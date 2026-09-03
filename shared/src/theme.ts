@@ -77,16 +77,16 @@ export const TOKENS: Record<ThemeMode, ThemeTokens> = {
     // on dark surfaces — see DESIGN.md token table.
     textMuted: '#cbd1d8',
     textFaint: '#9aa1ab',
-    accent: '#5ee4aa',
-    accentHover: '#79efc0',
+    accent: '#6aedb6',
+    accentHover: '#84f6cb',
     accentEmphasis: '#1a5b37',
     accentEmphasisHover: '#14502f',
     accentContrast: '#eaf6ef',
     border: '#30353b',
-    danger: '#ffbcab',
+    danger: '#ffc9b7',
     warning: '#f0ab41',
-    success: '#5ee4aa',
-    focus: '#79efc0',
+    success: '#6aedb6',
+    focus: '#84f6cb',
   },
 };
 
@@ -139,6 +139,10 @@ export function cssVars(mode: ThemeMode): Record<string, string> {
     '--elevation-md': SHARED_TOKENS.elevation.md,
     '--elevation-lg': SHARED_TOKENS.elevation.lg,
     '--font-family': SHARED_TOKENS.fontFamily,
+    '--motion-fast': SHARED_TOKENS.motion.fast,
+    '--motion-base': SHARED_TOKENS.motion.base,
+    '--motion-slow': SHARED_TOKENS.motion.slow,
+    '--motion-ease': SHARED_TOKENS.motion.ease,
   };
   for (const [name, size] of Object.entries(SHARED_TOKENS.fontSize)) {
     out[`--fs-${name}`] = size;

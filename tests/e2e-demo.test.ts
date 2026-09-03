@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const root = `${here}..`;
-const port = 4600 + (process.pid % 500);
+// Wide ephemeral range to avoid collisions with other services or a second
+// overlapping `npm test` run (pid-mod within 20k gives ~20k possible ports).
+const port = 20_000 + (process.pid % 20_000);
 
 interface CoreUnderTest {
   child: ChildProcess;

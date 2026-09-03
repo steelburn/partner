@@ -12,9 +12,12 @@
  * Secrets discipline: tokens/keys never enter responses, audit details, or
  * SSE payloads — every audit write goes through the redaction service.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient } from '@partner/shared';
+import { redactString } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import type { PairingManager } from './pairing.js';
 import type { SessionInfo, SessionManager } from './session.js';
@@ -27,6 +30,8 @@ export interface CoreAppOptions {
   schemaVersion: number;
   /** Host header allowlist; defaults to loopback for `port`. */
   hostAllowlist?: string[];
+  /** Optional built SPA directory served at / (stub at M0; the packaged shell wires the real path). */
+  staticDir?: string;
   pairing: PairingManager;
   sessions: SessionManager;
   audit: AuditService;
@@ -101,6 +106,7 @@ function requireSession(sessions: SessionManager) {
       return;
     }
     res.locals.session = result.session;
+    res.locals.token = token;
     next();
   };
 }
@@ -123,6 +129,13 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // 1. Loopback guard + JSON body parsing (public routes may not send JSON).
   app.use(hostGuard(allowlist));
   app.use(express.json({ limit: '1mb' }));
+
+  // Built SPA (optional at M0): serve static assets and index.html at /.
+  const staticDir = options.staticDir;
+  if (staticDir && existsSync(join(staticDir, 'index.html'))) {
+    app.use(express.static(staticDir));
+    app.get('/', (_req: Request, res: Response) => res.sendFile(join(staticDir, 'index.html')));
+  }
 
   // 2. Public surface.
   app.get('/v1/health', (_req: Request, res: Response) => {
@@ -226,12 +239,35 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ entries: audit.list(limit) });
   });
 
+  // Revoke the presented session (used by "Unpair"/"Pair again").
+  api.delete('/v1/session', requireSession(sessions), async (_req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const token = res.locals.token as string;
+    await sessions.revoke(token);
+    audit.log('session', 'session.revoke', 'web', { sessionId: session.id });
+    res.status(204).end();
+  });
+
   app.use(api);
 
   // Unknown routes: structured 404 (never leak internal paths or secrets).
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });
   });
+
+  // JSON error handler — never HTML, never internal paths, never secrets.
+  const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {
+    const maybe = err as { type?: string };
+    if (maybe?.type === 'entity.parse.failed') {
+      res.status(400).json({ error: 'bad_json' });
+      return;
+    }
+    const message =
+      err instanceof Error ? redactString(err.message) : `non-Error thrown: ${typeof err}`;
+    console.error('[partner-core] unhandled error:', message);
+    res.status(500).json({ error: 'internal_error' });
+  };
+  app.use(errorHandler);
 
   return app;
 }

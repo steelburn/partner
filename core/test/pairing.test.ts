@@ -15,7 +15,7 @@ function makeStore(): PairingStore {
 }
 
 describe('pairing manager', () => {
-  it('issue returns exactly 6 digits and stores only the SHA-256 hash', async () => {
+  it('issue returns exactly 6 digits and stores only a keyed hash', async () => {
     const store = makeStore();
     const pairing = createPairingManager(store, { now: () => 1_000 });
     const code = await pairing.issue();
@@ -24,8 +24,11 @@ describe('pairing manager', () => {
     const row = store.getLatest();
     expect(row).toBeDefined();
     const stored = row as NonNullable<typeof row>;
-    expect(stored.codeHash).toBe(codeHash(code));
+    expect(stored.codeHash).toMatch(/^[0-9a-f]{64}$/);
     expect(stored.codeHash).not.toBe(code); // plaintext never persisted
+    // Keyed HMAC-SHA256, NOT the offline-reversible SHA-256 of the 10^6
+    // code space (per-process key; codes die with the process).
+    expect(stored.codeHash).not.toBe(codeHash(code));
     expect(stored.expiresAt).toBe(1_000 + 120_000);
     expect(stored.attempts).toBe(0);
     expect(stored.lockedUntil).toBeNull();
@@ -102,7 +105,9 @@ describe('pairing manager', () => {
     const first = await pairing.issue();
     const second = await pairing.issue();
     expect(first).not.toBe(second);
-    expect(store.getLatest()?.codeHash).toBe(codeHash(second));
+    const latest = store.getLatest();
+    expect(latest?.codeHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(latest?.codeHash).not.toBe(codeHash(second)); // keyed, not plain SHA-256
     // The superseded code is now a wrong guess against the active pairing.
     expect(await pairing.verify(first)).toEqual({ ok: false, reason: 'invalid' });
     expect(await pairing.verify(second)).toEqual({ ok: true, code: second });

@@ -141,17 +141,23 @@ test. No product UI is designed here — this is plumbing to prove the spine.
 
 ## Exit criteria (tick against PLAN.md M0)
 
-- [ ] Repo + workspaces + vitest green; shared types compile from all
+- [x] Repo + workspaces + vitest green; shared types compile from all
       packages.
-- [ ] Keychain abstraction with fake + native impl behind one interface.
-- [ ] Pairing + session + origin allowlist + loopback bind, all test-covered.
-- [ ] Redaction layer at the single serialization point, proven by scan
+- [x] Keychain abstraction with fake + native impl behind one interface.
+- [x] Pairing + session + origin allowlist + loopback bind, all test-covered.
+      (Pairing codes stored keyed-HMAC, not offline-reversible SHA-256; live
+      HOST is restricted to loopback by construction.)
+- [x] Redaction layer at the single serialization point, proven by scan
       tests.
-- [ ] Demo `/v1/chat` streams through the spine; e2e pairs and chats against
+- [x] Demo `/v1/chat` streams through the spine; e2e pairs and chats against
       the real spawned process.
-- [ ] Spike decision recorded in `core/docs/spike-sidecar.md`; Tauri shell
-      launches the sidecar and serves the UI in a packaged build.
-- [ ] `DESIGN.md` draft exists (tokens module matches it).
+- [x] Spike decision recorded in `core/docs/spike-sidecar.md`; core serves
+      the built SPA at `/` when a static dir is configured (stub, review-
+      closed). **Remaining environment gate:** the packaged Tauri shell
+      launching the sidecar needs a Rust toolchain (not present on this
+      machine) — steps in `shell/src-tauri/README.md`.
+- [x] `DESIGN.md` draft exists (tokens module matches it; dark palette
+      contrast-tuned; ux_audit passes on all asserted pairs).
 
 ## Out of scope here
 

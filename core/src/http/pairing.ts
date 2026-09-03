@@ -2,8 +2,10 @@
  * Pairing manager — 6-digit single-use codes, hashed at rest.
  *
  * Security semantics (M0 spine):
- *  - Codes come from a CSPRNG (`crypto.randomInt`); only the SHA-256 hex of a
- *    code is ever persisted (`pairings.code_hash`). Plaintext lives in memory
+ *  - Codes come from a CSPRNG (`crypto.randomInt`); only a KEYED hash of a
+ *    code is persisted (`pairings.code_hash`) — HMAC-SHA256 with a
+ *    per-process random key, so the 10^6 code space is not offline-enumerable
+ *    from the DB and codes die with the process. Plaintext lives in memory
  *    only for the display/dev seam and is never logged or stored.
  *  - Single active code: issuing a new code replaces the previous one.
  *  - Single use: the first successful verify() consumes the row.
@@ -12,7 +14,7 @@
  *    the bucket resets. Locked/expired/absent are distinct reasons so the
  *    HTTP layer can map them to 429/401.
  */
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt } from 'node:crypto';
 import type { PairingStore } from '../stores/types.js';
 
 export interface PairingOptions {
@@ -47,6 +49,10 @@ export interface PairingManager {
   devCode(): Promise<string | null>;
 }
 
+/**
+ * Unkeyed SHA-256 of a code — retained for negative assertions (proving the
+ * stored hash is NOT this offline-reversible digest). Never used for storage.
+ */
 export function codeHash(code: string): string {
   return createHash('sha256').update(code, 'utf8').digest('hex');
 }
@@ -58,6 +64,11 @@ export function createPairingManager(store: PairingStore, options: PairingOption
   const now = options.now ?? Date.now;
   const demo = options.demo ?? false;
 
+  /** Per-process HMAC key: codes die with the process; DB alone is useless. */
+  const codeKey = randomBytes(32);
+  const hashCode = (code: string): string =>
+    createHmac('sha256', codeKey).update(code, 'utf8').digest('hex');
+
   /** Plaintext of the most recently issued code — memory only, never logged. */
   let active: { code: string; expiresAt: number } | null = null;
 
@@ -67,7 +78,7 @@ export function createPairingManager(store: PairingStore, options: PairingOption
       const expiresAt = issuedAt + codeTtlMs;
       const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
       store.removeAll();
-      store.insert(codeHash(code), issuedAt, expiresAt);
+      store.insert(hashCode(code), issuedAt, expiresAt);
       active = { code, expiresAt };
       return code;
     },
@@ -76,7 +87,7 @@ export function createPairingManager(store: PairingStore, options: PairingOption
       const code = String(input ?? '').trim();
       const at = now();
 
-      const row = store.findByCodeHash(codeHash(code));
+      const row = store.findByCodeHash(hashCode(code));
       if (row) {
         if (row.lockedUntil !== null && at < row.lockedUntil) {
           return { ok: false, reason: 'locked' };
@@ -117,7 +128,7 @@ export function createPairingManager(store: PairingStore, options: PairingOption
       if (!demo || !active) return null;
       if (active.expiresAt <= now()) return null;
       // A live (unconsumed) row must still exist for the code.
-      const row = store.findByCodeHash(codeHash(active.code));
+      const row = store.findByCodeHash(hashCode(active.code));
       if (!row) return null;
       return active.code;
     },

@@ -27,6 +27,11 @@ describe('loadConfig', () => {
     expect(cfg.dbPath).toBe('./data/partner.db');
   });
 
+  it('rejects a non-loopback HOST (sidecar binds loopback by construction)', () => {
+    expect(() => loadConfig({ ...NO_ENV, HOST: '0.0.0.0' })).toThrow(/loopback/);
+    expect(() => loadConfig({ ...NO_ENV, HOST: '192.168.1.5' })).toThrow(/loopback/);
+  });
+
   it('DEMO_MODE accepts explicit truthy/falsy spellings', () => {
     expect(loadConfig({ ...NO_ENV, DEMO_MODE: 'false' }).demo).toBe(false);
     expect(loadConfig({ ...NO_ENV, DEMO_MODE: 'off' }).demo).toBe(false);

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ChatEvent } from '@partner/shared';
 import { ALLOWED_HOST, ALTERNATE_HOST, demoHarness } from './helpers.js';
 import type { Harness } from './helpers.js';
@@ -240,6 +243,94 @@ describe('full demo round trip', () => {
         .set('Host', ALLOWED_HOST)
         .set('Authorization', `Bearer ${token}`);
       expect(missing.status).toBe(404);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('SPA static serving (review fix)', () => {
+  it('serves index.html and assets from staticDir, still behind the Host guard', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'partner-static-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Partner</title>');
+    writeFileSync(join(dir, 'app.css'), 'body{color:var(--text)}');
+    const h = demoHarness({ staticDir: dir });
+    try {
+      const root = await request(h.app).get('/').set('Host', ALLOWED_HOST);
+      expect(root.status).toBe(200);
+      expect(root.headers['content-type']).toContain('text/html');
+      expect(root.text).toContain('Partner');
+
+      const asset = await request(h.app).get('/app.css').set('Host', ALLOWED_HOST);
+      expect(asset.status).toBe(200);
+      expect(asset.text).toContain('var(--text)');
+
+      // The loopback guard still applies to static routes.
+      const foreign = await request(h.app).get('/').set('Host', 'evil.example:9999');
+      expect(foreign.status).toBe(403);
+    } finally {
+      h.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls through to JSON 404 when staticDir has no index.html', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'partner-empty-'));
+    const h = demoHarness({ staticDir: dir });
+    try {
+      const res = await request(h.app).get('/').set('Host', ALLOWED_HOST);
+      expect(res.status).toBe(404);
+      expect(res.headers['content-type']).toContain('application/json');
+    } finally {
+      h.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('robust errors & session revocation (review fixes)', () => {
+  it('malformed JSON returns a JSON 400 with no HTML/stack/paths', async () => {
+    const h = demoHarness();
+    try {
+      const res = await request(h.app)
+        .post('/v1/pair')
+        .set('Host', ALLOWED_HOST)
+        .set('Content-Type', 'application/json')
+        .send('{not valid json');
+      expect(res.status).toBe(400);
+      expect(res.headers['content-type']).toContain('application/json');
+      expect(res.body).toEqual({ error: 'bad_json' });
+      expect(res.text).not.toContain('at '); // no stack trace
+      expect(res.text).not.toContain('/home/'); // no internal paths
+    } finally {
+      h.close();
+    }
+  });
+
+  it('DELETE /v1/session revokes the presented token', async () => {
+    const h = demoHarness();
+    try {
+      const code = await fetchDevCode(h.app);
+      const token = await pair(h.app, code);
+
+      const del = await request(h.app)
+        .delete('/v1/session')
+        .set('Host', ALLOWED_HOST)
+        .set('Authorization', `Bearer ${token}`);
+      expect(del.status).toBe(204);
+
+      // The revoked token is refused afterwards.
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set('Host', ALLOWED_HOST)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ messages: [{ role: 'user', content: 'hi' }] });
+      expect(chat.status).toBe(401);
+      expect(chat.body.reason).toBe('revoked');
+
+      // And the revocation is audited.
+      const rows = h.audit.list(100);
+      expect(rows.filter((e) => e.action === 'session.revoke').length).toBe(1);
     } finally {
       h.close();
     }

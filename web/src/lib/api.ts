@@ -12,6 +12,7 @@ import { parseSseStream } from './sse.js';
 
 const PAIR_PATH = '/v1/pair';
 const CHAT_PATH = '/v1/chat';
+const SESSION_PATH = '/v1/session';
 const DEMO_PAIR_CODE_PATH = '/v1/dev/pair-code';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -248,4 +249,22 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
     if (event) onEvent(event);
   }
   return { ok: true };
+}
+
+/**
+ * Revoke the session server-side ("Unpair" / "Pair again"). Best-effort:
+ * a 401/403 means the session is already gone, which is success here.
+ */
+export async function revokeSession(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(SESSION_PATH, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (response.status !== 204 && response.status !== 401 && response.status !== 403) {
+    throw new ApiRequestError(response.status, 'Could not revoke the session.');
+  }
 }

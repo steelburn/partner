@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ThemeMode } from '@partner/shared';
 import ChatStrip from './ChatStrip.js';
 import PairGate from './PairGate.js';
+import { revokeSession } from './lib/api.js';
 import { clearStoredToken, readStoredToken } from './lib/token.js';
 import { applyMode, getInitialMode, persistMode } from './theme/apply.js';
 
@@ -26,6 +27,10 @@ export default function App() {
   const handlePaired = (): void => setPaired(true);
 
   const handleUnpair = (): void => {
+    // Best-effort server-side revocation so a leaked token cannot outlive
+    // "Unpair"/"Pair again"; local state clears regardless of network fate.
+    const token = readStoredToken();
+    if (token) void revokeSession(token).catch(() => undefined);
     clearStoredToken();
     setPaired(false);
   };

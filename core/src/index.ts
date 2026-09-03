@@ -114,6 +114,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     version: config.version,
     schemaVersion: config.schemaVersion,
     hostAllowlist: config.hostAllowlist,
+    staticDir: config.staticDir,
     pairing,
     sessions,
     audit,

@@ -39,7 +39,9 @@ export interface Harness {
   close(): void;
 }
 
-export function demoHarness(options: { demo?: boolean; pairing?: PairingOptions } = {}): Harness {
+export function demoHarness(
+  options: { demo?: boolean; pairing?: PairingOptions; staticDir?: string } = {},
+): Harness {
   const demo = options.demo ?? true;
   const db = openDatabase(':memory:');
   const pairingStore = createPairingStore(db);
@@ -58,6 +60,7 @@ export function demoHarness(options: { demo?: boolean; pairing?: PairingOptions 
     version: CORE_VERSION,
     schemaVersion: SCHEMA_VERSION,
     hostAllowlist: ALLOWLIST,
+    staticDir: options.staticDir,
     pairing,
     sessions,
     audit,

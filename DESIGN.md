@@ -35,17 +35,17 @@ Non-negotiable discipline (see also the repo UX rules):
 | `--surface` | #f6f6f4 | #191c1f | cards, panels, chat bubbles (own) |
 | `--surface-2` | #ececea | #22262a | inputs, wells, nested rows |
 | `--text` | #16181d | #e8eaed | primary text |
-| `--text-muted` | #3f444c | #a2a7ad | labels, captions |
+| `--text-muted` | #3f444c | #cbd1d8 | labels, captions |
 | `--text-faint` | #5d636e | #9aa1ab | disabled/placeholder (exempt from body-text minimums) |
-| `--accent` | #1f6f43 | #5ee4aa | links, active nav, focus emphasis on surfaces |
-| `--accent-hover` | #195936 | #79efc0 | accent hover |
+| `--accent` | #1f6f43 | #6aedb6 | links, active nav, focus emphasis on surfaces |
+| `--accent-hover` | #195936 | #84f6cb | accent hover |
 | `--accent-emphasis` | #1f6f43 | #1a5b37 | **filled** actions (primary buttons, user bubbles) |
 | `--accent-emphasis-hover` | #195936 | #14502f | emphasis hover |
 | `--accent-contrast` | #ffffff | #eaf6ef | text/icon on emphasis surfaces |
-| `--danger` | #b42318 | #ffbcab | destructive, errors |
+| `--danger` | #b42318 | #ffc9b7 | destructive, errors |
 | `--warning` | #a15c00 | #f0ab41 | warnings |
-| `--success` | #1f6f43 | #4caf7d | success |
-| `--focus` | #1f6f43 | #66c191 | 2px focus ring |
+| `--success` | #1f6f43 | #6aedb6 | success |
+| `--focus` | #1f6f43 | #84f6cb | 2px focus ring |
 | `--border` | #d9dbd7 | #30353b | input strokes / dividers (last resort) |
 
 Contrast: all text pairs pass APCA Lc ≥ 75 (body) / ≥ 45 (large-bold) and the

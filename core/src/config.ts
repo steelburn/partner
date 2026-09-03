@@ -34,6 +34,8 @@ export interface CoreConfig {
   dbPath: string;
   /** Which Keychain implementation to wire. */
   keychain: KeychainKind;
+  /** Optional built SPA directory to serve at / (packaged shell wires it). */
+  staticDir?: string;
   /** Host header allowlist (loopback only), derived from the port. */
   hostAllowlist: string[];
   codeTtlMs: number;
@@ -68,6 +70,11 @@ function readInt(raw: string | undefined, fallback: number, min: number, max: nu
 export function loadConfig(env: Record<string, string | undefined> = process.env): CoreConfig {
   const port = readInt(env.PORT, DEFAULT_PORT, 1, 65535);
   const host = env.HOST?.trim() || DEFAULT_HOST;
+  // The M0 sidecar is loopback-only BY CONSTRUCTION: allowlisting loopback
+  // Host headers is meaningless if the socket can be bound outward.
+  if (!['127.0.0.1', '::1', 'localhost'].includes(host)) {
+    throw new Error(`HOST must be a loopback address (127.0.0.1 / ::1 / localhost); got "${host}"`);
+  }
   const demo = readBool(env.DEMO_MODE, true);
   // Demo mode defaults to an in-memory DB; an explicit DB_PATH always wins.
   const dbPath = env.DB_PATH?.trim() || (demo ? ':memory:' : DEFAULT_DB_PATH);
@@ -81,6 +88,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     demo,
     dbPath,
     keychain,
+    staticDir: env.STATIC_DIR?.trim() || undefined,
     hostAllowlist: [`127.0.0.1:${port}`, `localhost:${port}`],
     codeTtlMs: readInt(env.PAIR_CODE_TTL_MS, 120_000, 1, Number.MAX_SAFE_INTEGER),
     maxAttempts: readInt(env.PAIR_MAX_ATTEMPTS, 3, 1, 100),
