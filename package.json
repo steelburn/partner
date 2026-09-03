@@ -1,0 +1,20 @@
+{
+  "name": "partner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["shared", "core", "web", "extension", "shell"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:core": "npm run dev -w core",
+    "dev:web": "npm run dev -w web"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.10",
+    "@types/node": "^22.10.0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@partner/shared": ["shared/src/index.ts"],
+      "@partner/shared/*": ["shared/src/*"],
+      "@partner/core": ["core/src/index.ts"]
+    }
+  }
+}

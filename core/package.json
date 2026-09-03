@@ -1,0 +1,27 @@
+{
+  "name": "@partner/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "^2.0.0",
+    "@partner/shared": "*",
+    "better-sqlite3": "^13.0.3",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^5.0.0",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.0"
+  }
+}
