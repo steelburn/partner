@@ -1,0 +1,5 @@
+{
+  "main": "sea-entry.mjs",
+  "output": "sea-prep-rawmjs.blob",
+  "disableExperimentalSEAWarning": true
+}

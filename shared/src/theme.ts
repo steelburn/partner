@@ -29,11 +29,15 @@ export interface ThemeTokens {
   textMuted: string;
   /** Disabled / placeholder text. */
   textFaint: string;
-  /** The single accent family. */
+  /** The single accent family — interactive text/links on surfaces. */
   accent: string;
   /** Accent hover state. */
   accentHover: string;
-  /** Text/icon on accent surfaces. */
+  /** Filled emphasis surface (primary buttons, user bubbles). */
+  accentEmphasis: string;
+  /** Hover for the emphasis surface. */
+  accentEmphasisHover: string;
+  /** Text/icon on emphasis surfaces (accentEmphasis backgrounds). */
   accentContrast: string;
   /** Subtle divider/input stroke (last resort). */
   border: string;
@@ -55,6 +59,8 @@ export const TOKENS: Record<ThemeMode, ThemeTokens> = {
     textFaint: '#5d636e',
     accent: '#1f6f43',
     accentHover: '#195936',
+    accentEmphasis: '#1f6f43',
+    accentEmphasisHover: '#195936',
     accentContrast: '#ffffff',
     border: '#d9dbd7',
     danger: '#b42318',
@@ -67,16 +73,20 @@ export const TOKENS: Record<ThemeMode, ThemeTokens> = {
     surface: '#191c1f',
     surface2: '#22262a',
     text: '#e8eaed',
-    textMuted: '#a2a7ad',
-    textFaint: '#7c8289',
-    accent: '#4caf7d',
-    accentHover: '#66c191',
-    accentContrast: '#0d1210',
+    // Tuned for strict contrast (APCA Lc >= 75 body text, WCAG AA sidecar)
+    // on dark surfaces — see DESIGN.md token table.
+    textMuted: '#cbd1d8',
+    textFaint: '#9aa1ab',
+    accent: '#5ee4aa',
+    accentHover: '#79efc0',
+    accentEmphasis: '#1a5b37',
+    accentEmphasisHover: '#14502f',
+    accentContrast: '#eaf6ef',
     border: '#30353b',
-    danger: '#f97066',
+    danger: '#ffbcab',
     warning: '#f0ab41',
-    success: '#4caf7d',
-    focus: '#66c191',
+    success: '#5ee4aa',
+    focus: '#79efc0',
   },
 };
 
@@ -114,6 +124,8 @@ export function cssVars(mode: ThemeMode): Record<string, string> {
     '--text-faint': t.textFaint,
     '--accent': t.accent,
     '--accent-hover': t.accentHover,
+    '--accent-emphasis': t.accentEmphasis,
+    '--accent-emphasis-hover': t.accentEmphasisHover,
     '--accent-contrast': t.accentContrast,
     '--border': t.border,
     '--danger': t.danger,

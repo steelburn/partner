@@ -1,0 +1,59 @@
+{
+  // M0 scaffold — verify with cargo check once Rust is installed.
+  // Tauri v2 config. NOTE: this app does NOT serve its own frontend — the
+  // Node core serves web/ on the loopback and the webview simply points at it.
+  // frontendDist is therefore a vestigial static placeholder that must exist
+  // so tauri-build can embed assets; the live URL is windows[0].url below.
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Partner",
+  "version": "0.0.0",
+  "identifier": "dev.ne1.partner",
+  "build": {
+    // Core is started separately (`npm run dev -w core` in dev; spawned as a
+    // sidecar in the packaged app). devUrl points at the core dev server.
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:4390",
+    "beforeBuildCommand": "",
+    "frontendDist": "./static-dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Partner",
+        "url": "http://127.0.0.1:4390",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      // All content is same-origin loopback (core serves web/) — CSP is a
+      // future hardening task once the SPA ships real pages (see PLAN.md).
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm", "appimage", "nsis", "msi", "dmg"],
+    "externalBin": [
+      // Core sidecar base name; tauri build expects
+      // src-tauri/binaries/partner-core-<target-triple> at build time and
+      // renames it to `partner-core` when bundling. See binaries/README.md.
+      "binaries/partner-core"
+    ],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {}
+}

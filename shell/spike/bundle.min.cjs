@@ -1,0 +1,1 @@
+var e=require("node:crypto"),o=(0,e.createHash)("sha256").update("partner-sidecar-spike").digest("hex");console.log("bundle-entry: hello from a single bundled file");console.log(`bundle-entry: node ${process.version} on ${process.platform}/${process.arch}`);console.log(`bundle-entry: sha256(seed)=${o.slice(0,16)}`);console.log(`bundle-entry: execPath=${process.execPath}`);

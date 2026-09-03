@@ -36,18 +36,25 @@ Non-negotiable discipline (see also the repo UX rules):
 | `--surface-2` | #ececea | #22262a | inputs, wells, nested rows |
 | `--text` | #16181d | #e8eaed | primary text |
 | `--text-muted` | #3f444c | #a2a7ad | labels, captions |
-| `--text-faint` | #5d636e | #7c8289 | disabled/placeholder |
-| `--accent` | #1f6f43 | #4caf7d | actions, active nav, links |
-| `--accent-hover` | #195936 | #66c191 | accent hover |
-| `--accent-contrast` | #ffffff | #0d1210 | text/icon on accent surfaces |
-| `--danger` | #b42318 | #f97066 | destructive, errors |
+| `--text-faint` | #5d636e | #9aa1ab | disabled/placeholder (exempt from body-text minimums) |
+| `--accent` | #1f6f43 | #5ee4aa | links, active nav, focus emphasis on surfaces |
+| `--accent-hover` | #195936 | #79efc0 | accent hover |
+| `--accent-emphasis` | #1f6f43 | #1a5b37 | **filled** actions (primary buttons, user bubbles) |
+| `--accent-emphasis-hover` | #195936 | #14502f | emphasis hover |
+| `--accent-contrast` | #ffffff | #eaf6ef | text/icon on emphasis surfaces |
+| `--danger` | #b42318 | #ffbcab | destructive, errors |
 | `--warning` | #a15c00 | #f0ab41 | warnings |
 | `--success` | #1f6f43 | #4caf7d | success |
 | `--focus` | #1f6f43 | #66c191 | 2px focus ring |
 | `--border` | #d9dbd7 | #30353b | input strokes / dividers (last resort) |
 
 Contrast: all text pairs pass APCA Lc ≥ 75 (body) / ≥ 45 (large-bold) and the
-WCAG sidecar (4.5 / 3.0). Theme saves are contrast-gated (M6).
+WCAG sidecar (4.5 / 3.0). Dark-mode values above are tuned to those gates on
+dark surfaces — secondary text is brighter than a naive palette requires.
+Filled actions use `accent-emphasis` (dark green in dark mode) so
+`accent-contrast` text passes while links keep the brighter `--accent`.
+Placeholders/disabled use `--text-faint` and are exempt from body-text
+minimums. Theme saves are contrast-gated (M6).
 
 ## Typography
 

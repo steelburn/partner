@@ -1,7 +1,9 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "."
+    // noEmit project; '@partner/shared' path-alias pulls in shared/src TS
+    // sources, so rootDir must span the workspace root.
+    "rootDir": ".."
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

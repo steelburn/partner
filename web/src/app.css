@@ -1,0 +1,357 @@
+/* ==========================================================================
+ * Partner web — M0 skeleton styles.
+ *
+ * Token-only discipline: every color, radius, elevation, font and spacing
+ * value comes from var(--…) tokens applied to <html> by src/theme/apply.ts
+ * (values live in shared/src/theme.ts — the single source of truth). No raw
+ * hex, no invented shadows, no gradients/glow/glass anywhere.
+ *
+ * The only bare lengths in this file are structural layout geometry
+ * (viewports, container widths), not design tokens.
+ * ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* --- App shell ---------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-header {
+  background: var(--surface);
+}
+
+.app-header-inner {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.app-brand {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Buttons ------------------------------------------------------------
+ * Variants: primary (accent fill) and secondary (surface-2 fill). Every
+ * interactive element declares default/hover/focus-visible/active/disabled.
+ * ------------------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-sm {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+.btn-primary {
+  background: var(--accent-emphasis);
+  color: var(--accent-contrast);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-emphasis-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-emphasis-hover);
+}
+
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.btn-secondary:active:not(:disabled) {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+/* --- Fields (input / textarea) ------------------------------------------
+ * surface-2 fill; a stroke appears on hover/focus only (stroke last resort).
+ * ------------------------------------------------------------------------ */
+
+.field {
+  width: 100%;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-md);
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.field::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.field:hover:not(:disabled) {
+  border-color: var(--border);
+}
+
+.field:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-color: var(--focus);
+}
+
+.field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+  margin-bottom: var(--space-1);
+}
+
+/* --- Pairing gate ------------------------------------------------------- */
+
+.gate {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+}
+
+.gate-panel {
+  width: 100%;
+  max-width: 560px;
+  height: fit-content;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  margin-top: var(--space-4);
+}
+
+.gate-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.gate-copy {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.code-field {
+  text-align: center;
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.gate-actions {
+  margin-top: var(--space-3);
+}
+
+.gate-feedback {
+  margin-top: var(--space-3);
+  min-height: var(--space-4);
+}
+
+.form-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.form-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* --- Chat strip --------------------------------------------------------- */
+
+.chat {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.chat-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--space-4);
+}
+
+.msg {
+  max-width: 80%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--accent-emphasis);
+  color: var(--accent-contrast);
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.chat-status {
+  min-height: var(--space-4);
+  display: flex;
+  align-items: center;
+  padding: var(--space-1) 0;
+}
+
+.chat-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.chat-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.chat-error-text {
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.chat-input {
+  flex: 1;
+  resize: vertical;
+  min-height: calc(var(--space-2) * 2 + var(--fs-md) * 1.5 * 2);
+}
+
+/* --- Motion ------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
+}

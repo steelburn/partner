@@ -1,0 +1,31 @@
+# M0 scaffold — verify with cargo check once Rust is installed.
+[package]
+name = "partner-shell"
+version = "0.0.0"
+description = "Tauri v2 desktop shell for Partner (spawns the Node core sidecar, hosts the webview)"
+edition = "2021"
+
+# Tauri v2 template shape: rlib for the library, cdylib/staticlib reserved for
+# future mobile targets. The binary entry is `src/main.rs` -> partner_shell_lib::run().
+[lib]
+name = "partner_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Required to spawn the core sidecar (Command::sidecar) and to keep the
+# tauri-plugin-shell permissions available. Spawning happens Rust-side in
+# `setup`; the plugin's IPC permissions are only exercised by future UI.
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# Recommended Tauri release profile (smaller/faster binaries).
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
