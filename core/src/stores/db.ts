@@ -45,6 +45,9 @@ import type {
   SessionRow,
   SessionStore,
   SettingsStore,
+  ThemeRow,
+  ThemeRowPatch,
+  ThemeStore,
 } from './types.js';
 
 const META_SCHEMA_VERSION_KEY = 'schema_version';
@@ -289,6 +292,21 @@ CREATE TABLE IF NOT EXISTS plans (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
   USING fts5(note_ref, plan_ref, content);
+
+-- M6 themes table (PLAN-M6.md, additive schema v7). One row = BOTH modes of
+-- the design tokens (JSON ThemeTokens per mode, same discipline as
+-- providers.default_models). Token bodies are not secrets, but audit rows
+-- keep to ids/names/source only (manager-owned).
+
+CREATE TABLE IF NOT EXISTS themes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL, -- preset | custom
+  light_json TEXT NOT NULL,
+  dark_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -1254,6 +1272,75 @@ export function createNotesFtsStore(db: Database.Database): NotesFtsStore {
         rank: number;
       }>;
       return rows.map((row) => ({ kind: row.kind, refId: row.refId, rank: row.rank }));
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M6 themes row store (PLAN-M6.md — additive schema v7). Plain typed CRUD
+// with NO business logic; the theme manager (core/src/theming/manager.ts)
+// owns the lint/contrast gate, preset seeding, activation and persona
+// binding. light_json/dark_json are JSON ThemeTokens strings the store never
+// interprets. Stores never read the clock: writes take explicit timestamps.
+// ---------------------------------------------------------------------------
+
+const THEME_COLUMNS = `
+  id, name, source, light_json AS lightJson, dark_json AS darkJson,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const THEME_UPDATE_COLUMNS: Readonly<Record<string, keyof ThemeRowPatch>> = {
+  name: 'name',
+  light_json: 'lightJson',
+  dark_json: 'darkJson',
+};
+
+export function createThemeStore(db: Database.Database): ThemeStore {
+  const insert = db.prepare(
+    `INSERT INTO themes (id, name, source, light_json, dark_json, created_at, updated_at)
+     VALUES (@id, @name, @source, @lightJson, @darkJson, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${THEME_COLUMNS} FROM themes WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${THEME_COLUMNS} FROM themes ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM themes WHERE id = ?');
+  const countAll = db.prepare('SELECT COUNT(*) AS n FROM themes');
+
+  return {
+    insert(row: ThemeRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ThemeRow | undefined {
+      return findById.get(id) as ThemeRow | undefined;
+    },
+    list(): ThemeRow[] {
+      return listAll.all() as ThemeRow[];
+    },
+    update(id: string, patch: ThemeRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(THEME_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof ThemeRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE themes SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE themes SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+    count(): number {
+      const row = countAll.get() as { n: number };
+      return row.n;
     },
   };
 }

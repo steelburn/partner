@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { IndependenceLevel, Persona, PersonaInput, TaskClass } from '@partner/shared';
+import type { IndependenceLevel, Persona, PersonaInput, TaskClass, ThemeProfile } from '@partner/shared';
 import {
   LEVEL_ORDER,
   TASK_CLASS_OPTIONS,
@@ -15,6 +15,7 @@ import {
   resumePersona,
   updatePersona,
 } from './lib/personas.js';
+import { bindPersonaTheme } from './lib/themes.js';
 import { readStoredToken } from './lib/token.js';
 
 export interface PersonaManagerProps {
@@ -22,10 +23,18 @@ export interface PersonaManagerProps {
   personas: Persona[] | null;
   /** Load-failure text for the list itself; shown with a retry action. */
   loadError: string | null;
+  /** Every theme (M6) for the per-persona Theme bind select; null while loading. */
+  themes: ThemeProfile[] | null;
+  /** Load-failure text for the theme list (the bind select hides on error). */
+  themesError: string | null;
   /** Forget the session and return to the pairing gate (auth failure). */
   onUnpair: () => void;
   /** Re-fetch personas from the core (keeps the shell + manager in sync). */
   onRefresh: () => void;
+  /** Re-fetch the theme list (keeps the per-row bind select current). */
+  onRefreshThemes: () => void;
+  /** A persona theme binding changed — the shell re-resolves the active theme. */
+  onPersonaThemeBound: () => void;
   /** True while this view is the visible one (triggers one refresh). */
   active?: boolean;
 }
@@ -37,12 +46,20 @@ export interface PersonaManagerProps {
  * two-step confirm (the default persona's delete is refused with a hint).
  * System prompts are edited in place and sent to the core only; they are
  * never logged, echoed or listed back by this view.
+ *
+ * M6 adds a per-row Theme bind (None/global or one of the saved themes) that
+ * writes persona.colorTheme via bindPersonaTheme — the core resolves what
+ * actually applies (persona -> global active -> preset).
  */
 export default function PersonaManagerView({
   personas,
   loadError,
+  themes,
+  themesError,
   onUnpair,
   onRefresh,
+  onRefreshThemes,
+  onPersonaThemeBound,
   active,
 }: PersonaManagerProps) {
   const [sessionLost, setSessionLost] = useState(false);
@@ -51,6 +68,7 @@ export default function PersonaManagerView({
   useEffect(() => {
     if (!active || sessionLost) return;
     onRefresh();
+    onRefreshThemes();
     // Refresh on first activation only; edits re-call onRefresh themselves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, sessionLost]);
@@ -108,7 +126,10 @@ export default function PersonaManagerView({
               <li key={persona.id} className="persona-card">
                 <PersonaRow
                   persona={persona}
+                  themes={themes}
+                  themesError={themesError}
                   onChanged={onRefresh}
+                  onPersonaThemeBound={onPersonaThemeBound}
                   onSessionLost={handleSessionLost}
                 />
               </li>
@@ -148,15 +169,19 @@ export default function PersonaManagerView({
 // Persona row
 // ---------------------------------------------------------------------------
 
-type RowOp = 'pause' | 'resume' | 'delete';
+type RowOp = 'pause' | 'resume' | 'delete' | 'bind';
 
 interface PersonaRowProps {
   persona: Persona;
+  themes: ThemeProfile[] | null;
+  themesError: string | null;
   onChanged: () => void;
+  /** A successful bind changes what theme applies to this persona. */
+  onPersonaThemeBound: () => void;
   onSessionLost: () => void;
 }
 
-function PersonaRow({ persona, onChanged, onSessionLost }: PersonaRowProps) {
+function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBound, onSessionLost }: PersonaRowProps) {
   const [busy, setBusy] = useState<RowOp | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -219,6 +244,29 @@ function PersonaRow({ persona, onChanged, onSessionLost }: PersonaRowProps) {
     } catch (cause) {
       setConfirming(false);
       handleOpError(cause, 'Could not delete the persona.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // M6 per-persona theme bind: '' = clear to the global active theme.
+  const handleBindTheme = async (value: string): Promise<void> => {
+    if (busy) return;
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    const themeId = value.length === 0 ? null : value;
+    setBusy('bind');
+    setError(null);
+    setConfirming(false);
+    try {
+      await bindPersonaTheme(token, persona.id, themeId);
+      onChanged();
+      onPersonaThemeBound();
+    } catch (cause) {
+      handleOpError(cause, 'Could not update this persona\'s theme.');
     } finally {
       setBusy(null);
     }
@@ -296,6 +344,25 @@ function PersonaRow({ persona, onChanged, onSessionLost }: PersonaRowProps) {
 
       <p className="persona-meta">{metaParts.join(' · ')}</p>
 
+      <div className="persona-theme-bind">
+        <label className="label persona-theme-label" htmlFor={`persona-theme-${persona.id}`}>
+          Theme
+        </label>
+        <PersonaThemeSelect
+          personaId={persona.id}
+          personaName={persona.name}
+          bound={persona.colorTheme ?? ''}
+          themes={themes}
+          themesError={themesError}
+          disabled={!idle}
+          busy={busy === 'bind'}
+          onChange={(value) => void handleBindTheme(value)}
+        />
+        <p className="persona-theme-hint">
+          Binds this persona to a theme; “None (global)” follows the active theme set in Themes.
+        </p>
+      </div>
+
       {persona.isDefault ? (
         <p className="form-hint persona-hint">
           The default persona is what new chats start with — set another persona as default to
@@ -320,6 +387,81 @@ function PersonaRow({ persona, onChanged, onSessionLost }: PersonaRowProps) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-persona theme bind select (M6)
+// ---------------------------------------------------------------------------
+
+interface PersonaThemeSelectProps {
+  personaId: string;
+  personaName: string;
+  /** The persona's bound theme id ('' = follow the global active theme). */
+  bound: string;
+  themes: ThemeProfile[] | null;
+  themesError: string | null;
+  disabled: boolean;
+  busy: boolean;
+  onChange: (value: string) => void;
+}
+
+function PersonaThemeSelect({
+  personaId,
+  personaName,
+  bound,
+  themes,
+  themesError,
+  disabled,
+  busy,
+  onChange,
+}: PersonaThemeSelectProps) {
+  const id = `persona-theme-${personaId}`;
+  if (themesError !== null) {
+    return (
+      <p className="persona-theme-hint" role="note">
+        Themes could not be loaded — the persona keeps its current look.
+      </p>
+    );
+  }
+  if (themes === null) {
+    return (
+      <select
+        id={id}
+        className="field persona-theme-select"
+        disabled={disabled || themes === null}
+        aria-busy
+        aria-label={`Theme for persona ${personaName}`}
+      >
+        <option value="">Loading themes…</option>
+      </select>
+    );
+  }
+  // A bound theme that no longer exists (deleted elsewhere) would otherwise
+  // leave the controlled select blank — surface it so it can be rebound.
+  const boundMissing = bound.length > 0 && !themes.some((t) => t.id === bound);
+  return (
+    <select
+      id={id}
+      className="field persona-theme-select"
+      value={bound}
+      onChange={(event) => onChange(event.target.value)}
+      disabled={disabled}
+      aria-busy={busy}
+      aria-label={`Theme for persona ${personaName}`}
+    >
+      {boundMissing ? (
+        <option value={bound} disabled>
+          Removed theme — pick another
+        </option>
+      ) : null}
+      <option value="">None (global)</option>
+      {themes.map((theme) => (
+        <option key={theme.id} value={theme.id}>
+          {theme.name}
+        </option>
+      ))}
+    </select>
   );
 }
 

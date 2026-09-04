@@ -68,6 +68,8 @@ import type { NoteManager } from '../notes/index.js';
 import { NoteError, noteErrorStatus } from '../notes/index.js';
 import type { PlanManager } from '../plans/index.js';
 import { PlanError, planErrorStatus } from '../plans/index.js';
+import type { ThemeManager } from '../theming/manager.js';
+import { ThemeError, themeErrorStatus } from '../theming/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -125,6 +127,12 @@ export interface CoreAppOptions {
    * absent the /v1/plans surface responds 501 not_configured.
    */
   plans?: PlanManager;
+  /**
+   * M6 theme manager (optional so M0-M5 harnesses compile unchanged). When
+   * absent the /v1/themes + /v1/theme/active + persona-theme bind surface
+   * responds 501 not_configured.
+   */
+  themes?: ThemeManager;
 }
 
 const SSE_HEADERS = {
@@ -301,6 +309,27 @@ function sendPlanError(res: Response, err: unknown): boolean {
   return false;
 }
 
+/**
+ * Send a typed ThemeError response; false when not one. invalid_input (the
+ * lint/contrast gate) carries the full ThemeReport body {ok:false, errors,
+ * warnings} so the studio can render per-token errors.
+ */
+function sendThemeError(res: Response, err: unknown): boolean {
+  if (err instanceof ThemeError) {
+    if (err.code === 'invalid_input') {
+      res.status(400).json({
+        error: err.code,
+        message: err.message,
+        ...(err.report !== undefined ? { report: err.report } : {}),
+      });
+      return true;
+    }
+    res.status(themeErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
 /** Trimmed non-empty string or undefined (chat optional fields). */
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
@@ -409,6 +438,16 @@ function requirePlans(options: CoreAppOptions, res: Response): PlanManager | nul
     return null;
   }
   return plans;
+}
+
+/** Guard: returns the M6 theme manager or 501s. */
+function requireThemes(options: CoreAppOptions, res: Response): ThemeManager | null {
+  const themes = options.themes;
+  if (!themes) {
+    notConfigured(res, 'theme manager');
+    return null;
+  }
+  return themes;
 }
 
 /** Send a typed ToolError response; false when err is not a ToolError. */
@@ -1581,6 +1620,112 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.json(plans.exportPlan(id));
     } catch (err) {
       if (sendPlanError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // M6 theming surface (PLAN-M6 wire spec). Theme list/CRUD, activation and
+  // the resolved active theme — persona override -> global active ->
+  // preset-default. Every route authed; responses carry the owner's token
+  // documents BY DESIGN (the studio edits them), but audit rows only ever
+  // carry theme ids/names/source — never the token values. A gate-failing
+  // save/update returns 400 with the full ThemeReport body (invalid_input).
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/themes', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    res.json({ themes: themes.list() });
+  });
+
+  api.post('/v1/themes', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    try {
+      const profile = themes.save(req.body);
+      res.status(201).json(profile);
+    } catch (err) {
+      if (sendThemeError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/themes/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(themes.update(id, req.body));
+    } catch (err) {
+      if (sendThemeError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/themes/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      themes.remove(id);
+    } catch (err) {
+      if (sendThemeError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.post('/v1/themes/:id/activate', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(themes.activate(id));
+    } catch (err) {
+      if (sendThemeError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/theme/active', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    const personaId =
+      typeof req.query.personaId === 'string' && req.query.personaId.trim() !== ''
+        ? req.query.personaId.trim()
+        : undefined;
+    res.json(themes.active(personaId));
+  });
+
+  api.post('/v1/personas/:id/theme', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    // The persona-theme bind endpoint only exists on the wired personas
+    // surface (501 when either manager is not wired).
+    if (!requirePersonaManager(options, res)) return;
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as { themeId?: unknown };
+    // themeId: a string id to bind, or null/undefined to CLEAR the override.
+    const raw = body.themeId;
+    const themeId =
+      typeof raw === 'string' && raw.trim() !== ''
+        ? raw.trim()
+        : raw === null || raw === undefined
+          ? null
+          : undefined;
+    if (themeId === undefined) {
+      res.status(400).json({
+        error: 'invalid_input',
+        message: 'themeId must be a theme id string or null',
+      });
+      return;
+    }
+    try {
+      themes.bindPersonaTheme(id, themeId);
+      res.json({ personaId: id, themeId });
+    } catch (err) {
+      if (sendThemeError(res, err)) return;
       throw err;
     }
   });

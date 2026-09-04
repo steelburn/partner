@@ -605,3 +605,44 @@ export interface NotesFtsStore {
    */
   match(query: string, limit: number): NotesFtsHit[];
 }
+
+// ---------------------------------------------------------------------------
+// M6 themes table (PLAN-M6.md — additive schema v7). Row profile only; the
+// theme manager (core/src/theming/*) owns lint/contrast gating, preset
+// seeding, activation and persona binding. Each row holds BOTH modes of the
+// design tokens as JSON strings (exactly like providers.default_models) —
+// the store never interprets them. Token bodies are not secrets, but the
+// manager keeps audit rows to ids/names/source only. Stores never read the
+// clock: every write takes explicit timestamps.
+// ---------------------------------------------------------------------------
+
+/** `themes` row — one id/name + JSON ThemeTokens for light and dark modes. */
+export interface ThemeRow {
+  id: string;
+  name: string;
+  /** 'preset' | 'custom' — presets are immutable (manager-enforced). */
+  source: string;
+  /** JSON ThemeTokens for the light mode. */
+  lightJson: string;
+  /** JSON ThemeTokens for the dark mode. */
+  darkJson: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields for a theme row; a write always stamps updated_at. */
+export type ThemeRowPatch = Partial<Pick<ThemeRow, 'name' | 'lightJson' | 'darkJson'>> & {
+  updatedAt: number;
+};
+
+export interface ThemeStore {
+  insert(row: ThemeRow): void;
+  findById(id: string): ThemeRow | undefined;
+  /** All rows ascending by createdAt (stable); the manager sorts/derives. */
+  list(): ThemeRow[];
+  /** Apply a whitelisted patch, always stamping updated_at. */
+  update(id: string, patch: ThemeRowPatch): void;
+  remove(id: string): void;
+  /** Total rows (preset seeding runs only when the table is empty). */
+  count(): number;
+}

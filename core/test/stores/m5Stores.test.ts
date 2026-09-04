@@ -56,7 +56,8 @@ describe('schema v6 (additive M5 tables + shared FTS5)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(6);
+      // M6 (PLAN-M6.md, 238b20a) raised the schema to 7 (themes table).
+      expect(SCHEMA_VERSION).toBe(7);
     } finally {
       db.close();
     }

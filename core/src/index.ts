@@ -46,6 +46,7 @@ export {
   createProviderStore,
   createSessionStore,
   createSettingsStore,
+  createThemeStore,
   openDatabase,
   assertFts5,
 } from './stores/db.js';
@@ -97,6 +98,9 @@ export type {
   SessionStore,
   SettingsRow,
   SettingsStore,
+  ThemeRow,
+  ThemeRowPatch,
+  ThemeStore,
 } from './stores/types.js';
 
 // ---- pairing / sessions ----------------------------------------------------
@@ -233,6 +237,32 @@ export type { PlanManager, PlanManagerOptions, PlanPatch, PlanExportBundle } fro
 export { PlanError, planError, planErrorStatus } from './plans/index.js';
 export type { PlanErrorCode } from './plans/index.js';
 
+// ---- M6 theming (PLAN-M6.md) ---------------------------------------------
+export { createThemeManager, ACTIVE_THEME_KEY } from './theming/index.js';
+export type { ThemeManager, ThemeManagerOptions } from './theming/index.js';
+export { ThemeError, themeError, themeErrorStatus } from './theming/index.js';
+export type { ThemeErrorCode } from './theming/index.js';
+export {
+  apcaLc,
+  wcagRatio,
+  parseHex,
+  relativeLuminance,
+  lintTokens,
+  contrastReport,
+  validateTheme,
+  THEME_TOKEN_KEYS,
+  MIN_APCA_LC,
+  MIN_WCAG_RATIO,
+} from './theming/index.js';
+export {
+  PRESET_DEFAULT,
+  PRESET_MIDNIGHT,
+  THEME_PRESETS,
+  PRESET_IDS,
+  presetProfile,
+} from './theming/index.js';
+export type { ThemePreset } from './theming/index.js';
+
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
@@ -256,6 +286,8 @@ import {
   createProfileStore,
   createEpisodeStore,
   createMemoryFtsStore,
+  createSettingsStore,
+  createThemeStore,
 } from './stores/db.js';
 import type {
   ConversationStore,
@@ -269,6 +301,8 @@ import type {
   PlanStore,
   ProfileEntryStore,
   ProviderStore,
+  SettingsStore,
+  ThemeStore,
 } from './stores/types.js';
 import { createPersonaManager } from './personas/manager.js';
 import type { PersonaManager } from './personas/manager.js';
@@ -302,6 +336,8 @@ import { createNoteManager, createDailySummarizeResolver } from './notes/index.j
 import type { NoteManager } from './notes/index.js';
 import { createPlanManager } from './plans/index.js';
 import type { PlanManager } from './plans/index.js';
+import { createThemeManager } from './theming/index.js';
+import type { ThemeManager } from './theming/index.js';
 import {
   createNoteLinkStore,
   createNoteStore,
@@ -342,6 +378,10 @@ export interface CoreBundle {
   noteLinkStore: NoteLinkStore;
   planStore: PlanStore;
   notesFtsStore: NotesFtsStore;
+  /** M6 theme manager + store + settings store (schema v7). */
+  themes: ThemeManager;
+  themeStore: ThemeStore;
+  settingsStore: SettingsStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -444,6 +484,20 @@ export function createCore(config: CoreConfig): CoreBundle {
     audit,
   });
 
+  // M6: theming over the SAME db (schema v7). The two immutable preset rows
+  // seed on first boot (empty table only); the persona store's colorTheme
+  // column (M3) is the per-persona override and the settings store holds the
+  // global active_theme key.
+  const settingsStore = createSettingsStore(db);
+  const themeStore = createThemeStore(db);
+  const themes = createThemeManager({
+    store: themeStore,
+    personaStore,
+    settings: settingsStore,
+    audit,
+  });
+  themes.seedIfEmpty();
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -462,6 +516,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     memory,
     notes,
     plans,
+    themes,
   });
 
   return {
@@ -493,6 +548,9 @@ export function createCore(config: CoreConfig): CoreBundle {
     noteLinkStore,
     planStore,
     notesFtsStore,
+    themes,
+    themeStore,
+    settingsStore,
     app,
     close(): void {
       try {

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ConversationSummary, Persona, ThemeMode } from '@partner/shared';
+import type { ActiveTheme, ThemeProfile } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import type { StreamDoneMeta } from './lib/api.js';
+import type { ThemeTokenPair } from './lib/theme-helpers.js';
 import ChatStrip from './ChatStrip.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
@@ -11,17 +13,19 @@ import PairGate from './PairGate.js';
 import PersonaManagerView from './PersonaManagerView.js';
 import PersonaPicker from './PersonaPicker.js';
 import ProvidersView from './ProvidersView.js';
+import ThemeStudio from './ThemeStudio.js';
 import { revokeSession } from './lib/api.js';
 import { createConversation, deleteConversation, listConversations } from './lib/conversations.js';
 import { isSessionLost, listPersonas } from './lib/personas.js';
+import { getActiveTheme, listThemes } from './lib/themes.js';
 import { listPending } from './lib/tools.js';
 import { clearStoredToken, readStoredToken } from './lib/token.js';
-import { applyMode, getInitialMode, persistMode } from './theme/apply.js';
+import { applyMode, applyThemeTokens, getInitialMode, persistMode } from './theme/apply.js';
 
 /** How often the shell refreshes the pending-approval count for the badge. */
 const QUEUE_POLL_MS = 4000;
 
-type ViewName = 'chat' | 'personas' | 'providers' | 'files' | 'memory' | 'notes';
+type ViewName = 'chat' | 'personas' | 'providers' | 'files' | 'memory' | 'themes' | 'notes';
 
 /**
  * App shell (M3): header row carries the brand, the view switch, the active
@@ -49,10 +53,34 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [creatingChat, setCreatingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  // M6 theming: the theme list (studio + persona binds), the resolved active
+  // theme for the current persona, and an optional studio draft preview.
+  const [themes, setThemes] = useState<ThemeProfile[] | null>(null);
+  const [themesError, setThemesError] = useState<string | null>(null);
+  const [activeTheme, setActiveTheme] = useState<ActiveTheme | null>(null);
+  const [previewTokens, setPreviewTokens] = useState<ThemeTokenPair | null>(null);
 
+  // The FIRST paint always uses the canonical tokens (main.tsx applyMode);
+  // this effect re-applies whenever the mode flips, the resolved active
+  // theme arrives, or a studio draft preview is pushed. The preview (if
+  // any) wins, then the active theme, then the canonical defaults.
   useEffect(() => {
+    if (previewTokens !== null) {
+      applyThemeTokens(previewTokens.light, previewTokens.dark, mode);
+      return;
+    }
+    if (activeTheme !== null) {
+      applyThemeTokens(activeTheme.light, activeTheme.dark, mode);
+      return;
+    }
     applyMode(mode);
-  }, [mode]);
+  }, [mode, activeTheme, previewTokens]);
+
+  // A studio draft preview is only meaningful while the Theme view is open;
+  // leaving restores whatever the active theme resolves to.
+  useEffect(() => {
+    if (view !== 'themes') setPreviewTokens(null);
+  }, [view]);
 
   const handlePaired = (): void => setPaired(true);
 
@@ -115,6 +143,49 @@ export default function App() {
       .catch(() => undefined);
   }, []);
 
+  // M6: theme list + resolved active theme. The active theme is persona-
+  // scoped (persona.colorTheme -> global active -> preset), so it refetches
+  // whenever the active persona changes.
+  const refreshThemes = useCallback(async (): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) return;
+    try {
+      setThemes(await listThemes(token));
+      setThemesError(null);
+    } catch (cause) {
+      if (!isSessionLost(cause)) {
+        setThemesError(
+          cause instanceof Error ? cause.message : 'Could not load themes.',
+        );
+      }
+    }
+  }, []);
+
+  const refreshActiveTheme = useCallback(async (): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) return;
+    try {
+      setActiveTheme(await getActiveTheme(token, activePersonaId));
+    } catch (cause) {
+      if (!isSessionLost(cause)) {
+        // The canonical default keeps rendering; the list/studio surface
+        // errors through their own load paths.
+        setActiveTheme(null);
+      }
+    }
+  }, [activePersonaId]);
+
+  /** Themes mutated inside the studio (create/update/delete/activate/import). */
+  const handleThemesChanged = useCallback((): void => {
+    void refreshThemes();
+    void refreshActiveTheme();
+  }, [refreshThemes, refreshActiveTheme]);
+
+  /** A persona's theme binding changed (Personas view) — re-resolve what applies. */
+  const handlePersonaThemeBound = useCallback((): void => {
+    void refreshActiveTheme();
+  }, [refreshActiveTheme]);
+
   useEffect(() => {
     if (!paired) {
       setPending([]);
@@ -127,10 +198,15 @@ export default function App() {
       setStreaming(false);
       setCreatingChat(false);
       setChatError(null);
+      setThemes(null);
+      setThemesError(null);
+      setActiveTheme(null);
+      setPreviewTokens(null);
       return;
     }
     void refreshPersonas();
     void refreshConversations();
+    void refreshThemes();
     refreshQueue();
     const timer = window.setInterval(refreshQueue, QUEUE_POLL_MS);
     const onFocus = (): void => {
@@ -160,6 +236,13 @@ export default function App() {
       return fallback ? fallback.id : null;
     });
   }, [personas]);
+
+  // Resolve the applied theme for the current persona (persona binding ->
+  // global active -> preset-default) whenever pairing or the persona changes.
+  useEffect(() => {
+    if (!paired) return;
+    void refreshActiveTheme();
+  }, [paired, activePersonaId, refreshActiveTheme]);
 
   const activePersona = personas?.find((p) => p.id === activePersonaId) ?? null;
 
@@ -307,6 +390,14 @@ export default function App() {
                   <button
                     type="button"
                     className="btn btn-secondary view-tab"
+                    onClick={() => setView('themes')}
+                    aria-pressed={view === 'themes'}
+                  >
+                    Themes
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary view-tab"
                     onClick={() => setView('notes')}
                     aria-pressed={view === 'notes'}
                   >
@@ -370,9 +461,13 @@ export default function App() {
             <div className={view === 'personas' ? 'app-view app-view-active' : 'app-view'}>
               <PersonaManagerView
                 personas={personas}
+                themes={themes}
                 loadError={personasError}
+                themesError={themesError}
                 onUnpair={handleSessionLost}
                 onRefresh={() => void refreshPersonas()}
+                onRefreshThemes={() => void refreshThemes()}
+                onPersonaThemeBound={handlePersonaThemeBound}
                 active={view === 'personas'}
               />
             </div>
@@ -392,6 +487,19 @@ export default function App() {
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'memory'}
+              />
+            </div>
+            <div className={view === 'themes' ? 'app-view app-view-active' : 'app-view'}>
+              <ThemeStudio
+                themes={themes}
+                loadError={themesError}
+                activeThemeId={activeTheme?.themeId ?? null}
+                preview={previewTokens}
+                onPreviewChange={setPreviewTokens}
+                onUnpair={handleSessionLost}
+                onRefresh={() => void refreshThemes()}
+                onThemesChanged={handleThemesChanged}
+                active={view === 'themes'}
               />
             </div>
             <div className={view === 'notes' ? 'app-view app-view-active' : 'app-view'}>

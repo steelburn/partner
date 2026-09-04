@@ -44,6 +44,8 @@ import { createNoteManager } from '../src/notes/index.js';
 import type { PlanManager } from '../src/plans/index.js';
 import { createPlanManager } from '../src/plans/index.js';
 import type { ProfileManager } from '../src/memory/profile.js';
+import type { ThemeManager } from '../src/theming/index.js';
+import { createThemeManager } from '../src/theming/index.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
@@ -69,6 +71,8 @@ import {
   createProjectRootStore,
   createProviderStore,
   createSessionStore,
+  createSettingsStore,
+  createThemeStore,
   openDatabase,
 } from '../src/stores/db.js';
 import type {
@@ -90,6 +94,8 @@ import type {
   ProjectRootStore,
   ProviderStore,
   SessionStore,
+  SettingsStore,
+  ThemeStore,
 } from '../src/stores/types.js';
 
 export const ALLOWED_HOST = '127.0.0.1:4390';
@@ -121,6 +127,11 @@ export interface HarnessOptions {
    * daily summarize write the deterministic placeholder.
    */
   notesPlans?: boolean;
+  /**
+   * Wire the M6 theme manager over the same db (default true). Presets seed
+   * when the themes table is empty; theme routes 501 when disabled.
+   */
+  themes?: boolean;
 }
 
 export interface Harness {
@@ -166,6 +177,10 @@ export interface Harness {
   notesFtsStore: NotesFtsStore;
   notes?: NoteManager;
   plans?: PlanManager;
+  /** M6 theme manager + stores over the SAME db (default on). */
+  themeStore: ThemeStore;
+  settingsStore: SettingsStore;
+  themes?: ThemeManager;
   close(): void;
 }
 
@@ -175,6 +190,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const personasEnabled = options.personas ?? true;
   const memoryEnabled = options.memory ?? true;
   const notesPlansEnabled = options.notesPlans ?? true;
+  const themesEnabled = options.themes ?? true;
   const db = openDatabase(':memory:');
   const pairingStore = createPairingStore(db);
   const sessionStore = createSessionStore(db);
@@ -288,6 +304,24 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     });
   }
 
+  // M6: theme manager + stores over the same db (default on). Preset rows
+  // seed only when the themes table is empty; settings hold the global
+  // active_theme key and the persona store's colorTheme column is the
+  // per-persona override. Managers + routes are wired unless themes: false
+  // (the 501 not_configured case).
+  const themeStore = createThemeStore(db);
+  const settingsStore = createSettingsStore(db);
+  let themes: ThemeManager | undefined;
+  if (themesEnabled) {
+    themes = createThemeManager({
+      store: themeStore,
+      personaStore,
+      settings: settingsStore,
+      audit,
+    });
+    themes.seedIfEmpty();
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -305,6 +339,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     conversationManager: personasEnabled ? conversations : undefined,
     ...(memoryEnabled ? { memory } : {}),
     ...(notesPlansEnabled ? { notes, plans } : {}),
+    ...(themesEnabled ? { themes } : {}),
   });
 
   return {
@@ -345,6 +380,9 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     notesFtsStore,
     notes,
     plans,
+    themeStore,
+    settingsStore,
+    themes,
     close(): void {
       db.close();
     },
