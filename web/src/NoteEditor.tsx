@@ -117,6 +117,11 @@ export default function NoteEditor({
     if (dismissed) return null;
     const match = wikiSuggestion(content);
     if (match === null) return null;
+    // Only suggest when the [[…]] fragment runs to the END of the document
+    // (nothing but whitespace after it) — completing mid-line would silently
+    // drop whatever the user typed after the bracket (M5 review finding 5).
+    const afterFragment = content.slice(match.start + 2 + match.query.length);
+    if (afterFragment.trim() !== '') return null;
     const lowerQuery = match.query.toLocaleLowerCase();
     const seen = new Set<string>();
     const matches: string[] = [];

@@ -420,9 +420,16 @@ describe('summarizeDaily', () => {
     }
   });
 
-  it('stripDailySummarySection removes only the last summary section', () => {
-    expect(stripDailySummarySection('a\n\n## Daily summary\n\nold')).toBe('a');
-    expect(stripDailySummarySection('a\n\n## Daily summary\n\nold\nmore')).toBe('a');
+  it('stripDailySummarySection removes the section only when it is the document tail', () => {
+    // Whitespace-only below the heading -> section is the tail -> removable.
+    expect(stripDailySummarySection('a\n\n## Daily summary\n\n')).toBe('a');
+    // User content below a previous summary is NEVER stripped (M5 review).
+    expect(stripDailySummarySection('a\n\n## Daily summary\n\nold')).toBe(
+      'a\n\n## Daily summary\n\nold',
+    );
+    expect(stripDailySummarySection('a\n\n## Daily summary\n\nold\nmore')).toBe(
+      'a\n\n## Daily summary\n\nold\nmore',
+    );
     expect(stripDailySummarySection('no section here')).toBe('no section here');
   });
 

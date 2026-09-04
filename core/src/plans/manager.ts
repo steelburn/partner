@@ -197,6 +197,22 @@ export function validateDocument(raw: unknown): PlanDocument {
     throw planError('invalid_input', 'plan document milestones must be an array');
   }
   const milestones = maybe.milestones.map((m, i) => requireMilestone(m, `milestone #${i}`));
+  // Globally-unique ids (M5 review finding 2): duplicates make status
+  // lookups ambiguous, so reject them up front.
+  const milestoneIds = new Set<string>();
+  const taskIds = new Set<string>();
+  for (const milestone of milestones) {
+    if (milestoneIds.has(milestone.id)) {
+      throw planError('invalid_input', `duplicate milestone id: ${milestone.id}`);
+    }
+    milestoneIds.add(milestone.id);
+    for (const task of milestone.tasks) {
+      if (taskIds.has(task.id)) {
+        throw planError('invalid_input', `duplicate task id: ${task.id}`);
+      }
+      taskIds.add(task.id);
+    }
+  }
   return { milestones };
 }
 
@@ -365,11 +381,12 @@ export function createPlanManager(options: PlanManagerOptions): PlanManager {
       throw planError('not_found', 'task not found');
     }
 
-    // Apply the transition: status always; note REPLACES the previous note
-    // (an omitted note clears it — the task carries its latest change note).
+    // Apply the transition: status always; an EXPLICIT note replaces the
+    // previous one (an empty string clears it); an omitted note preserves the
+    // existing note (M5 review finding 3 — a status-only toggle must not wipe
+    // a blocked-reason).
     const updatedTask: PlanTask = { ...found, status };
     if (note !== undefined) updatedTask.note = note;
-    else delete updatedTask.note;
 
     for (const milestone of document.milestones) {
       if (milestone.id !== milestoneId) continue;

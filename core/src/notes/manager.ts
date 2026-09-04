@@ -250,7 +250,11 @@ function resolveLinks(stores: { notes: NoteStore }, titles: string[]): Array<{ t
   }));
 }
 
-/** Body without the trailing (last) '## Daily summary' section, trimmed. */
+/** Body with the trailing (last) '## Daily summary' section removed ONLY when
+ *  that section is the document tail (nothing but whitespace below the
+ *  heading). If the user has written content below a previous summary, the
+ *  content is returned unchanged so summarizeDaily never silently deletes
+ *  user text (M5 review finding 1). */
 export function stripDailySummarySection(content: string): string {
   const lines = content.split('\n');
   let cut = -1;
@@ -261,6 +265,8 @@ export function stripDailySummarySection(content: string): string {
     }
   }
   if (cut < 0) return content;
+  const tail = lines.slice(cut + 1).join('\n');
+  if (tail.trim() !== '') return content; // user content below -> keep everything
   return lines.slice(0, cut).join('\n').trimEnd();
 }
 
@@ -510,10 +516,21 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       }
     }
 
-    const dailyOwn = stripDailySummarySection(todayDaily.content);
-    const base = dailyOwn === '' ? '' : `${dailyOwn}\n\n`;
+    const currentContent = todayDaily.content;
+    const stripped = stripDailySummarySection(currentContent);
+    if (stripped === currentContent && /^##\s+Daily summary/m.test(currentContent)) {
+      // The user wrote content below the previous auto-summary. Never delete
+      // it silently: skip the rewrite (audited) and report the note unchanged.
+      audit.log('web', 'note.summarize_skipped', todayDaily.id, {
+        reason: 'content_below_summary',
+      });
+      return toNote(requireRow(todayDaily.id));
+    }
+    const base = stripped === '' ? '' : `${stripped}\n\n`;
     const content = `${base}${DAILY_SUMMARY_HEADING}\n\n${summaryText}`;
     stores.notes.update(todayDaily.id, { content, updatedAt: at });
+    // Keep the wiki-link/FTS mirror in sync with the new body (M5 review).
+    stores.links.replaceForNote(todayDaily.id, resolveLinks(stores, parseWikiLinks(content)));
     stores.fts.upsertNote(todayDaily.id, noteSearchText({ title: todayDaily.title, content }));
     const updated = requireRow(todayDaily.id);
     audit.log('web', 'note.summarize', updated.id, {

@@ -185,12 +185,16 @@ describe('task status transitions', () => {
       const task = findTask(done.document, t1);
       expect(task).toMatchObject({ status: 'done', note: 'finished it' });
 
-      // Re-toggling back to open with a NEW note replaces the old note.
+      // Re-toggling back to open WITHOUT a note PRESERVES the existing note
+      // (M5 review finding 3: a status-only toggle must not wipe a reason).
       const open = env.plans.setTaskStatus(planId, t1, { status: 'open' });
       const reopened = findTask(open.document, t1);
-      expect(reopened).toMatchObject({ status: 'open' });
-      expect(reopened?.note).toBeUndefined(); // omitted note clears the previous one
+      expect(reopened).toMatchObject({ status: 'open', note: 'finished it' });
       expect(open.doneCount).toBe(0);
+
+      // An EXPLICIT empty note clears it.
+      const cleared = env.plans.setTaskStatus(planId, t1, { status: 'blocked', note: '' });
+      expect(findTask(cleared.document, t1)?.note).toBe('');
 
       // A transition on the OTHER milestone's task still finds it.
       const third = env.plans.setTaskStatus(planId, t3, { status: 'done', note: '' });
