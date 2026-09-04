@@ -32,7 +32,15 @@ export type ChatEvent =
   | { type: 'delta'; text: string }
   | { type: 'usage'; promptTokens: number; completionTokens: number; totalTokens: number }
   | { type: 'done'; model: string; latencyMs: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | {
+      type: 'budget_reached';
+      message: string;
+      spentCents: number;
+      limitCents: number | null;
+      requests: number;
+      limitRequests: number | null;
+    };
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -64,5 +72,5 @@ export interface ProviderClient {
 // Versioning
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const WIRE_VERSION = 'v1';
