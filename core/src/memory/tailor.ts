@@ -22,6 +22,8 @@ export function buildTailoring(profileManager: ProfileManager, personaId: string
   const confirmedGlobal = profileManager
     .list()
     .filter((entry) => entry.status === 'confirmed' && entry.personaScope === null)
+    // Newest first: the most recent confirmed facts are the ones to honor.
+    .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, TAILORING_MAX_ENTRIES);
 
   if (confirmedGlobal.length === 0) return null;

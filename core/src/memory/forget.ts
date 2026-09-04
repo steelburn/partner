@@ -61,9 +61,15 @@ export function createMemoryForgetManager(options: MemoryForgetManagerOptions): 
     const body = (input ?? {}) as ForgetRequest;
     const what = body.what;
 
-    // Whole-memory date boundary (what is ignored): forget all entries and
-    // episodes strictly older than the cutoff.
+    // Whole-memory date boundary. A date cutoff must not be combined with
+    // what/id — that would silently ignore one of the two intents.
     if (body.before !== undefined) {
+      if (body.id !== undefined || (body.what !== undefined && body.what !== 'all')) {
+        throw memoryError(
+          'invalid_input',
+          "'before' forgets whole memory up to the cutoff — do not combine it with an id or another what",
+        );
+      }
       const cutoff = parseBeforeCutoff(body.before);
       const beforeEntries = stores.profile
         .list()

@@ -1514,6 +1514,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.status(400).json({ error: 'bad_json' });
       return;
     }
+    if (maybe?.type === 'entity.too.large') {
+      res.status(413).json({ error: 'payload_too_large' });
+      return;
+    }
     const message =
       err instanceof Error ? redactString(err.message) : `non-Error thrown: ${typeof err}`;
     console.error('[partner-core] unhandled error:', message);

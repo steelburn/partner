@@ -30,9 +30,10 @@ describe('buildTailoring', () => {
       env.profile.add({ kind: 'identity', value: 'calls you by your first name' });
       const text = buildTailoring(env.profile, 'p-researcher');
       expect(text).not.toBeNull();
+      // Newest-first ordering (review fix): the identity entry was added last.
       expect(text).toBe(
-        '- preference: start with a tldr (evidence: in 6 of 10 asks)\n' +
-          '- identity: calls you by your first name',
+        '- identity: calls you by your first name\n' +
+          '- preference: start with a tldr (evidence: in 6 of 10 asks)',
       );
     } finally {
       env.close();

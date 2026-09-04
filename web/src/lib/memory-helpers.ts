@@ -91,19 +91,26 @@ export function scopedLabel(scope: string | null, personas: readonly PersonaLike
 }
 
 /**
- * The lightweight "in use" indicator: confirmed GLOBAL entries are injected
- * into a persona's system prompt at chat time (PLAN-M4 tailoring); scoped or
- * unconfirmed entries are not.
+ * The "in use" indicator: confirmed GLOBAL entries are the tailoring
+ * candidates. The server injects at most the 8 NEWEST of them (newest
+ * first), so the true injected set is capped + order-dependent.
  */
+export function tailoringInUseIds(entries: readonly ProfileEntry[]): ReadonlySet<string> {
+  const candidates = entries
+    .filter((entry) => entry.status === 'confirmed' && entry.personaScope === null)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 8);
+  return new Set(candidates.map((entry) => entry.id));
+}
+
+/** Single-entry predicate used by tests/legacy callers (confirmed + global). */
 export function isEntryInUse(entry: ProfileEntry): boolean {
   return entry.status === 'confirmed' && entry.personaScope === null;
 }
 
-/** How many of the given entries are currently injected at chat time. */
+/** How many of the given entries are actually injected (capped, newest-first). */
 export function countEntriesInUse(entries: readonly ProfileEntry[]): number {
-  let count = 0;
-  for (const entry of entries) if (isEntryInUse(entry)) count += 1;
-  return count;
+  return tailoringInUseIds(entries).size;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +154,7 @@ export function bundleToFile(bundle: MemoryExportBundle): string {
   return `${JSON.stringify(bundle, null, 2)}\n`;
 }
 
-const MAX_BUNDLE_CHARS = 20_000_000; // ~20 MB of JSON text — far past any real export
+const MAX_BUNDLE_CHARS = 900_000; // below the core's 1 MiB JSON body cap
 
 /**
  * Schema guard run BEFORE an import POST (and on export responses). Returns

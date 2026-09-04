@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type {
   EpisodeSummary,
   ForgetRequest,
@@ -23,6 +23,7 @@ import {
   scopedLabel,
   sortEpisodes,
   statusLabel,
+  tailoringInUseIds,
   validateBundle,
   validateBundleSize,
 } from './lib/memory-helpers.js';
@@ -236,6 +237,7 @@ interface ProfileCardProps {
 }
 
 function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, onSessionLost }: ProfileCardProps) {
+  const inUseIds = useMemo(() => tailoringInUseIds(confirmed), [confirmed]);
   return (
     <section className="card" aria-label="Profile">
       <div className="section-head">
@@ -271,6 +273,7 @@ function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, on
               <ProfileEntryRow
                 entry={entry}
                 personas={personas}
+                inUse={inUseIds.has(entry.id)}
                 deletable
                 onChanged={onChanged}
                 onSessionLost={onSessionLost}
@@ -293,6 +296,7 @@ function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, on
                 <ProfileEntryRow
                   entry={entry}
                   personas={personas}
+                  inUse={false}
                   deletable={false}
                   onChanged={onChanged}
                   onSessionLost={onSessionLost}
@@ -315,6 +319,8 @@ function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, on
 interface ProfileEntryRowProps {
   entry: ProfileEntry;
   personas: readonly Persona[];
+  /** True when this entry is in the server-side tailoring set (top 8 newest). */
+  inUse?: boolean;
   /** Show Delete (confirmed rows). Suggested rows get Confirm/Reject instead. */
   deletable: boolean;
   onChanged: () => void;
@@ -324,6 +330,7 @@ interface ProfileEntryRowProps {
 function ProfileEntryRow({
   entry,
   personas,
+  inUse: inUseOverride,
   deletable,
   onChanged,
   onSessionLost,
@@ -338,7 +345,7 @@ function ProfileEntryRow({
   const [rowError, setRowError] = useState<string | null>(null);
 
   const tone = kindTone(entry.kind);
-  const inUse = isEntryInUse(entry);
+  const inUse = inUseOverride === undefined ? isEntryInUse(entry) : inUseOverride;
   const personaScopeLabel = scopedLabel(entry.personaScope, personas);
   const unknownScope = entry.personaScope !== null && !personas.some((p) => p.id === entry.personaScope);
 
@@ -970,8 +977,8 @@ function EpisodeRow({
           <span className="mem-meta-item">{personaLabel}</span>
         )}
         {demo ? (
-          <span className="mem-chip mem-chip-neutral" title="Written without a provider (demo mode)">
-            Demo summary
+          <span className="mem-chip mem-chip-neutral" title="Placeholder summary written without a provider">
+            Placeholder
           </span>
         ) : null}
         <span className="mem-meta-item">{timeAgo(episode.updatedAt)}</span>
@@ -1288,7 +1295,7 @@ function ControlsCard({ entryCount, episodeCount, onChanged, onSessionLost }: Co
         <div className="mem-control-text">
           <span className="mem-control-title">Forget before a date</span>
           <span className="mem-control-copy">
-            Removes profile entries and episodes last touched before the chosen day.
+            Removes profile entries and episodes CREATED before the chosen day (a whole-memory boundary).
           </span>
         </div>
         <div className="mem-control-date">
