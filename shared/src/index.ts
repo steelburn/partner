@@ -12,3 +12,4 @@ export * from './provider.js';
 export * from './tools.js';
 export * from './persona.js';
 export * from './memory.js';
+export * from './notes.js';
