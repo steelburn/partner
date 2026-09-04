@@ -108,6 +108,12 @@ export default function ChatStrip({ onUnpair }: ChatStripProps) {
         case 'error':
           setTurnError({ message: event.message, canRepair: false });
           break;
+        case 'budget_reached':
+          // The core aborted the stream at the session spend cap. Surface the
+          // cap message as an inline error — never a crash, never a key/cost
+          // detail beyond what the core already reported.
+          setTurnError({ message: event.message, canRepair: false });
+          break;
       }
     };
 

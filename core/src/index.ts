@@ -29,6 +29,7 @@ export type { Keychain } from './keychain/keychain.js';
 export {
   createAuditStore,
   createPairingStore,
+  createProviderStore,
   createSessionStore,
   createSettingsStore,
   openDatabase,
@@ -38,6 +39,9 @@ export type {
   AuditStore,
   PairingRow,
   PairingStore,
+  ProviderRow,
+  ProviderRowPatch,
+  ProviderStore,
   SessionRow,
   SessionStore,
   SettingsRow,
@@ -61,6 +65,27 @@ export type { AuditService } from './services/redaction.js';
 
 // ---- gateway ---------------------------------------------------------------
 export { demoProvider, DEMO_MODEL } from './gateway/demo.js';
+export { createOpenAICompatibleClient, UpstreamError, safeUpstreamMessage, USER_AGENT } from './gateway/openaiCompatible.js';
+export type {
+  OpenAICompatibleClient,
+  OpenAICompatibleOptions,
+  UpstreamErrorCode,
+} from './gateway/openaiCompatible.js';
+export { resolveChatProvider } from './gateway/resolver.js';
+export { createBudgetTracker } from './gateway/budget.js';
+export { priceForModel } from './gateway/pricing.js';
+export type { BudgetOptions, BudgetRecord, BudgetTracker, UsageCharge } from './gateway/budget.js';
+export { connectSelfService, fetchSelfServiceLoginKey } from './gateway/selfService.js';
+export type { SelfServiceErrorKind, SelfServiceOptions } from './gateway/selfService.js';
+
+// ---- providers (M1) --------------------------------------------------------
+export { createProviderManager, toSummary, normalizeEndpoint } from './providers/providerManager.js';
+export type {
+  ProviderManager,
+  ProviderManagerOptions,
+} from './providers/providerManager.js';
+export { ProviderError } from './providers/errors.js';
+export type { ProviderErrorCode } from './providers/errors.js';
 
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
@@ -68,7 +93,13 @@ export type { CoreAppOptions } from './http/server.js';
 
 import { loadConfig } from './config.js';
 import type { CoreConfig } from './config.js';
-import { openDatabase, createPairingStore, createSessionStore, createAuditStore } from './stores/db.js';
+import {
+  openDatabase,
+  createPairingStore,
+  createSessionStore,
+  createAuditStore,
+  createProviderStore,
+} from './stores/db.js';
 import { createKeychainFake, createKeychainNative } from './keychain/keychain.js';
 import { createPairingManager } from './http/pairing.js';
 import type { PairingManager } from './http/pairing.js';
@@ -77,6 +108,9 @@ import type { SessionManager } from './http/session.js';
 import { auditLog } from './services/redaction.js';
 import type { AuditService } from './services/redaction.js';
 import { demoProvider } from './gateway/demo.js';
+import { createProviderManager } from './providers/providerManager.js';
+import type { ProviderManager } from './providers/providerManager.js';
+import type { ProviderStore } from './stores/types.js';
 import { createCoreApp } from './http/server.js';
 
 export interface CoreBundle {
@@ -86,6 +120,8 @@ export interface CoreBundle {
   pairing: PairingManager;
   sessions: SessionManager;
   audit: AuditService;
+  providerStore: ProviderStore;
+  providerManager: ProviderManager;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -108,6 +144,13 @@ export function createCore(config: CoreConfig): CoreBundle {
   const sessions = createSessionManager(createSessionStore(db), { ttlMs: config.sessionTtlMs });
   const audit = auditLog({ store: createAuditStore(db) });
 
+  // M1: provider profiles (row store) + manager (keychain + probe logic). In
+  // demo mode the store is ':memory:' and the keychain is the fake, so the
+  // whole surface is exercisable with no credentials. Demo chat still falls
+  // back to the demo provider until a profile is registered.
+  const providerStore = createProviderStore(db);
+  const providerManager = createProviderManager({ store: providerStore, keychain, audit });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -119,6 +162,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     sessions,
     audit,
     providers: config.demo ? [demoProvider()] : [],
+    providerManager,
   });
 
   return {
@@ -128,6 +172,8 @@ export function createCore(config: CoreConfig): CoreBundle {
     pairing,
     sessions,
     audit,
+    providerStore,
+    providerManager,
     app,
     close(): void {
       try {

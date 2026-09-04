@@ -7,13 +7,22 @@
  * no console output ever carry the token.
  */
 
-import type { ChatEvent } from '@partner/shared';
+import type {
+  ChatEvent,
+  ProviderInput,
+  ProviderSummary,
+  SelfServiceConnectInput,
+  SelfServiceLoginKey,
+} from '@partner/shared';
 import { parseSseStream } from './sse.js';
 
 const PAIR_PATH = '/v1/pair';
 const CHAT_PATH = '/v1/chat';
 const SESSION_PATH = '/v1/session';
 const DEMO_PAIR_CODE_PATH = '/v1/dev/pair-code';
+const PROVIDERS_PATH = '/v1/providers';
+const SELF_SERVICE_LOGIN_KEY_PATH = '/v1/self-service/login-key';
+const SELF_SERVICE_CONNECT_PATH = '/v1/self-service/connect';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -190,6 +199,22 @@ export function asChatEvent(value: unknown): ChatEvent | null {
         : null;
     case 'error':
       return typeof v.message === 'string' ? { type: 'error', message: v.message } : null;
+    case 'budget_reached': {
+      // Ignore-safe: any malformed member drops the whole event (frame skipped).
+      const message = v.message;
+      const spentCents = v.spentCents;
+      const requests = v.requests;
+      if (
+        typeof message !== 'string' ||
+        typeof spentCents !== 'number' ||
+        typeof requests !== 'number'
+      ) {
+        return null;
+      }
+      const limitCents = typeof v.limitCents === 'number' ? v.limitCents : null;
+      const limitRequests = typeof v.limitRequests === 'number' ? v.limitRequests : null;
+      return { type: 'budget_reached', message, spentCents, limitCents, requests, limitRequests };
+    }
     default:
       return null;
   }
@@ -267,4 +292,197 @@ export async function revokeSession(
   if (response.status !== 204 && response.status !== 401 && response.status !== 403) {
     throw new ApiRequestError(response.status, 'Could not revoke the session.');
   }
+}
+
+// ---------------------------------------------------------------------------
+// M1 providers & llm-self-service import (PLAN-M1.md wire spec)
+//
+// The pairing token travels ONLY in the Authorization header, exactly like
+// every other call in this file. None of these functions accept, return, log
+// or persist a provider key — setProviderKey sends it once and returns 204.
+// ---------------------------------------------------------------------------
+
+function providerPath(id: string, suffix: '' | '/key' | '/test'): string {
+  return `${PROVIDERS_PATH}/${encodeURIComponent(id)}${suffix}`;
+}
+
+/** Parse a 2xx JSON body; non-2xx becomes ApiRequestError with a readable message. */
+async function expectJson<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorMessage(response));
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiRequestError(response.status, 'The response was not valid JSON.');
+  }
+}
+
+/** Require a 204 (void endpoints); non-2xx becomes ApiRequestError. */
+async function expectNoContent(response: Response, action: string): Promise<void> {
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorMessage(response));
+  }
+  if (response.status !== 204) {
+    throw new ApiRequestError(response.status, `${action} did not return a 204 response.`);
+  }
+}
+
+/** GET /v1/providers -> all provider profiles (never keys/keyRefs). */
+export async function listProviders(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<ProviderSummary[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(PROVIDERS_PATH, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  const parsed = await expectJson<unknown>(response);
+  // Wire envelope: { providers: [...] }. A bare array is tolerated so the
+  // client stays robust to either serialization of the same contract.
+  if (Array.isArray(parsed)) return parsed as ProviderSummary[];
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    Array.isArray((parsed as { providers?: unknown }).providers)
+  ) {
+    return (parsed as { providers: ProviderSummary[] }).providers;
+  }
+  throw new ApiRequestError(response.status, 'The providers response had an unexpected shape.');
+}
+
+/** POST /v1/providers -> the created profile (key is stored separately). */
+export async function createProvider(
+  token: string,
+  input: ProviderInput,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<ProviderSummary> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(PROVIDERS_PATH, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+  return expectJson<ProviderSummary>(response);
+}
+
+/** POST /v1/providers/:id/key {key} -> 204. The key is never echoed back. */
+export async function setProviderKey(
+  token: string,
+  id: string,
+  key: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(providerPath(id, '/key'), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ key }),
+  });
+  return expectNoContent(response, 'Setting the provider key');
+}
+
+/** DELETE /v1/providers/:id -> 204 (keychain item + row removed). */
+export async function deleteProvider(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(providerPath(id, ''), {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return expectNoContent(response, 'Deleting the provider');
+}
+
+/**
+ * POST /v1/providers/:id/test -> refreshed profile. The core probes the
+ * upstream (models + 1-token chat), stores default_models and health; the
+ * profile returned replaces the stale row in the UI.
+ */
+export async function testProvider(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<ProviderSummary> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(providerPath(id, '/test'), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  return expectJson<ProviderSummary>(response);
+}
+
+/**
+ * POST /v1/self-service/login-key {endpoint} -> the S0 envelope public key.
+ * The core proxies GET {endpoint}/api/login-key (S0). 502/504 mean the
+ * upstream self-service app is unreachable through the core.
+ */
+export async function fetchSelfServiceLoginKey(
+  token: string,
+  endpoint: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SelfServiceLoginKey> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(SELF_SERVICE_LOGIN_KEY_PATH, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({ endpoint }),
+  });
+  if (response.status === 502 || response.status === 504) {
+    throw new ApiRequestError(response.status, 'Upstream service unavailable');
+  }
+  const loginKey = await expectJson<SelfServiceLoginKey>(response);
+  if (typeof loginKey?.publicKeyPem !== 'string' || loginKey.publicKeyPem.length === 0) {
+    throw new ApiRequestError(
+      response.status,
+      'The self-service login key response was missing its public key.',
+    );
+  }
+  return loginKey;
+}
+
+/**
+ * POST /v1/self-service/connect {endpoint, email, passwordCipher} -> the
+ * created provider profile. The ciphertext was produced IN THE PAGE by
+ * cryptoEnvelope; the plaintext password never crosses the loopback.
+ * A 401 from the core means the upstream rejected the org credentials (the
+ * core sends the same wording for wrong-credential/unknown-user — no
+ * enumeration); 502 means the self-service app is unreachable.
+ */
+export async function connectSelfService(
+  token: string,
+  input: SelfServiceConnectInput,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<ProviderSummary> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(SELF_SERVICE_CONNECT_PATH, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+  if (response.status === 401) {
+    throw new ApiRequestError(401, 'Invalid email or password');
+  }
+  if (response.status === 502) {
+    throw new ApiRequestError(502, 'Upstream service unavailable');
+  }
+  return expectJson<ProviderSummary>(response);
 }

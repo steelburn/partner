@@ -355,3 +355,358 @@ textarea {
     transition: none !important;
   }
 }
+
+/* --- M1: header view switch ---------------------------------------------
+ * Segmented Chat / Providers control. Both are .btn-secondary by default;
+ * the active tab carves back to the header surface with the accent text.
+ * ------------------------------------------------------------------------ */
+
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.view-switch {
+  display: inline-flex;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.view-switch .btn {
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+}
+
+.view-switch .btn[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.view-switch .btn[aria-pressed='true']:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+/* --- M1: view mounting (keep both views alive; show one) ---------------- */
+
+.app-view {
+  display: none;
+}
+
+.app-view-active {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* --- M1: danger-text action button --------------------------------------
+ * Delete etc. stays on the secondary surface; only the label colour shifts
+ * to the semantic danger token (contrast-safe in both modes).
+ * ------------------------------------------------------------------------ */
+
+.btn-danger {
+  /* Ghost destructive action: danger label on the card surface (transparent
+   * bg) so the small label keeps APCA contrast — a filled surface-2 state
+   * would drop the danger text below the body-text minimum. */
+  background: transparent;
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: transparent;
+  color: var(--danger);
+  text-decoration: underline;
+}
+
+.btn-danger:active:not(:disabled) {
+  background: transparent;
+  color: var(--danger);
+}
+
+/* --- M1: Providers screen ------------------------------------------------ */
+
+.providers {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.providers-panel {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.providers-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.providers-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+.providers-loading {
+  margin: 0;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.providers-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+
+.providers-alert-text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.empty-state {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+}
+
+.empty-state-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.empty-state-copy {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 52ch;
+  margin-inline: auto;
+}
+
+/* --- Provider list ------------------------------------------------------ */
+
+.provider-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.provider-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+}
+
+.provider-card-inner {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.provider-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.provider-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.provider-name {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.source-badge {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.provider-endpoint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.chip {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+}
+
+.health {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+}
+
+.health-ok {
+  color: var(--success);
+}
+
+.health-error {
+  color: var(--danger);
+}
+
+.health-unknown {
+  color: var(--text-muted);
+}
+
+.provider-budget {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.row-form {
+  margin-top: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.row-form-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.key-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* --- Cards (add / import forms) ----------------------------------------- */
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.card-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.card-copy {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.form-feedback {
+  min-height: var(--space-4);
+}
+
+.success-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--success);
+}
+
+.keychain-note {
+  max-width: 72ch;
+}
+
+@media (max-width: 640px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+

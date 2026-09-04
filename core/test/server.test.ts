@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChatEvent } from '@partner/shared';
+import { SCHEMA_VERSION } from '@partner/shared';
 import { ALLOWED_HOST, ALTERNATE_HOST, demoHarness } from './helpers.js';
 import type { Harness } from './helpers.js';
 
@@ -43,7 +44,7 @@ describe('public surface', () => {
     try {
       const res = await request(h.app).get('/v1/health').set('Host', ALLOWED_HOST);
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ status: 'ok', demo: true, schemaVersion: 1 });
+      expect(res.body).toMatchObject({ status: 'ok', demo: true, schemaVersion: SCHEMA_VERSION });
       expect(typeof res.body.version).toBe('string');
     } finally {
       h.close();

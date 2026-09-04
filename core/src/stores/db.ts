@@ -14,6 +14,9 @@ import type {
   AuditStore,
   PairingRow,
   PairingStore,
+  ProviderRow,
+  ProviderRowPatch,
+  ProviderStore,
   SessionRow,
   SessionStore,
   SettingsStore,
@@ -57,6 +60,21 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'openai-compatible',
+  source TEXT NOT NULL DEFAULT 'manual',
+  endpoint TEXT NOT NULL,
+  default_models TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  budget_cents INTEGER,
+  key_ref TEXT NOT NULL,
+  last_health TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -74,6 +92,35 @@ const SESSION_COLUMNS = `
 
 const AUDIT_COLUMNS = `
   id, actor, action, target, details, created_at AS createdAt`;
+
+const PROVIDER_COLUMNS = `
+  id, name, kind, source, endpoint, default_models AS defaultModels,
+  enabled, budget_cents AS budgetCents, key_ref AS keyRef,
+  last_health AS lastHealth, created_at AS createdAt, updated_at AS updatedAt`;
+
+/** snake_case column -> camelCase row key for the whitelisted update patch. */
+type ProviderPatchKey =
+  | 'name'
+  | 'kind'
+  | 'source'
+  | 'endpoint'
+  | 'defaultModels'
+  | 'enabled'
+  | 'budgetCents'
+  | 'keyRef'
+  | 'lastHealth';
+
+const PROVIDER_UPDATE_COLUMNS: Readonly<Record<string, ProviderPatchKey>> = {
+  name: 'name',
+  kind: 'kind',
+  source: 'source',
+  endpoint: 'endpoint',
+  default_models: 'defaultModels',
+  enabled: 'enabled',
+  budget_cents: 'budgetCents',
+  key_ref: 'keyRef',
+  last_health: 'lastHealth',
+};
 
 function applySchema(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
@@ -190,6 +237,59 @@ export function createSettingsStore(db: Database.Database): SettingsStore {
     },
     set(key: string, value: string, updatedAt: number): void {
       upsert.run(key, value, updatedAt);
+    },
+  };
+}
+
+/**
+ * M1 provider row store (PLAN-M1.md). Plain CRUD with NO business logic —
+ * the provider manager owns validation, keychain coordination, and health
+ * probing. No key material ever crosses this interface.
+ */
+export function createProviderStore(db: Database.Database): ProviderStore {
+  const insert = db.prepare(
+    `INSERT INTO providers (id, name, kind, source, endpoint, default_models, enabled,
+                            budget_cents, key_ref, last_health, created_at, updated_at)
+     VALUES (@id, @name, @kind, @source, @endpoint, @defaultModels, @enabled,
+             @budgetCents, @keyRef, @lastHealth, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${PROVIDER_COLUMNS} FROM providers ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM providers WHERE id = ?');
+  const touch = db.prepare('UPDATE providers SET updated_at = ? WHERE id = ?');
+
+  return {
+    insert(row: ProviderRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ProviderRow | undefined {
+      return findById.get(id) as ProviderRow | undefined;
+    },
+    list(): ProviderRow[] {
+      return listAll.all() as ProviderRow[];
+    },
+    update(id: string, patch: ProviderRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(PROVIDER_UPDATE_COLUMNS)) {
+        if (patch[key] !== undefined) {
+          sets.push(`${column} = @${key}`);
+          params[key] = patch[key];
+        }
+      }
+      if (sets.length === 0) {
+        touch.run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE providers SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
     },
   };
 }

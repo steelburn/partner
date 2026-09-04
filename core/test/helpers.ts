@@ -5,6 +5,7 @@
  * and Express app per call so tests never share state.
  */
 import type { Express } from 'express';
+import type { Keychain } from '@partner/shared';
 import { SCHEMA_VERSION } from '@partner/shared';
 import { CORE_VERSION } from '../src/config.js';
 import { demoProvider } from '../src/gateway/demo.js';
@@ -15,13 +16,22 @@ import type { SessionManager } from '../src/http/session.js';
 import { createCoreApp } from '../src/http/server.js';
 import { auditLog } from '../src/services/redaction.js';
 import type { AuditService } from '../src/services/redaction.js';
+import { createKeychainFake } from '../src/keychain/keychain.js';
+import { createProviderManager } from '../src/providers/providerManager.js';
+import type { ProviderManager } from '../src/providers/providerManager.js';
 import {
   createAuditStore,
   createPairingStore,
+  createProviderStore,
   createSessionStore,
   openDatabase,
 } from '../src/stores/db.js';
-import type { AuditStore, PairingStore, SessionStore } from '../src/stores/types.js';
+import type {
+  AuditStore,
+  PairingStore,
+  ProviderStore,
+  SessionStore,
+} from '../src/stores/types.js';
 
 export const ALLOWED_HOST = '127.0.0.1:4390';
 export const ALTERNATE_HOST = 'localhost:4390';
@@ -36,6 +46,9 @@ export interface Harness {
   pairingStore: PairingStore;
   sessionStore: SessionStore;
   auditStore: AuditStore;
+  providerStore: ProviderStore;
+  providerManager: ProviderManager;
+  keychain: Keychain;
   close(): void;
 }
 
@@ -54,6 +67,13 @@ export function demoHarness(
   });
   const sessions = createSessionManager(sessionStore, {});
   const audit = auditLog({ store: auditStore });
+
+  // M1: every harness gets a provider manager over the SAME in-memory DB and
+  // a fresh fake keychain so provider/import tests run without an OS daemon.
+  const keychain = createKeychainFake();
+  const providerStore = createProviderStore(db);
+  const providerManager = createProviderManager({ store: providerStore, keychain, audit });
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -65,6 +85,7 @@ export function demoHarness(
     sessions,
     audit,
     providers: demo ? [demoProvider()] : [],
+    providerManager,
   });
 
   return {
@@ -76,6 +97,9 @@ export function demoHarness(
     pairingStore,
     sessionStore,
     auditStore,
+    providerStore,
+    providerManager,
+    keychain,
     close(): void {
       db.close();
     },
