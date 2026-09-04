@@ -9,3 +9,5 @@ export * from './theme.js';
 export * from './redact.js';
 export * from './contracts.js';
 export * from './provider.js';
+export * from './tools.js';
+export * from './persona.js';
