@@ -54,7 +54,7 @@ textarea {
 
 .app-header-inner {
   width: 100%;
-  max-width: 920px;
+  max-width: 1180px;
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -366,6 +366,8 @@ textarea {
   align-items: center;
   gap: var(--space-3);
   min-width: 0;
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
 }
 
 .view-switch {
@@ -1332,4 +1334,540 @@ select {
   padding: var(--space-1);
   min-width: var(--space-3);
   text-align: center;
+}
+
+/* ==========================================================================
+ * M3 — Personas, conversations & routing (PLAN-M3.md provisional UI).
+ *
+ * Token-only, same discipline as M0–M2: every colour/radius/spacing/elevation
+ * value is a var(--…) token; bare lengths appear only as structural layout
+ * geometry (the rail column width). Separation order everywhere: space →
+ * surface shift → elevation; no 1px gray card borders, no glow/glass.
+ * ========================================================================== */
+
+/* --- Chat workspace: conversation rail + chat strip --------------------- */
+
+.chat-workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.chat-workspace .chat {
+  /* Inside the workspace the chat fills the remaining width (no centering). */
+  margin: 0;
+  max-width: none;
+  min-width: 0;
+}
+
+.chat-shell-error {
+  margin: 0;
+  padding: var(--space-1) var(--space-4) var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.rail {
+  flex: none;
+  width: 288px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.rail-head {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-3);
+}
+
+.rail-note {
+  margin: 0;
+  padding: var(--space-2);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.rail-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+
+.rail-error-text {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+}
+
+.rail-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-0);
+  border-radius: var(--radius-md);
+}
+
+.rail-item-active {
+  /* Carve the active row back to the page background so the accent title
+   * keeps its body-text APCA in both themes (accent on --surface-2 fails). */
+  background: var(--bg);
+}
+
+.rail-item-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  padding: var(--space-2);
+  text-align: left;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.rail-item-open:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.rail-item-open:active:not(:disabled) {
+  background: var(--bg);
+}
+
+.rail-item-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.rail-item-open:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rail-item-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-item-active .rail-item-title {
+  color: var(--accent);
+}
+
+.rail-item-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.rail-item-del {
+  align-self: center;
+  flex: none;
+  opacity: 0;
+  margin-right: var(--space-1);
+}
+
+.rail-item-del-visible {
+  opacity: 1;
+}
+
+.rail-item:hover .rail-item-del,
+.rail-item:focus-within .rail-item-del {
+  opacity: 1;
+}
+
+/* --- Header persona picker ---------------------------------------------- */
+
+.picker {
+  position: relative;
+}
+
+.picker-trigger {
+  gap: var(--space-1);
+}
+
+.picker-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.picker-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-trigger .chip {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.picker-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: default;
+  outline: none;
+}
+
+.picker-pop {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 91;
+  width: 320px;
+  max-width: calc(100vw - var(--space-4));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  padding: var(--space-1);
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-lg);
+}
+
+.picker-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  text-align: left;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.picker-option:hover {
+  background: var(--surface-2);
+}
+
+.picker-option:active {
+  background: var(--surface);
+}
+
+.picker-option:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.picker-option[aria-selected='true'] {
+  background: var(--surface-2);
+}
+
+.picker-option-avatar {
+  width: var(--space-4);
+  height: var(--space-4);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+}
+
+.picker-option-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+}
+
+.picker-option-name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-option-default {
+  flex: none;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  color: var(--text-muted);
+}
+
+.picker-option-tagline {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-option-meta {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-0);
+}
+
+.picker-option-active {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--accent);
+}
+
+/* --- Personas view ------------------------------------------------------- */
+
+.personas {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.personas-panel {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.personas-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.personas-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+.personas-loading {
+  margin: 0;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.personas-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+
+.personas-alert-text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.persona-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.persona-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+}
+
+.persona-card-inner {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.persona-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.persona-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-4);
+  height: var(--space-4);
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.persona-identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.persona-name {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.persona-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.persona-tagline {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.persona-meta {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.persona-hint {
+  margin-top: 0;
+}
+
+.persona-card-head .row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.persona-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.persona-prompt-input {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.persona-models {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.persona-models-legend {
+  margin-bottom: var(--space-0);
+}
+
+.persona-model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.persona-model-label {
+  flex: none;
+  width: 96px;
+  margin-bottom: 0;
+}
+
+.persona-model-row .field {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .persona-model-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+}
+
+/* Paused banner reuses the M2 waiting-box surface-2 treatment (muted text on
+ * surface-2 passes both themes); the composer below it is disabled. */
+.paused-banner {
+  margin: 0 0 var(--space-1);
+}
+
+/* System rows in the transcript: muted status text, not a bubble. */
+.msg-system {
+  align-self: center;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--space-1) var(--space-2);
 }

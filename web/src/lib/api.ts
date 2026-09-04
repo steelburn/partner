@@ -231,25 +231,88 @@ export function asChatEvent(value: unknown): ChatEvent | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// M3: persisted conversations — the trailing chat meta event
+//
+// The M3 core persists each turn into a conversation and ends the SSE stream
+// with the persisted ids. The shared ChatEvent union (contracts.ts) is not
+// widened; the web client reads the ids defensively off the same JSON frame
+// instead — a `done` frame may carry extra `messageId`/`conversationId`
+// members, or the core may send a dedicated trailing `done_meta` frame.
+// Malformed frames simply yield no meta (the turn still completed).
+// ---------------------------------------------------------------------------
+
+/** Persisted-turn ids delivered by the trailing chat meta (M3). */
+export interface StreamDoneMeta {
+  messageId: string;
+  conversationId: string;
+}
+
+/**
+ * Tolerant reader for the persisted-turn meta carried on (or after) the
+ * final `done` frame. Accepts either an enriched `done` frame or a dedicated
+ * `done_meta` frame; returns null when the ids are absent/malformed.
+ */
+export function readDoneMeta(value: unknown): StreamDoneMeta | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (v.type !== 'done' && v.type !== 'done_meta') return null;
+  const messageId = v.messageId;
+  const conversationId = v.conversationId;
+  if (typeof messageId !== 'string' || messageId.length === 0) return null;
+  if (typeof conversationId !== 'string' || conversationId.length === 0) return null;
+  return { messageId, conversationId };
+}
+
 export type StreamChatResult =
   | { ok: true }
-  | { ok: false; status: number | null; unauthorized: boolean; message: string };
+  | {
+      ok: false;
+      status: number | null;
+      unauthorized: boolean;
+      /** True when the core refused the turn because the persona is paused (423). */
+      paused: boolean;
+      message: string;
+    };
 
 export interface StreamChatOptions {
   token: string;
   content: string;
   /** Dispatched as each SSE frame of the chat stream arrives. */
   onEvent: (event: ChatEvent) => void;
+  /** Optional active conversation to persist the turn into (M3). */
+  conversationId?: string;
+  /** Optional persona to route the turn through (M3). */
+  personaId?: string;
+  /** Optional explicit model override (M3). */
+  model?: string;
+  /** Receives the persisted-turn ids off the trailing chat meta frame. */
+  onDoneMeta?: (meta: StreamDoneMeta) => void;
   signal?: AbortSignal;
   fetchImpl?: FetchLike;
 }
 
 /**
- * POST /v1/chat and consume the SSE stream. One user message per call (M0
- * has no server-side conversation state). Returns after the stream ends.
+ * POST /v1/chat and consume the SSE stream. One user message per call; when
+ * conversationId is set the turn is persisted server-side and the trailing
+ * meta frame carries the resulting ids. Returns after the stream ends.
  */
 export async function streamChat(options: StreamChatOptions): Promise<StreamChatResult> {
-  const { token, content, onEvent, signal, fetchImpl = fetch } = options;
+  const {
+    token,
+    content,
+    onEvent,
+    conversationId,
+    personaId,
+    model,
+    onDoneMeta,
+    signal,
+    fetchImpl = fetch,
+  } = options;
+  const body: Record<string, unknown> = { messages: [{ role: 'user', content }] };
+  if (conversationId) body.conversationId = conversationId;
+  if (personaId) body.personaId = personaId;
+  if (model) body.model = model;
   const response = await fetchImpl(CHAT_PATH, {
     method: 'POST',
     headers: {
@@ -257,20 +320,30 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
       accept: 'text/event-stream',
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ messages: [{ role: 'user', content }] }),
+    body: JSON.stringify(body),
     signal,
   });
 
   if (!response.ok) {
+    const paused = response.status === 423;
     return {
       ok: false,
       status: response.status,
       unauthorized: response.status === 401 || response.status === 403,
-      message: await readErrorMessage(response),
+      paused,
+      message: paused
+        ? 'This persona is paused — resume it in Personas to continue.'
+        : await readErrorMessage(response),
     };
   }
   if (response.body === null) {
-    return { ok: false, status: response.status, unauthorized: false, message: 'The stream was empty.' };
+    return {
+      ok: false,
+      status: response.status,
+      unauthorized: false,
+      paused: false,
+      message: 'The stream was empty.',
+    };
   }
 
   for await (const frame of parseSseStream(streamChunks(response.body))) {
@@ -283,6 +356,8 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
     }
     const event = asChatEvent(parsed);
     if (event) onEvent(event);
+    const meta = readDoneMeta(parsed);
+    if (meta) onDoneMeta?.(meta);
   }
   return { ok: true };
 }

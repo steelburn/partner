@@ -38,12 +38,19 @@ import type { ProjectRootManager } from '../src/broker/roots.js';
 import { createFileTools } from '../src/files/tools.js';
 import { createProposalManager } from '../src/files/proposals.js';
 import type { ProposalManager } from '../src/files/proposals.js';
+import { createPersonaManager } from '../src/personas/manager.js';
+import type { PersonaManager } from '../src/personas/manager.js';
+import { createConversationManager } from '../src/conversations/manager.js';
+import type { ConversationManager } from '../src/conversations/manager.js';
 import {
   createAuditStore,
+  createConversationStore,
   createFileProposalStore,
   createGrantStore,
+  createMessageStore,
   createPairingStore,
   createPendingToolStore,
+  createPersonaStore,
   createProjectRootStore,
   createProviderStore,
   createSessionStore,
@@ -51,10 +58,13 @@ import {
 } from '../src/stores/db.js';
 import type {
   AuditStore,
+  ConversationStore,
   FileProposalStore,
   GrantStore,
+  MessageStore,
   PairingStore,
   PendingToolStore,
+  PersonaStore,
   ProjectRootStore,
   ProviderStore,
   SessionStore,
@@ -75,6 +85,8 @@ export interface HarnessOptions {
   staticDir?: string;
   /** Wire the M2 tool broker (default true). */
   broker?: boolean;
+  /** Wire + seed the M3 persona/conversation managers (default true). */
+  personas?: boolean;
 }
 
 export interface Harness {
@@ -99,12 +111,20 @@ export interface Harness {
   grantManager?: GrantManager;
   pendingManager?: PendingManager;
   proposalManager?: ProposalManager;
+  /** M3 persona/conversation stores + managers over the SAME db. The persona
+   *  table is seeded with the eight starter personas (demoHarness default). */
+  personaStore: PersonaStore;
+  personas: PersonaManager;
+  conversationStore: ConversationStore;
+  messageStore: MessageStore;
+  conversations: ConversationManager;
   close(): void;
 }
 
 export function demoHarness(options: HarnessOptions = {}): Harness {
   const demo = options.demo ?? true;
   const brokerEnabled = options.broker ?? true;
+  const personasEnabled = options.personas ?? true;
   const db = openDatabase(':memory:');
   const pairingStore = createPairingStore(db);
   const sessionStore = createSessionStore(db);
@@ -155,6 +175,19 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     });
   }
 
+  // M3: persona + conversation managers over the same db (default on). When
+  // the persona table is empty the eight starter personas are seeded.
+  const personaStore = createPersonaStore(db);
+  const personas = createPersonaManager({ store: personaStore, audit });
+  if (personasEnabled) personas.seedIfEmpty();
+  const conversationStore = createConversationStore(db);
+  const messageStore = createMessageStore(db);
+  const conversations = createConversationManager({
+    personaStore: personasEnabled ? personaStore : undefined,
+    stores: { conversations: conversationStore, messages: messageStore },
+    audit,
+  });
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -168,6 +201,8 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     providers: demo ? [demoProvider()] : [],
     providerManager,
     broker,
+    personaManager: personasEnabled ? personas : undefined,
+    conversationManager: personasEnabled ? conversations : undefined,
   });
 
   return {
@@ -191,6 +226,11 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     grantManager,
     pendingManager,
     proposalManager,
+    personaStore,
+    personas,
+    conversationStore,
+    messageStore,
+    conversations,
     close(): void {
       db.close();
     },

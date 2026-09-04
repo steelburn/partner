@@ -12,14 +12,22 @@ import { SCHEMA_VERSION } from '@partner/shared';
 import type {
   AuditRow,
   AuditStore,
+  ConversationRow,
+  ConversationRowPatch,
+  ConversationStore,
   FileProposalRow,
   FileProposalStore,
   GrantRow,
   GrantStore,
+  MessageRow,
+  MessageStore,
   PairingRow,
   PairingStore,
   PendingToolRow,
   PendingToolStore,
+  PersonaRow,
+  PersonaRowPatch,
+  PersonaStore,
   ProjectRootRow,
   ProjectRootStore,
   ProviderRow,
@@ -137,6 +145,56 @@ CREATE TABLE IF NOT EXISTS file_proposals (
   applied_at INTEGER,
   discarded_at INTEGER
 );
+
+-- M3 persona/conversation tables (PLAN-M3.md, additive schema v4). Columns
+-- follow the plan verbatim plus two additive extras so the full shared wire
+-- Persona round-trips: color_theme (Persona.colorTheme) and auto_scopes
+-- (independence.autoScopes — 'stored now, enforced later').
+
+CREATE TABLE IF NOT EXISTS personas (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  tagline TEXT,
+  avatar TEXT,
+  color_theme TEXT,
+  voice TEXT,
+  language TEXT,
+  system_prompt TEXT,
+  temperature REAL,
+  task_classes TEXT,
+  fallback_model TEXT,
+  provider_id TEXT,
+  independence_level TEXT NOT NULL DEFAULT 'assist',
+  require_human TEXT,
+  auto_scopes TEXT,
+  memory_flags TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  paused INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  persona_id TEXT,
+  title TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  persona_id TEXT,
+  content TEXT NOT NULL,
+  model TEXT,
+  latency_ms INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation
+  ON messages(conversation_id, created_at);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -172,6 +230,23 @@ const FILE_PROPOSAL_COLUMNS = `
   id, project_id AS projectId, path, original_mtime AS originalMtime,
   original_content AS originalContent, proposed_content AS proposedContent,
   created_at AS createdAt, applied_at AS appliedAt, discarded_at AS discardedAt`;
+
+const PERSONA_COLUMNS = `
+  id, name, tagline, avatar, color_theme AS colorTheme,
+  voice, language, system_prompt AS systemPrompt, temperature,
+  task_classes AS taskClasses, fallback_model AS fallbackModel,
+  provider_id AS providerId, independence_level AS independenceLevel,
+  require_human AS requireHuman, auto_scopes AS autoScopes,
+  memory_flags AS memoryFlags, is_default AS isDefault, paused,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const CONVERSATION_COLUMNS = `
+  id, persona_id AS personaId, title,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const MESSAGE_COLUMNS = `
+  id, conversation_id AS conversationId, role, persona_id AS personaId,
+  content, model, latency_ms AS latencyMs, created_at AS createdAt`;
 
 /** snake_case column -> camelCase row key for the whitelisted update patch. */
 type ProviderPatchKey =
@@ -504,6 +579,180 @@ export function createFileProposalStore(db: Database.Database): FileProposalStor
     },
     markDiscarded(id: string, at: number): void {
       discard.run(at, id);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M3 row stores (PLAN-M3.md — additive schema v4). Plain typed CRUD with NO
+// business logic; the persona manager owns validation/defaults/seed and the
+// conversation manager owns persona binding, message ordering and cascades.
+// Stores never read the clock: writes take explicit timestamps.
+// ---------------------------------------------------------------------------
+
+const PERSONA_UPDATE_COLUMNS: Readonly<Record<string, keyof PersonaRowPatch>> = {
+  name: 'name',
+  tagline: 'tagline',
+  avatar: 'avatar',
+  color_theme: 'colorTheme',
+  voice: 'voice',
+  language: 'language',
+  system_prompt: 'systemPrompt',
+  temperature: 'temperature',
+  task_classes: 'taskClasses',
+  fallback_model: 'fallbackModel',
+  provider_id: 'providerId',
+  independence_level: 'independenceLevel',
+  require_human: 'requireHuman',
+  auto_scopes: 'autoScopes',
+  memory_flags: 'memoryFlags',
+  is_default: 'isDefault',
+  paused: 'paused',
+};
+
+export function createPersonaStore(db: Database.Database): PersonaStore {
+  const insert = db.prepare(
+    `INSERT INTO personas (id, name, tagline, avatar, color_theme, voice, language,
+                           system_prompt, temperature, task_classes, fallback_model,
+                           provider_id, independence_level, require_human, auto_scopes,
+                           memory_flags, is_default, paused, created_at, updated_at)
+     VALUES (@id, @name, @tagline, @avatar, @colorTheme, @voice, @language,
+             @systemPrompt, @temperature, @taskClasses, @fallbackModel,
+             @providerId, @independenceLevel, @requireHuman, @autoScopes,
+             @memoryFlags, @isDefault, @paused, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${PERSONA_COLUMNS} FROM personas WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${PERSONA_COLUMNS} FROM personas ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM personas WHERE id = ?');
+  const countAll = db.prepare('SELECT COUNT(*) AS n FROM personas');
+
+  return {
+    insert(row: PersonaRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): PersonaRow | undefined {
+      return findById.get(id) as PersonaRow | undefined;
+    },
+    list(): PersonaRow[] {
+      return listAll.all() as PersonaRow[];
+    },
+    update(id: string, patch: PersonaRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(PERSONA_UPDATE_COLUMNS)) {
+        if (patch[key as keyof PersonaRowPatch] !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = patch[key as keyof PersonaRowPatch];
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE personas SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE personas SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+    count(): number {
+      const row = countAll.get() as { n: number };
+      return row.n;
+    },
+  };
+}
+
+export function createConversationStore(db: Database.Database): ConversationStore {
+  const insert = db.prepare(
+    `INSERT INTO conversations (id, persona_id, title, created_at, updated_at)
+     VALUES (@id, @personaId, @title, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${CONVERSATION_COLUMNS} FROM conversations WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${CONVERSATION_COLUMNS} FROM conversations
+     ORDER BY updated_at DESC, rowid DESC`,
+  );
+  const remove = db.prepare('DELETE FROM conversations WHERE id = ?');
+
+  return {
+    insert(row: ConversationRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ConversationRow | undefined {
+      return findById.get(id) as ConversationRow | undefined;
+    },
+    list(): ConversationRow[] {
+      return listAll.all() as ConversationRow[];
+    },
+    update(id: string, patch: ConversationRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      if (patch.title !== undefined) {
+        sets.push('title = @title');
+        params.title = patch.title;
+      }
+      if (patch.personaId !== undefined) {
+        sets.push('persona_id = @personaId');
+        params.personaId = patch.personaId;
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE conversations SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+export function createMessageStore(db: Database.Database): MessageStore {
+  const insert = db.prepare(
+    `INSERT INTO messages (id, conversation_id, role, persona_id, content, model,
+                           latency_ms, created_at)
+     VALUES (@id, @conversationId, @role, @personaId, @content, @model,
+             @latencyMs, @createdAt)`,
+  );
+  const findById = db.prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`);
+  const listByConversation = db.prepare(
+    `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE conversation_id = ?
+     ORDER BY created_at ASC, rowid ASC`,
+  );
+  const countByConversation = db.prepare(
+    'SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?',
+  );
+  const countsAll = db.prepare(
+    'SELECT conversation_id AS conversationId, COUNT(*) AS count FROM messages GROUP BY conversation_id',
+  );
+  const removeByConversation = db.prepare('DELETE FROM messages WHERE conversation_id = ?');
+
+  return {
+    insert(row: MessageRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): MessageRow | undefined {
+      return findById.get(id) as MessageRow | undefined;
+    },
+    listByConversation(conversationId: string): MessageRow[] {
+      return listByConversation.all(conversationId) as MessageRow[];
+    },
+    countByConversation(conversationId: string): number {
+      const row = countByConversation.get(conversationId) as { n: number };
+      return row.n;
+    },
+    countsByConversation(): Array<{ conversationId: string; count: number }> {
+      return countsAll.all() as Array<{ conversationId: string; count: number }>;
+    },
+    removeByConversation(conversationId: string): void {
+      removeByConversation.run(conversationId);
     },
   };
 }

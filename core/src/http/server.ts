@@ -8,24 +8,38 @@
  *  3. Pairing exchange — POST /v1/pair drives the 6-digit single-use manager
  *     and mints a `web` session bound to the caller's (allowlisted) origin.
  *  4. Authed group (Bearer + origin) — POST /v1/chat (SSE), GET /v1/audit,
- *     the M1 provider API (/v1/providers…, /v1/models) and the
- *     self-service import (/v1/self-service/*).
+ *     the M1 provider API (/v1/providers…, /v1/models), the
+ *     self-service import (/v1/self-service/*), the M2 tool surface
+ *     (/v1/roots|/v1/grants|/v1/tools…, /v1/proposals…) and the M3
+ *     persona + conversation API (/v1/personas…, /v1/conversations…).
+ *
+ * M3 chat (PLAN-M3.md): POST /v1/chat accepts optional {conversationId?,
+ * personaId?, taskClass?}. A persona (explicit or derived from the
+ * conversation) routes the model via gateway/resolver.ts and must not be
+ * paused (423 persona_paused). When a personaId or conversationId is
+ * present, the turn is PERSISTED (auto-creating a conversation bound to the
+ * persona when none is given) and a trailing `done_meta` SSE event carries
+ * the stored {messageId, conversationId}. Persistence failures are logged
+ * (redacted) and NEVER break the stream. Without personaId/conversationId
+ * the route is byte-identical to M0/M1 (no persistence, no done_meta).
  *
  * Secrets discipline: tokens/keys never enter responses, audit details, or
- * SSE payloads — every audit write goes through the redaction service.
+ * SSE payloads — every audit write goes through the redaction service. Chat
+ * content is never audited either: message rows carry only ids/lengths.
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
-import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient } from '@partner/shared';
+import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient, ProviderSummary } from '@partner/shared';
+import type { Persona } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import { redactString } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
 import { centsForTokens } from '../gateway/pricing.js';
-import { resolveChatProvider } from '../gateway/resolver.js';
+import { resolveChatModel } from '../gateway/resolver.js';
 import { UpstreamError } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import {
@@ -42,6 +56,10 @@ import type { AuditService } from '../services/redaction.js';
 import type { ToolBroker } from '../broker/broker.js';
 import type { ToolErrorCode } from '../broker/errors.js';
 import { ToolError, toolErrorStatus } from '../broker/errors.js';
+import type { ConversationManager, ConversationDetail } from '../conversations/manager.js';
+import type { PersonaManager } from '../personas/manager.js';
+import { ConversationError } from '../conversations/errors.js';
+import { PersonaError } from '../personas/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -69,6 +87,18 @@ export interface CoreAppOptions {
    * not_configured (mirrors the provider manager).
    */
   broker?: ToolBroker;
+  /**
+   * M3 persona manager (optional so M0-M2 harnesses compile unchanged).
+   * When absent the persona routes 501 and persona-bound chat is refused
+   * with not_configured; persona-less one-shot chat is untouched.
+   */
+  personaManager?: PersonaManager;
+  /**
+   * M3 conversation manager (optional; paired with personaManager). When
+   * absent, conversation persistence in /v1/chat and the conversation
+   * routes 501 not_configured.
+   */
+  conversationManager?: ConversationManager;
 }
 
 const SSE_HEADERS = {
@@ -77,6 +107,18 @@ const SSE_HEADERS = {
   Connection: 'keep-alive',
   'X-Accel-Buffering': 'no',
 };
+
+/** Trailing SSE event emitted ONLY when a turn was persisted (PLAN-M3): the
+ *  shared ChatEvent `done` is untouched (shared/ is the web lane's), so the
+ *  stored ids ride a separate final event the web layer consumes. */
+export interface ChatDoneMetaEvent {
+  type: 'done_meta';
+  messageId: string;
+  conversationId: string;
+}
+
+/** Local event union: ChatEvent (wire) + done_meta (route-only). */
+export type ServerChatEvent = ChatEvent | ChatDoneMetaEvent;
 
 const ALLOWED_ROLES: ReadonlySet<string> = new Set(['system', 'user', 'assistant']);
 const DEFAULT_AUDIT_LIMIT = 100;
@@ -144,7 +186,7 @@ function requireSession(sessions: SessionManager) {
   };
 }
 
-function writeSse(res: Response, event: ChatEvent): void {
+function writeSse(res: Response, event: ServerChatEvent): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
@@ -173,6 +215,57 @@ function sendProviderError(res: Response, err: unknown): boolean {
     return true;
   }
   return false;
+}
+
+/** PersonaError code -> loopback status (personas/errors.ts). */
+function personaHttpStatus(err: PersonaError): number {
+  switch (err.code) {
+    case 'invalid_input':
+      return 400;
+    case 'not_found':
+      return 404;
+    case 'conflict':
+      return 409;
+  }
+}
+
+/** Send a typed PersonaError response; false when err is not a PersonaError. */
+function sendPersonaError(res: Response, err: unknown): boolean {
+  if (err instanceof PersonaError) {
+    res.status(personaHttpStatus(err)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** Send a typed ConversationError response; false when not one. */
+function sendConversationError(res: Response, err: unknown): boolean {
+  if (err instanceof ConversationError) {
+    const status = err.code === 'not_found' ? 404 : 400;
+    res.status(status).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** Trimmed non-empty string or undefined (chat optional fields). */
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+/** Chat task-class union guard; unknown -> 'bad_params' (typed on the wire). */
+function optionalTaskClass(value: unknown): 'chat' | 'deep' | 'coding' | 'vision' | 'cheap' | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (
+    value === 'chat' ||
+    value === 'deep' ||
+    value === 'coding' ||
+    value === 'vision' ||
+    value === 'cheap'
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 /** Safe audit target for a self-service endpoint: its host, or a constant. */
@@ -210,6 +303,29 @@ function requireBroker(options: CoreAppOptions, res: Response): ToolBroker | nul
     return null;
   }
   return broker;
+}
+
+/** Guard: returns the M3 persona manager or 501s. */
+function requirePersonaManager(options: CoreAppOptions, res: Response): PersonaManager | null {
+  const manager = options.personaManager;
+  if (!manager) {
+    notConfigured(res, 'persona manager');
+    return null;
+  }
+  return manager;
+}
+
+/** Guard: returns the M3 conversation manager or 501s. */
+function requireConversationManager(
+  options: CoreAppOptions,
+  res: Response,
+): ConversationManager | null {
+  const manager = options.conversationManager;
+  if (!manager) {
+    notConfigured(res, 'conversation manager');
+    return null;
+  }
+  return manager;
 }
 
 /** Send a typed ToolError response; false when err is not a ToolError. */
@@ -310,30 +426,213 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
 
   api.post('/v1/chat', requireSession(sessions), async (req: Request, res: Response) => {
     const session = res.locals.session as SessionInfo;
-    const body = (req.body ?? {}) as { messages?: unknown; model?: unknown };
+    const body = (req.body ?? {}) as {
+      messages?: unknown;
+      model?: unknown;
+      conversationId?: unknown;
+      personaId?: unknown;
+      taskClass?: unknown;
+    };
     const messages = sanitizeMessages(body.messages);
     if (messages === null) {
       res.status(400).json({ error: 'invalid_messages' });
       return;
     }
-    const requestedModel =
-      typeof body.model === 'string' && body.model.trim() !== '' ? body.model.trim() : undefined;
+    const requestedModel = optionalString(body.model);
+    const requestedPersonaId = optionalString(body.personaId);
+    const requestedConversationId = optionalString(body.conversationId);
+    const taskClassRaw = optionalTaskClass(body.taskClass);
+    if (
+      body.taskClass !== undefined &&
+      body.taskClass !== null &&
+      taskClassRaw === undefined
+    ) {
+      res.status(400).json({
+        error: 'bad_params',
+        message: "taskClass must be one of chat|deep|coding|vision|cheap",
+      });
+      return;
+    }
 
-    // M1: a configured provider wins over the demo/legacy fallback whenever
-    // the manager resolves an enabled provider (resolver.ts).
+    // Newest user turn = what gets answered AND what is persisted as the
+    // new turn; the FIRST user message titles an auto-created conversation.
+    const firstUser = messages.find((m) => m.role === 'user');
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+
+    // ---------------------------------------------------------------------
+    // M3 persona/conversation pre-flight (PLAN-M3.md). Only when the caller
+    // names a personaId OR a conversationId does chat persist; otherwise the
+    // rest of this handler is byte-identical to M0/M1 one-shot chat.
+    // ---------------------------------------------------------------------
+    const persist = requestedPersonaId !== undefined || requestedConversationId !== undefined;
+    let personaManager: PersonaManager | null = null;
+    let conversationManager: ConversationManager | null = null;
+    // The persona that supplies model routing (null = legacy no-persona).
+    let routingPersona: Persona | null = null;
+    // Denormalized persona id stamped on persisted message rows.
+    let routingPersonaId: string | null = null;
+    // Persistence target; null until an auto conversation is ensured.
+    let conversationId: string | null = null;
+
+    if (persist) {
+      personaManager = requirePersonaManager(options, res);
+      if (!personaManager) return;
+      conversationManager = requireConversationManager(options, res);
+      if (!conversationManager) return;
+
+      // personaId given -> must exist (404) and NOT be paused (423).
+      if (requestedPersonaId !== undefined) {
+        const persona = personaManager.get(requestedPersonaId);
+        if (!persona) {
+          res.status(404).json({ error: 'not_found', message: 'persona not found' });
+          return;
+        }
+        if (persona.paused) {
+          res.status(423).json({
+            error: 'persona_paused',
+            message: 'persona is paused — resume it before chatting',
+          });
+          return;
+        }
+        routingPersona = persona;
+        routingPersonaId = persona.id;
+      }
+
+      // conversationId given -> must exist (404); persona derives from the
+      // conversation when no explicit personaId was sent.
+      if (requestedConversationId !== undefined) {
+        let detail: ConversationDetail;
+        try {
+          detail = conversationManager.get(requestedConversationId);
+        } catch (err) {
+          if (sendConversationError(res, err)) return;
+          throw err;
+        }
+        conversationId = detail.summary.id;
+        if (routingPersona === null && detail.summary.personaId !== null) {
+          const bound = personaManager.get(detail.summary.personaId);
+          if (bound) {
+            // A paused persona refuses chat even when reached via a
+            // conversation bound to it.
+            if (bound.paused) {
+              res.status(423).json({
+                error: 'persona_paused',
+                message: 'persona is paused — resume it before chatting',
+              });
+              return;
+            }
+            routingPersona = bound;
+            routingPersonaId = bound.id;
+          }
+          // Bound persona deleted -> the conversation still works, no persona.
+        }
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Model resolution (gateway/resolver.ts): requestedModel wins; else the
+    // persona's task-class mapping; else the persona's fallback; else the
+    // first enabled provider's default model. No persona -> legacy routing.
+    // ---------------------------------------------------------------------
     const manager = options.providerManager;
-    let managedProvider = manager ? resolveChatProvider(manager, requestedModel) : undefined;
+    const providers = manager ? manager.list() : [];
+    const resolved = resolveChatModel({
+      persona: routingPersona,
+      requestedModel,
+      providers,
+      taskClass: taskClassRaw ?? 'chat',
+    });
+    let managedProvider: ProviderSummary | null = resolved.provider;
     // Demo-mode guard: a provider imported through the built-in demo double is
     // an OFFLINE artifact (its endpoint is this core itself), so keep the demo
     // provider as the chat backend — demo stays usable with no network.
     if (options.demo && managedProvider?.source === 'llm-self-service') {
-      managedProvider = undefined;
+      managedProvider = null;
     }
+
+    // Persistence helpers — best effort ONLY. A failure is logged (redacted)
+    // and the stream continues: persistence must never break a chat turn.
+    const logPersistenceFailure = (what: string, err: unknown): void => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[partner-core] chat persist (${what}) failed:`, redactString(message));
+    };
+
+    const ensureConversation = (): void => {
+      if (!persist || conversationId !== null) return;
+      try {
+        // Auto-created conversations are bound to the routing persona; the
+        // title is the first user message truncated to 60 chars (PLAN-M3).
+        const title = firstUser !== undefined ? firstUser.content.slice(0, 60) : undefined;
+        const created = (conversationManager as ConversationManager).create({
+          personaId: routingPersonaId ?? undefined,
+          title,
+        });
+        conversationId = created.id;
+      } catch (err) {
+        logPersistenceFailure('conversation create', err);
+      }
+    };
+
+    const persistUserTurn = (): void => {
+      if (!persist || conversationId === null || lastUser === undefined) return;
+      try {
+        (conversationManager as ConversationManager).append(conversationId, 'user', {
+          content: lastUser.content,
+          personaId: routingPersonaId,
+          model: null,
+          latencyMs: null,
+        });
+      } catch (err) {
+        logPersistenceFailure('user message', err);
+      }
+    };
+
+    // Persist the assistant turn AFTER done (deltas + model + latency) and
+    // emit the trailing done_meta event with the stored ids. done_meta is
+    // ONLY written when the turn was actually stored.
+    const persistAssistantTurn = (
+      sawDone: boolean,
+      deltaText: string,
+      doneModel: string | null,
+      doneLatencyMs: number | null,
+    ): void => {
+      if (!persist || !sawDone || conversationId === null) return;
+      try {
+        const stored = (conversationManager as ConversationManager).append(conversationId, 'assistant', {
+          content: deltaText,
+          personaId: routingPersonaId,
+          model: doneModel,
+          latencyMs: doneLatencyMs,
+        });
+        writeSse(res, {
+          type: 'done_meta',
+          messageId: stored.id,
+          conversationId: stored.conversationId,
+        });
+      } catch (err) {
+        logPersistenceFailure('assistant message', err);
+      }
+    };
+
+    // Turn-accumulation shared by both streaming paths.
+    let deltaText = '';
+    let sawDone = false;
+    let doneModel: string | null = null;
+    let doneLatencyMs: number | null = null;
+    const observeEvent = (event: ChatEvent): void => {
+      if (event.type === 'delta') {
+        deltaText += event.text;
+      } else if (event.type === 'done') {
+        sawDone = true;
+        doneModel = event.model;
+        doneLatencyMs = event.latencyMs;
+      }
+    };
 
     if (managedProvider) {
       // managedProvider is only ever non-null when a manager is wired.
       const activeManager: ProviderManager = manager as ProviderManager;
-      const model = requestedModel ?? managedProvider.defaultModels[0] ?? '';
+      const model = resolved.model;
       if (model === '') {
         res.status(400).json({
           error: 'model_required',
@@ -348,6 +647,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         if (sendProviderError(res, err)) return;
         throw err;
       }
+
+      // The turn will stream: create the auto conversation + persist the
+      // incoming user message BEFORE streaming (best effort).
+      ensureConversation();
+      persistUserTurn();
 
       res.status(200);
       res.set(SSE_HEADERS);
@@ -401,6 +705,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             }
             writeSse(res, event);
             events += 1;
+            observeEvent(event);
             continue;
           }
           if (event.type === 'usage') {
@@ -419,7 +724,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           if (event.type === 'error') ok = false;
           writeSse(res, event);
           events += 1;
+          observeEvent(event);
         }
+        persistAssistantTurn(sawDone, deltaText, doneModel, doneLatencyMs);
       } catch {
         // External abort (client gone) ends the generator silently; only
         // surface an error if the socket is still open.
@@ -437,6 +744,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           messages: messages.length,
           sessionId: session.id,
           providerId: managedProvider.id,
+          ...(routingPersonaId !== null ? { personaId: routingPersonaId } : {}),
+          ...(conversationId !== null ? { conversationId } : {}),
         });
       }
       return;
@@ -450,6 +759,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.status(501).json({ error: 'no_provider' });
       return;
     }
+
+    // The turn will stream: auto conversation + persisted user turn first.
+    ensureConversation();
+    persistUserTurn();
+
     const chatRequest: ChatRequest = { model, messages, stream: true };
 
     res.status(200);
@@ -462,7 +776,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       for await (const event of provider.chatStream(chatRequest)) {
         writeSse(res, event);
         events += 1;
+        observeEvent(event);
       }
+      persistAssistantTurn(sawDone, deltaText, doneModel, doneLatencyMs);
     } catch {
       ok = false;
       writeSse(res, { type: 'error', message: 'provider_stream_failed' });
@@ -473,6 +789,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         events,
         messages: messages.length,
         sessionId: session.id,
+        ...(routingPersonaId !== null ? { personaId: routingPersonaId } : {}),
+        ...(conversationId !== null ? { conversationId } : {}),
       });
     }
   });
@@ -638,6 +956,134 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       ? Math.min(MAX_AUDIT_LIMIT, Math.max(1, raw))
       : DEFAULT_AUDIT_LIMIT;
     res.json({ entries: audit.list(limit) });
+  });
+
+  // -------------------------------------------------------------------------
+  // M3 persona surface (PLAN-M3 wire spec) — CRUD + pause/resume + default
+  // invariants (409 when deleting the default persona). Every route authed;
+  // responses are shared Persona wire shapes (no secrets exist on a persona).
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/personas', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requirePersonaManager(options, res);
+    if (!manager) return;
+    res.json({ personas: manager.list() });
+  });
+
+  api.post('/v1/personas', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requirePersonaManager(options, res);
+    if (!manager) return;
+    try {
+      const persona = manager.create(req.body);
+      res.status(201).json(persona);
+    } catch (err) {
+      if (sendPersonaError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/personas/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requirePersonaManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    try {
+      const persona = manager.update(id, req.body);
+      res.status(200).json(persona);
+    } catch (err) {
+      if (sendPersonaError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/personas/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requirePersonaManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    try {
+      manager.remove(id);
+    } catch (err) {
+      if (sendPersonaError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.post('/v1/personas/:id/pause', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requirePersonaManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.status(200).json(manager.pause(id));
+    } catch (err) {
+      if (sendPersonaError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post('/v1/personas/:id/resume', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requirePersonaManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.status(200).json(manager.resume(id));
+    } catch (err) {
+      if (sendPersonaError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // M3 conversation surface (PLAN-M3 wire spec) — recent conversations with
+  // message counts, explicit create, transcript GET, delete (cascade). Every
+  // route authed; wire shapes are shared ConversationSummary/Message.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/conversations', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requireConversationManager(options, res);
+    if (!manager) return;
+    res.json({ conversations: manager.list() });
+  });
+
+  api.post('/v1/conversations', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requireConversationManager(options, res);
+    if (!manager) return;
+    const body = (req.body ?? {}) as { personaId?: unknown; title?: unknown };
+    try {
+      const summary = manager.create({
+        personaId: optionalString(body.personaId),
+        title: optionalString(body.title),
+      });
+      res.status(201).json(summary);
+    } catch (err) {
+      if (sendConversationError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/conversations/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requireConversationManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    try {
+      const detail = manager.get(id);
+      res.status(200).json({ conversation: detail.summary, messages: detail.messages });
+    } catch (err) {
+      if (sendConversationError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/conversations/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requireConversationManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    try {
+      manager.remove(id);
+    } catch (err) {
+      if (sendConversationError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
   });
 
   // -------------------------------------------------------------------------

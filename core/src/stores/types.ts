@@ -240,3 +240,136 @@ export interface FileProposalStore {
   markApplied(id: string, at: number): void;
   markDiscarded(id: string, at: number): void;
 }
+
+// ---------------------------------------------------------------------------
+// M3 persona/conversation tables (PLAN-M3.md — additive schema v4). Row
+// profile only; the persona manager owns validation, defaults, the single
+// isDefault invariant, pause state and the seed. JSON-ish columns (task
+// classes, requireHumanFor, autoScopes, memory flags) are stored as JSON
+// strings exactly like providers.default_models — the manager serializes and
+// parses them, the store never interprets them.
+// ---------------------------------------------------------------------------
+
+/** `personas` row — flattened persona; nested wire fields are JSON strings. */
+export interface PersonaRow {
+  id: string;
+  name: string;
+  tagline: string | null;
+  avatar: string | null;
+  colorTheme: string | null;
+  /** character.voice */
+  voice: string;
+  /** character.language */
+  language: string;
+  /** character.systemPrompt */
+  systemPrompt: string;
+  /** character.temperature */
+  temperature: number;
+  /** model.taskClasses as JSON object (known task-class keys only). */
+  taskClasses: string | null;
+  /** model.fallback */
+  fallbackModel: string | null;
+  /** model.providerId */
+  providerId: string | null;
+  /** independence.level: 'assist'|'suggest'|'auto'|'autonomous'. */
+  independenceLevel: string;
+  /** independence.requireHumanFor as JSON array of 'high'|'medium'. */
+  requireHuman: string | null;
+  /** independence.autoScopes as JSON string array (stored now, enforced later). */
+  autoScopes: string | null;
+  /** memory flags as JSON {userProfile, episodes}. */
+  memoryFlags: string | null;
+  /** 0 | 1. At most one row has 1 (single-default invariant, manager-owned). */
+  isDefault: number;
+  /** 0 | 1. Pause = kill switch: chat/tools refuse a paused persona (423). */
+  paused: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields; a write always stamps updatedAt (mirrors ProviderRowPatch). */
+export type PersonaRowPatch = Partial<
+  Pick<
+    PersonaRow,
+    | 'name'
+    | 'tagline'
+    | 'avatar'
+    | 'colorTheme'
+    | 'voice'
+    | 'language'
+    | 'systemPrompt'
+    | 'temperature'
+    | 'taskClasses'
+    | 'fallbackModel'
+    | 'providerId'
+    | 'independenceLevel'
+    | 'requireHuman'
+    | 'autoScopes'
+    | 'memoryFlags'
+    | 'isDefault'
+    | 'paused'
+  >
+> & { updatedAt: number };
+
+export interface PersonaStore {
+  insert(row: PersonaRow): void;
+  findById(id: string): PersonaRow | undefined;
+  /** Creation order (oldest first) — the manager owns default/ordering logic. */
+  list(): PersonaRow[];
+  /** Apply a whitelisted patch, always stamping updated_at. */
+  update(id: string, patch: PersonaRowPatch): void;
+  remove(id: string): void;
+  /** Total rows (seed + default invariants). */
+  count(): number;
+}
+
+/** `conversations` row — multi-turn chat bound to an optional persona. */
+export interface ConversationRow {
+  id: string;
+  /** Denormalized persona id; null when the conversation has no persona. */
+  personaId: string | null;
+  /** First-user-message title (route-side, truncated), or null. */
+  title: string | null;
+  createdAt: number;
+  /** Bumped on every message append (list = recent activity first). */
+  updatedAt: number;
+}
+
+/** Writable fields for a conversation (append bumps updated_at). */
+export type ConversationRowPatch = Partial<Pick<ConversationRow, 'title' | 'personaId'>> & {
+  updatedAt: number;
+};
+
+export interface ConversationStore {
+  insert(row: ConversationRow): void;
+  findById(id: string): ConversationRow | undefined;
+  /** Most recently active first. */
+  list(): ConversationRow[];
+  update(id: string, patch: ConversationRowPatch): void;
+  remove(id: string): void;
+}
+
+/** `messages` row — one stored turn within a conversation (ASC by time). */
+export interface MessageRow {
+  id: string;
+  conversationId: string;
+  role: string;
+  /** Denormalized persona id at append time (may be null). */
+  personaId: string | null;
+  content: string;
+  model: string | null;
+  latencyMs: number | null;
+  createdAt: number;
+}
+
+export interface MessageStore {
+  insert(row: MessageRow): void;
+  findById(id: string): MessageRow | undefined;
+  /** Oldest first (conversation transcript order). */
+  listByConversation(conversationId: string): MessageRow[];
+  countByConversation(conversationId: string): number;
+  /** conversationId -> row count for EVERY conversation (list summaries). */
+  countsByConversation(): Array<{ conversationId: string; count: number }>;
+  /** Cascade: remove a conversation's messages (conversation delete). */
+  removeByConversation(conversationId: string): void;
+}

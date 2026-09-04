@@ -28,10 +28,13 @@ export type { Keychain } from './keychain/keychain.js';
 // ---- stores ----------------------------------------------------------------
 export {
   createAuditStore,
+  createConversationStore,
   createFileProposalStore,
   createGrantStore,
+  createMessageStore,
   createPairingStore,
   createPendingToolStore,
+  createPersonaStore,
   createProjectRootStore,
   createProviderStore,
   createSessionStore,
@@ -41,14 +44,22 @@ export {
 export type {
   AuditRow,
   AuditStore,
+  ConversationRow,
+  ConversationRowPatch,
+  ConversationStore,
   FileProposalRow,
   FileProposalStore,
   GrantRow,
   GrantStore,
+  MessageRow,
+  MessageStore,
   PairingRow,
   PairingStore,
   PendingToolRow,
   PendingToolStore,
+  PersonaRow,
+  PersonaRowPatch,
+  PersonaStore,
   ProjectRootRow,
   ProjectRootStore,
   ProviderRow,
@@ -83,7 +94,8 @@ export type {
   OpenAICompatibleOptions,
   UpstreamErrorCode,
 } from './gateway/openaiCompatible.js';
-export { resolveChatProvider } from './gateway/resolver.js';
+export { resolveChatModel, resolveChatProvider } from './gateway/resolver.js';
+export type { ResolveChatModelOptions, ResolvedChatModel } from './gateway/resolver.js';
 export { createBudgetTracker } from './gateway/budget.js';
 export { priceForModel } from './gateway/pricing.js';
 export type { BudgetOptions, BudgetRecord, BudgetTracker } from './gateway/budget.js';
@@ -137,9 +149,31 @@ export type {
   ToolExecutor,
 } from './files/tools.js';
 
+// ---- M3 personas + conversations ------------------------------------------
+export { createPersonaManager } from './personas/manager.js';
+export type {
+  PersonaDraft,
+  PersonaManager,
+  PersonaManagerOptions,
+  PersonaPatch,
+} from './personas/manager.js';
+export { PersonaError } from './personas/errors.js';
+export type { PersonaErrorCode } from './personas/errors.js';
+export { createConversationManager } from './conversations/manager.js';
+export type {
+  AppendRole,
+  ConversationAppendInput,
+  ConversationDetail,
+  ConversationManager,
+  ConversationManagerOptions,
+} from './conversations/manager.js';
+export { ConversationError } from './conversations/errors.js';
+export type { ConversationErrorCode } from './conversations/errors.js';
+
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
+export type { ChatDoneMetaEvent, ServerChatEvent } from './http/server.js';
 
 import { loadConfig } from './config.js';
 import type { CoreConfig } from './config.js';
@@ -153,8 +187,20 @@ import {
   createGrantStore,
   createPendingToolStore,
   createFileProposalStore,
+  createPersonaStore,
+  createConversationStore,
+  createMessageStore,
 } from './stores/db.js';
-import type { ProviderStore } from './stores/types.js';
+import type {
+  ConversationStore,
+  MessageStore,
+  PersonaStore,
+  ProviderStore,
+} from './stores/types.js';
+import { createPersonaManager } from './personas/manager.js';
+import type { PersonaManager } from './personas/manager.js';
+import { createConversationManager } from './conversations/manager.js';
+import type { ConversationManager } from './conversations/manager.js';
 import { createKeychainFake, createKeychainNative } from './keychain/keychain.js';
 import { createPairingManager } from './http/pairing.js';
 import type { PairingManager } from './http/pairing.js';
@@ -193,6 +239,12 @@ export interface CoreBundle {
   grantManager: GrantManager;
   pendingManager: PendingManager;
   proposalManager: ProposalManager;
+  /** M3 persona manager + stores (wired on every core; seeded on boot). */
+  personaManager: PersonaManager;
+  personaStore: PersonaStore;
+  conversationManager: ConversationManager;
+  conversationStore: ConversationStore;
+  messageStore: MessageStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -244,6 +296,20 @@ export function createCore(config: CoreConfig): CoreBundle {
     audit,
   });
 
+  // M3: personas + conversations over the SAME db. The persona manager seeds
+  // the EIGHT starter personas on first run (empty table only) so a fresh
+  // core always boots with a default partner persona.
+  const personaStore = createPersonaStore(db);
+  const personaManager = createPersonaManager({ store: personaStore, audit });
+  personaManager.seedIfEmpty();
+  const conversationStore = createConversationStore(db);
+  const messageStore = createMessageStore(db);
+  const conversationManager = createConversationManager({
+    personaStore,
+    stores: { conversations: conversationStore, messages: messageStore },
+    audit,
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -257,6 +323,8 @@ export function createCore(config: CoreConfig): CoreBundle {
     providers: config.demo ? [demoProvider()] : [],
     providerManager,
     broker,
+    personaManager,
+    conversationManager,
   });
 
   return {
@@ -273,6 +341,11 @@ export function createCore(config: CoreConfig): CoreBundle {
     grantManager,
     pendingManager,
     proposalManager,
+    personaManager,
+    personaStore,
+    conversationManager,
+    conversationStore,
+    messageStore,
     app,
     close(): void {
       try {
