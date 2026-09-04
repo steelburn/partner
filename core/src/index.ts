@@ -74,7 +74,7 @@ export type {
 export { resolveChatProvider } from './gateway/resolver.js';
 export { createBudgetTracker } from './gateway/budget.js';
 export { priceForModel } from './gateway/pricing.js';
-export type { BudgetOptions, BudgetRecord, BudgetTracker, UsageCharge } from './gateway/budget.js';
+export type { BudgetOptions, BudgetRecord, BudgetTracker } from './gateway/budget.js';
 export { connectSelfService, fetchSelfServiceLoginKey } from './gateway/selfService.js';
 export type { SelfServiceErrorKind, SelfServiceOptions } from './gateway/selfService.js';
 

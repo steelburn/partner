@@ -51,6 +51,9 @@ export interface ChatRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  /** External cancellation (e.g. client disconnect / budget stop). When it
+   *  fires the provider stream is aborted WITHOUT an error event. */
+  signal?: AbortSignal;
 }
 
 export interface HealthReport {

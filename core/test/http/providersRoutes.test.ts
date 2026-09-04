@@ -22,9 +22,9 @@ import { sseReply } from '../support/server.js';
 // ---------------------------------------------------------------------------
 
 async function pairToken(h: Harness): Promise<string> {
-  const codeRes = await request(h.app).get('/v1/dev/pair-code').set('Host', ALLOWED_HOST);
-  expect(codeRes.status).toBe(200);
-  const code = codeRes.body.code as string;
+  // Issue the code through the manager (works demo AND live; the dev
+  // pair-code HTTP seam is demo-only and covered by server.test + e2e).
+  const code = await h.pairing.issue();
   const pairRes = await request(h.app).post('/v1/pair').set('Host', ALLOWED_HOST).send({ code });
   expect(pairRes.status).toBe(200);
   return pairRes.body.token as string;
@@ -89,9 +89,56 @@ function startFakeUpstream(): Promise<FakeUpstream> {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Fake llm-self-service (S0 contract): RSA-OAEP envelope login + /api/me/key
-// ---------------------------------------------------------------------------
+/**
+ * Upstream that streams deltas one-by-one with a small delay between frames —
+ * lets tests observe a budget stop MID-STREAM (the big delta is dropped).
+ */
+function startDelayedUpstream(deltas: string[]): Promise<FakeUpstream> {
+  return new Promise((resolve, reject) => {
+    const requests: FakeUpstream['requests'] = [];
+    const server = http.createServer((req, res) => {
+      requests.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers });
+      const path = (req.url ?? '').split('?')[0] ?? '';
+      if (path === '/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }] }));
+        return;
+      }
+      if (path === '/chat/completions') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        void (async () => {
+          try {
+            for (const delta of deltas) {
+              res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`);
+              await new Promise((r) => setTimeout(r, 15));
+            }
+            res.end('data: [DONE]\n\n');
+          } catch {
+            res.destroy();
+          }
+        })();
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        server,
+        base: `http://127.0.0.1:${port}`,
+        requests,
+        close(): Promise<void> {
+          return new Promise((done) => {
+            server.closeAllConnections();
+            server.close(() => done());
+          });
+        },
+      });
+    });
+  });
+}
 
 interface FakeSelfService {
   server: http.Server;
@@ -550,13 +597,50 @@ describe('POST /v1/chat through a managed provider', () => {
         .send({ messages: [{ role: 'user', content: 'expensive' }], model: 'gpt-4o' });
       expect(chat.status).toBe(200);
       const events = parseSse(chat.text);
-      // 10_000 tokens @ gpt-4o (5 USD/MTok) = 5 cents >= 3 -> cap trips at the usage event.
+      // The reply ('Hello world') is ~11 chars = ~3 est tokens -> below the cap
+      // while streaming; the usage event (10_000 tokens @ gpt-4o 5 USD/MTok =
+      // 5 cents >= 3) then trips the cap and stops the stream.
       expect(events.map((e) => e.type)).toEqual(['delta', 'delta', 'budget_reached']);
       expect(chat.text).not.toContain('"type":"done"');
       const budget = events[events.length - 1] as Extract<ChatEvent, { type: 'budget_reached' }>;
       expect(budget.limitCents).toBe(3);
       expect(budget.spentCents).toBeGreaterThanOrEqual(3);
-      expect(budget.requests).toBe(1);
+      expect(budget.limitRequests).toBeNull();
+    } finally {
+      h.close();
+    }
+  });
+
+  it('aborts the upstream MID-STREAM before a single over-budget delta is delivered', async () => {
+    // A small delta first (fits the cap), then a huge delta that must trip the
+    // cap at the checkpoint — BEFORE it is written and BEFORE 'done'.
+    const upstream = await track(await startDelayedUpstream(['ok', 'x'.repeat(40_000)]));
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const created = await request(h.app)
+        .post('/v1/providers')
+        .set(authed(token))
+        .send({ name: 'capped-mid', endpoint: upstream.base, budgetCents: 5, defaultModels: ['gpt-4o'] });
+      const id = (created.body as { id: string }).id;
+      await request(h.app).post(`/v1/providers/${id}/key`).set(authed(token)).send({ key: PROVISIONED_KEY });
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content: 'run' }], model: 'gpt-4o' });
+      expect(chat.status).toBe(200);
+      const events = parseSse(chat.text);
+      // 40_000 chars ~= 10_000 est tokens @ gpt-4o = 25 cents >= 5 -> trip.
+      // The huge delta is dropped (never delivered) and no done follows.
+      expect(events.map((e) => e.type)).toEqual(['delta', 'budget_reached']);
+      const deltas = events
+        .filter((e): e is Extract<ChatEvent, { type: 'delta' }> => e.type === 'delta')
+        .map((e) => e.text)
+        .join('');
+      expect(deltas).toBe('ok');
+      expect(chat.text).not.toContain('x'.repeat(64));
+      expect(chat.text).not.toContain('"type":"done"');
     } finally {
       h.close();
     }
@@ -621,7 +705,7 @@ describe('self-service import routes', () => {
 
   it('login-key proxies the fake PEM (authed)', async () => {
     const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness();
+    const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
       const res = await request(h.app)
@@ -649,7 +733,7 @@ describe('self-service import routes', () => {
 
   it('connect happy path: envelope login -> provider (source llm-self-service) + key in keychain', async () => {
     const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness();
+    const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
       const cipher = await encryptPassword(ss.publicKeyPem, GOOD_PASSWORD);
@@ -702,7 +786,7 @@ describe('self-service import routes', () => {
 
   it('rejects a plaintext password field with 400 (envelope only) and creates nothing', async () => {
     const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness();
+    const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
       const res = await request(h.app)
@@ -723,7 +807,7 @@ describe('self-service import routes', () => {
 
   it('wrong password and unknown user both map to the SAME generic 401', async () => {
     const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness();
+    const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
 
@@ -757,7 +841,7 @@ describe('end-to-end redaction regression', () => {
     const ss = await track(
       await startFakeSelfService({ ['good@example.com']: 'horse-battery-staple' }, PROVISIONED_KEY),
     );
-    const h = demoHarness();
+    const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
       const bodies: string[] = [];
@@ -807,6 +891,57 @@ describe('end-to-end redaction regression', () => {
       expect(actions).toContain('self_service.connect');
       expect(actions).toContain('provider.test');
       expect(actions).toContain('chat.stream');
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('demo double (offline llm-self-service import)', () => {
+  // DEMO_MODE=1 must keep the import fully offline: the core serves the S0
+  // double itself (no network, no credentials) — end of the review major.
+  it('login-key + connect work in demo against the built-in double', async () => {
+    const h = demoHarness(); // demo: true
+    try {
+      const token = await pairToken(h);
+      const keyRes = await request(h.app)
+        .post('/v1/self-service/login-key')
+        .set(authed(token))
+        .send({ endpoint: 'https://enter.ne1.dev' }); // would be real network if not demo
+      expect(keyRes.status).toBe(200);
+      const pem = keyRes.body.publicKeyPem as string;
+      expect(pem).toContain('BEGIN PUBLIC KEY');
+
+      const cipher = await encryptPassword(pem, 'demo-pass-123');
+      const connect = await request(h.app)
+        .post('/v1/self-service/connect')
+        .set(authed(token))
+        .send({ endpoint: 'https://enter.ne1.dev', email: 'demo@example.com', passwordCipher: cipher });
+      expect(connect.status).toBe(201);
+      const summary = connect.body as { source: string; endpoint: string; id: string };
+      expect(summary.source).toBe('llm-self-service');
+      expect(summary.endpoint).toBe('http://127.0.0.1:4390/v1');
+      await expect(h.keychain.get('partner', `provider:${summary.id}`)).resolves.toBe('sk-demo-import');
+      expect(JSON.stringify(connect.body)).not.toContain('sk-demo-import');
+
+      // Wrong password -> identical generic 401 (no enumeration). The double
+      // accepts any >=4-char password (demo semantics), so use a short one.
+      const badCipher = await encryptPassword(pem, 'x');
+      const bad = await request(h.app)
+        .post('/v1/self-service/connect')
+        .set(authed(token))
+        .send({ endpoint: 'https://enter.ne1.dev', email: 'demo@example.com', passwordCipher: badCipher });
+      expect(bad.status).toBe(401);
+      expect(bad.body.message).toBe('Invalid email or password');
+
+      // Chat still works offline in demo: the demo-imported provider is not
+      // used as a chat backend (its endpoint is this core itself).
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content: 'hi' }] });
+      expect(chat.status).toBe(200);
+      expect(chat.text).toContain('demo: received');
     } finally {
       h.close();
     }

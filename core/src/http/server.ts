@@ -19,14 +19,20 @@ import { join } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient } from '@partner/shared';
-import type { ProviderInput, SelfServiceConnectInput } from '@partner/shared';
+import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
 import { redactString } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
+import { centsForTokens } from '../gateway/pricing.js';
 import { resolveChatProvider } from '../gateway/resolver.js';
 import { UpstreamError } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
-import { connectSelfService, fetchSelfServiceLoginKey, SelfServiceError } from '../gateway/selfService.js';
+import {
+  connectSelfService,
+  createSelfServiceDemoDouble,
+  fetchSelfServiceLoginKey,
+  SelfServiceError,
+} from '../gateway/selfService.js';
 import type { ProviderManager } from '../providers/providerManager.js';
 import { ProviderError } from '../providers/errors.js';
 import type { PairingManager } from './pairing.js';
@@ -197,6 +203,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   const app = express();
   app.disable('x-powered-by');
 
+  // Demo mode: an in-process S0 double keeps the import fully offline.
+  const demoSelfService = options.demo ? createSelfServiceDemoDouble(options.port) : undefined;
+
   // 1. Loopback guard + JSON body parsing (public routes may not send JSON).
   app.use(hostGuard(allowlist));
   app.use(express.json({ limit: '1mb' }));
@@ -274,7 +283,13 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // M1: a configured provider wins over the demo/legacy fallback whenever
     // the manager resolves an enabled provider (resolver.ts).
     const manager = options.providerManager;
-    const managedProvider = manager ? resolveChatProvider(manager, requestedModel) : undefined;
+    let managedProvider = manager ? resolveChatProvider(manager, requestedModel) : undefined;
+    // Demo-mode guard: a provider imported through the built-in demo double is
+    // an OFFLINE artifact (its endpoint is this core itself), so keep the demo
+    // provider as the chat backend — demo stays usable with no network.
+    if (options.demo && managedProvider?.source === 'llm-self-service') {
+      managedProvider = undefined;
+    }
 
     if (managedProvider) {
       // managedProvider is only ever non-null when a manager is wired.
@@ -299,42 +314,82 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.set(SSE_HEADERS);
       res.flushHeaders();
 
-      // Defense-in-depth spend cap (PLAN-M1 'budget'): defaults off when the
-      // provider has no budgetCents. On a cap hit emit ONE budget_reached
-      // event and stop — never a done event for that session.
-      const tracker = createBudgetTracker({
-        budgetCents: managedProvider.budgetCents ?? null,
-        maxRequests: null,
-      });
-      const chatRequest: ChatRequest = { model, messages, stream: true };
+      // Defense-in-depth spend cap (PLAN-M1 'budget'). Off when the provider
+      // has no budgetCents. Enforcement is WITHIN this response: deltas are
+      // charged as they stream (char/4 token estimate, conservative default
+      // price for unknown models) and the upstream is ABORTED the moment the
+      // cap is exceeded — one budget_reached event, never a done. Final usage
+      // reconciles the estimate with the real token count.
+      const budgetCents = managedProvider.budgetCents ?? null;
+      const tracker = createBudgetTracker({ budgetCents });
+
+      // Client disconnect / budget stop: abort the upstream stream.
+      const controller = new AbortController();
+      const abortOnClose = (): void => {
+        if (!res.writableEnded) controller.abort();
+      };
+      res.on('close', abortOnClose);
+
+      const chatRequest: ChatRequest = { model, messages, stream: true, signal: controller.signal };
       let events = 0;
       let ok = true;
       let over = false;
+      let estTokens = 0;
+
+      const emitBudgetReached = (spentCents: number): void => {
+        writeSse(res, {
+          type: 'budget_reached',
+          message: 'budget reached — stream stopped',
+          spentCents,
+          limitCents: budgetCents,
+          requests: events,
+          limitRequests: null,
+        });
+      };
+
       try {
         for await (const event of client.chatStream(chatRequest)) {
+          if (event.type === 'delta') {
+            estTokens += Math.max(1, Math.ceil(event.text.length / 4));
+            if (budgetCents !== null) {
+              const tentative = tracker.spentCents + centsForTokens(model, estTokens);
+              if (tentative >= budgetCents) {
+                over = true;
+                controller.abort();
+                emitBudgetReached(tentative);
+                break;
+              }
+            }
+            writeSse(res, event);
+            events += 1;
+            continue;
+          }
           if (event.type === 'usage') {
-            const rec = tracker.record({ model, totalTokens: event.totalTokens });
+            // Reconcile with the real count (est was tentative only).
+            const rec = tracker.charge({ model, totalTokens: event.totalTokens });
             if (rec.over) {
               over = true;
-              writeSse(res, {
-                type: 'budget_reached',
-                message: 'session budget reached — stream stopped',
-                spentCents: rec.spentCents,
-                limitCents: tracker.limitCents,
-                requests: rec.requests,
-                limitRequests: tracker.limitRequests,
-              });
+              controller.abort();
+              emitBudgetReached(rec.spentCents);
               break;
             }
+            writeSse(res, event);
+            events += 1;
+            continue;
           }
           if (event.type === 'error') ok = false;
           writeSse(res, event);
           events += 1;
         }
       } catch {
-        ok = false;
-        writeSse(res, { type: 'error', message: 'provider_stream_failed' });
+        // External abort (client gone) ends the generator silently; only
+        // surface an error if the socket is still open.
+        if (!res.writableEnded) {
+          ok = false;
+          writeSse(res, { type: 'error', message: 'provider_stream_failed' });
+        }
       } finally {
+        res.removeListener('close', abortOnClose);
         res.end();
         audit.log('session', 'chat.stream', model, {
           ok,
@@ -485,7 +540,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.post('/v1/self-service/login-key', requireSession(sessions), async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { endpoint?: unknown };
     try {
-      const { publicKeyPem } = await fetchSelfServiceLoginKey(body.endpoint);
+      const { publicKeyPem } = await fetchSelfServiceLoginKey(body.endpoint, {
+        demo: options.demo,
+        demoDouble: demoSelfService,
+      });
       audit.log('self-service', 'self_service.login_key', endpointAuditTarget(body.endpoint), { ok: true });
       res.json({ publicKeyPem });
     } catch (err) {
@@ -515,7 +573,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       return;
     }
     try {
-      const summary = await connectSelfService(manager, raw as unknown as SelfServiceConnectInput);
+      const summary = await connectSelfService(manager, raw as unknown as SelfServiceConnectInput, {
+        demo: options.demo,
+        demoDouble: demoSelfService,
+      });
       audit.log('self-service', 'self_service.connect', summary.id, {
         ok: true,
         source: summary.source,

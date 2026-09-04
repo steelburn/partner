@@ -74,7 +74,7 @@ export function toSummary(row: ProviderRow): ProviderSummary {
   };
 }
 
-/** Validate + normalize a provider endpoint: trim, http(s), ONE trailing slash stripped. */
+/** Validate + normalize a provider endpoint: trim, https or loopback http, ONE trailing slash stripped. */
 export function normalizeEndpoint(raw: unknown): string {
   if (typeof raw !== 'string') {
     throw new ProviderError('invalid_endpoint', 'endpoint is required and must be a string');
@@ -85,10 +85,21 @@ export function normalizeEndpoint(raw: unknown): string {
   try {
     url = new URL(trimmed);
   } catch {
-    throw new ProviderError('invalid_endpoint', 'endpoint must be a valid http(s) URL');
+    throw new ProviderError('invalid_endpoint', 'endpoint must be a valid URL');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new ProviderError('invalid_endpoint', 'endpoint must be http(s)');
+  }
+  if (url.protocol === 'http:') {
+    // http is only ever acceptable on a loopback host (local fakes/tests) -
+    // the same rule the self-service client enforces (PLAN.md §11).
+    const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
+    if (!loopback) {
+      throw new ProviderError(
+        'invalid_endpoint',
+        'http endpoints must be on a loopback host (127.0.0.1/localhost) — use https elsewhere',
+      );
+    }
   }
   if (url.hostname === '') throw new ProviderError('invalid_endpoint', 'endpoint must include a host');
   return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
@@ -232,6 +243,9 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
     }
   }
 
+  /** Chat probe timeout (single token, just proving /chat/completions works). */
+  const PROBE_TIMEOUT_MS = 10_000;
+
   async function test(id: string): Promise<ProviderSummary> {
     const row = store.findById(id);
     if (!row) throw new ProviderError('not_found', 'provider not found');
@@ -246,15 +260,49 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
     });
     const started = Date.now();
     const checkedAt = now();
+
+    // A proxy is only 'Healthy' when BOTH /models and a minimal chat round
+    // work — a broken /chat/completions must not pass as healthy (PLAN-M1).
     try {
       const models = await client.listModels();
+      let probeError: string | null = null;
+      if (models.length > 0) {
+        const probeSignal = AbortSignal.timeout(PROBE_TIMEOUT_MS);
+        let sawDone = false;
+        for await (const event of client.chatStream({
+          model: models[0] as string,
+          messages: [{ role: 'user', content: 'ping' }],
+          stream: true,
+          signal: probeSignal,
+        })) {
+          if (event.type === 'error') {
+            probeError = `chat probe failed: ${event.message}`;
+            break;
+          }
+          if (event.type === 'done') {
+            sawDone = true;
+            break;
+          }
+        }
+        if (!sawDone && probeError === null) probeError = 'chat probe failed: no reply (timeout?)';
+      }
+
       const latencyMs = Date.now() - started;
-      store.update(id, {
-        defaultModels: models.length > 0 ? JSON.stringify(models) : null,
-        lastHealth: JSON.stringify({ ok: true, latencyMs, error: null, models, checkedAt }),
-        updatedAt: checkedAt,
-      });
-      audit.log('provider', 'provider.test', id, { ok: true, latencyMs, models: models.length });
+      if (probeError !== null) {
+        store.update(id, {
+          defaultModels: models.length > 0 ? JSON.stringify(models) : null,
+          lastHealth: JSON.stringify({ ok: false, latencyMs, error: probeError, models: [], checkedAt }),
+          updatedAt: checkedAt,
+        });
+        audit.log('provider', 'provider.test', id, { ok: false, latencyMs, error: probeError });
+      } else {
+        store.update(id, {
+          defaultModels: models.length > 0 ? JSON.stringify(models) : null,
+          lastHealth: JSON.stringify({ ok: true, latencyMs, error: null, models, checkedAt }),
+          updatedAt: checkedAt,
+        });
+        audit.log('provider', 'provider.test', id, { ok: true, latencyMs, models: models.length });
+      }
     } catch (err) {
       const latencyMs = Date.now() - started;
       const message = safeUpstreamMessage(err);

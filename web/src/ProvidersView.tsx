@@ -212,6 +212,9 @@ function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }:
   const toggleKey = (): void => {
     setConfirming(false);
     setRowError(null);
+    // Toggling off also wipes any pasted key from the input (never leave a
+    // secret in the DOM for the next open).
+    if (keyOpen && keyRef.current) keyRef.current.value = '';
     setKeyOpen((open) => !open);
   };
 
@@ -363,7 +366,7 @@ function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }:
               ref={keyRef}
               className="field key-field"
               type="password"
-              autoComplete="off"
+              autoComplete="new-password"
               spellCheck={false}
               autoFocus
               placeholder="Paste the API key"
@@ -576,6 +579,13 @@ function ImportCard({ disabled, onConnected, onSessionLost }: ImportCardProps) {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const passwordRef = useRef<HTMLInputElement | null>(null);
+  // Never leave the plaintext password in the DOM after the view unmounts.
+  useEffect(
+    () => () => {
+      if (passwordRef.current) passwordRef.current.value = '';
+    },
+    [],
+  );
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -686,7 +696,7 @@ function ImportCard({ disabled, onConnected, onSessionLost }: ImportCardProps) {
             ref={passwordRef}
             className="field"
             type="password"
-            autoComplete="off"
+            autoComplete="new-password"
             aria-required="true"
             disabled={formDisabled}
             placeholder="Org account password"

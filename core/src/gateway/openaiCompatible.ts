@@ -222,6 +222,10 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
       const started = Date.now();
       const controller = new AbortController();
       let timedOut = false;
+      const external = req.signal;
+      const onExternalAbort = (): void => controller.abort();
+      if (external?.aborted) controller.abort();
+      else external?.addEventListener('abort', onExternalAbort, { once: true });
       const connectTimer = setTimeout(() => {
         timedOut = true;
         controller.abort();
@@ -242,7 +246,9 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
         clearTimeout(connectTimer);
 
         if (!res.ok) {
-          // Non-2xx: the status alone is safe; the body is never read/echoed.
+          // Non-2xx: the status alone is safe; never read/echo the body.
+          // Cancel it so undici can reuse the connection under 401/429 storms.
+          await res.body?.cancel().catch(() => undefined);
           yield { type: 'error', message: upstreamMessageForStatus(res.status) };
           return;
         }
@@ -324,9 +330,12 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
         yield { type: 'done', model: req.model, latencyMs: Date.now() - started };
       } catch (err) {
         // Connect/idle timeouts and network failures -> safe error event.
+        // An EXTERNAL abort (client disconnect / budget stop) ends silently.
+        if (external?.aborted) return;
         yield { type: 'error', message: classify(err, timedOut).message };
       } finally {
         clearTimeout(connectTimer);
+        external?.removeEventListener('abort', onExternalAbort);
         controller.abort();
       }
     })();

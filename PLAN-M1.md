@@ -84,15 +84,22 @@ default, else a clear error listing what models the provider reported.
   (`shared/src/pricing.ts`, overridable later); when the model's price is
   unknown, fall back to a request-count cap so a runaway loop can still be
   stopped.
-- Checkpoint mid-stream every N chunks; exceeding the cap aborts the stream
-  with an explicit `budget_reached` event. Caps reset per chat session.
+- Checkpoints happen **mid-stream per delta chunk** (char/4 token estimate,
+  conservative default price for unknown models): exceeding the cap ABORTS
+  the upstream stream before the over-budget chunk is delivered, with one
+  explicit `budget_reached` event; final usage reconciles the estimate.
+  The cap is a hard stop within one chat response — cumulative spend across
+  separate turns belongs to the conversation store (M3) and is a documented
+  M1 limitation (defense-in-depth, not accounting).
 
 ## Provider API (loopback, authed) — wire spec
 
 - `GET  /v1/providers` → `[{id,name,kind,endpoint,defaultModels,enabled,budgetCents,source, health:{ok|error,latencyMs,lastError?}}]` — **never `keyRef`, never the key**.
 - `POST /v1/providers` `{name, kind?, endpoint, defaultModels?, budgetCents?, enabled?}` → `201` profile (no key). Test: kind other than `openai-compatible` → `400 unsupported (v1: openai-compatible)`.
 - `POST /v1/providers/:id/key` `{key}` → set **or** rotate (stores keychain item `provider:<id>`, replaces old atomically). Response `204`. Never echoes the key.
-- `POST /v1/providers/:id/test` → runs `listModels` + a 1-token chat probe; stores `default_models`; returns `{ok, models, latencyMs, error?}`.
+- `POST /v1/providers/:id/test` → runs `listModels` + a 1-token chat probe
+  (a proxy with broken `/chat/completions` is NOT healthy); stores
+  `default_models`; returns `{ok, models, latencyMs, error?}`.
 - `DELETE /v1/providers/:id` → deletes keychain item + row.
 - `GET  /v1/models?provider=<id>` → upstream model list.
 - `POST /v1/chat` `{providerId, model?, messages, stream:true}` → SSE events `delta|usage|done|error|budget_reached`.
@@ -123,11 +130,11 @@ portal's `encryptPassword`).
 ## Demo mode
 
 - `DEMO_MODE=1`: in-memory stores + `demoProvider` streaming fake + a
-  **fake llm-self-service** (tiny in-process HTTP double implementing the S0
-  contract: `/api/login-key`, `/api/session`, `/api/me/key` → `sk-demo-…`),
-  so the whole import flow works offline with no credentials — same promise
-  as llm-self-service's demo mode.
-- Real-S0 integration is tested against the **recorded/fixture double**, never
+  **fake llm-self-service** — implemented as an in-process S0 double the demo
+  core serves itself (`createSelfServiceDemoDouble`: `/api/login-key`,
+  `/api/session`, `/api/me/key` → `sk-demo-import`), so demo mode is fully
+  offline and credential-free — same promise as llm-self-service's demo mode.
+- Real-S0 (non-demo) integration is tested against a **loopback fake**, never
   a live server, in CI.
 
 ## TDD tests (red → green)

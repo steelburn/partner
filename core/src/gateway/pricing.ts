@@ -4,15 +4,19 @@
  * Defense-in-depth: Partner's optional per-session spend caps are charged
  * against this small static table so a runaway task cannot silently burn a
  * metered key. Prices are blended USD per 1M tokens (input+output averaged)
- * for common models; a model with no entry has NO money cap — only the
- * request-count cap applies. The table is deliberately static in v1 and is
- * overridable later.
+ * for common models. Models NOT in the table fall back to
+ * {@link DEFAULT_USD_PER_MT} (a conservative blended default) so the money
+ * cap always binds — never a silent 'unpriceable model'. The table is
+ * deliberately static in v1 and is overridable later.
  */
 
 export interface ModelPrice {
   /** Blended USD per 1M tokens. */
   usdPerMToken: number;
 }
+
+/** Conservative blended USD/1M for models absent from the table. */
+export const DEFAULT_USD_PER_MT = 2.0;
 
 /**
  * (match-substring, blended USD / 1M tokens). Longer matchers win so
@@ -35,12 +39,18 @@ const PRICE_TABLE: ReadonlyArray<{ match: string; usdPerMToken: number }> = [
   { match: 'gemini-2.0-flash', usdPerMToken: 1.0 },
 ].sort((a, b) => b.match.length - a.match.length);
 
-/** Price for a model id, or null when the model is not in the table. */
-export function priceForModel(model: string): ModelPrice | null {
+/** Price for a model id; unknown models get the conservative default. */
+export function priceForModel(model: string): ModelPrice {
   const needle = String(model ?? '').toLowerCase();
-  if (needle === '') return null;
+  if (needle === '') return { usdPerMToken: DEFAULT_USD_PER_MT };
   for (const row of PRICE_TABLE) {
     if (needle.includes(row.match)) return { usdPerMToken: row.usdPerMToken };
   }
-  return null;
+  return { usdPerMToken: DEFAULT_USD_PER_MT };
+}
+
+/** tokens * usdPerMToken / 1_000_000 tokens * 100 cents = cents. */
+export function centsForTokens(model: string, totalTokens: number): number {
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) return 0;
+  return Math.round((totalTokens * priceForModel(model).usdPerMToken) / 10_000);
 }
