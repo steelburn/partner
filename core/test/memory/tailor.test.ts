@@ -58,9 +58,11 @@ describe('buildTailoring', () => {
   });
 
   it('confirmed entries are newest-first (recent facts win within the cap)', () => {
-    const env = makeMemoryEnv();
+    const clock = { t: 1_000 };
+    const env = makeMemoryEnv({ demo: false, now: () => clock.t });
     try {
       env.profile.add({ kind: 'identity', value: 'older fact' });
+      clock.t += 1_000;
       env.profile.add({ kind: 'preference', value: 'newer fact' });
       const text = buildTailoring(env.profile, 'p-x');
       expect(text?.split('\n')[0]).toContain('newer fact');
