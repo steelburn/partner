@@ -26,7 +26,7 @@ import type {
 } from '@partner/shared/tools.js';
 import type { ProjectRoot } from '@partner/shared/tools.js';
 import { FILE_TOOL_MANIFESTS } from './toolManifests.js';
-import { ToolError } from './errors.js';
+import { toolError, ToolError } from './errors.js';
 import type { GrantManager } from './grants.js';
 import type { PendingManager } from './pending.js';
 import type { ProjectRootManager } from './roots.js';
@@ -54,12 +54,14 @@ export interface ExecContext {
 
 export interface DecideResult {
   ok: true;
-  /** Grant id persisted when approve+remember; null otherwise. */
+  /** Grant id persisted when approve+remember AND the execution succeeded. */
   grantId: string | null;
   /** True when an approval executed the underlying tool once. */
   executed: boolean;
   /** Set when approval executed but the tool itself was denied/failed. */
   error?: string;
+  /** Tool result when executed (e.g. a proposalId from files.edit). */
+  result?: AnyParams;
 }
 
 export interface ToolBroker {
@@ -272,50 +274,83 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
   }
 
   function decide(pendingId: string, input: ToolDecisionInput, by: string): DecideResult {
-    const { row, grantId } = pending.decide(pendingId, input, by);
     const approved = input.decision === 'approve';
+    const pre = pending.get(pendingId);
+    if (!pre) throw toolError('not_found', 'pending call not found');
+    if (pre.decidedAt !== null) throw toolError('not_pending', 'pending call was already decided');
+
+    let executed = false;
+    let error: string | undefined;
+    let result: AnyParams | undefined;
+
+    if (approved) {
+      // Execute ONCE with the stored params BEFORE closing the row. A grant
+      // is only persisted when the execution actually succeeds (review fix:
+      // never grant on a failed approval).
+      const tool = pre.toolId;
+      const manifest = manifestIndex.get(tool);
+      const impl = manifest ? (tools as unknown as Record<string, unknown>)[manifest.id] : undefined;
+      if (!manifest || impl === undefined) {
+        error = 'unknown_tool';
+      } else {
+        let parsed: AnyParams | undefined;
+        try {
+          parsed =
+            typeof pre.params === 'string'
+              ? (JSON.parse(pre.params) as AnyParams)
+              : ((pre.params ?? {}) as AnyParams);
+        } catch {
+          error = 'bad_params';
+        }
+        if (error === undefined && parsed !== undefined) {
+          const params = parsed;
+          const rootId = projectIdOf(params);
+          const root = roots.getById(rootId);
+          const started = now();
+          if (!root) {
+            error = 'unknown_project';
+          } else {
+            const outcome = runAuthorized(tool, manifest, impl, params, root, started);
+            if (outcome.ok) {
+              executed = true;
+              result = outcome.result;
+            } else {
+              error = outcome.error;
+            }
+          }
+        }
+      }
+    }
+
+    // Close the row now (remember handled below, AFTER a successful run).
+    const closed = pending.decide(pendingId, { decision: input.decision, remember: false }, by);
+    const row = closed.row;
+
+    let grantId: string | null = null;
+    if (approved && executed && input.remember === true && row.projectId !== null) {
+      const grant = grants.add(row.toolId, row.projectId, {
+        ...(input.note !== undefined && input.note !== '' ? { note: input.note } : {}),
+      });
+      grantId = grant.id;
+      audit.log(by, 'grant.add', row.projectId, {
+        toolId: row.toolId,
+        projectId: row.projectId,
+        grantId,
+        source: 'user',
+      });
+    }
+
     const details: Record<string, unknown> = {
       toolId: row.toolId,
       projectId: row.projectId ?? undefined,
       remember: input.remember === true,
       ...(input.note !== undefined && input.note !== '' ? { note: input.note } : {}),
       ...(grantId !== null ? { grantId } : {}),
+      executed,
+      ...(error !== undefined ? { error } : {}),
     };
     audit.log(by, approved ? 'tool.approve' : 'tool.deny', pendingId, details);
-    if (grantId !== null) {
-      audit.log(by, 'grant.add', row.projectId ?? '', {
-        toolId: row.toolId,
-        projectId: row.projectId ?? undefined,
-        grantId,
-        source: 'user',
-      });
-    }
-
-    if (!approved) return { ok: true, grantId, executed: false };
-
-    // An approval EXECUTES the tool once with the stored params (that is the
-    // point of the ask). Remember additionally persists a grant for future
-    // direct execs; without it, the next exec asks again (high-risk 'always').
-    const tool = row.toolId;
-    const manifest = manifestIndex.get(tool);
-    const impl = manifest ? (tools as unknown as Record<string, unknown>)[manifest.id] : undefined;
-    if (!manifest || impl === undefined) return { ok: true, grantId, executed: false, error: 'unknown_tool' };
-    let params: AnyParams;
-    try {
-      params =
-        typeof row.params === 'string'
-          ? (JSON.parse(row.params) as AnyParams)
-          : (row.params as AnyParams);
-    } catch {
-      return { ok: true, grantId, executed: false, error: 'bad_params' };
-    }
-    const rootId = projectIdOf(params);
-    const root = roots.getById(rootId);
-    const started = now();
-    if (!root) return { ok: true, grantId, executed: false, error: 'unknown_project' };
-    const outcome = runAuthorized(tool, manifest, impl, params, root, started);
-    if (!outcome.ok) return { ok: true, grantId, executed: false, error: outcome.error };
-    return { ok: true, grantId, executed: true };
+    return { ok: true, grantId, executed, ...(error !== undefined ? { error } : {}), ...(result !== undefined ? { result } : {}) };
   }
 
   function getProposal(id: string): ProposalView | null {

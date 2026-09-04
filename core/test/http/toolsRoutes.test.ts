@@ -346,23 +346,23 @@ describe('write-preview happy flow over HTTP', () => {
       expect(proposal.body.open).toBe(false);
       expect(proposal.body.discardedAt).toBeTruthy();
 
-      // Apply of a discarded proposal: needs approval first, then refused.
+      // Apply of a discarded proposal: needs approval first; the approval
+      // executes and FAILS (not_pending), and no grant is persisted.
       const apply1 = await request(h.app)
         .post(`/v1/proposals/${proposalId}/apply`)
         .set(authed(token))
         .send({ projectId: rootId });
       expect(apply1.status).toBe(202);
       const pendingId = apply1.body.pendingId as string;
-      await request(h.app)
+      const decide = await request(h.app)
         .post(`/v1/tools/pending/${pendingId}`)
         .set(authed(token))
         .send({ decision: 'approve', remember: true });
-      const apply2 = await request(h.app)
-        .post(`/v1/proposals/${proposalId}/apply`)
-        .set(authed(token))
-        .send({ projectId: rootId });
-      expect(apply2.status).toBe(403);
-      expect(apply2.body.reason).toBe('not_pending');
+      expect(decide.status).toBe(200);
+      expect(decide.body.executed).toBe(false);
+      expect(decide.body.error).toBe('not_pending');
+      // Review fix: a failed approval must NOT persist a grant.
+      expect(h.broker?.grants.hasGrant('files.apply', rootId) || false).toBe(false);
       expect(readFileSync(join(dir, 'f.txt'), 'utf8')).toBe('v1');
     } finally {
       h.close();
@@ -390,6 +390,50 @@ describe('write-preview happy flow over HTTP', () => {
       expect(exec.body.outcome).toBe('executed');
       expect(existsSync(join(dir, 'trashme.txt'))).toBe(false);
       expect(existsSync(join(dir, exec.body.result.trashPath as string))).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('drift protection (review fix)', () => {
+  it('apply refuses when the file changed on disk after the proposal', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const dir = tempDir();
+      writeFileSync(join(dir, 'd.txt'), 'v1\n');
+      const root = await request(h.app).post('/v1/roots').set(authed(token)).send({ label: 'dr', path: dir });
+      const rootId = root.body.id as string;
+      await request(h.app)
+        .post('/v1/grants')
+        .set(authed(token))
+        .send({ toolId: 'files.edit', projectId: rootId });
+      await request(h.app)
+        .post('/v1/grants')
+        .set(authed(token))
+        .send({ toolId: 'files.apply', projectId: rootId });
+
+      const edit = await request(h.app)
+        .post('/v1/tools/exec')
+        .set(authed(token))
+        .send({ tool: 'files.edit', params: { projectId: rootId, path: 'd.txt', proposedContent: 'v2\n' } });
+      expect(edit.status).toBe(200);
+      const proposalId = edit.body.result.proposalId as string;
+
+      // The file changes on disk AFTER the proposal (e.g. another editor).
+      writeFileSync(join(dir, 'd.txt'), 'v1.5\n');
+      const future = Date.now() + 2000;
+      const { utimesSync } = await import('node:fs');
+      utimesSync(join(dir, 'd.txt'), future / 1000, future / 1000);
+
+      const apply = await request(h.app)
+        .post(`/v1/proposals/${proposalId}/apply`)
+        .set(authed(token))
+        .send({ projectId: rootId });
+      expect(apply.status).toBe(403);
+      expect(apply.body.reason).toBe('changed_since_proposal');
+      expect(readFileSync(join(dir, 'd.txt'), 'utf8')).toBe('v1.5\n'); // untouched
     } finally {
       h.close();
     }

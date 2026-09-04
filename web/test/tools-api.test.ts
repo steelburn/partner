@@ -199,22 +199,47 @@ describe('approval queue decisions', () => {
     expect(calls[0]?.input).toBe('/v1/tools/pending');
   });
 
-  it('decidePending sends {decision: approve, remember: true} when remembering', async () => {
-    const { fetchImpl, calls } = recordFetch(() => new Response(null, { status: 204 }));
-    await decidePending(TOKEN, 'p-1', { decision: 'approve', remember: true }, { fetchImpl });
+  it('decidePending sends {decision: approve, remember: true} when remembering and returns the outcome', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ grantId: 'g-1', executed: true, result: { proposalId: 'pr-9' } }),
+    );
+    const outcome = await decidePending(
+      TOKEN,
+      'p-1',
+      { decision: 'approve', remember: true },
+      { fetchImpl },
+    );
     expect(calls[0]?.input).toBe('/v1/tools/pending/p-1');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(bodyOf(calls[0]!)).toEqual({ decision: 'approve', remember: true });
+    expect(outcome).toEqual({
+      grantId: 'g-1',
+      executed: true,
+      result: { proposalId: 'pr-9' },
+    });
   });
 
-  it('decidePending omits remember when not remembering, and supports deny', async () => {
-    const approve = recordFetch(() => new Response(null, { status: 204 }));
-    await decidePending(TOKEN, 'p-1', { decision: 'approve' }, { fetchImpl: approve.fetchImpl });
+  it('decidePending omits remember when not remembering, supports deny, and surfaces execution errors', async () => {
+    const approve = recordFetch(() => jsonResponse({ grantId: null, executed: false, error: 'not_pending' }));
+    const approveOutcome = await decidePending(
+      TOKEN,
+      'p-1',
+      { decision: 'approve' },
+      { fetchImpl: approve.fetchImpl },
+    );
     expect(bodyOf(approve.calls[0]!)).toEqual({ decision: 'approve' });
+    expect(approveOutcome).toEqual({ grantId: null, executed: false, error: 'not_pending' });
 
-    const deny = recordFetch(() => new Response(null, { status: 204 }));
-    await decidePending(TOKEN, 'p-1', { decision: 'deny', note: 'nope' }, { fetchImpl: deny.fetchImpl });
+    const deny = recordFetch(() => jsonResponse({ grantId: null, executed: false }));
+    const denyOutcome = await decidePending(TOKEN, 'p-1', { decision: 'deny', note: 'nope' }, { fetchImpl: deny.fetchImpl });
     expect(bodyOf(deny.calls[0]!)).toEqual({ decision: 'deny', note: 'nope' });
+    expect(denyOutcome.executed).toBe(false);
+  });
+
+  it('decidePending tolerates a legacy 204 response', async () => {
+    const { fetchImpl } = recordFetch(() => new Response(null, { status: 204 }));
+    const outcome = await decidePending(TOKEN, 'p-1', { decision: 'deny' }, { fetchImpl });
+    expect(outcome).toEqual({ grantId: null, executed: false });
   });
 });
 

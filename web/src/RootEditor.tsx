@@ -17,7 +17,7 @@ import {
 } from './lib/roots.js';
 import { applyProposal, decidePending, discardProposal, execTool } from './lib/tools.js';
 import { readStoredToken } from './lib/token.js';
-import { useDecisionRerun } from './useDecisionRerun.js';
+import { useEffect } from 'react';
 
 export interface EditPreviewPanelProps {
   root: ProjectRoot;
@@ -25,8 +25,6 @@ export interface EditPreviewPanelProps {
   onSessionLost: () => void;
   onRefreshPending: () => void;
 }
-
-const MAX_ASKS = 2;
 
 type BrowseAction = 'list' | 'read';
 type FlowAction = BrowseAction | 'edit' | 'apply';
@@ -41,7 +39,6 @@ interface LocalProposal {
 interface EditWait {
   action: FlowAction;
   pendingId: string;
-  ask: number;
 }
 
 function isSessionLost(cause: unknown): boolean {
@@ -72,8 +69,6 @@ export default function EditPreviewPanel({
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const waitRef = useRef<EditWait | null>(null);
-  waitRef.current = wait;
   const lastActionRef = useRef<{
     action: FlowAction;
     toolId: ToolId;
@@ -149,16 +144,7 @@ export default function EditPreviewPanel({
     }
     if (response.outcome === 'needs_approval') {
       const action = lastActionRef.current?.action ?? 'edit';
-      const ask = (waitRef.current?.ask ?? 0) + 1;
-      if (ask > MAX_ASKS) {
-        setWait(null);
-        setBusy(null);
-        setError(
-          'Still waiting after repeated prompts — approve with "Remember" so this step can run without asking again.',
-        );
-        return;
-      }
-      setWait({ action, pendingId: response.pendingId, ask });
+      setWait({ action, pendingId: response.pendingId });
       setBusy(null);
       onRefreshPending();
       return;
@@ -221,13 +207,53 @@ export default function EditPreviewPanel({
     [execute],
   );
 
-  const rerun = useCallback(() => {
-    const last = lastActionRef.current;
-    if (last) void execute(last.action, last.toolId, last.params, last.via);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [execute]);
+  /** Approve the waiting call INLINE — the decision executes the tool once
+   *  and returns its result, so we continue the flow directly here (no
+   *  second execution anywhere). */
+  const approveHere = async (): Promise<void> => {
+    const token = readStoredToken();
+    const waitFor = wait;
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    if (waitFor === null) return;
+    setBusy(waitFor.action);
+    clearTransient();
+    try {
+      const outcome = await decidePending(token, waitFor.pendingId, { decision: 'approve' });
+      setWait(null);
+      if (outcome.executed) {
+        const action = waitFor.action;
+        interpret(action, outcome.result ?? {});
+        setNote(
+          action === 'apply'
+            ? 'Approved — applied. The file was written with a .bak backup.'
+            : action === 'edit'
+              ? 'Approved — the edit proposal is ready below.'
+              : 'Approved — the tool ran once.',
+        );
+      } else {
+        setError(outcome.error ? `Not executed: ${outcome.error}` : 'The tool did not execute.');
+      }
+      onRefreshPending();
+    } catch (cause) {
+      handleError(cause, 'Could not approve the request.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
-  useDecisionRerun(pending, wait?.pendingId ?? null, rerun);
+  // If the row was decided in the QUEUE (not here), never auto re-run — the
+  // decision already executed server-side. Just surface a hint.
+  useEffect(() => {
+    if (wait !== null && !pending.some((item) => item.id === wait.pendingId)) {
+      setWait(null);
+      setNote(
+        'Decided in the queue above — press the action again to continue (approve with "Remember" to avoid future prompts).',
+      );
+    }
+  }, [pending, wait]);
 
   const openDir = async (path: string): Promise<void> => {
     setDirPath(path);
@@ -468,11 +494,20 @@ export default function EditPreviewPanel({
           </span>
           <button
             type="button"
+            className="btn btn-primary btn-sm"
+            disabled={controlsLocked}
+            onClick={() => void approveHere()}
+            aria-busy={busy === waitingAction}
+          >
+            {busy === waitingAction ? 'Approving…' : 'Approve here'}
+          </button>
+          <button
+            type="button"
             className="btn btn-secondary btn-sm"
             disabled={controlsLocked}
             onClick={() => void cancelWait(wait.pendingId)}
           >
-            Cancel request
+            Deny
           </button>
         </div>
       ) : null}

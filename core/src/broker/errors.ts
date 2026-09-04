@@ -24,7 +24,8 @@ export type ToolErrorCode =
   | 'denied'
   | 'read_only'
   | 'not_pending'
-  | 'exists';
+  | 'exists'
+  | 'changed_since_proposal';
 
 export class ToolError extends Error {
   readonly code: ToolErrorCode;

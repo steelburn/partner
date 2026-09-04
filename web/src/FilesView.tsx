@@ -284,8 +284,13 @@ function QueueItem({
     }
     setError(null);
     try {
-      await decidePending(token, item.id, input);
-      if (input.decision === 'approve' && input.remember === true) onRemembered();
+      const outcome = await decidePending(token, item.id, input);
+      if (input.decision === 'approve') {
+        if (input.remember === true) onRemembered();
+        if (!outcome.executed && outcome.error) {
+          setError(`${label} was not executed: ${outcome.error}`);
+        }
+      }
       onRefreshPending();
     } catch (cause) {
       setError(cause instanceof ApiRequestError ? cause.message : 'Could not reach the Partner core.');

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   FileListEntry,
   FileSearchHit,
@@ -18,19 +18,14 @@ import {
 } from './lib/roots.js';
 import { decidePending, execTool } from './lib/tools.js';
 import { readStoredToken } from './lib/token.js';
-import { useDecisionRerun } from './useDecisionRerun.js';
 
 export interface TryToolPanelProps {
   root: ProjectRoot;
-  /** Live approval queue (drives the auto re-exec on decision). */
+  /** Live approval queue (drives the external-decision hint). */
   pending: PendingToolCall[];
   onSessionLost: () => void;
   onRefreshPending: () => void;
 }
-
-/** How many times a wait may re-ask before the panel stops asking (approve
- * with "remember" to skip future prompts for this tool + root). */
-const MAX_ASKS = 2;
 
 const TRY_TOOLS: ToolId[] = ['files.list', 'files.read', 'files.search'];
 
@@ -41,7 +36,6 @@ type TryResult =
 
 interface TryWait {
   pendingId: string;
-  ask: number;
 }
 
 function isSessionLost(cause: unknown): boolean {
@@ -49,11 +43,11 @@ function isSessionLost(cause: unknown): boolean {
 }
 
 /**
- * "Try a tool" demo panel (PLAN-M2 provisional UI): pick one of the low-risk
- * file tools plus a relative path/query and run it against a project root.
- * An un-granted run lands in the approval queue and this panel shows
- * "Waiting for approval…" until the queue decides, then re-executes to fetch
- * the real result.
+ * "Try a tool" demo panel (PLAN-M2 provisional UI): run files.list/read/
+ * search against a project root. An un-granted run lands in the approval
+ * queue; you can approve HERE (the approval executes the tool and returns
+ * its result) or decide in the queue above — the panel never auto re-runs
+ * (an external decision already executed server-side).
  */
 export default function TryToolPanel({
   root,
@@ -68,10 +62,8 @@ export default function TryToolPanel({
   const [wait, setWait] = useState<TryWait | null>(null);
   const [result, setResult] = useState<TryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
-  // Refs mirroring state so the (stable) run handlers never read stale values.
-  const waitRef = useRef<TryWait | null>(null);
-  waitRef.current = wait;
   const lastActionRef = useRef<{ toolId: ToolId; params: Record<string, unknown> } | null>(null);
   const pathRef = useRef(path);
   pathRef.current = path;
@@ -109,22 +101,14 @@ export default function TryToolPanel({
     if (response.outcome === 'executed') {
       const action = lastActionRef.current;
       setResult(null);
+      setNote(null);
       if (action) applyResult(action.toolId, response.result);
       setWait(null);
       setBusy(false);
       return;
     }
     if (response.outcome === 'needs_approval') {
-      const ask = (waitRef.current?.ask ?? 0) + 1;
-      if (ask > MAX_ASKS) {
-        setWait(null);
-        setBusy(false);
-        setError(
-          'Still waiting after repeated prompts — approve with "Remember" so this tool can run without asking again.',
-        );
-        return;
-      }
-      setWait({ pendingId: response.pendingId, ask });
+      setWait({ pendingId: response.pendingId });
       setBusy(false);
       onRefreshPending();
       return;
@@ -134,27 +118,24 @@ export default function TryToolPanel({
     setError(`Denied: ${response.reason}`);
   };
 
-  const execute = useCallback(
-    async (toolId: ToolId, params: Record<string, unknown>): Promise<void> => {
-      const token = readStoredToken();
-      if (!token) {
-        onSessionLost();
-        return;
-      }
-      lastActionRef.current = { toolId, params };
-      setBusy(true);
-      setError(null);
-      try {
-        const response = await execTool(token, toolId, params);
-        handleDecision(response);
-      } catch (cause) {
-        setBusy(false);
-        handleError(cause, 'Could not run the tool.');
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [onSessionLost],
-  );
+  const execute = async (toolId: ToolId, params: Record<string, unknown>): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    lastActionRef.current = { toolId, params };
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const response = await execTool(token, toolId, params);
+      handleDecision(response);
+    } catch (cause) {
+      setBusy(false);
+      handleError(cause, 'Could not run the tool.');
+    }
+  };
 
   const buildParams = (): Record<string, unknown> | null => {
     const trimmedPath = pathRef.current.trim();
@@ -178,24 +159,48 @@ export default function TryToolPanel({
     await execute(toolId, params);
   };
 
-  // Auto re-exec exactly once the queue resolves the row we are waiting on.
-  const rerun = useCallback(() => {
-    const last = lastActionRef.current;
-    if (last) void execute(last.toolId, last.params);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [execute]);
-
-  useDecisionRerun(pending, wait?.pendingId ?? null, rerun);
-
-  const cancelWait = async (pendingId: string): Promise<void> => {
+  /** Approve the waiting call INLINE — the decision executes once and returns
+   *  the tool result, so we render it directly (no second execution). */
+  const approveHere = async (): Promise<void> => {
     const token = readStoredToken();
+    const waitFor = wait;
     if (!token) {
       onSessionLost();
       return;
     }
+    if (waitFor === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await decidePending(token, waitFor.pendingId, { decision: 'approve' });
+      setWait(null);
+      if (outcome.executed) {
+        const action = lastActionRef.current;
+        setResult(null);
+        if (action && outcome.result) applyResult(action.toolId, outcome.result);
+        setNote('Approved — the tool ran once.');
+      } else {
+        setError(outcome.error ? `Not executed: ${outcome.error}` : 'The tool did not execute.');
+      }
+      onRefreshPending();
+    } catch (cause) {
+      handleError(cause, 'Could not approve the request.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const denyHere = async (): Promise<void> => {
+    const token = readStoredToken();
+    const waitFor = wait;
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    if (waitFor === null) return;
     setBusy(true);
     try {
-      await decidePending(token, pendingId, { decision: 'deny' });
+      await decidePending(token, waitFor.pendingId, { decision: 'deny' });
       setWait(null);
       onRefreshPending();
     } catch (cause) {
@@ -205,6 +210,17 @@ export default function TryToolPanel({
     }
   };
 
+  // If the row was decided in the QUEUE (not here), never auto re-run — the
+  // decision already executed server-side. Just surface a hint.
+  useEffect(() => {
+    if (wait !== null && !pending.some((item) => item.id === wait.pendingId)) {
+      setWait(null);
+      setNote(
+        'Decided in the queue above — press Run again to fetch the result (approve with "Remember" to avoid future prompts).',
+      );
+    }
+  }, [pending, wait]);
+
   const controlsLocked = busy || wait !== null;
 
   return (
@@ -212,7 +228,7 @@ export default function TryToolPanel({
       <p className="sub-panel-title">Try a tool (browse demo)</p>
       <p className="sub-panel-copy">
         Run files.list, files.read or files.search against this root. Relative paths only — a
-        first run may need your approval in the queue above.
+        first run may need your approval.
       </p>
       <div className="tool-row">
         <select
@@ -275,11 +291,19 @@ export default function TryToolPanel({
           <span className="waiting-text">Waiting for approval…</span>
           <button
             type="button"
+            className="btn btn-primary btn-sm"
+            disabled={busy}
+            onClick={() => void approveHere()}
+          >
+            Approve here
+          </button>
+          <button
+            type="button"
             className="btn btn-secondary btn-sm"
             disabled={busy}
-            onClick={() => void cancelWait(wait.pendingId)}
+            onClick={() => void denyHere()}
           >
-            Cancel request
+            Deny
           </button>
         </div>
       ) : null}
@@ -289,6 +313,7 @@ export default function TryToolPanel({
           {error}
         </p>
       ) : null}
+      {note ? <p className="success-note">{note}</p> : null}
 
       {result !== null ? <TryResultView result={result} onRow={onRow} /> : null}
     </div>

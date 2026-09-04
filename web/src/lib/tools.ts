@@ -250,12 +250,24 @@ export async function listPending(
  * POST /v1/tools/pending/:id {decision, remember?, note?} -> 204.
  * `remember: true` (approve only) persists a grant for (tool, project).
  */
+/** Outcome of deciding a pending tool call (the approval executes the tool
+ *  once server-side; remember persists a grant). */
+export interface ToolDecisionOutcome {
+  grantId: string | null;
+  /** True when the approval executed the underlying tool. */
+  executed: boolean;
+  /** Set when the tool refused the run (e.g. not_pending). */
+  error?: string;
+  /** Tool result when executed (e.g. a proposalId from files.edit). */
+  result?: Record<string, unknown>;
+}
+
 export async function decidePending(
   token: string,
   pendingId: string,
   input: ToolDecisionInput,
   options: { fetchImpl?: FetchLike } = {},
-): Promise<void> {
+): Promise<ToolDecisionOutcome> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const body: Record<string, unknown> = { decision: input.decision };
   if (input.remember === true) body.remember = true;
@@ -268,7 +280,16 @@ export async function decidePending(
     },
     body: JSON.stringify(body),
   });
-  return expectNoContent(response, 'Deciding the pending call');
+  if (response.status === 204) return { grantId: null, executed: false };
+  const parsed = (await expectJson<Record<string, unknown>>(response)) as Record<string, unknown>;
+  return {
+    grantId: typeof parsed.grantId === 'string' ? parsed.grantId : null,
+    executed: parsed.executed === true,
+    ...(typeof parsed.error === 'string' && parsed.error.length > 0 ? { error: parsed.error } : {}),
+    ...(parsed.result !== null && typeof parsed.result === 'object'
+      ? { result: parsed.result as Record<string, unknown> }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -159,10 +160,11 @@ function listImpl(root: ProjectRoot, path: string): ListResult {
     const entryAbs = join(absolute, entry.name);
     let entryStat;
     try {
-      entryStat = statSync(entryAbs);
+      entryStat = lstatSync(entryAbs);
     } catch {
-      continue; // broken symlink or vanished mid-listing — skip
+      continue; // vanished mid-listing — skip
     }
+    if (entryStat.isSymbolicLink()) continue; // never leak outside-root metadata
     const isDir = entryStat.isDirectory();
     entries.push({
       name: entry.name,
@@ -285,6 +287,11 @@ function editImpl(root: ProjectRoot, p: FilesEditParams, deps: FileToolDeps): Ed
   if (st.isDirectory()) {
     throw toolError('bad_params', 'path is a directory — point files.edit at a file');
   }
+  // Same cap as files.read: edit never pulls unbounded files into memory/DB.
+  const hardCap = deps.hardMaxReadBytes ?? HARD_MAX_READ;
+  if (st.size > hardCap) {
+    throw toolError('too_large', `file exceeds the ${hardCap} byte edit cap`);
+  }
   const originalContent = readFileSync(absolute, 'utf8');
   const at = (deps.now ?? Date.now)();
   const row: FileProposalRow = {
@@ -303,9 +310,13 @@ function editImpl(root: ProjectRoot, p: FilesEditParams, deps: FileToolDeps): Ed
 }
 
 /**
- * Atomic apply: proposal -> .bak of the CURRENT disk file (rename preserves
- * its inode, so .bak keeps the original mtime) -> tmp write in the same dir
- * -> rename into place. On any mid-write failure the original is restored.
+ * Atomic apply with drift protection and a crash-safe .bak:
+ *  1. stat the CURRENT file: if its mtime differs from the proposal snapshot
+ *     the file changed on disk -> refuse (changed_since_proposal);
+ *  2. write .bak as a COPY of the current bytes (preserving its mtime) BEFORE
+ *     touching the original, so the real file is never moved away;
+ *  3. write a tmp file in the same dir, rename over the original.
+ * A crash at any point leaves the original file present and intact.
  */
 function applyImpl(root: ProjectRoot, p: FilesApplyParams, deps: FileToolDeps): ApplyResult {
   if (root.readOnly) {
@@ -323,24 +334,36 @@ function applyImpl(root: ProjectRoot, p: FilesApplyParams, deps: FileToolDeps): 
   if (!existsSync(absolute)) {
     throw toolError('not_found', 'target file no longer exists');
   }
+  // Drift protection: refuse to clobber a file that changed since the proposal.
+  const currentStat = statSync(absolute);
+  if (mtimeMs(currentStat) !== row.originalMtime) {
+    throw toolError(
+      'changed_since_proposal',
+      'the file changed on disk since this proposal was created — re-propose instead of overwriting',
+    );
+  }
 
+  const originalBytes = readFileSync(absolute);
   const bakPath = `${absolute}.bak`;
   const tmpPath = join(dirname(absolute), `.${basename(absolute)}.${randomUUID()}.partner-tmp`);
   try {
-    renameSync(absolute, bakPath); // original -> .bak (mtime preserved)
+    // .bak first, from a copy, preserving the original's timestamps: the real
+    // file is never moved or destroyed, so a crash mid-apply is safe.
+    writeFileSync(bakPath, originalBytes);
+    utimesSync(bakPath, currentStat.atime, currentStat.mtime);
     writeFileSync(tmpPath, row.proposedContent, 'utf8');
     renameSync(tmpPath, absolute);
   } catch (err) {
-    // Best-effort rollback: never leave the original stranded in .bak only.
-    // The partial tmp file is REMOVED (never written over the restored
-    // original — that would destroy the pre-apply content).
+    // Best-effort cleanup: the partial tmp is removed; the original was never
+    // displaced, so no restore dance is needed.
     try {
-      if (!existsSync(absolute) && existsSync(bakPath)) renameSync(bakPath, absolute);
       if (existsSync(tmpPath)) rmSync(tmpPath, { force: true });
     } catch {
-      // Rollback itself failed — the .bak still holds the original content.
+      // Ignore cleanup failures.
     }
-    if (err instanceof Error && isMissing(err)) throw toolError('not_found', 'target file vanished during apply');
+    if (err instanceof Error && isMissing(err)) {
+      throw toolError('not_found', 'target file vanished during apply');
+    }
     throw toolError('denied', 'apply failed — no changes were written');
   }
   deps.proposals.markApplied(row.id, (deps.now ?? Date.now)());
