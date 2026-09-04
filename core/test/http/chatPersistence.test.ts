@@ -348,3 +348,41 @@ describe('audit rows for chat persistence', () => {
     }
   });
 });
+
+describe('conversation persona rebind on per-message persona switch (review fix)', () => {
+  it('a chat under a different persona in an existing conversation rebinds it', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      // Conversation bound to Analyst first.
+      const first = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-analyst', messages: [{ role: 'user', content: 'from analyst' }] });
+      const convId = doneMeta(parseSse(first.text)).conversationId;
+
+      // Second turn under Builder in the SAME conversation -> conversation
+      // follows its latest message persona.
+      const second = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          conversationId: convId,
+          personaId: 'p-builder',
+          messages: [{ role: 'user', content: 'now builder' }],
+        });
+      expect(second.status).toBe(200);
+
+      const detail = (
+        await request(h.app).get(`/v1/conversations/${convId}`).set(authed(token))
+      ).body as {
+        conversation: { personaId: string | null };
+        messages: Array<{ role: string; personaId: string | null }>;
+      };
+      expect(detail.conversation.personaId).toBe('p-builder');
+      expect(detail.messages[detail.messages.length - 1]?.personaId).toBe('p-builder');
+    } finally {
+      h.close();
+    }
+  });
+});

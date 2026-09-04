@@ -165,6 +165,11 @@ export default function ChatStrip({
     const userRow: ChatRow = { key: `local-${++nextId.current}`, role: 'user', text: content };
     const placeholder: ChatRow = { key: `local-${++nextId.current}`, role: 'assistant', text: '' };
     setRows((prev) => [...prev, userRow, placeholder]);
+    // A failed turn is never persisted server-side: drop the optimistic rows
+    // so a later history reload cannot silently remove a visible ghost.
+    const dropLocals = (): void => {
+      setRows((prev) => prev.filter((r) => r.key !== userRow.key && r.key !== placeholder.key));
+    };
     setDraft('');
     setUsage(null);
     setModelLatency(null);
@@ -221,6 +226,7 @@ export default function ChatStrip({
         },
       });
       if (!result.ok) {
+        dropLocals();
         setTurnError({
           message: result.unauthorized
             ? 'Your session with the Partner core has expired. Pair again to continue.'
@@ -230,6 +236,7 @@ export default function ChatStrip({
       }
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'AbortError') return;
+      dropLocals();
       setTurnError({
         message: 'Lost connection to the Partner core. Check that it is running and try again.',
         canRepair: false,

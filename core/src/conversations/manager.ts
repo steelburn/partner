@@ -76,6 +76,8 @@ export interface ConversationManager {
   list(): ConversationSummary[];
   /** {summary, messages} — unknown conversation throws not_found. */
   get(id: string): ConversationDetail;
+  /** Re-point a conversation at a persona (bumps updated_at). Unknown -> not_found. */
+  bindPersona(conversationId: string, personaId: string): void;
   /** Delete a conversation AND its messages. Unknown -> not_found. */
   remove(id: string): void;
 }
@@ -219,5 +221,18 @@ export function createConversationManager(
     audit.log('web', 'conversation.delete', id, {});
   }
 
-  return { create, append, list, get, remove };
+  function bindPersona(conversationId: string, personaId: string): void {
+    const row = stores.conversations.findById(conversationId);
+    if (!row) throw conversationError('not_found', 'conversation not found');
+    if (typeof personaId !== 'string' || personaId.trim() === '') {
+      throw conversationError('invalid_input', 'personaId must be a non-empty string');
+    }
+    if (personaStore && !personaStore.findById(personaId)) {
+      throw conversationError('not_found', 'persona not found');
+    }
+    if (row.personaId === personaId) return;
+    stores.conversations.update(conversationId, { personaId, updatedAt: now() });
+  }
+
+  return { create, append, list, get, bindPersona, remove };
 }

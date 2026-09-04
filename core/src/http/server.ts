@@ -576,6 +576,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const persistUserTurn = (): void => {
       if (!persist || conversationId === null || lastUser === undefined) return;
       try {
+        // Per-message persona switch (PLAN-M3): the conversation follows its
+        // latest message's persona, so rebind when they differ.
+        if (routingPersonaId !== null) {
+          const bound = (conversationManager as ConversationManager).get(conversationId).summary
+            .personaId;
+          if (bound !== routingPersonaId) {
+            (conversationManager as ConversationManager).bindPersona(conversationId, routingPersonaId);
+          }
+        }
         (conversationManager as ConversationManager).append(conversationId, 'user', {
           content: lastUser.content,
           personaId: routingPersonaId,

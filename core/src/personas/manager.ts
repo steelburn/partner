@@ -499,8 +499,21 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
       current.memory = normalizeMemory({ ...current.memory, ...body.memory });
     }
     if (body.isDefault !== undefined) {
-      if (body.isDefault) clearCurrentDefault();
-      current.isDefault = body.isDefault;
+      if (body.isDefault) {
+        clearCurrentDefault();
+        current.isDefault = true;
+      } else if (current.isDefault) {
+        // Invariant (PLAN-M3): a default persona must exist while personas
+        // exist. Unsetting the sole default flag auto-relocates it to the
+        // oldest remaining persona; refusing when this is the last persona.
+        const others = store.list().filter((r) => r.id !== id);
+        if (others.length === 0) {
+          throw personaError('conflict', 'the default flag cannot be removed from the last persona');
+        }
+        const oldest = others.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+        store.update(oldest.id, { isDefault: 1, updatedAt: now() });
+        current.isDefault = false;
+      }
     }
 
     const mergedPersona: Persona = { ...current, updatedAt: now() };

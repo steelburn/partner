@@ -168,6 +168,26 @@ describe('last-default deletion guard', () => {
     expect(manager.get('p-default')).toBeNull();
     expect(defaultsOf(manager).map((p) => p.id)).toEqual([analyst.id]);
   });
+
+  it('unsetting the default flag auto-relocates it to the oldest persona (review fix)', () => {
+    const { manager } = makeManager();
+    manager.seedIfEmpty();
+    const current = defaultsOf(manager)[0] as Persona;
+    const analyst = manager.list().find((p) => p.name === 'Analyst') as Persona;
+    // Move default to Analyst first (deterministic), then unset it there.
+    manager.update(analyst.id, { isDefault: true });
+    manager.update(analyst.id, { isDefault: false });
+    expect(analyst.id !== null && manager.get(analyst.id)?.isDefault).toBe(false);
+    expect(defaultsOf(manager)).toHaveLength(1);
+    expect(defaultsOf(manager)[0]?.id).not.toBe(analyst.id);
+  });
+
+  it('refuses to remove the default flag from the LAST persona (409 conflict)', () => {
+    const { manager } = makeManager();
+    const solo = manager.create({ name: 'Solo', isDefault: true });
+    expectPersonaError(() => manager.update(solo.id, { isDefault: false }), 'conflict');
+    expect(manager.get(solo.id)?.isDefault).toBe(true);
+  });
 });
 
 describe('pause / resume', () => {
