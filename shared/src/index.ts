@@ -11,3 +11,4 @@ export * from './contracts.js';
 export * from './provider.js';
 export * from './tools.js';
 export * from './persona.js';
+export * from './memory.js';
