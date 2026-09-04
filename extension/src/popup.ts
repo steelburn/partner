@@ -33,6 +33,9 @@ const statusText = el<HTMLParagraphElement>('statusText');
 const pairBtn = el<HTMLButtonElement>('pairBtn');
 const codeRow = el<HTMLParagraphElement>('codeRow');
 const codeText = el<HTMLElement>('codeText');
+const manualRow = el<HTMLParagraphElement>('manualRow');
+const codeInput = el<HTMLInputElement>('codeInput');
+const submitPair = el<HTMLButtonElement>('submitPair');
 const pageLine = el<HTMLParagraphElement>('pageLine');
 const partnerBtn = el<HTMLButtonElement>('partnerBtn');
 const pageResult = el<HTMLParagraphElement>('pageResult');
@@ -103,15 +106,20 @@ async function probeCore(): Promise<void> {
   // Hello also refreshes the persisted pairing state in the background.
   const hello = await runtimeSend(nmRequest('hello', {}));
   if (hello?.kind === 'nm.reply' && hello.ok) {
-    setStatus('ok', 'Paired with the Partner core');
-    pairBtn.classList.add('hidden');
+    // hello proves REACHABILITY only — pairing is a separate step (M7
+    // review finding 2: the core answers hello before any pair exchange).
+    if (state.paired) {
+      setStatus('ok', 'Paired with the Partner core');
+      pairBtn.classList.add('hidden');
+    } else {
+      setStatus('bad', 'Core reachable — pair below to continue.');
+      pairBtn.disabled = false;
+      pairBtn.textContent = 'Pair with core';
+    }
   } else {
     const error = hello?.kind === 'nm.reply' ? hello.error : undefined;
     if (error === 'native_unavailable' || !state.native) {
       setStatus('bad', 'Core not reachable — is the native host running?');
-      pairBtn.disabled = false;
-    } else if (error === 'not_paired' || !state.paired) {
-      setStatus('bad', 'Not paired — pair with the core to continue.');
       pairBtn.disabled = false;
     } else {
       setStatus('bad', `Core error: ${error ?? 'unreachable'}`);
@@ -120,29 +128,73 @@ async function probeCore(): Promise<void> {
   }
 }
 
+/** Submit a pairing code to the core; updates UI on the result. */
+async function submitPairCode(code: string): Promise<void> {
+  pairBtn.disabled = true;
+  submitPair.disabled = true;
+  setStatus('busy', 'Pairing…');
+  const reply = await runtimeSend(nmRequest('pair', { code }));
+  if (reply?.kind === 'nm.reply' && reply.ok) {
+    setStatus('ok', 'Paired with the Partner core');
+    pairBtn.classList.add('hidden');
+    manualRow.classList.add('hidden');
+    codeInput.value = '';
+    void refreshScopeRead();
+  } else {
+    const error = reply?.kind === 'nm.reply' ? (reply.error ?? 'failed') : 'no reply';
+    setStatus('bad', `Pairing failed: ${error}`);
+    pairBtn.disabled = false;
+    submitPair.disabled = false;
+  }
+}
+
 pairBtn.addEventListener('click', () => {
   pairBtn.disabled = true;
   pairBtn.textContent = 'Requesting…';
-  void runtimeSend(nmRequest('pair.code', {})).then((reply) => {
+  void runtimeSend(nmRequest('pair.code', {})).then(async (reply) => {
     pairBtn.textContent = 'Pair with core';
     if (reply?.kind === 'nm.reply' && reply.ok) {
       const payload = (reply.payload ?? {}) as { code?: unknown };
       const code = typeof payload.code === 'string' ? payload.code : '';
-      setStatus('ok', 'Pairing code ready (demo).');
+      // Demo: the core hands us the dev code — auto-pair with it.
       if (code) {
         codeRow.classList.remove('hidden');
         codeText.textContent = code;
-        setResult(`Enter code ${code} in the Partner core window to pair.`, 'plain');
-      } else {
-        setResult('Core accepted the pairing request (demo).', 'plain');
+        await submitPairCode(code);
+        return;
       }
-    } else {
-      const error = reply?.kind === 'nm.reply' ? (reply.error ?? 'failed') : 'no reply';
-      setStatus('bad', `Pairing failed: ${error}`);
-      setResult(`Pairing failed (${error}) — is the core running?`, 'danger');
+      setStatus('ok', 'Pairing request accepted (demo).');
       pairBtn.disabled = false;
+      return;
     }
+    const error = reply?.kind === 'nm.reply' ? (reply.error ?? 'failed') : 'no reply';
+    if (error === 'live_mode' || error === 'not_paired') {
+      // Live core: the desktop shows a code — ask the user to type it in.
+      setStatus('bad', 'Enter the pairing code shown by the Partner desktop.');
+      manualRow.classList.remove('hidden');
+      codeInput.focus();
+    } else {
+      setStatus('bad', `Pairing failed: ${error}`);
+    }
+    pairBtn.disabled = false;
   });
+});
+
+submitPair.addEventListener('click', () => {
+  const code = codeInput.value.trim();
+  if (code.length === 0) {
+    codeInput.focus();
+    return;
+  }
+  void submitPairCode(code);
+});
+
+codeInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    const code = codeInput.value.trim();
+    if (code.length > 0) void submitPairCode(code);
+  }
 });
 
 // ---------------------------------------------------------------------------

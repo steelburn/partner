@@ -59,30 +59,46 @@ export function isSiteScope(value: unknown): value is SiteScope {
  * core scope manager's blocklist (PLAN-M7.md: banking, payments, password
  * managers are blocked by default from any autonomous action).
  */
+/**
+ * Hard-off origins — MIRROR of core/src/browser/scopes.ts SITE_BLOCKLIST.
+ * The CORE list is the single source of truth; keep this array byte-identical
+ * (a root-level test asserts the sync). Entries may carry a leading '*.' for
+ * readability; every entry matches its apex host and all subdomains.
+ */
 export const BLOCKED_HOSTS: readonly string[] = [
-  // banking
-  'chase.com',
-  'bankofamerica.com',
-  'wellsfargo.com',
-  'citi.com',
-  'usbank.com',
-  'capitalone.com',
-  // payments
+  // Banking.
+  '*.wellsfargo.com',
+  '*.chase.com',
+  '*.bankofamerica.com',
+  '*.citibank.com',
+  '*.usbank.com',
+  '*.capitalone.com',
+  // Payments.
   'paypal.com',
-  // card issuers
-  'americanexpress.com',
-  // password managers
-  '1password.com',
-  'bitwarden.com',
-  'lastpass.com',
+  '*.paypal.com',
+  '*.stripe.com',
+  '*.venmo.com',
+  '*.coinbase.com',
+  // Accounts / identity consoles.
+  'accounts.google.com',
+  'appleid.apple.com',
+  'login.microsoftonline.com',
+  'account.microsoft.com',
+  'login.live.com',
 ];
+
+/** Strip a leading '*.' readability prefix. */
+function blockSuffix(entry: string): string {
+  return entry.startsWith('*.') ? entry.slice(2) : entry;
+}
 
 /** True when `hostname` is on the hard blocklist (self or any subdomain). */
 export function isHostBlocked(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return BLOCKED_HOSTS.some(
-    (entry) => host === entry || host.endsWith(`.${entry}`),
-  );
+  return BLOCKED_HOSTS.some((entry) => {
+    const suffix = blockSuffix(entry);
+    return host === suffix || host.endsWith(`.${suffix}`);
+  });
 }
 
 /**

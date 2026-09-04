@@ -83,9 +83,12 @@ describe('blocklist (built-in hard off)', () => {
     expect(p.scope).toBe('off');
   });
 
-  it('blocks payments and password managers', () => {
+  it('blocks payments and identity consoles (mirrors the core list)', () => {
     expect(resolveScopeForUrl('https://www.paypal.com/', EMPTY).blocked).toBe(true);
-    expect(resolveScopeForUrl('https://vault.bitwarden.com/', EMPTY).blocked).toBe(true);
+    expect(resolveScopeForUrl('https://dashboard.stripe.com/', EMPTY).blocked).toBe(true);
+    expect(resolveScopeForUrl('https://accounts.google.com/', EMPTY).blocked).toBe(true);
+    // NOT on the core list (password managers were removed from it):
+    expect(resolveScopeForUrl('https://vault.bitwarden.com/', EMPTY).blocked).toBe(false);
   });
 
   it('blocklist is immovable even with trusted', () => {

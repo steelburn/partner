@@ -16,7 +16,8 @@ import type { PageSnapshot } from './snapshot.js';
 /** popup → background */
 export type PartnerRuntimeMessage =
   | { kind: 'nm'; command: string; payload?: unknown }
-  | { kind: 'state' };
+  | { kind: 'state' }
+  | { kind: 'reconnect' };
 
 /** background → popup */
 export type PartnerRuntimeReply =

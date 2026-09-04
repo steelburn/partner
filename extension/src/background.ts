@@ -45,6 +45,7 @@ let port: chrome.runtime.Port | null = null;
 let decoder: FrameDecoder = new FrameDecoder();
 let pending = new Map<string, Pending>();
 let backoffAttempt = 0;
+let deadAttempts = 0;
 let reconnectTimer: number | undefined;
 let openAttempt: Promise<chrome.runtime.Port> | null = null;
 let cachedState: PartnerState = { paired: false, lastDeny: null };
@@ -85,12 +86,24 @@ function failAllPending(error: string): void {
 
 function scheduleReconnect(): void {
   if (reconnectTimer !== undefined || port !== null) return;
+  // Give up after six failed attempts without ever delivering a frame: the
+  // native host is very likely not installed. Stop retrying until the user
+  // acts (popup 'reconnect' message) — M7 review finding 4.
+  deadAttempts += 1;
+  if (deadAttempts >= 6) return;
   const delay = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** backoffAttempt);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
     backoffAttempt += 1;
     void warmUp();
   }, delay);
+}
+
+/** Reset the reconnect give-up counter (user asked to try again). */
+function resetReconnect(): void {
+  deadAttempts = 0;
+  backoffAttempt = 0;
+  void warmUp();
 }
 
 function connect(): Promise<chrome.runtime.Port> {
@@ -163,18 +176,26 @@ function handleResponse(env: NmResponse): void {
   pending.delete(id);
   clearTimeout(p.timer);
   const result = responseResult(env);
-  // Pairing state: any ok round-trip proves the host is reachable; a core
-  // "not_paired" denial flips us back to unpaired.
-  if (!result.ok && result.error === 'not_paired') {
-    void persistState({ paired: false, lastDeny: null });
-  } else if (result.ok) {
-    void persistState({ paired: true, lastDeny: null });
-  }
-  if (!result.ok && result.error !== undefined && DENIAL_CODES.has(result.error)) {
-    void persistState({ paired: true, lastDeny: result.error });
-    setDeniedBadge(result.error);
-  } else if (result.ok) {
+  const cmd = p.command;
+  if (result.ok) {
+    deadAttempts = 0;
+    backoffAttempt = 0;
+    if (cmd === 'hello') {
+      // hello only proves reachability — it does NOT imply pairing (the core
+      // answers hello before any pair exchange; M7 review finding 2).
+      void persistState({ paired: cachedState.paired, lastDeny: null });
+    } else if (cmd === 'pair') {
+      void persistState({ paired: true, lastDeny: null });
+    } else {
+      // capture/analyze/scope.read keep whatever pairing state we had.
+      void persistState({ paired: cachedState.paired, lastDeny: null });
+    }
     clearBadge();
+  } else if (result.error === 'not_paired') {
+    void persistState({ paired: false, lastDeny: null });
+  } else if (result.error !== undefined && DENIAL_CODES.has(result.error)) {
+    void persistState({ paired: cachedState.paired, lastDeny: result.error });
+    setDeniedBadge(result.error);
   }
   p.resolve(result);
 }
@@ -227,7 +248,7 @@ export function request(command: string, payload?: unknown): Promise<NmResult> {
 async function warmUp(): Promise<void> {
   try {
     const res = await request('hello', {});
-    if (res.ok) backoffAttempt = 0;
+    if (res.ok) { backoffAttempt = 0; deadAttempts = 0; }
   } catch {
     // request() never rejects; keep the worker alive only via timers above.
   }
@@ -252,6 +273,11 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
   if (msg.kind === 'state') {
     void stateReply().then(sendResponse);
     return true; // async response
+  }
+  if (msg.kind === 'reconnect') {
+    resetReconnect();
+    sendResponse({ kind: 'state.reply', paired: cachedState.paired, native: port !== null, lastDeny: cachedState.lastDeny });
+    return true;
   }
   if (msg.kind === 'nm') {
     void request(msg.command, msg.payload)

@@ -157,6 +157,18 @@
         <button id="pairBtn" class="primary" type="button">Pair with core</button>
       </div>
       <p id="codeRow" class="hidden">Demo code: <code id="codeText"></code></p>
+      <p id="manualRow" class="hidden">
+        <label for="codeInput">Pairing code from the Partner desktop:</label>
+        <input
+          id="codeInput"
+          type="text"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          placeholder="6-digit code"
+          spellcheck="false"
+        />
+        <button id="submitPair" type="button" class="primary">Connect</button>
+      </p>
     </section>
 
     <section>

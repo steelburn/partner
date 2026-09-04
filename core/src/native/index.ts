@@ -54,7 +54,9 @@ export type NmCommandError =
   | 'denied_scope'
   | 'persona_paused'
   | 'no_provider'
-  | 'bad_frame';
+  | 'bad_frame'
+  | 'invalid_input'
+  | 'not_found';
 
 /** Fixed analyzer instruction — never user-derived. */
 export const ANALYZE_SYSTEM_PROMPT =
@@ -464,10 +466,13 @@ async function dispatch(
         return fail('unknown_command');
     }
   } catch (err) {
-    // Invalid origins surface as typed BrowserErrors -> answer bad_frame so
-    // the channel stays alive; anything else re-throws to the session guard.
+    // Invalid origins surface as typed BrowserErrors -> answer with a
+    // DISTINCT code (invalid_input/not_found) so the extension can show a
+    // real reason instead of a generic frame error (M7 review finding 5).
     if (err instanceof BrowserError) {
-      return fail('bad_frame', { reason: 'invalid_payload' });
+      return fail(err.code === 'not_found' ? 'not_found' : 'invalid_input', {
+        reason: err.message.slice(0, 160),
+      });
     }
     throw err;
   }
