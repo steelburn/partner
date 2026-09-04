@@ -2203,3 +2203,452 @@ select {
   font-weight: var(--fw-regular);
   color: var(--text-faint);
 }
+
+/* ==========================================================================
+ * M5 — Notes & plans view (PLAN-M5.md).
+ *
+ * Token-only, same discipline as every other screen: colours/radius/spacing
+ * come from var(--…) tokens; the only bare lengths here are structural
+ * geometry (progress-bar height, row min-heights). Row buttons reset the
+ * default <button> chrome and declare hover/focus-visible/active; disabled
+ * states come from .btn/.field. No borders used for separation — surfaces
+ * shift instead.
+ * ========================================================================== */
+
+.notes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.notes-panel {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.notes-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.notes-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+.notes-loading {
+  margin: 0;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* Segment tabs (Notes | Plans): the same segmented pill as the header, on
+ * the page background. */
+.seg-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.seg-tabs .btn {
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+}
+
+.seg-tabs .btn[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.seg-tabs .btn[aria-pressed='true']:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+/* Both segments stay mounted (a draft survives a tab flip); only the
+ * visible one lays out. */
+.notes-seg {
+  display: none;
+}
+
+.notes-seg-active {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* --- Shared row buttons (notes + plans lists) ----------------------------
+ * Whole-row open targets: plain buttons with the <button> chrome stripped;
+ * the title carries the semantics, meta/tags stay non-interactive spans.
+ * ------------------------------------------------------------------------ */
+
+.n-list,
+.p-list,
+.p-milestone-list,
+.p-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.n-row,
+.p-row {
+  appearance: none;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.n-row:hover:not(:disabled),
+.p-row:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.n-row:active:not(:disabled),
+.p-row:active:not(:disabled) {
+  background: var(--surface);
+}
+
+.n-row:focus-visible,
+.p-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.n-row-title,
+.p-row-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.n-row-meta,
+.p-row-meta,
+.p-progress-label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.n-row-snippet {
+  max-width: 100%;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.p-row-desc {
+  max-width: 100%;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.n-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* Toolbar rows (both segments). */
+.n-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.n-muted-line {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* --- Progress (plans) --------------------------------------------------- */
+
+.progress-track {
+  display: block;
+  width: 100%;
+  height: 8px; /* structural geometry */
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+.p-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* --- Note editor -------------------------------------------------------- */
+
+.n-editor-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.n-editor-textarea {
+  min-height: 240px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.n-editor-meta {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* Live [[wiki]] suggestion: a popover list under the textarea (elevation-lg
+ * popover tier; surface shift, no border). */
+.wiki-suggest {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: var(--space-1);
+  right: var(--space-1);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-lg);
+  padding: var(--space-1);
+}
+
+.wiki-suggest-title {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.wiki-suggest-item {
+  appearance: none;
+  border: 0;
+  text-align: left;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.wiki-suggest-item:hover {
+  background: var(--surface-2);
+}
+
+.wiki-suggest-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.wiki-suggest-brackets {
+  color: var(--text-faint);
+}
+
+.n-backlinks {
+  margin-top: var(--space-1);
+}
+
+.n-backlink-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+}
+
+.n-backlink {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.n-backlink:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.n-backlink:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* --- Plan planner ------------------------------------------------------- */
+
+.p-milestone {
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.p-milestone-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.p-milestone-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.p-add-milestone,
+.p-add-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.p-add-milestone .field,
+.p-add-task .field {
+  flex: 1;
+  min-width: 180px;
+}
+
+.p-add-task {
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+
+.p-owner-select,
+.p-task-status {
+  width: auto;
+}
+
+.p-task-list {
+  gap: var(--space-1);
+}
+
+.p-task {
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.p-task-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.p-task-check {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+}
+
+.p-task-check input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.p-task-check input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.p-task-check input[type='checkbox']:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.p-task-title {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.p-task-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.p-task-note-editor {
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+@media (max-width: 640px) {
+  .p-add-task .field {
+    flex-basis: 100%;
+  }
+}

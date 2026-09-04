@@ -32,7 +32,8 @@ import { join } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient, ProviderSummary } from '@partner/shared';
-import type { Persona } from '@partner/shared';
+import type { NoteInput, Persona } from '@partner/shared';
+import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import { redactString } from '@partner/shared';
@@ -63,6 +64,10 @@ import { PersonaError } from '../personas/errors.js';
 import type { MemoryBundle } from '../memory/index.js';
 import { buildTailoring } from '../memory/tailor.js';
 import { MemoryError, memoryErrorStatus } from '../memory/index.js';
+import type { NoteManager } from '../notes/index.js';
+import { NoteError, noteErrorStatus } from '../notes/index.js';
+import type { PlanManager } from '../plans/index.js';
+import { PlanError, planErrorStatus } from '../plans/index.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -110,6 +115,16 @@ export interface CoreAppOptions {
    * (demo/one-shot paths stay byte-identical; nothing is persisted).
    */
   memory?: MemoryBundle;
+  /**
+   * M5 note manager (optional so M0-M4 harnesses compile unchanged). When
+   * absent the /v1/notes + /v1/tags surface responds 501 not_configured.
+   */
+  notes?: NoteManager;
+  /**
+   * M5 plan manager (optional so M0-M4 harnesses compile unchanged). When
+   * absent the /v1/plans surface responds 501 not_configured.
+   */
+  plans?: PlanManager;
 }
 
 const SSE_HEADERS = {
@@ -268,6 +283,24 @@ function sendMemoryError(res: Response, err: unknown): boolean {
   return false;
 }
 
+/** Send a typed NoteError response; false when not one. */
+function sendNoteError(res: Response, err: unknown): boolean {
+  if (err instanceof NoteError) {
+    res.status(noteErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** Send a typed PlanError response; false when not one. */
+function sendPlanError(res: Response, err: unknown): boolean {
+  if (err instanceof PlanError) {
+    res.status(planErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
 /** Trimmed non-empty string or undefined (chat optional fields). */
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
@@ -356,6 +389,26 @@ function requireMemory(options: CoreAppOptions, res: Response): MemoryBundle | n
     return null;
   }
   return memory;
+}
+
+/** Guard: returns the M5 note manager or 501s. */
+function requireNotes(options: CoreAppOptions, res: Response): NoteManager | null {
+  const notes = options.notes;
+  if (!notes) {
+    notConfigured(res, 'notes manager');
+    return null;
+  }
+  return notes;
+}
+
+/** Guard: returns the M5 plan manager or 501s. */
+function requirePlans(options: CoreAppOptions, res: Response): PlanManager | null {
+  const plans = options.plans;
+  if (!plans) {
+    notConfigured(res, 'plans manager');
+    return null;
+  }
+  return plans;
 }
 
 /** Send a typed ToolError response; false when err is not a ToolError. */
@@ -1285,6 +1338,249 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.json({ imported });
     } catch (err) {
       if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // M5 notes + tags surface (PLAN-M5 wire spec). Notes are the owner's local
+  // markdown: create/update parse wiki-links ([[Title]], resolved/dangling),
+  // search rides the notes_fts mirror, daily() creates today's note on first
+  // touch, capture() splits title/body, and /daily/summarize appends (or
+  // replaces) the '## Daily summary' section. Every route authed; responses
+  // carry the OWNER's note content by design, but audit rows only ever carry
+  // ids and lengths — never note content. Literal single-segment paths are
+  // registered BEFORE '/v1/notes/:id' so Express never treats 'capture' or
+  // 'export' as an id.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/notes', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    res.json({ notes: notes.list() });
+  });
+
+  api.post('/v1/notes', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    try {
+      const note = notes.create((req.body ?? {}) as NoteInput);
+      res.status(201).json(note);
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post('/v1/notes/capture', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const body = (req.body ?? {}) as { text?: unknown };
+    try {
+      const note = notes.capture(body.text);
+      res.status(201).json(note);
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/notes/daily', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    res.json(notes.daily());
+  });
+
+  api.post('/v1/notes/daily/summarize', requireSession(sessions), async (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    try {
+      const note = await notes.summarizeDaily();
+      res.json(note);
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/notes/search', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    try {
+      res.json({ notes: notes.search(q) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/notes/export', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    res.json(notes.exportAll());
+  });
+
+  api.get('/v1/tags', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    res.json({ tags: notes.listTags() });
+  });
+
+  api.get('/v1/notes/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      const note = notes.get(id);
+      if (note === null) {
+        res.status(404).json({ error: 'not_found', message: 'note not found' });
+        return;
+      }
+      res.json({ note, links: notes.links(id) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/notes/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(notes.update(id, (req.body ?? {}) as never));
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/notes/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      notes.remove(id);
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.get('/v1/notes/:id/backlinks', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json({ backlinks: notes.backlinks(id) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // M5 plans surface (PLAN-M5 wire spec). Plans are structured documents
+  // (milestones -> tasks with status + optional owner persona). create()
+  // starts empty; PUT replaces title/description/document after shape
+  // validation; POST /tasks/:taskId applies a user-driven status transition
+  // (audited — task note text length only, never its content). Exports carry
+  // the OWNER's full plan by design.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/plans', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    res.json({ plans: plans.list() });
+  });
+
+  api.post('/v1/plans', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    try {
+      const plan = plans.create((req.body ?? {}) as PlanInput);
+      res.status(201).json(plan);
+    } catch (err) {
+      if (sendPlanError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/plans/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    const id = String(req.params.id ?? '');
+    const plan = plans.get(id);
+    if (plan === null) {
+      res.status(404).json({ error: 'not_found', message: 'plan not found' });
+      return;
+    }
+    res.json(plan);
+  });
+
+  api.put('/v1/plans/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(plans.update(id, (req.body ?? {}) as never));
+    } catch (err) {
+      if (sendPlanError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/plans/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    const id = String(req.params.id ?? '');
+    try {
+      plans.remove(id);
+    } catch (err) {
+      if (sendPlanError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.post('/v1/plans/:id/tasks/:taskId', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    const id = String(req.params.id ?? '');
+    const taskId = String(req.params.taskId ?? '');
+    try {
+      const plan = plans.setTaskStatus(id, taskId, (req.body ?? {}) as TaskStatusInput);
+      res.json(plan);
+    } catch (err) {
+      if (sendPlanError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/plans/:id/export', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(plans.exportPlan(id));
+    } catch (err) {
+      if (sendPlanError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // PLAN-M5.md specifies POST for the plan export; the task brief specified
+  // GET. Both verbs are registered — the endpoint is a read-only export.
+  api.post('/v1/plans/:id/export', requireSession(sessions), (req: Request, res: Response) => {
+    const plans = requirePlans(options, res);
+    if (!plans) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(plans.exportPlan(id));
+    } catch (err) {
+      if (sendPlanError(res, err)) return;
       throw err;
     }
   });

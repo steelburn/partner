@@ -477,3 +477,131 @@ export interface MemoryFtsStore {
    */
   match(query: string, limit: number): MemoryFtsHit[];
 }
+
+// ---------------------------------------------------------------------------
+// M5 notes + plans tables (PLAN-M5.md — additive schema v6). Row profile
+// only; the managers (core/src/notes/*, core/src/plans/*) own wiki-link
+// parsing/resolution, tags, the daily-note rule, document shape validation,
+// the shared notes_fts mirror and audit. Stores never read the clock: every
+// write takes explicit timestamps.
+// ---------------------------------------------------------------------------
+
+/** `notes` row — one local markdown note (owner content lives HERE only). */
+export interface NoteRow {
+  id: string;
+  title: string;
+  content: string;
+  /** JSON string array of tags ([] serialized); the store never interprets it. */
+  tags: string | null;
+  /** 0 | 1 — daily notes are title/date-keyed by the manager. */
+  isDaily: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields for a note row; a write always stamps updated_at. */
+export type NoteRowPatch = Partial<Pick<NoteRow, 'title' | 'content' | 'tags' | 'isDaily'>> & {
+  updatedAt: number;
+};
+
+export interface NoteStore {
+  insert(row: NoteRow): void;
+  findById(id: string): NoteRow | undefined;
+  /**
+   * Case-insensitive (ASCII NOCASE) title lookup — the wiki-link resolution
+   * target at save time; undefined when no note has that title yet.
+   */
+  findIdByTitle(title: string): string | undefined;
+  /** All rows ascending by createdAt (stable) — the manager sorts/filters. */
+  list(): NoteRow[];
+  update(id: string, patch: NoteRowPatch): void;
+  remove(id: string): void;
+}
+
+/**
+ * `note_links` row — one resolved wiki-link edge. from_note is the source
+ * note id; to_title is the (trimmed) bracket title, case-insensitively
+ * unique per source note; to_note is the target id when the title resolved
+ * at save time, else NULL (dangling, resolvable later via backlinks by title).
+ */
+export interface NoteLinkRow {
+  fromNote: string;
+  /** Resolved target id at save time; null = dangling. */
+  toNote: string | null;
+  toTitle: string;
+}
+
+export interface NoteLinkStore {
+  /**
+   * Replace a note's outgoing links in ONE transaction (delete-then-insert,
+   * INSERT OR IGNORE per row so duplicate titles collapse).
+   */
+  replaceForNote(
+    fromNote: string,
+    links: ReadonlyArray<{ toNote: string | null; toTitle: string }>,
+  ): void;
+  /** Remove a note's outgoing links (update/delete cleanup). */
+  removeForNote(fromNote: string): void;
+  /** A note's outgoing links, to_title ascending (stable). */
+  listFrom(fromNote: string): NoteLinkRow[];
+  /**
+   * Distinct source-note ids whose links target this note — resolved
+   * (to_note = id) OR dangling by exact case-insensitive title match — the
+   * backlink set. The manager filters out the note itself.
+   */
+  listLinkingTo(noteId: string, title: string): string[];
+}
+
+/** `plans` row — a structured plan; document is a JSON PlanDocument string. */
+export interface PlanRow {
+  id: string;
+  title: string;
+  description: string | null;
+  /** JSON: {milestones: [{id,title,tasks:[{id,title,status,ownerPersonaId?}]}]}. */
+  document: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields for a plan row; a write always stamps updated_at. */
+export type PlanRowPatch = Partial<Pick<PlanRow, 'title' | 'description' | 'document'>> & {
+  updatedAt: number;
+};
+
+export interface PlanStore {
+  insert(row: PlanRow): void;
+  findById(id: string): PlanRow | undefined;
+  /** All rows ascending by createdAt (stable). */
+  list(): PlanRow[];
+  update(id: string, patch: PlanRowPatch): void;
+  remove(id: string): void;
+}
+
+/**
+ * `notes_fts` (FTS5) mirror helpers — the shared searchable text behind M5
+ * retrieval. One FTS row per indexed object tagged by which ref column is
+ * set: notes set `note_ref`, plans set `plan_ref`; content holds searchable
+ * text (never audit/logs/errors).
+ */
+export type NotesFtsKind = 'note' | 'plan';
+
+export interface NotesFtsHit {
+  kind: NotesFtsKind;
+  refId: string;
+  /** bm25 rank of the FTS row (lower = better). */
+  rank: number;
+}
+
+export interface NotesFtsStore {
+  /** Delete + reinsert the note's searchable text (title + content). */
+  upsertNote(id: string, content: string): void;
+  /** Delete + reinsert the plan's searchable text (title/desc/milestone-task titles). */
+  upsertPlan(id: string, content: string): void;
+  /** Remove the FTS row for one ref (no-op when absent). */
+  deleteRef(kind: NotesFtsKind, id: string): void;
+  /**
+   * FTS5 MATCH over the content column, ranked by bm25 ascending, capped at
+   * limit. The caller has already escaped the query.
+   */
+  match(query: string, limit: number): NotesFtsHit[];
+}

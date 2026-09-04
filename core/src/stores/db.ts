@@ -49,6 +49,20 @@ import type {
 
 const META_SCHEMA_VERSION_KEY = 'schema_version';
 
+import type {
+  NoteLinkRow,
+  NoteLinkStore,
+  NoteRow,
+  NoteRowPatch,
+  NoteStore,
+  NotesFtsHit,
+  NotesFtsKind,
+  NotesFtsStore,
+  PlanRow,
+  PlanRowPatch,
+  PlanStore,
+} from './types.js';
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS pairings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,6 +251,44 @@ CREATE TABLE IF NOT EXISTS episodes (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
   USING fts5(episode_ref, profile_ref, content);
+
+-- M5 notes + plans tables (PLAN-M5.md, additive schema v6). notes holds the
+-- owner's markdown; note_links is the wiki-link edge set (to_title is
+-- NOCASE so [[Foo]]/[[foo]] collapse to one edge and backlink title matches
+-- are case-insensitive); plans holds the structured document JSON. notes_fts
+-- is the shared FTS5 mirror (note_ref XOR plan_ref) kept in step by the
+-- notes/plans managers. Note/plan CONTENT lives in these tables only — it
+-- never crosses audit/logs/errors (ids/titles/lengths beyond).
+
+CREATE TABLE IF NOT EXISTS notes (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT,
+  is_daily INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS note_links (
+  from_note TEXT NOT NULL,
+  to_note TEXT,
+  to_title TEXT NOT NULL COLLATE NOCASE,
+  PRIMARY KEY (from_note, to_title)
+);
+CREATE INDEX IF NOT EXISTS idx_note_links_to_note ON note_links(to_note);
+
+CREATE TABLE IF NOT EXISTS plans (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  document TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+  USING fts5(note_ref, plan_ref, content);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -987,6 +1039,217 @@ export function createMemoryFtsStore(db: Database.Database): MemoryFtsStore {
     match(query: string, limit: number): MemoryFtsHit[] {
       const rows = matchQuery.all(query, limit) as Array<{
         kind: MemoryRefKind;
+        refId: string;
+        rank: number;
+      }>;
+      return rows.map((row) => ({ kind: row.kind, refId: row.refId, rank: row.rank }));
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M5 notes + plans row stores (PLAN-M5.md — additive schema v6). Plain typed
+// CRUD with NO business logic; the managers (core/src/notes/manager.ts,
+// core/src/plans/manager.ts) own wiki-link parsing/resolution, tags, the
+// daily-note rule, document shape validation, the notes_fts mirror and
+// audit. Stores never read the clock: writes take explicit timestamps.
+// ---------------------------------------------------------------------------
+
+const NOTE_COLUMNS = `
+  id, title, content, tags, is_daily AS isDaily,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const NOTE_LINK_COLUMNS = `
+  from_note AS fromNote, to_note AS toNote, to_title AS toTitle`;
+
+const PLAN_COLUMNS = `
+  id, title, description, document,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const NOTE_UPDATE_COLUMNS: Readonly<Record<string, keyof NoteRowPatch>> = {
+  title: 'title',
+  content: 'content',
+  tags: 'tags',
+  is_daily: 'isDaily',
+};
+
+const PLAN_UPDATE_COLUMNS: Readonly<Record<string, keyof PlanRowPatch>> = {
+  title: 'title',
+  description: 'description',
+  document: 'document',
+};
+
+export function createNoteStore(db: Database.Database): NoteStore {
+  const insert = db.prepare(
+    `INSERT INTO notes (id, title, content, tags, is_daily, created_at, updated_at)
+     VALUES (@id, @title, @content, @tags, @isDaily, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${NOTE_COLUMNS} FROM notes WHERE id = ?`);
+  const findIdByTitle = db.prepare(
+    'SELECT id FROM notes WHERE title = ? COLLATE NOCASE ORDER BY created_at ASC, rowid ASC LIMIT 1',
+  );
+  const listAll = db.prepare(
+    `SELECT ${NOTE_COLUMNS} FROM notes ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM notes WHERE id = ?');
+
+  return {
+    insert(row: NoteRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): NoteRow | undefined {
+      return findById.get(id) as NoteRow | undefined;
+    },
+    findIdByTitle(title: string): string | undefined {
+      const row = findIdByTitle.get(title) as { id: string } | undefined;
+      return row?.id;
+    },
+    list(): NoteRow[] {
+      return listAll.all() as NoteRow[];
+    },
+    update(id: string, patch: NoteRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(NOTE_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof NoteRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE notes SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+export function createNoteLinkStore(db: Database.Database): NoteLinkStore {
+  const insertOne = db.prepare(
+    `INSERT OR IGNORE INTO note_links (from_note, to_note, to_title)
+     VALUES (@fromNote, @toNote, @toTitle)`,
+  );
+  const removeForNote = db.prepare('DELETE FROM note_links WHERE from_note = ?');
+  const listFrom = db.prepare(
+    `SELECT ${NOTE_LINK_COLUMNS} FROM note_links
+     WHERE from_note = ? ORDER BY to_title ASC, rowid ASC`,
+  );
+  const linkingTo = db.prepare(
+    `SELECT DISTINCT from_note AS fromNote FROM note_links
+     WHERE to_note = ? OR to_title = ? ORDER BY fromNote ASC`,
+  );
+
+  return {
+    replaceForNote(
+      fromNote: string,
+      links: ReadonlyArray<{ toNote: string | null; toTitle: string }>,
+    ): void {
+      const tx = db.transaction(() => {
+        removeForNote.run(fromNote);
+        for (const link of links) {
+          insertOne.run({ fromNote, toNote: link.toNote, toTitle: link.toTitle });
+        }
+      });
+      tx();
+    },
+    removeForNote(fromNote: string): void {
+      removeForNote.run(fromNote);
+    },
+    listFrom(fromNote: string): NoteLinkRow[] {
+      return listFrom.all(fromNote) as NoteLinkRow[];
+    },
+    listLinkingTo(noteId: string, title: string): string[] {
+      const rows = linkingTo.all(noteId, title) as Array<{ fromNote: string }>;
+      return rows.map((r) => r.fromNote);
+    },
+  };
+}
+
+export function createPlanStore(db: Database.Database): PlanStore {
+  const insert = db.prepare(
+    `INSERT INTO plans (id, title, description, document, created_at, updated_at)
+     VALUES (@id, @title, @description, @document, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${PLAN_COLUMNS} FROM plans WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${PLAN_COLUMNS} FROM plans ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM plans WHERE id = ?');
+
+  return {
+    insert(row: PlanRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): PlanRow | undefined {
+      return findById.get(id) as PlanRow | undefined;
+    },
+    list(): PlanRow[] {
+      return listAll.all() as PlanRow[];
+    },
+    update(id: string, patch: PlanRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(PLAN_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof PlanRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE plans SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE plans SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+/** FTS5 mirror helpers over the shared notes_fts virtual table (PLAN-M5). */
+export function createNotesFtsStore(db: Database.Database): NotesFtsStore {
+  const insert = db.prepare(
+    'INSERT INTO notes_fts (note_ref, plan_ref, content) VALUES (?, ?, ?)',
+  );
+  const deleteNoteRef = db.prepare('DELETE FROM notes_fts WHERE note_ref = ?');
+  const deletePlanRef = db.prepare('DELETE FROM notes_fts WHERE plan_ref = ?');
+  const matchQuery = db.prepare(
+    `SELECT
+       CASE WHEN note_ref IS NOT NULL THEN 'note' ELSE 'plan' END AS kind,
+       COALESCE(note_ref, plan_ref) AS refId,
+       bm25(notes_fts) AS rank
+     FROM notes_fts WHERE notes_fts MATCH ? ORDER BY rank ASC LIMIT ?`,
+  );
+
+  return {
+    upsertNote(id: string, content: string): void {
+      deleteNoteRef.run(id);
+      insert.run(id, null, content);
+    },
+    upsertPlan(id: string, content: string): void {
+      deletePlanRef.run(id);
+      insert.run(null, id, content);
+    },
+    deleteRef(kind: NotesFtsKind, id: string): void {
+      if (kind === 'note') deleteNoteRef.run(id);
+      else deletePlanRef.run(id);
+    },
+    match(query: string, limit: number): NotesFtsHit[] {
+      const rows = matchQuery.all(query, limit) as Array<{
+        kind: NotesFtsKind;
         refId: string;
         rank: number;
       }>;

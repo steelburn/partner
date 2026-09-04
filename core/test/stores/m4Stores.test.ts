@@ -1,6 +1,7 @@
 /**
- * M4 store tests (PLAN-M4.md, schema v5): the profile_entries/episodes
- * tables + the memory_fts virtual table are created idempotently alongside
+ * M4 store tests (PLAN-M4.md + M5 schema bump to v6): the
+ * profile_entries/episodes tables + the memory_fts virtual table are created
+ * idempotently alongside
  * M0-M3 tables; the FTS5 probe passes on a known-good db (negative case is
  * impossible with the bundled SQLite — documented in PLAN-M4); the new row
  * stores round-trip and the FTS mirror upserts/deletes/matches with bm25
@@ -24,7 +25,7 @@ function tableNames(db: ReturnType<typeof openDatabase>): string[] {
   return rows.map((r) => r.name);
 }
 
-describe('schema v5 (additive M4 tables + FTS5)', () => {
+describe('schema v6 (additive M4/M5 tables + FTS5)', () => {
   it('creates profile_entries, episodes and memory_fts; keeps every earlier table', () => {
     const db = openDatabase(':memory:');
     try {
@@ -53,7 +54,8 @@ describe('schema v5 (additive M4 tables + FTS5)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(5);
+      // M5 (PLAN-M5.md) raised the schema from 5 to 6 (notes/plans tables).
+      expect(SCHEMA_VERSION).toBe(6);
     } finally {
       db.close();
     }

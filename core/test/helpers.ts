@@ -39,6 +39,10 @@ import { createFileTools } from '../src/files/tools.js';
 import { createProposalManager } from '../src/files/proposals.js';
 import type { ProposalManager } from '../src/files/proposals.js';
 import type { EpisodeManager } from '../src/memory/episodes.js';
+import type { NoteManager } from '../src/notes/index.js';
+import { createNoteManager } from '../src/notes/index.js';
+import type { PlanManager } from '../src/plans/index.js';
+import { createPlanManager } from '../src/plans/index.js';
 import type { ProfileManager } from '../src/memory/profile.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
@@ -54,9 +58,13 @@ import {
   createGrantStore,
   createMemoryFtsStore,
   createMessageStore,
+  createNoteLinkStore,
+  createNoteStore,
+  createNotesFtsStore,
   createPairingStore,
   createPendingToolStore,
   createPersonaStore,
+  createPlanStore,
   createProfileStore,
   createProjectRootStore,
   createProviderStore,
@@ -71,9 +79,13 @@ import type {
   GrantStore,
   MemoryFtsStore,
   MessageStore,
+  NoteLinkStore,
+  NoteStore,
+  NotesFtsStore,
   PairingStore,
   PendingToolStore,
   PersonaStore,
+  PlanStore,
   ProfileEntryStore,
   ProjectRootStore,
   ProviderStore,
@@ -103,6 +115,12 @@ export interface HarnessOptions {
    * usable chat provider by default.
    */
   memory?: boolean;
+  /**
+   * Wire the M5 notes + plans managers over the same db (default true). The
+   * stores live on the harness for row-level assertions; demo mode makes
+   * daily summarize write the deterministic placeholder.
+   */
+  notesPlans?: boolean;
 }
 
 export interface Harness {
@@ -141,6 +159,13 @@ export interface Harness {
   memory?: MemoryBundle;
   profile?: ProfileManager;
   episodes?: EpisodeManager;
+  /** M5 notes + plans managers + stores over the SAME db (default on). */
+  noteStore: NoteStore;
+  noteLinkStore: NoteLinkStore;
+  planStore: PlanStore;
+  notesFtsStore: NotesFtsStore;
+  notes?: NoteManager;
+  plans?: PlanManager;
   close(): void;
 }
 
@@ -149,6 +174,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const brokerEnabled = options.broker ?? true;
   const personasEnabled = options.personas ?? true;
   const memoryEnabled = options.memory ?? true;
+  const notesPlansEnabled = options.notesPlans ?? true;
   const db = openDatabase(':memory:');
   const pairingStore = createPairingStore(db);
   const sessionStore = createSessionStore(db);
@@ -240,6 +266,28 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     episodes = memory.episodes;
   }
 
+  // M5: notes + plans managers over the same db (default on). Stores exist on
+  // every harness so row-level assertions are possible; managers + routes are
+  // wired unless notesPlans: false (the 501 not_configured case). Demo mode
+  // makes daily summarize write the deterministic placeholder.
+  const noteStore = createNoteStore(db);
+  const noteLinkStore = createNoteLinkStore(db);
+  const planStore = createPlanStore(db);
+  const notesFtsStore = createNotesFtsStore(db);
+  let notes: NoteManager | undefined;
+  let plans: PlanManager | undefined;
+  if (notesPlansEnabled) {
+    notes = createNoteManager({
+      stores: { notes: noteStore, links: noteLinkStore, fts: notesFtsStore },
+      audit,
+      demo,
+    });
+    plans = createPlanManager({
+      stores: { plans: planStore, fts: notesFtsStore },
+      audit,
+    });
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -256,6 +304,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     personaManager: personasEnabled ? personas : undefined,
     conversationManager: personasEnabled ? conversations : undefined,
     ...(memoryEnabled ? { memory } : {}),
+    ...(notesPlansEnabled ? { notes, plans } : {}),
   });
 
   return {
@@ -290,6 +339,12 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     memory,
     profile,
     episodes,
+    noteStore,
+    noteLinkStore,
+    planStore,
+    notesFtsStore,
+    notes,
+    plans,
     close(): void {
       db.close();
     },

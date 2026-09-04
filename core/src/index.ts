@@ -34,9 +34,13 @@ export {
   createGrantStore,
   createMemoryFtsStore,
   createMessageStore,
+  createNoteLinkStore,
+  createNoteStore,
+  createNotesFtsStore,
   createPairingStore,
   createPendingToolStore,
   createPersonaStore,
+  createPlanStore,
   createProfileStore,
   createProjectRootStore,
   createProviderStore,
@@ -63,6 +67,14 @@ export type {
   MemoryRefKind,
   MessageRow,
   MessageStore,
+  NoteLinkRow,
+  NoteLinkStore,
+  NoteRow,
+  NoteRowPatch,
+  NoteStore,
+  NotesFtsHit,
+  NotesFtsKind,
+  NotesFtsStore,
   PairingRow,
   PairingStore,
   PendingToolRow,
@@ -70,6 +82,9 @@ export type {
   PersonaRow,
   PersonaRowPatch,
   PersonaStore,
+  PlanRow,
+  PlanRowPatch,
+  PlanStore,
   ProfileEntryRow,
   ProfileEntryRowPatch,
   ProfileEntryStore,
@@ -208,6 +223,16 @@ export type { MemoryForgetManager, MemoryForgetResult } from './memory/forget.js
 export { createMemoryTransferManager } from './memory/transfer.js';
 export { buildTailoring } from './memory/tailor.js';
 
+// ---- M5 notes + plans (PLAN-M5.md) -----------------------------------------
+export { createNoteManager, parseWikiLinks, noteSearchText, stripDailySummarySection, demoDailySummary, createDailySummarizeResolver } from './notes/index.js';
+export type { NoteManager, NoteManagerOptions, NotePatch } from './notes/index.js';
+export { NoteError, noteError, noteErrorStatus } from './notes/index.js';
+export type { NoteErrorCode } from './notes/index.js';
+export { createPlanManager, validateDocument, planSearchText } from './plans/index.js';
+export type { PlanManager, PlanManagerOptions, PlanPatch, PlanExportBundle } from './plans/index.js';
+export { PlanError, planError, planErrorStatus } from './plans/index.js';
+export type { PlanErrorCode } from './plans/index.js';
+
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
@@ -237,7 +262,11 @@ import type {
   EpisodeStore,
   MemoryFtsStore,
   MessageStore,
+  NoteLinkStore,
+  NoteStore,
+  NotesFtsStore,
   PersonaStore,
+  PlanStore,
   ProfileEntryStore,
   ProviderStore,
 } from './stores/types.js';
@@ -269,6 +298,16 @@ import type { ProposalManager } from './files/proposals.js';
 import { createCoreApp } from './http/server.js';
 import { createMemoryBundle, createSummarizeResolver } from './memory/index.js';
 import type { MemoryBundle } from './memory/index.js';
+import { createNoteManager, createDailySummarizeResolver } from './notes/index.js';
+import type { NoteManager } from './notes/index.js';
+import { createPlanManager } from './plans/index.js';
+import type { PlanManager } from './plans/index.js';
+import {
+  createNoteLinkStore,
+  createNoteStore,
+  createNotesFtsStore,
+  createPlanStore,
+} from './stores/db.js';
 
 export interface CoreBundle {
   config: CoreConfig;
@@ -296,6 +335,13 @@ export interface CoreBundle {
   profileStore: ProfileEntryStore;
   episodeStore: EpisodeStore;
   memoryFtsStore: MemoryFtsStore;
+  /** M5 notes + plans managers + stores (PLAN-M5.md, schema v6). */
+  notes: NoteManager;
+  plans: PlanManager;
+  noteStore: NoteStore;
+  noteLinkStore: NoteLinkStore;
+  planStore: PlanStore;
+  notesFtsStore: NotesFtsStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -378,6 +424,26 @@ export function createCore(config: CoreConfig): CoreBundle {
     }),
   });
 
+  // M5: notes + plans over the SAME db (schema v6). Wiki-links/tags/daily/
+  // export live in the note manager; document validation + task status in the
+  // plan manager; both share the notes_fts mirror. Daily summaries route
+  // through the first enabled provider's default model when one is usable;
+  // demo mode always writes the deterministic placeholder.
+  const noteStore = createNoteStore(db);
+  const noteLinkStore = createNoteLinkStore(db);
+  const planStore = createPlanStore(db);
+  const notesFtsStore = createNotesFtsStore(db);
+  const notes = createNoteManager({
+    stores: { notes: noteStore, links: noteLinkStore, fts: notesFtsStore },
+    audit,
+    demo: config.demo,
+    providerResolver: createDailySummarizeResolver({ providers: providerManager }),
+  });
+  const plans = createPlanManager({
+    stores: { plans: planStore, fts: notesFtsStore },
+    audit,
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -394,6 +460,8 @@ export function createCore(config: CoreConfig): CoreBundle {
     personaManager,
     conversationManager,
     memory,
+    notes,
+    plans,
   });
 
   return {
@@ -419,6 +487,12 @@ export function createCore(config: CoreConfig): CoreBundle {
     profileStore,
     episodeStore,
     memoryFtsStore,
+    notes,
+    plans,
+    noteStore,
+    noteLinkStore,
+    planStore,
+    notesFtsStore,
     app,
     close(): void {
       try {

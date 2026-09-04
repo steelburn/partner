@@ -6,6 +6,7 @@ import ChatStrip from './ChatStrip.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
 import MemoryView from './MemoryView.js';
+import NotesView from './NotesView.js';
 import PairGate from './PairGate.js';
 import PersonaManagerView from './PersonaManagerView.js';
 import PersonaPicker from './PersonaPicker.js';
@@ -20,7 +21,7 @@ import { applyMode, getInitialMode, persistMode } from './theme/apply.js';
 /** How often the shell refreshes the pending-approval count for the badge. */
 const QUEUE_POLL_MS = 4000;
 
-type ViewName = 'chat' | 'personas' | 'providers' | 'files' | 'memory';
+type ViewName = 'chat' | 'personas' | 'providers' | 'files' | 'memory' | 'notes';
 
 /**
  * App shell (M3): header row carries the brand, the view switch, the active
@@ -303,6 +304,14 @@ export default function App() {
                   >
                     Memory
                   </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary view-tab"
+                    onClick={() => setView('notes')}
+                    aria-pressed={view === 'notes'}
+                  >
+                    Notes
+                  </button>
                 </div>
                 {personasLoaded && personas.length > 0 ? (
                   <PersonaPicker
@@ -383,6 +392,13 @@ export default function App() {
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'memory'}
+              />
+            </div>
+            <div className={view === 'notes' ? 'app-view app-view-active' : 'app-view'}>
+              <NotesView
+                personas={personas}
+                onUnpair={handleSessionLost}
+                active={view === 'notes'}
               />
             </div>
           </>
