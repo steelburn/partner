@@ -17,10 +17,8 @@
 
 import { ApiRequestError, expectJson, readErrorMessage, type FetchLike } from './api.js';
 import { isThemeTokens } from './theme-helpers.js';
-import { parsePersona } from './personas.js';
 import type {
   ActiveTheme,
-  Persona,
   ThemeActivation,
   ThemeMode,
   ThemeProfile,
@@ -364,15 +362,15 @@ export async function getActiveTheme(
 
 /**
  * POST /v1/personas/:id/theme {themeId|null} — bind a theme to a persona
- * (null clears to the global active). Returns the updated persona when the
- * core answers with a body, or null on a 204 no-content response.
+ * (null clears to the global active). Resolves on 2xx; the core returns
+ * {personaId, themeId} (a 204 is also tolerated).
  */
 export async function bindPersonaTheme(
   token: string,
   personaId: string,
   themeId: string | null,
   options: { fetchImpl?: FetchLike } = {},
-): Promise<Persona | null> {
+): Promise<void> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
     `${PERSONAS_PATH}/${encodeURIComponent(personaId)}/theme`,
@@ -389,6 +387,4 @@ export async function bindPersonaTheme(
   if (!response.ok) {
     throw new ApiRequestError(response.status, await readErrorMessage(response));
   }
-  if (response.status === 204) return null;
-  return parsePersona(await expectJson<unknown>(response), response.status);
 }

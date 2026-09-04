@@ -128,14 +128,13 @@ describe('contrastReport + validateTheme', () => {
     expect(error).toMatchObject({ mode: 'light' });
   });
 
-  it('warns (non-blocking) when accent equals the page background', () => {
+  it('accent == background is a blocking error and emits NO redundant warning', () => {
     const light = { ...TOKENS.light, accent: TOKENS.light.bg };
     const report = contrastReport(light, TOKENS.dark);
-    const warning = report.warnings.find((w) => w.token === 'light.accent');
-    expect(warning).toBeDefined();
-    expect(warning?.message).toContain('accent equals the page background');
-    // The pair itself fails the gate (invisible links) -> still an error.
+    // The invisible-link pair blocks the save (error only).
     expect(report.errors.some((e) => e.token === 'light.accent')).toBe(true);
+    // No double-reporting via the warnings channel (M6 review finding 5).
+    expect(report.warnings.some((w) => w.token === 'light.accent')).toBe(false);
   });
 
   it('validateTheme reports structural garbage instead of throwing', () => {

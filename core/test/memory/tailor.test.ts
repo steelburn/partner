@@ -24,15 +24,18 @@ describe('buildTailoring', () => {
   });
 
   it('renders confirmed GLOBAL entries as "- kind: value" lines with evidence', () => {
-    const env = makeMemoryEnv();
+    const clock = { t: 1_000 };
+    const env = makeMemoryEnv({ demo: false, now: () => clock.t });
     try {
       env.profile.add({ kind: 'preference', value: 'start with a tldr', evidence: 'in 6 of 10 asks' });
+      clock.t += 1_000;
       env.profile.add({ kind: 'identity', value: 'calls you by your first name' });
       const text = buildTailoring(env.profile, 'p-researcher');
       expect(text).not.toBeNull();
+      // Newest first (deterministic clock): the identity entry was added last.
       expect(text).toBe(
-        '- preference: start with a tldr (evidence: in 6 of 10 asks)\n' +
-          '- identity: calls you by your first name',
+        '- identity: calls you by your first name\n' +
+          '- preference: start with a tldr (evidence: in 6 of 10 asks)',
       );
     } finally {
       env.close();

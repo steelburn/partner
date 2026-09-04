@@ -94,6 +94,11 @@ function clampBlack(y: number): number {
  * Polarity-aware: dark text on light bg uses 0.56/0.57; light text on a dark
  * background uses 0.62/0.65. Returns 0 for equal/near-equal colors.
  * Inputs must be parseable hex (lint guarantees that before the gate runs).
+ *
+ * Calibration vs the canonical apca-w3 0.0.98G: this embedded implementation
+ * runs ~2.7 Lc high (missing canonical low-level clamps). We subtract a
+ * fixed 2.0 headroom + the 0.027 polarity offset so borderline themes FAIL
+ * CLOSED against the documented 75 body floor (M6 review finding 2).
  */
 export function apcaLc(fg: string, bg: string): number {
   const txtY = clampBlack(relativeLuminance(fg));
@@ -107,7 +112,10 @@ export function apcaLc(fg: string, bg: string): number {
     out = (Math.pow(txtY, 0.62) - Math.pow(bgY, 0.65)) * 1.14;
   }
   if (out < 0.027) return 0;
-  return out * 100;
+  const scaled = out * 100;
+  // Canonical polarity offsets + conservative headroom (see JSDoc).
+  const adjusted = scaled > 0 ? scaled - 2.027 : scaled + 2.027;
+  return adjusted < 0 ? 0 : adjusted;
 }
 
 /**
@@ -236,17 +244,10 @@ export function contrastReport(light: unknown, dark: unknown): ThemeReport {
       }
     }
     // Lenient semantic sanity (DESIGN.md): a link color that equals the page
-    // background would be invisible — note it without double-reporting (the
-    // accent pair contrast check already errors when it truly fails).
-    const accent = doc.accent;
-    const bg = doc.bg;
-    if (isHex(accent) && isHex(bg) && sameColor(accent, bg)) {
-      warnings.push({
-        token: `${mode}.accent`,
-        mode,
-        message: `${mode}: accent equals the page background — links will be invisible`,
-      });
-    }
+    // background would be invisible — but the accent-on-bg contrast pair
+    // ALREADY blocks that (Lc 0), so a separate warning here is redundant
+    // (M6 review finding 5) and is intentionally NOT emitted.
+    void doc;
   }
 
   return { ok: errors.length === 0, errors, warnings };

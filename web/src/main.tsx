@@ -1,11 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.js';
-import { applyMode, getInitialMode } from './theme/apply.js';
+import { bootApply } from './theme/apply.js';
 import './app.css';
 
 // Apply tokens before the first paint so no raw default colors flash.
-applyMode(getInitialMode());
+// Uses the last applied theme pair when cached (network-free), else the
+// canonical mode tokens.
+bootApply();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

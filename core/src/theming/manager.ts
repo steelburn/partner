@@ -198,6 +198,9 @@ export function createThemeManager(options: ThemeManagerOptions): ThemeManager {
       throw themeError('conflict', 'preset themes are immutable — copy one to customize');
     }
     const body = bodyOf(input);
+    if (body.name === undefined && body.light === undefined && body.dark === undefined) {
+      throw themeError('invalid_input', 'nothing to update — send name, light or dark');
+    }
     const current = profileOf(row);
     const name = body.name !== undefined ? requireName(body) : current.name;
     // Partial edit: omitted modes keep the current tokens; the MERGED theme

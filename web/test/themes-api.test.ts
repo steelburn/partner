@@ -271,19 +271,19 @@ describe('active theme resolution', () => {
 describe('per-persona theme binding', () => {
   it('POST /v1/personas/:id/theme sends themeId null when clearing', async () => {
     const { fetchImpl, calls } = recordFetch(() => new Response(null, { status: 204 }));
-    await expect(bindPersonaTheme(TOKEN, 'p1', null, { fetchImpl })).resolves.toBeNull();
-    expect(calls[0].init?.method).toBe('POST');
-    expect(calls[0].input).toBe('/v1/personas/p1/theme');
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ themeId: null });
+    await expect(bindPersonaTheme(TOKEN, 'p1', null, { fetchImpl })).resolves.toBeUndefined();
+    expect(calls[0]?.init?.method).toBe('POST');
+    expect(calls[0]?.input).toBe('/v1/personas/p1/theme');
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ themeId: null });
   });
 
-  it('sends the theme id and parses an updated persona body', async () => {
-    const updated = persona({ colorTheme: 't1' });
-    const { fetchImpl, calls } = recordFetch(() => jsonResponse({ persona: updated }));
-    const result = await bindPersonaTheme(TOKEN, 'p1', 't1', { fetchImpl });
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ themeId: 't1' });
-    expect(result?.colorTheme).toBe('t1');
-    expect(result?.id).toBe('p1');
+  it('posts the theme id to the persona and resolves the bind envelope', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ personaId: 'p1', themeId: 't1' }),
+    );
+    await bindPersonaTheme(TOKEN, 'p1', 't1', { fetchImpl });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ themeId: 't1' });
+    expect(calls[0]?.init?.method).toBe('POST');
   });
 
   it('propagates API failures', async () => {

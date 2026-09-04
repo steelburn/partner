@@ -205,8 +205,11 @@ export function normalizeHexColor(value: string): string | null {
 export function colorValueHint(value: string): string | null {
   const trimmed = value.trim();
   if (trimmed.length === 0) return 'Enter a color — blank fields keep the default.';
-  if (HEX_RE.test(trimmed) || OKLCH_RE.test(trimmed)) return null;
-  return 'Not a valid color — use a hex like #1f6f43 or an oklch() color.';
+  if (HEX_RE.test(trimmed)) return null;
+  if (OKLCH_RE.test(trimmed)) {
+    return 'oklch() previews live but themes save as #hex only — the server lint accepts hex.';
+  }
+  return 'Not a valid color — use a hex like #1f6f43.';
 }
 
 /**
@@ -219,9 +222,11 @@ export function plausibleColorOverrides(
 ): Partial<ThemeTokens> {
   const out: Partial<ThemeTokens> = {};
   if (!isRecord(draft)) return out;
+  const plausible = (value: string): boolean =>
+    HEX_RE.test(value.trim()) || OKLCH_RE.test(value.trim());
   for (const key of THEME_COLOR_KEYS) {
     const value = draft[key];
-    if (typeof value === 'string' && colorValueHint(value) === null) {
+    if (typeof value === 'string' && plausible(value)) {
       out[key] = value;
     }
   }

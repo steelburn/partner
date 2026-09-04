@@ -52,6 +52,61 @@ export function applyMode(mode: ThemeMode): void {
   setVariables(cssVars(mode), mode);
 }
 
+export const THEME_CACHE_KEY = 'partner.theme.pair';
+
+/** The last successfully applied theme pair + mode (for a network-free
+ *  first paint — M6 review finding 4). */
+export interface CachedThemePair {
+  mode: ThemeMode;
+  light: ThemeTokens;
+  dark: ThemeTokens;
+}
+
+export function cacheThemePair(
+  light: ThemeTokens,
+  dark: ThemeTokens,
+  mode: ThemeMode,
+): void {
+  writeLocal(THEME_CACHE_KEY, JSON.stringify({ mode, light, dark } as CachedThemePair));
+}
+
+export function clearCachedThemePair(): void {
+  writeLocal(THEME_CACHE_KEY, '');
+}
+
+export function readCachedThemePair(): CachedThemePair | null {
+  const raw = readLocal(THEME_CACHE_KEY);
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CachedThemePair>;
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      (parsed.mode === 'light' || parsed.mode === 'dark') &&
+      parsed.light !== null &&
+      typeof parsed.light === 'object' &&
+      parsed.dark !== null &&
+      typeof parsed.dark === 'object'
+    ) {
+      return parsed as CachedThemePair;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/** First-paint token application: the last applied theme pair when cached,
+ *  else the canonical mode tokens. Never touches the network. */
+export function bootApply(): void {
+  const cached = readCachedThemePair();
+  if (cached) {
+    applyThemeTokens(cached.light, cached.dark, cached.mode);
+    return;
+  }
+  applyMode(getInitialMode());
+}
+
 /**
  * Apply the canonical tokens in `mode` with color overrides from an
  * arbitrary light/dark pair (active theme or studio draft). Missing color

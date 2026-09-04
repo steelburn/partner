@@ -242,9 +242,9 @@ describe('color input validation', () => {
     expect(normalizeHexColor('')).toBeNull();
   });
 
-  it('accepts hex and oklch values, hinting on anything else', () => {
+  it('accepts hex; hints that oklch previews but saves as hex only; hints on anything else', () => {
     expect(colorValueHint('#1f6f43')).toBeNull();
-    expect(colorValueHint('oklch(45% 0.13 160)')).toBeNull();
+    expect(colorValueHint('oklch(45% 0.13 160)')).toMatch(/hex only/);
     expect(colorValueHint('')).toMatch(/Enter a color/);
     expect(colorValueHint('banana')).toMatch(/Not a valid color/);
     expect(colorValueHint('rgb(1,2,3)')).toMatch(/Not a valid color/);

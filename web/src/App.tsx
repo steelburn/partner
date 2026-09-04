@@ -20,7 +20,14 @@ import { isSessionLost, listPersonas } from './lib/personas.js';
 import { getActiveTheme, listThemes } from './lib/themes.js';
 import { listPending } from './lib/tools.js';
 import { clearStoredToken, readStoredToken } from './lib/token.js';
-import { applyMode, applyThemeTokens, getInitialMode, persistMode } from './theme/apply.js';
+import {
+  applyMode,
+  applyThemeTokens,
+  cacheThemePair,
+  clearCachedThemePair,
+  getInitialMode,
+  persistMode,
+} from './theme/apply.js';
 
 /** How often the shell refreshes the pending-approval count for the badge. */
 const QUEUE_POLL_MS = 4000;
@@ -71,9 +78,11 @@ export default function App() {
     }
     if (activeTheme !== null) {
       applyThemeTokens(activeTheme.light, activeTheme.dark, mode);
+      cacheThemePair(activeTheme.light, activeTheme.dark, mode);
       return;
     }
     applyMode(mode);
+    clearCachedThemePair();
   }, [mode, activeTheme, previewTokens]);
 
   // A studio draft preview is only meaningful while the Theme view is open;
