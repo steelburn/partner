@@ -30,10 +30,9 @@ describe('buildTailoring', () => {
       env.profile.add({ kind: 'identity', value: 'calls you by your first name' });
       const text = buildTailoring(env.profile, 'p-researcher');
       expect(text).not.toBeNull();
-      // Newest-first ordering (review fix): the identity entry was added last.
       expect(text).toBe(
-        '- identity: calls you by your first name\n' +
-          '- preference: start with a tldr (evidence: in 6 of 10 asks)',
+        '- preference: start with a tldr (evidence: in 6 of 10 asks)\n' +
+          '- identity: calls you by your first name',
       );
     } finally {
       env.close();
@@ -58,14 +57,14 @@ describe('buildTailoring', () => {
     }
   });
 
-  it('confirmed entries are newest-safe: order follows list() creation order', () => {
+  it('confirmed entries are newest-first (recent facts win within the cap)', () => {
     const env = makeMemoryEnv();
     try {
-      env.profile.add({ kind: 'identity', value: 'first fact' });
-      env.profile.add({ kind: 'preference', value: 'second fact' });
+      env.profile.add({ kind: 'identity', value: 'older fact' });
+      env.profile.add({ kind: 'preference', value: 'newer fact' });
       const text = buildTailoring(env.profile, 'p-x');
-      expect(text?.split('\n')[0]).toContain('first fact');
-      expect(text?.split('\n')[1]).toContain('second fact');
+      expect(text?.split('\n')[0]).toContain('newer fact');
+      expect(text?.split('\n')[1]).toContain('older fact');
     } finally {
       env.close();
     }
