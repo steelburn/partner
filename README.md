@@ -31,3 +31,10 @@ npm run typecheck    # tsc per package
 npm run dev:core     # core on http://127.0.0.1:4390 (demo mode by default)
 npm run dev:web      # SPA dev server on :5173 (standalone dev)
 ```
+
+## Open follow-up (packaged app)
+
+M0's packaged-Tauri-app boot is NOT yet verified: this machine has no Rust
+toolchain. When ready: install rustup + `cargo install tauri-cli`, then follow
+`shell/src-tauri/README.md` (`cargo check` / `tauri dev`) and tick the final
+PLAN-M0.md exit item.
