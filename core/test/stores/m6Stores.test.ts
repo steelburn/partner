@@ -60,7 +60,7 @@ describe('schema v7 (additive M6 themes table)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(8);
+      expect(SCHEMA_VERSION).toBe(9); // current schema: v9 (M8 skills, PLAN-M8.md)
     } finally {
       db.close();
     }

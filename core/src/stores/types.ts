@@ -666,3 +666,88 @@ export interface SiteScopeStore {
   /** Remove a mapping (back to the default 'ask'). Idempotent. */
   remove(origin: string): void;
 }
+
+// ---------------------------------------------------------------------------
+// M8 skills tables (PLAN-M8.md — additive schema v9). Row profile only; the
+// skill manager (core/src/skills/*) owns manifest validation, the code store
+// on disk (storeDir/<id>), install/uninstall hygiene and audit. manifest_json
+// is the JSON SkillManifest string the store never interprets; sha256 covers
+// the ENTRY FILE at install time (local-catalog integrity, PLAN-M8 §9
+// deviation). skill_invocations rows are METADATA ONLY (ok/toolCalls/ms/
+// error codes) — skill args/results/logs never reach this store or audit.
+// Stores never read the clock: every write takes explicit timestamps.
+// ---------------------------------------------------------------------------
+
+/** `skills` row — one installed skill (user-scoped, per-core profile). */
+export interface SkillRow {
+  id: string;
+  name: string;
+  description: string | null;
+  author: string;
+  version: string;
+  /** Code path under the per-core skill store (e.g. 'entry.mjs'). */
+  entrypoint: string;
+  /** JSON SkillManifest string (the store never interprets it). */
+  manifestJson: string;
+  /** SHA-256 hex of the entry file recorded at install time. */
+  sha256: string;
+  /** 'local' in v1 (remote gallery deferred). */
+  source: string;
+  /** 'installed' | 'disabled' (manager-owned). */
+  status: string;
+  installedAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields; a write always stamps updatedAt (mirrors PersonaRowPatch). */
+export type SkillRowPatch = Partial<
+  Pick<
+    SkillRow,
+    | 'name'
+    | 'description'
+    | 'author'
+    | 'version'
+    | 'entrypoint'
+    | 'manifestJson'
+    | 'sha256'
+    | 'source'
+    | 'status'
+  >
+> & { updatedAt: number };
+
+export interface SkillStore {
+  insert(row: SkillRow): void;
+  findById(id: string): SkillRow | undefined;
+  /** Installed order (oldest first) — the manager owns status/ordering. */
+  list(): SkillRow[];
+  /** Apply a whitelisted patch, always stamping updated_at. */
+  update(id: string, patch: SkillRowPatch): void;
+  remove(id: string): void;
+}
+
+/** `skill_invocations` row — metadata of one worker run (never content). */
+export interface SkillInvocationRow {
+  id: string;
+  skillId: string;
+  /** Persona that triggered the run (null = no persona). */
+  personaId: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+  /** 0 | 1 — null while the run is open (rows are written after settle). */
+  ok: number | null;
+  /** Number of broker-mediated tool requests the worker made. */
+  toolCalls: number;
+  /** Coded outcome only — never content (null when ok). */
+  error: string | null;
+  /** Wall-clock duration in ms (null while open). */
+  ms: number | null;
+}
+
+export interface SkillInvocationStore {
+  insert(row: SkillInvocationRow): void;
+  findById(id: string): SkillInvocationRow | undefined;
+  /** Newest first, capped at limit (metadata only). */
+  listBySkill(skillId: string, limit: number): SkillInvocationRow[];
+  /** Cascade: drop a skill's invocation history on uninstall. */
+  removeBySkill(skillId: string): void;
+}

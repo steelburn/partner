@@ -47,6 +47,11 @@ import type {
   SessionStore,
   SettingsStore,
   SiteScopeStore,
+  SkillInvocationRow,
+  SkillInvocationStore,
+  SkillRow,
+  SkillRowPatch,
+  SkillStore,
   ThemeRow,
   ThemeRowPatch,
   ThemeStore,
@@ -322,6 +327,44 @@ CREATE TABLE IF NOT EXISTS site_scopes (
   scope TEXT NOT NULL DEFAULT 'ask',
   updated_at INTEGER NOT NULL
 );
+
+-- M8 skills tables (PLAN-M8.md, additive schema v9). skills holds one row per
+-- installed skill: manifest JSON + entry SHA-256 recorded from the LOCAL
+-- catalog at install (remote gallery/signing deferred) + status. Code lives
+-- on disk under <data>/skills/<id>/ (manager-owned, wiped on uninstall), so
+-- only ids/versions/hashes cross this table. skill_invocations is a metadata
+-- log (ids/counts/ms/coded errors) — skill args/results/logs NEVER reach
+-- SQLite, let alone audit.
+
+CREATE TABLE IF NOT EXISTS skills (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  author TEXT NOT NULL,
+  version TEXT NOT NULL,
+  entrypoint TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'local',
+  status TEXT NOT NULL DEFAULT 'installed',
+  installed_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_invocations (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  persona_id TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  ok INTEGER,
+  tool_calls INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  ms INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_invocations_skill
+  ON skill_invocations(skill_id, started_at);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -1394,6 +1437,117 @@ export function createSiteScopeStore(db: Database.Database): SiteScopeStore {
     },
     remove(origin: string): void {
       remove.run(origin);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M8 skills row stores (PLAN-M8.md — additive schema v9). Plain typed CRUD
+// with NO business logic; the skill manager (core/src/skills/*) owns manifest
+// validation, the on-disk code store, install/uninstall hygiene and audit.
+// Stores never read the clock: writes take explicit timestamps.
+// ---------------------------------------------------------------------------
+
+const SKILL_COLUMNS = `
+  id, name, description, author, version, entrypoint,
+  manifest_json AS manifestJson, sha256, source, status,
+  installed_at AS installedAt, updated_at AS updatedAt`;
+
+const SKILL_INVOCATION_COLUMNS = `
+  id, skill_id AS skillId, persona_id AS personaId,
+  started_at AS startedAt, finished_at AS finishedAt, ok,
+  tool_calls AS toolCalls, error, ms`;
+
+const SKILL_UPDATE_COLUMNS: Readonly<Record<string, keyof SkillRowPatch>> = {
+  name: 'name',
+  description: 'description',
+  author: 'author',
+  version: 'version',
+  entrypoint: 'entrypoint',
+  manifest_json: 'manifestJson',
+  sha256: 'sha256',
+  source: 'source',
+  status: 'status',
+};
+
+export function createSkillStore(db: Database.Database): SkillStore {
+  const insert = db.prepare(
+    `INSERT INTO skills (id, name, description, author, version, entrypoint,
+                         manifest_json, sha256, source, status,
+                         installed_at, updated_at)
+     VALUES (@id, @name, @description, @author, @version, @entrypoint,
+             @manifestJson, @sha256, @source, @status,
+             @installedAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${SKILL_COLUMNS} FROM skills WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${SKILL_COLUMNS} FROM skills ORDER BY installed_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM skills WHERE id = ?');
+
+  return {
+    insert(row: SkillRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): SkillRow | undefined {
+      return findById.get(id) as SkillRow | undefined;
+    },
+    list(): SkillRow[] {
+      return listAll.all() as SkillRow[];
+    },
+    update(id: string, patch: SkillRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(SKILL_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof SkillRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE skills SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE skills SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+export function createSkillInvocationStore(db: Database.Database): SkillInvocationStore {
+  const insert = db.prepare(
+    `INSERT INTO skill_invocations (id, skill_id, persona_id, started_at,
+                                    finished_at, ok, tool_calls, error, ms)
+     VALUES (@id, @skillId, @personaId, @startedAt,
+             @finishedAt, @ok, @toolCalls, @error, @ms)`,
+  );
+  const findById = db.prepare(
+    `SELECT ${SKILL_INVOCATION_COLUMNS} FROM skill_invocations WHERE id = ?`,
+  );
+  const listBySkill = db.prepare(
+    `SELECT ${SKILL_INVOCATION_COLUMNS} FROM skill_invocations
+     WHERE skill_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`,
+  );
+  const removeBySkill = db.prepare('DELETE FROM skill_invocations WHERE skill_id = ?');
+
+  return {
+    insert(row: SkillInvocationRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): SkillInvocationRow | undefined {
+      return findById.get(id) as SkillInvocationRow | undefined;
+    },
+    listBySkill(skillId: string, limit: number): SkillInvocationRow[] {
+      return listBySkill.all(skillId, limit) as SkillInvocationRow[];
+    },
+    removeBySkill(skillId: string): void {
+      removeBySkill.run(skillId);
     },
   };
 }

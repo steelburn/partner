@@ -73,6 +73,9 @@ import type { ThemeManager } from '../theming/manager.js';
 import { ThemeError, themeErrorStatus } from '../theming/errors.js';
 import type { SiteScopeManager } from '../browser/scopes.js';
 import { BrowserError, browserErrorStatus } from '../browser/errors.js';
+import type { SkillManager } from '../skills/manager.js';
+import type { SkillRunner } from '../skills/runner.js';
+import { SkillError, skillErrorStatus } from '../skills/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -142,6 +145,16 @@ export interface CoreAppOptions {
    * 501 not_configured.
    */
   scopes?: SiteScopeManager;
+  /**
+   * M8 skill manager (optional so M0-M7 harnesses compile unchanged). When
+   * absent the whole /v1/skills surface responds 501 not_configured.
+   */
+  skills?: SkillManager;
+  /**
+   * M8 skill runner (paired with skills; the invoke route needs both). When
+   * absent POST /v1/skills/:id/invoke responds 501 not_configured.
+   */
+  skillRunner?: SkillRunner;
 }
 
 const SSE_HEADERS = {
@@ -467,6 +480,35 @@ function requireScopes(options: CoreAppOptions, res: Response): SiteScopeManager
     return null;
   }
   return scopes;
+}
+
+/** Guard: returns the M8 skill manager or 501s. */
+function requireSkills(options: CoreAppOptions, res: Response): SkillManager | null {
+  const skills = options.skills;
+  if (!skills) {
+    notConfigured(res, 'skills manager');
+    return null;
+  }
+  return skills;
+}
+
+/** Guard: returns the M8 skill runner or 501s. */
+function requireSkillRunner(options: CoreAppOptions, res: Response): SkillRunner | null {
+  const runner = options.skillRunner;
+  if (!runner) {
+    notConfigured(res, 'skill runner');
+    return null;
+  }
+  return runner;
+}
+
+/** Send a typed SkillError response; false when err is not a SkillError. */
+function sendSkillError(res: Response, err: unknown): boolean {
+  if (err instanceof SkillError) {
+    res.status(skillErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
 }
 
 /** Send a typed BrowserError response; false when err is not a BrowserError. */
@@ -2021,6 +2063,138 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       if (sendBrowserError(res, err)) return;
       throw err;
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // M8 skills surface (PLAN-M8 wire spec) — local catalog + install/disable/
+  // enable/uninstall + sandboxed invoke + invocation metadata. Every route
+  // authed; the manager + runner keep audit rows to ids/versions/counts, so
+  // skill code, logs, args and results never cross this surface's audit (the
+  // invoke RESPONSE carries the skill's own result to the caller by design).
+  // The literal '/v1/skills/catalog' route is registered before the ':id'
+  // routes so Express never treats 'catalog' as a skill id.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/skills/catalog', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const listing = skills.catalog();
+    res.json({ skills: listing.skills, warnings: listing.warnings });
+  });
+
+  api.get('/v1/skills', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    res.json({ skills: skills.list() });
+  });
+
+  api.post('/v1/skills/install', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const body = (req.body ?? {}) as { catalogId?: unknown };
+    const catalogId = typeof body.catalogId === 'string' ? body.catalogId.trim() : '';
+    if (catalogId === '') {
+      res.status(400).json({ error: 'invalid_input', message: 'catalogId is required' });
+      return;
+    }
+    try {
+      const summary = skills.install(catalogId);
+      res.status(201).json(summary);
+    } catch (err) {
+      if (sendSkillError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/skills/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const id = String(req.params.id ?? '');
+    const detail = skills.get(id);
+    if (detail === null) {
+      res.status(404).json({ error: 'not_found', message: 'skill not installed' });
+      return;
+    }
+    res.json(detail);
+  });
+
+  api.get('/v1/skills/:id/invocations', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const id = String(req.params.id ?? '');
+    if (skills.get(id) === null) {
+      res.status(404).json({ error: 'not_found', message: 'skill not installed' });
+      return;
+    }
+    res.json({ invocations: skills.listInvocations(id) });
+  });
+
+  api.post('/v1/skills/:id/disable', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(skills.disable(id));
+    } catch (err) {
+      if (sendSkillError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post('/v1/skills/:id/enable', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json(skills.enable(id));
+    } catch (err) {
+      if (sendSkillError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/skills/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const id = String(req.params.id ?? '');
+    try {
+      skills.remove(id);
+    } catch (err) {
+      if (sendSkillError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.post('/v1/skills/:id/invoke', requireSession(sessions), async (req: Request, res: Response) => {
+    const skills = requireSkills(options, res);
+    if (!skills) return;
+    const runner = requireSkillRunner(options, res);
+    if (!runner) return;
+    const id = String(req.params.id ?? '');
+    const detail = skills.get(id);
+    if (detail === null) {
+      res.status(404).json({ error: 'not_found', message: 'skill not installed' });
+      return;
+    }
+    if (detail.status === 'disabled') {
+      res.status(409).json({ error: 'disabled', message: 'skill is disabled — enable it before invoking' });
+      return;
+    }
+    const body = (req.body ?? {}) as { args?: unknown; personaId?: unknown };
+    const personaId =
+      typeof body.personaId === 'string' && body.personaId.trim() !== ''
+        ? body.personaId.trim()
+        : undefined;
+    const result = await runner.invoke(
+      detail,
+      body.args,
+      personaId === undefined ? {} : { personaId },
+    );
+    // Invoke outcomes ride the 200 envelope {ok, result?, error?, meta}: the
+    // coded failures (budget_exceeded/crashed/tool_denied/caps_exceeded/...) are
+    // results of a run, not transport errors.
+    res.json(result);
   });
 
   app.use(api);

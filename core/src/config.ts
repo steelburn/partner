@@ -10,6 +10,8 @@
  * ':memory:' so nothing touches the OS keychain or disk.
  */
 import { SCHEMA_VERSION } from '@partner/shared';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_PORT = 4390;
 export const DEFAULT_HOST = '127.0.0.1';
@@ -42,6 +44,10 @@ export interface CoreConfig {
   maxAttempts: number;
   lockMs: number;
   sessionTtlMs: number;
+  /** M8 per-core skill store (installed code): env SKILLS_DIR. */
+  skillsDir: string;
+  /** M8 local catalog: env SKILLS_CATALOG_DIR (default repo skills-catalog/). */
+  skillsCatalogDir: string;
   schemaVersion: number;
   version: string;
 }
@@ -94,6 +100,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxAttempts: readInt(env.PAIR_MAX_ATTEMPTS, 3, 1, 100),
     lockMs: readInt(env.PAIR_LOCK_MS, 300_000, 1, Number.MAX_SAFE_INTEGER),
     sessionTtlMs: readInt(env.SESSION_TTL_MS, THIRTY_DAYS_MS, 1, Number.MAX_SAFE_INTEGER),
+    // M8: installed skill code lives next to this core's SQLite under
+    // <db dir>/skills/ (per-core profile — user-scoped store). Demo mode
+    // defaults to ./data/skills relative to the core's working directory;
+    // packaged shells will point SKILLS_DIR at app-data explicitly.
+    skillsDir:
+      env.SKILLS_DIR?.trim() || join(dbPath === ':memory:' ? './data' : dirname(dbPath), 'skills'),
+    // The checked-in local catalog (no remote gallery in M8). Resolved from
+    // this source file so tsx/vitest runs work from any working directory.
+    skillsCatalogDir:
+      env.SKILLS_CATALOG_DIR?.trim() || fileURLToPath(new URL('../../skills-catalog/', import.meta.url)),
     schemaVersion: SCHEMA_VERSION,
     version: CORE_VERSION,
   };

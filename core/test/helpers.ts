@@ -12,6 +12,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Express } from 'express';
 import type { Keychain } from '@partner/shared';
 import { SCHEMA_VERSION } from '@partner/shared';
@@ -48,6 +49,11 @@ import type { ThemeManager } from '../src/theming/index.js';
 import { createThemeManager } from '../src/theming/index.js';
 import { createSiteScopeManager } from '../src/browser/scopes.js';
 import type { SiteScopeManager } from '../src/browser/scopes.js';
+import { FILE_TOOL_IDS } from '../src/files/tools.js';
+import { createSkillManager } from '../src/skills/manager.js';
+import type { SkillManager } from '../src/skills/manager.js';
+import { createSkillRunner } from '../src/skills/runner.js';
+import type { SkillRunner } from '../src/skills/runner.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
@@ -75,6 +81,8 @@ import {
   createSessionStore,
   createSettingsStore,
   createSiteScopeStore,
+  createSkillInvocationStore,
+  createSkillStore,
   createThemeStore,
   openDatabase,
 } from '../src/stores/db.js';
@@ -99,12 +107,17 @@ import type {
   SessionStore,
   SettingsStore,
   SiteScopeStore,
+  SkillInvocationStore,
+  SkillStore,
   ThemeStore,
 } from '../src/stores/types.js';
 
 export const ALLOWED_HOST = '127.0.0.1:4390';
 export const ALTERNATE_HOST = 'localhost:4390';
 export const ALLOWLIST = [ALLOWED_HOST, ALTERNATE_HOST];
+
+/** The repo's checked-in sample catalog (skills-catalog/ at the repo root). */
+export const REPO_CATALOG = fileURLToPath(new URL('../../skills-catalog/', import.meta.url));
 
 /** A fresh real directory under the OS tmpdir (cleaned by the caller). */
 export function makeTempRoot(): string {
@@ -141,6 +154,13 @@ export interface HarnessOptions {
    * browser scope/policy routes 501 when disabled.
    */
   browser?: boolean;
+  /**
+   * Wire the M8 skills manager + runner over the same db (default true) with
+   * a TEMP store dir (removed in close()) and a catalog that defaults to the
+   * repo's skills-catalog/. Pass false for the 501 not_configured surface;
+   * pass an object to point storeDir/catalogDir elsewhere.
+   */
+  skills?: boolean | { storeDir?: string; catalogDir?: string };
 }
 
 export interface Harness {
@@ -193,6 +213,11 @@ export interface Harness {
   /** M7 site-scope manager + store over the SAME db (default on). */
   scopeStore: SiteScopeStore;
   scopes?: SiteScopeManager;
+  /** M8 skills manager + runner + stores over the SAME db (default on). */
+  skillStore: SkillStore;
+  skillInvocationStore: SkillInvocationStore;
+  skills?: SkillManager;
+  skillRunner?: SkillRunner;
   close(): void;
 }
 
@@ -344,6 +369,42 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     scopes = createSiteScopeManager({ store: scopeStore, audit });
   }
 
+  // M8: skills manager + runner over the same db (default on). Installed
+  // code lands in a TEMP store dir (removed in close()); the catalog defaults
+  // to the repo's checked-in skills-catalog/ so install/invoke flows run
+  // against the real sample skills. The runner needs the broker (skill tool
+  // requests are broker-mediated), so skills are only wired when the broker
+  // is — pass skills: false for the 501 not_configured surface.
+  const skillStore = createSkillStore(db);
+  const skillInvocationStore = createSkillInvocationStore(db);
+  const skillsEnabled = options.skills !== false;
+  const skillsOption =
+    typeof options.skills === 'object' && options.skills !== null ? options.skills : {};
+  let skillsDir: string | undefined;
+  let skills: SkillManager | undefined;
+  let skillRunner: SkillRunner | undefined;
+  if (skillsEnabled && brokerEnabled) {
+    skillsDir = skillsOption.storeDir ?? makeTempRoot();
+    const catalogDir = skillsOption.catalogDir ?? REPO_CATALOG;
+    // The broker registry is the six files.* manifests in v1; FILE_TOOL_IDS
+    // mirrors it so the harness needs no back-reference to the broker.
+    const registry = new Set<string>(FILE_TOOL_IDS);
+    skills = createSkillManager({
+      store: skillStore,
+      invocations: skillInvocationStore,
+      storeDir: skillsDir,
+      catalogDir,
+      tools: registry,
+      audit,
+    });
+    skillRunner = createSkillRunner({
+      dataDir: skillsDir,
+      broker: broker as ToolBroker,
+      audit,
+      invocations: skillInvocationStore,
+    });
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -363,6 +424,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(notesPlansEnabled ? { notes, plans } : {}),
     ...(themesEnabled ? { themes } : {}),
     ...(browserEnabled ? { scopes } : {}),
+    ...(skills && skillRunner ? { skills, skillRunner } : {}),
   });
 
   return {
@@ -408,8 +470,13 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     themes,
     scopeStore,
     scopes,
+    skillStore,
+    skillInvocationStore,
+    skills,
+    skillRunner,
     close(): void {
       db.close();
+      if (skillsDir !== undefined) removeTempRoot(skillsDir);
     },
   };
 }

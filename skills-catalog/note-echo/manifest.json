@@ -1,0 +1,16 @@
+{
+  "id": "note-echo",
+  "name": "Note Echo",
+  "description": "Pure skill: returns a canned text summary of the arguments it received (proves skills need no tools).",
+  "author": "Partner Samples",
+  "version": "0.1.0",
+  "entrypoint": "entry.mjs",
+  "permissions": {
+    "tools": [],
+    "network": false,
+    "risk": "low"
+  },
+  "budget": {
+    "timeMs": 10000
+  }
+}

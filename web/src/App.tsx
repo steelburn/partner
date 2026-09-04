@@ -13,6 +13,7 @@ import PairGate from './PairGate.js';
 import PersonaManagerView from './PersonaManagerView.js';
 import PersonaPicker from './PersonaPicker.js';
 import ProvidersView from './ProvidersView.js';
+import SkillsView from './SkillsView.js';
 import ThemeStudio from './ThemeStudio.js';
 import { revokeSession } from './lib/api.js';
 import { createConversation, deleteConversation, listConversations } from './lib/conversations.js';
@@ -32,7 +33,15 @@ import {
 /** How often the shell refreshes the pending-approval count for the badge. */
 const QUEUE_POLL_MS = 4000;
 
-type ViewName = 'chat' | 'personas' | 'providers' | 'files' | 'memory' | 'themes' | 'notes';
+type ViewName =
+  | 'chat'
+  | 'personas'
+  | 'providers'
+  | 'files'
+  | 'memory'
+  | 'themes'
+  | 'notes'
+  | 'skills';
 
 /**
  * App shell (M3): header row carries the brand, the view switch, the active
@@ -412,6 +421,14 @@ export default function App() {
                   >
                     Notes
                   </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary view-tab"
+                    onClick={() => setView('skills')}
+                    aria-pressed={view === 'skills'}
+                  >
+                    Skills
+                  </button>
                 </div>
                 {personasLoaded && personas.length > 0 ? (
                   <PersonaPicker
@@ -516,6 +533,13 @@ export default function App() {
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'notes'}
+              />
+            </div>
+            <div className={view === 'skills' ? 'app-view app-view-active' : 'app-view'}>
+              <SkillsView
+                personas={personas}
+                onUnpair={handleSessionLost}
+                active={view === 'skills'}
               />
             </div>
           </>

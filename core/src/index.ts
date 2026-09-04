@@ -47,6 +47,8 @@ export {
   createSessionStore,
   createSettingsStore,
   createSiteScopeStore,
+  createSkillInvocationStore,
+  createSkillStore,
   createThemeStore,
   openDatabase,
   assertFts5,
@@ -100,6 +102,11 @@ export type {
   SettingsRow,
   SettingsStore,
   SiteScopeStore,
+  SkillInvocationRow,
+  SkillInvocationStore,
+  SkillRow,
+  SkillRowPatch,
+  SkillStore,
   ThemeRow,
   ThemeRowPatch,
   ThemeStore,
@@ -265,6 +272,34 @@ export {
 } from './theming/index.js';
 export type { ThemePreset } from './theming/index.js';
 
+// ---- M8 skills (PLAN-M8.md) ----------------------------------------------
+export { createSkillManager } from './skills/manager.js';
+export type { SkillManager, SkillManagerOptions } from './skills/manager.js';
+export { createSkillRunner } from './skills/runner.js';
+export type {
+  SkillInvokeContext,
+  SkillInvokeErrorCode,
+  SkillInvokeFailure,
+  SkillInvokeOk,
+  SkillInvokeResult,
+  SkillRunner,
+  SkillRunnerOptions,
+} from './skills/runner.js';
+export { SkillError, skillError, skillErrorStatus } from './skills/errors.js';
+export type { SkillErrorCode } from './skills/errors.js';
+export {
+  readCatalog,
+  loadCatalogSkill,
+  validateManifestShape,
+  defaultToolRegistry,
+} from './skills/catalog.js';
+export type {
+  CatalogReadOptions,
+  CatalogReadResult,
+  LoadedCatalogSkill,
+  ManifestValidation,
+} from './skills/catalog.js';
+
 // ---- M7 browser site scopes + native messaging (PLAN-M7.md) ----------------
 export {
   createSiteScopeManager,
@@ -320,6 +355,8 @@ import {
   createMemoryFtsStore,
   createSettingsStore,
   createSiteScopeStore,
+  createSkillInvocationStore,
+  createSkillStore,
   createThemeStore,
 } from './stores/db.js';
 import type {
@@ -336,6 +373,8 @@ import type {
   ProviderStore,
   SettingsStore,
   SiteScopeStore,
+  SkillInvocationStore,
+  SkillStore,
   ThemeStore,
 } from './stores/types.js';
 import { createPersonaManager } from './personas/manager.js';
@@ -376,6 +415,10 @@ import { createSiteScopeManager } from './browser/scopes.js';
 import type { SiteScopeManager } from './browser/scopes.js';
 import { createNativeSession } from './native/index.js';
 import type { NativeSessionDeps } from './native/index.js';
+import { createSkillManager } from './skills/manager.js';
+import type { SkillManager } from './skills/manager.js';
+import { createSkillRunner } from './skills/runner.js';
+import type { SkillRunner } from './skills/runner.js';
 import {
   createNoteLinkStore,
   createNoteStore,
@@ -423,6 +466,11 @@ export interface CoreBundle {
   /** M7 site-scope manager + store (schema v8, PLAN-M7.md). */
   scopes: SiteScopeManager;
   scopeStore: SiteScopeStore;
+  /** M8 skill manager + runner + stores (schema v9, PLAN-M8.md). */
+  skills: SkillManager;
+  skillRunner: SkillRunner;
+  skillStore: SkillStore;
+  skillInvocationStore: SkillInvocationStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -546,6 +594,29 @@ export function createCore(config: CoreConfig): CoreBundle {
   const scopeStore = createSiteScopeStore(db);
   const scopes = createSiteScopeManager({ store: scopeStore, audit });
 
+  // M8: skills over the SAME db (schema v9). The manager owns the installed
+  // lifecycle (catalog -> code copy under config.skillsDir -> row); the
+  // runner spawns one worker per invoke and brokers tool requests with
+  // requestedBy 'skill'. Config.skillsCatalogDir points at the checked-in
+  // local catalog (repo skills-catalog/) — no remote gallery in M8.
+  const skillStore = createSkillStore(db);
+  const skillInvocationStore = createSkillInvocationStore(db);
+  const skillRegistry: ReadonlySet<string> = new Set(broker.manifests.map((m) => m.id));
+  const skills = createSkillManager({
+    store: skillStore,
+    invocations: skillInvocationStore,
+    storeDir: config.skillsDir,
+    catalogDir: config.skillsCatalogDir,
+    tools: skillRegistry,
+    audit,
+  });
+  const skillRunner = createSkillRunner({
+    dataDir: config.skillsDir,
+    broker,
+    audit,
+    invocations: skillInvocationStore,
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -566,6 +637,8 @@ export function createCore(config: CoreConfig): CoreBundle {
     plans,
     themes,
     scopes,
+    skills,
+    skillRunner,
   });
 
   return {
@@ -602,6 +675,10 @@ export function createCore(config: CoreConfig): CoreBundle {
     settingsStore,
     scopes,
     scopeStore,
+    skills,
+    skillRunner,
+    skillStore,
+    skillInvocationStore,
     app,
     close(): void {
       try {

@@ -1,0 +1,16 @@
+{
+  "id": "files-preview",
+  "name": "Files Preview",
+  "description": "Reads one file under a declared project root via files.read and returns its length. Refused (tool_denied) until the user grants files.read for that root.",
+  "author": "Partner Samples",
+  "version": "0.1.0",
+  "entrypoint": "entry.mjs",
+  "permissions": {
+    "tools": ["files.read"],
+    "network": false,
+    "risk": "medium"
+  },
+  "budget": {
+    "timeMs": 10000
+  }
+}
