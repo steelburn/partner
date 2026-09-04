@@ -373,3 +373,107 @@ export interface MessageStore {
   /** Cascade: remove a conversation's messages (conversation delete). */
   removeByConversation(conversationId: string): void;
 }
+
+// ---------------------------------------------------------------------------
+// M4 memory tables (PLAN-M4.md — additive schema v5). Row profile only; the
+// memory managers (core/src/memory/*) own validation, status rules, FTS
+// mirroring, forgetting, export/import and audit. Wire shapes are the shared
+// ProfileEntry/EpisodeSummary types (camelCase). Stores never read the clock.
+// ---------------------------------------------------------------------------
+
+/** `profile_entries` row — one explicit, user-visible memory fact. */
+export interface ProfileEntryRow {
+  id: string;
+  /** preference | identity | rule | style (validated by the manager). */
+  kind: string;
+  /** Machine key when applicable (e.g. tone, language); null when none. */
+  key: string | null;
+  value: string;
+  /** Why the partner thinks this (observed examples); null when none. */
+  evidence: string | null;
+  /** 'user' | 'partner_suggestion'. */
+  source: string;
+  /** confirmed | suggested | rejected. */
+  status: string;
+  /** null = global (every persona); else a persona id. */
+  personaScope: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields for a profile row; a write always stamps updated_at. */
+export type ProfileEntryRowPatch = Partial<
+  Pick<
+    ProfileEntryRow,
+    'kind' | 'key' | 'value' | 'evidence' | 'source' | 'status' | 'personaScope'
+  >
+> & { updatedAt: number };
+
+export interface ProfileEntryStore {
+  insert(row: ProfileEntryRow): void;
+  findById(id: string): ProfileEntryRow | undefined;
+  /** All rows in creation order (oldest first) — the manager filters. */
+  list(): ProfileEntryRow[];
+  update(id: string, patch: ProfileEntryRowPatch): void;
+  remove(id: string): void;
+}
+
+/** `episodes` row — one summarized conversation (conversation_id UNIQUE). */
+export interface EpisodeRow {
+  id: string;
+  /** UNIQUE — an episode is the per-conversation summary. */
+  conversationId: string;
+  /** Denormalized persona id of the conversation at summarize time. */
+  personaId: string | null;
+  title: string;
+  summary: string;
+  /** Model that produced the summary; null for demo/placeholder summaries. */
+  model: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Writable fields for an episode row; a write always stamps updated_at. */
+export type EpisodeRowPatch = Partial<
+  Pick<EpisodeRow, 'personaId' | 'title' | 'summary' | 'model'>
+> & { updatedAt: number };
+
+export interface EpisodeStore {
+  insert(row: EpisodeRow): void;
+  findById(id: string): EpisodeRow | undefined;
+  /** Lookup by the UNIQUE conversation id (resummarize dedupe). */
+  findByConversationId(conversationId: string): EpisodeRow | undefined;
+  /** All rows in creation order (oldest first). */
+  list(): EpisodeRow[];
+  update(id: string, patch: EpisodeRowPatch): void;
+  remove(id: string): void;
+}
+
+/**
+ * `memory_fts` (FTS5) mirror helpers — the searchable text behind M4
+ * retrieval. One FTS row per indexed object, tagged by which ref column is
+ * set: profile rows set `profile_ref`, episode rows set `episode_ref`.
+ * content holds the object's searchable text (never audit/logs).
+ */
+export type MemoryRefKind = 'profile' | 'episode';
+
+export interface MemoryFtsHit {
+  kind: MemoryRefKind;
+  refId: string;
+  /** bm25 rank of the FTS row (lower = better). */
+  rank: number;
+}
+
+export interface MemoryFtsStore {
+  /** Delete + reinsert the profile row's searchable text (content = value). */
+  upsertProfile(id: string, content: string): void;
+  /** Delete + reinsert the episode row's searchable text (title + summary). */
+  upsertEpisode(id: string, content: string): void;
+  /** Remove the FTS row for one ref (no-op when absent). */
+  deleteRef(kind: MemoryRefKind, id: string): void;
+  /**
+   * FTS5 MATCH over the content column, ranked by bm25 ascending, capped at
+   * limit. The caller has already escaped the query.
+   */
+  match(query: string, limit: number): MemoryFtsHit[];
+}

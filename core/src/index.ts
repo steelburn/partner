@@ -29,17 +29,21 @@ export type { Keychain } from './keychain/keychain.js';
 export {
   createAuditStore,
   createConversationStore,
+  createEpisodeStore,
   createFileProposalStore,
   createGrantStore,
+  createMemoryFtsStore,
   createMessageStore,
   createPairingStore,
   createPendingToolStore,
   createPersonaStore,
+  createProfileStore,
   createProjectRootStore,
   createProviderStore,
   createSessionStore,
   createSettingsStore,
   openDatabase,
+  assertFts5,
 } from './stores/db.js';
 export type {
   AuditRow,
@@ -47,10 +51,16 @@ export type {
   ConversationRow,
   ConversationRowPatch,
   ConversationStore,
+  EpisodeRow,
+  EpisodeRowPatch,
+  EpisodeStore,
   FileProposalRow,
   FileProposalStore,
   GrantRow,
   GrantStore,
+  MemoryFtsHit,
+  MemoryFtsStore,
+  MemoryRefKind,
   MessageRow,
   MessageStore,
   PairingRow,
@@ -60,6 +70,9 @@ export type {
   PersonaRow,
   PersonaRowPatch,
   PersonaStore,
+  ProfileEntryRow,
+  ProfileEntryRowPatch,
+  ProfileEntryStore,
   ProjectRootRow,
   ProjectRootStore,
   ProviderRow,
@@ -170,6 +183,31 @@ export type {
 export { ConversationError } from './conversations/errors.js';
 export type { ConversationErrorCode } from './conversations/errors.js';
 
+// ---- M4 memory (profile, episodes, search, forget, export/import, tailor) --
+export {
+  createMemoryBundle,
+  createSummarizeResolver,
+  MemoryError,
+  memoryError,
+  memoryErrorStatus,
+} from './memory/index.js';
+export type {
+  MemoryBundle,
+  MemoryImportCounts,
+  MemoryTransferManager,
+  MemoryWiringOptions,
+} from './memory/index.js';
+export { createProfileManager, normalizeProfileInput } from './memory/profile.js';
+export type { ProfileEntryPatch, ProfileListOptions, ProfileManager, ProfileManagerOptions } from './memory/profile.js';
+export { createEpisodeManager } from './memory/episodes.js';
+export type { EpisodeManager, EpisodeManagerOptions, SummarizeTarget } from './memory/episodes.js';
+export { createSearchManager, escapeFtsQuery } from './memory/search.js';
+export type { SearchManager } from './memory/search.js';
+export { createMemoryForgetManager, parseBeforeCutoff } from './memory/forget.js';
+export type { MemoryForgetManager, MemoryForgetResult } from './memory/forget.js';
+export { createMemoryTransferManager } from './memory/transfer.js';
+export { buildTailoring } from './memory/tailor.js';
+
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
@@ -190,11 +228,17 @@ import {
   createPersonaStore,
   createConversationStore,
   createMessageStore,
+  createProfileStore,
+  createEpisodeStore,
+  createMemoryFtsStore,
 } from './stores/db.js';
 import type {
   ConversationStore,
+  EpisodeStore,
+  MemoryFtsStore,
   MessageStore,
   PersonaStore,
+  ProfileEntryStore,
   ProviderStore,
 } from './stores/types.js';
 import { createPersonaManager } from './personas/manager.js';
@@ -223,6 +267,8 @@ import { createFileTools } from './files/tools.js';
 import { createProposalManager } from './files/proposals.js';
 import type { ProposalManager } from './files/proposals.js';
 import { createCoreApp } from './http/server.js';
+import { createMemoryBundle, createSummarizeResolver } from './memory/index.js';
+import type { MemoryBundle } from './memory/index.js';
 
 export interface CoreBundle {
   config: CoreConfig;
@@ -245,6 +291,11 @@ export interface CoreBundle {
   conversationManager: ConversationManager;
   conversationStore: ConversationStore;
   messageStore: MessageStore;
+  /** M4 memory managers + stores (wired on every core over the same db). */
+  memory: MemoryBundle;
+  profileStore: ProfileEntryStore;
+  episodeStore: EpisodeStore;
+  memoryFtsStore: MemoryFtsStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -310,6 +361,23 @@ export function createCore(config: CoreConfig): CoreBundle {
     audit,
   });
 
+  // M4: memory over the SAME db (schema v5). Summaries route through the
+  // persona's resolved chat provider when a conversation has one and a
+  // provider+model is usable; demo mode always writes placeholder summaries.
+  const profileStore = createProfileStore(db);
+  const episodeStore = createEpisodeStore(db);
+  const memoryFtsStore = createMemoryFtsStore(db);
+  const memory = createMemoryBundle({
+    stores: { profile: profileStore, episodes: episodeStore, fts: memoryFtsStore },
+    conversations: conversationManager,
+    audit,
+    demo: config.demo,
+    providerResolver: createSummarizeResolver({
+      personas: personaManager,
+      providers: providerManager,
+    }),
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -325,6 +393,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     broker,
     personaManager,
     conversationManager,
+    memory,
   });
 
   return {
@@ -346,6 +415,10 @@ export function createCore(config: CoreConfig): CoreBundle {
     conversationManager,
     conversationStore,
     messageStore,
+    memory,
+    profileStore,
+    episodeStore,
+    memoryFtsStore,
     app,
     close(): void {
       try {

@@ -38,19 +38,26 @@ import type { ProjectRootManager } from '../src/broker/roots.js';
 import { createFileTools } from '../src/files/tools.js';
 import { createProposalManager } from '../src/files/proposals.js';
 import type { ProposalManager } from '../src/files/proposals.js';
+import type { EpisodeManager } from '../src/memory/episodes.js';
+import type { ProfileManager } from '../src/memory/profile.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
 import type { ConversationManager } from '../src/conversations/manager.js';
+import { createMemoryBundle, createSummarizeResolver } from '../src/memory/index.js';
+import type { MemoryBundle } from '../src/memory/index.js';
 import {
   createAuditStore,
   createConversationStore,
+  createEpisodeStore,
   createFileProposalStore,
   createGrantStore,
+  createMemoryFtsStore,
   createMessageStore,
   createPairingStore,
   createPendingToolStore,
   createPersonaStore,
+  createProfileStore,
   createProjectRootStore,
   createProviderStore,
   createSessionStore,
@@ -59,12 +66,15 @@ import {
 import type {
   AuditStore,
   ConversationStore,
+  EpisodeStore,
   FileProposalStore,
   GrantStore,
+  MemoryFtsStore,
   MessageStore,
   PairingStore,
   PendingToolStore,
   PersonaStore,
+  ProfileEntryStore,
   ProjectRootStore,
   ProviderStore,
   SessionStore,
@@ -87,6 +97,12 @@ export interface HarnessOptions {
   broker?: boolean;
   /** Wire + seed the M3 persona/conversation managers (default true). */
   personas?: boolean;
+  /**
+   * Wire the M4 memory managers over the same db (default true). Summarize
+   * runs in demo mode (placeholder) because the demo harness registers no
+   * usable chat provider by default.
+   */
+  memory?: boolean;
 }
 
 export interface Harness {
@@ -118,6 +134,13 @@ export interface Harness {
   conversationStore: ConversationStore;
   messageStore: MessageStore;
   conversations: ConversationManager;
+  /** M4 memory stores + managers over the SAME db (default on). */
+  profileStore: ProfileEntryStore;
+  episodeStore: EpisodeStore;
+  memoryFtsStore: MemoryFtsStore;
+  memory?: MemoryBundle;
+  profile?: ProfileManager;
+  episodes?: EpisodeManager;
   close(): void;
 }
 
@@ -125,6 +148,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const demo = options.demo ?? true;
   const brokerEnabled = options.broker ?? true;
   const personasEnabled = options.personas ?? true;
+  const memoryEnabled = options.memory ?? true;
   const db = openDatabase(':memory:');
   const pairingStore = createPairingStore(db);
   const sessionStore = createSessionStore(db);
@@ -188,6 +212,34 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     audit,
   });
 
+  // M4: memory stores + managers over the same db (default on). The resolver
+  // mirrors createCore (persona -> provider manager) but the demo harness
+  // registers no provider, so non-demo summarize falls back to the
+  // deterministic placeholder unless a test registers a provider + keys.
+  const profileStore = createProfileStore(db);
+  const episodeStore = createEpisodeStore(db);
+  const memoryFtsStore = createMemoryFtsStore(db);
+  let memory: MemoryBundle | undefined;
+  let profile: ProfileManager | undefined;
+  let episodes: EpisodeManager | undefined;
+  if (memoryEnabled) {
+    // Mirror createCore's resolver: the conversation's persona routes through
+    // the provider manager. Demo mode short-circuits to placeholders before
+    // the resolver runs, so the demo harness needs no registered provider.
+    memory = createMemoryBundle({
+      stores: { profile: profileStore, episodes: episodeStore, fts: memoryFtsStore },
+      conversations,
+      audit,
+      demo,
+      providerResolver: createSummarizeResolver({
+        personas,
+        providers: providerManager,
+      }),
+    });
+    profile = memory.profile;
+    episodes = memory.episodes;
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -203,6 +255,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     broker,
     personaManager: personasEnabled ? personas : undefined,
     conversationManager: personasEnabled ? conversations : undefined,
+    ...(memoryEnabled ? { memory } : {}),
   });
 
   return {
@@ -231,6 +284,12 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     conversationStore,
     messageStore,
     conversations,
+    profileStore,
+    episodeStore,
+    memoryFtsStore,
+    memory,
+    profile,
+    episodes,
     close(): void {
       db.close();
     },

@@ -15,10 +15,16 @@ import type {
   ConversationRow,
   ConversationRowPatch,
   ConversationStore,
+  EpisodeRow,
+  EpisodeRowPatch,
+  EpisodeStore,
   FileProposalRow,
   FileProposalStore,
   GrantRow,
   GrantStore,
+  MemoryFtsHit,
+  MemoryFtsStore,
+  MemoryRefKind,
   MessageRow,
   MessageStore,
   PairingRow,
@@ -28,6 +34,9 @@ import type {
   PersonaRow,
   PersonaRowPatch,
   PersonaStore,
+  ProfileEntryRow,
+  ProfileEntryRowPatch,
+  ProfileEntryStore,
   ProjectRootRow,
   ProjectRootStore,
   ProviderRow,
@@ -195,6 +204,39 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
   ON messages(conversation_id, created_at);
+
+-- M4 memory tables (PLAN-M4.md, additive schema v5). profile_entries hold
+-- explicit user/partner facts (status confirmed|suggested|rejected); episodes
+-- hold one summary per conversation (conversation_id UNIQUE); memory_fts is
+-- the FTS5 mirror searched by GET /v1/memory/search. FTS5 availability is
+-- asserted in assertFts5() before this schema runs (openDatabase).
+
+CREATE TABLE IF NOT EXISTS profile_entries (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL, -- preference|identity|rule|style
+  key TEXT,
+  value TEXT NOT NULL,
+  evidence TEXT,
+  source TEXT NOT NULL, -- 'user'|'partner_suggestion'
+  status TEXT NOT NULL DEFAULT 'confirmed', -- confirmed|suggested|rejected
+  persona_scope TEXT, -- null = global, else persona id
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS episodes (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT UNIQUE,
+  persona_id TEXT,
+  title TEXT,
+  summary TEXT NOT NULL,
+  model TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
+  USING fts5(episode_ref, profile_ref, content);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -248,6 +290,14 @@ const MESSAGE_COLUMNS = `
   id, conversation_id AS conversationId, role, persona_id AS personaId,
   content, model, latency_ms AS latencyMs, created_at AS createdAt`;
 
+const PROFILE_COLUMNS = `
+  id, kind, key, value, evidence, source, status,
+  persona_scope AS personaScope, created_at AS createdAt, updated_at AS updatedAt`;
+
+const EPISODE_COLUMNS = `
+  id, conversation_id AS conversationId, persona_id AS personaId,
+  title, summary, model, created_at AS createdAt, updated_at AS updatedAt`;
+
 /** snake_case column -> camelCase row key for the whitelisted update patch. */
 type ProviderPatchKey =
   | 'name'
@@ -272,7 +322,42 @@ const PROVIDER_UPDATE_COLUMNS: Readonly<Record<string, ProviderPatchKey>> = {
   last_health: 'lastHealth',
 };
 
+const PROFILE_UPDATE_COLUMNS: Readonly<Record<string, keyof ProfileEntryRowPatch>> = {
+  kind: 'kind',
+  key: 'key',
+  value: 'value',
+  evidence: 'evidence',
+  source: 'source',
+  status: 'status',
+  persona_scope: 'personaScope',
+};
+
+const EPISODE_UPDATE_COLUMNS: Readonly<Record<string, keyof EpisodeRowPatch>> = {
+  persona_id: 'personaId',
+  title: 'title',
+  summary: 'summary',
+  model: 'model',
+};
+
+/**
+ * Assert the bundled SQLite has FTS5 (PLAN-M4): run a trivial probe and
+ * throw a CLEAR error when the module is missing so a deployment surfaces
+ * the reason instead of a cryptic CREATE VIRTUAL TABLE failure.
+ */
+export function assertFts5(db: Database.Database): void {
+  try {
+    db.exec('CREATE VIRTUAL TABLE __partner_fts5_probe USING fts5(x)');
+    db.exec('DROP TABLE __partner_fts5_probe');
+  } catch {
+    throw new Error(
+      'M4 memory search needs SQLite FTS5, but this build of better-sqlite3 has no FTS5 ' +
+        'support — rebuild it against a full SQLite build or bundle one with FTS5 enabled',
+    );
+  }
+}
+
 function applySchema(db: Database.Database): void {
+  assertFts5(db);
   db.exec(SCHEMA_SQL);
   db.prepare(
     'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
@@ -753,6 +838,159 @@ export function createMessageStore(db: Database.Database): MessageStore {
     },
     removeByConversation(conversationId: string): void {
       removeByConversation.run(conversationId);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M4 row stores (PLAN-M4.md — additive schema v5). Plain typed CRUD with NO
+// business logic; the memory managers (core/src/memory/*) own validation,
+// status rules, the FTS mirror, forgetting, export/import and audit. Stores
+// never read the clock: writes take explicit timestamps. The factories keep
+// the PLAN-M4 names (createProfileStore for the profile_entries table, row
+// type ProfileEntryRow) so audits/tests can match the spec verbatim.
+// ---------------------------------------------------------------------------
+
+export function createProfileStore(db: Database.Database): ProfileEntryStore {
+  const insert = db.prepare(
+    `INSERT INTO profile_entries (id, kind, key, value, evidence, source, status,
+                                  persona_scope, created_at, updated_at)
+     VALUES (@id, @kind, @key, @value, @evidence, @source, @status,
+             @personaScope, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${PROFILE_COLUMNS} FROM profile_entries WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${PROFILE_COLUMNS} FROM profile_entries ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM profile_entries WHERE id = ?');
+
+  return {
+    insert(row: ProfileEntryRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ProfileEntryRow | undefined {
+      return findById.get(id) as ProfileEntryRow | undefined;
+    },
+    list(): ProfileEntryRow[] {
+      return listAll.all() as ProfileEntryRow[];
+    },
+    update(id: string, patch: ProfileEntryRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(PROFILE_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof ProfileEntryRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE profile_entries SET updated_at = ? WHERE id = ?').run(
+          patch.updatedAt,
+          id,
+        );
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE profile_entries SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+export function createEpisodeStore(db: Database.Database): EpisodeStore {
+  const insert = db.prepare(
+    `INSERT INTO episodes (id, conversation_id, persona_id, title, summary, model,
+                           created_at, updated_at)
+     VALUES (@id, @conversationId, @personaId, @title, @summary, @model,
+             @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${EPISODE_COLUMNS} FROM episodes WHERE id = ?`);
+  const findByConversationId = db.prepare(
+    `SELECT ${EPISODE_COLUMNS} FROM episodes WHERE conversation_id = ?`,
+  );
+  const listAll = db.prepare(
+    `SELECT ${EPISODE_COLUMNS} FROM episodes ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM episodes WHERE id = ?');
+
+  return {
+    insert(row: EpisodeRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): EpisodeRow | undefined {
+      return findById.get(id) as EpisodeRow | undefined;
+    },
+    findByConversationId(conversationId: string): EpisodeRow | undefined {
+      return findByConversationId.get(conversationId) as EpisodeRow | undefined;
+    },
+    list(): EpisodeRow[] {
+      return listAll.all() as EpisodeRow[];
+    },
+    update(id: string, patch: EpisodeRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(EPISODE_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof EpisodeRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE episodes SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE episodes SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+/** FTS5 mirror helpers over the memory_fts virtual table (PLAN-M4). */
+export function createMemoryFtsStore(db: Database.Database): MemoryFtsStore {
+  const insert = db.prepare(
+    'INSERT INTO memory_fts (episode_ref, profile_ref, content) VALUES (?, ?, ?)',
+  );
+  const deleteProfileRef = db.prepare('DELETE FROM memory_fts WHERE profile_ref = ?');
+  const deleteEpisodeRef = db.prepare('DELETE FROM memory_fts WHERE episode_ref = ?');
+  const matchQuery = db.prepare(
+    `SELECT
+       CASE WHEN profile_ref IS NOT NULL THEN 'profile' ELSE 'episode' END AS kind,
+       COALESCE(profile_ref, episode_ref) AS refId,
+       bm25(memory_fts) AS rank
+     FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank ASC LIMIT ?`,
+  );
+
+  return {
+    upsertProfile(id: string, content: string): void {
+      deleteProfileRef.run(id);
+      insert.run(null, id, content);
+    },
+    upsertEpisode(id: string, content: string): void {
+      deleteEpisodeRef.run(id);
+      insert.run(id, null, content);
+    },
+    deleteRef(kind: MemoryRefKind, id: string): void {
+      if (kind === 'profile') deleteProfileRef.run(id);
+      else deleteEpisodeRef.run(id);
+    },
+    match(query: string, limit: number): MemoryFtsHit[] {
+      const rows = matchQuery.all(query, limit) as Array<{
+        kind: MemoryRefKind;
+        refId: string;
+        rank: number;
+      }>;
+      return rows.map((row) => ({ kind: row.kind, refId: row.refId, rank: row.rank }));
     },
   };
 }

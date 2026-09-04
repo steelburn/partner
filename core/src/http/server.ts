@@ -60,6 +60,9 @@ import type { ConversationManager, ConversationDetail } from '../conversations/m
 import type { PersonaManager } from '../personas/manager.js';
 import { ConversationError } from '../conversations/errors.js';
 import { PersonaError } from '../personas/errors.js';
+import type { MemoryBundle } from '../memory/index.js';
+import { buildTailoring } from '../memory/tailor.js';
+import { MemoryError, memoryErrorStatus } from '../memory/index.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -99,6 +102,14 @@ export interface CoreAppOptions {
    * routes 501 not_configured.
    */
   conversationManager?: ConversationManager;
+  /**
+   * M4 memory bundle (optional so M0-M3 harnesses compile unchanged). When
+   * absent the /v1/memory surface responds 501 not_configured and chat-time
+   * tailoring is skipped. When present, provider-routed persona chat
+   * PREPENDS the confirmed-global profile prelude to the upstream request
+   * (demo/one-shot paths stay byte-identical; nothing is persisted).
+   */
+  memory?: MemoryBundle;
 }
 
 const SSE_HEADERS = {
@@ -248,6 +259,15 @@ function sendConversationError(res: Response, err: unknown): boolean {
   return false;
 }
 
+/** Send a typed MemoryError response; false when not one. */
+function sendMemoryError(res: Response, err: unknown): boolean {
+  if (err instanceof MemoryError) {
+    res.status(memoryErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
 /** Trimmed non-empty string or undefined (chat optional fields). */
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
@@ -326,6 +346,16 @@ function requireConversationManager(
     return null;
   }
   return manager;
+}
+
+/** Guard: returns the M4 memory bundle or 501s. */
+function requireMemory(options: CoreAppOptions, res: Response): MemoryBundle | null {
+  const memory = options.memory;
+  if (!memory) {
+    notConfigured(res, 'memory manager');
+    return null;
+  }
+  return memory;
 }
 
 /** Send a typed ToolError response; false when err is not a ToolError. */
@@ -682,7 +712,29 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       };
       res.on('close', abortOnClose);
 
-      const chatRequest: ChatRequest = { model, messages, stream: true, signal: controller.signal };
+      // M4 chat-time tailoring (PLAN-M4.md): when a persona routes through a
+      // provider AND confirmed-global profile entries exist, PREPEND the
+      // profile prelude as a system message to the UPSTREAM request only.
+      // Demo and one-shot paths never reach here, the injected prelude is
+      // never persisted (only user+assistant turns are stored), and the
+      // chat.stream audit count still reflects the client's own messages.
+      let requestMessages: ChatMessage[] = messages;
+      if (routingPersona !== null && options.memory) {
+        const tailoring = buildTailoring(options.memory.profile, routingPersona.id);
+        if (tailoring !== null) {
+          requestMessages = [
+            { role: 'system', content: '<Partner profile you should honor>\n' + tailoring },
+            ...messages,
+          ];
+        }
+      }
+
+      const chatRequest: ChatRequest = {
+        model,
+        messages: requestMessages,
+        stream: true,
+        signal: controller.signal,
+      };
       let events = 0;
       let ok = true;
       let over = false;
@@ -1093,6 +1145,148 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       throw err;
     }
     res.status(204).end();
+  });
+
+  // -------------------------------------------------------------------------
+  // M4 memory surface (PLAN-M4 wire spec) — profile entries, episode
+  // summaries, FTS search, forgetting, export/import. Every route authed;
+  // responses carry the OWNER's memory (user data by design) but audit rows
+  // only ever carry ids, kinds and lengths — never memory content.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/memory/profile', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    const includeRejected =
+      req.query.includeRejected === '1' || req.query.includeRejected === 'true';
+    const scopeRaw = req.query.personaScope;
+    res.json({
+      profile: memory.profile.list({
+        includeRejected,
+        ...(typeof scopeRaw === 'string' && scopeRaw.trim() !== ''
+          ? { personaScope: scopeRaw.trim() }
+          : {}),
+      }),
+    });
+  });
+
+  api.post('/v1/memory/profile', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    try {
+      const entry = memory.profile.add((req.body ?? {}) as never);
+      res.status(201).json(entry);
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/memory/profile/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    const id = String(req.params.id ?? '');
+    try {
+      const entry = memory.profile.update(id, (req.body ?? {}) as never);
+      res.status(200).json(entry);
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/memory/profile/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    const id = String(req.params.id ?? '');
+    try {
+      memory.profile.remove(id);
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.get('/v1/memory/episodes', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    res.json({ episodes: memory.episodes.list() });
+  });
+
+  api.post(
+    '/v1/memory/episodes/:conversationId',
+    requireSession(sessions),
+    async (req: Request, res: Response) => {
+      const memory = requireMemory(options, res);
+      if (!memory) return;
+      try {
+        const { episode, created } = await memory.episodes.summarize(
+          String(req.params.conversationId ?? ''),
+        );
+        res.status(created ? 201 : 200).json(episode);
+      } catch (err) {
+        if (sendMemoryError(res, err)) return;
+        if (sendConversationError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.delete('/v1/memory/episodes/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    const id = String(req.params.id ?? '');
+    try {
+      memory.episodes.remove(id);
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.get('/v1/memory/search', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    try {
+      res.json({ hits: memory.search.query(q) });
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post('/v1/memory/forget', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    try {
+      const removed = memory.forget.forget((req.body ?? {}) as never);
+      res.json({ removed });
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/memory/export', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    res.json(memory.transfer.exportBundle());
+  });
+
+  api.post('/v1/memory/import', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    try {
+      const body = (req.body ?? {}) as { bundle?: unknown };
+      const imported = memory.transfer.importBundle(body.bundle);
+      res.json({ imported });
+    } catch (err) {
+      if (sendMemoryError(res, err)) return;
+      throw err;
+    }
   });
 
   // -------------------------------------------------------------------------
