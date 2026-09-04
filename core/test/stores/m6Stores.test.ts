@@ -60,7 +60,7 @@ describe('schema v7 (additive M6 themes table)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(7);
+      expect(SCHEMA_VERSION).toBe(8);
     } finally {
       db.close();
     }

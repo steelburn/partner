@@ -8,6 +8,7 @@
  * Stores never read the clock: every write takes explicit timestamps so
  * tests can inject `now()`.
  */
+import type { SiteScopeRecord } from '@partner/shared';
 
 export interface PairingRow {
   id: number;
@@ -645,4 +646,23 @@ export interface ThemeStore {
   remove(id: string): void;
   /** Total rows (preset seeding runs only when the table is empty). */
   count(): number;
+}
+
+// ---------------------------------------------------------------------------
+// M7 browser site scopes table (PLAN-M7.md — additive schema v8). One row per
+// origin the user has explicitly configured; ABSENCE means the default 'ask'
+// scope. Origin strings are ids/ownership metadata ONLY — page content never
+// reaches this store (it lives in the owner's browser, never the core). The
+// scope manager (core/src/browser/scopes.ts) owns blocklist + validation;
+// this row store is plain CRUD over the shared SiteScopeRecord shape.
+// ---------------------------------------------------------------------------
+
+export interface SiteScopeStore {
+  /** Upsert one origin-scope mapping (origin PK — scope default 'ask'). */
+  upsert(row: SiteScopeRecord): void;
+  findByOrigin(origin: string): SiteScopeRecord | undefined;
+  /** All rows ascending by origin (stable order for the web list view). */
+  list(): SiteScopeRecord[];
+  /** Remove a mapping (back to the default 'ask'). Idempotent. */
+  remove(origin: string): void;
 }

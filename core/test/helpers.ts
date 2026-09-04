@@ -46,6 +46,8 @@ import { createPlanManager } from '../src/plans/index.js';
 import type { ProfileManager } from '../src/memory/profile.js';
 import type { ThemeManager } from '../src/theming/index.js';
 import { createThemeManager } from '../src/theming/index.js';
+import { createSiteScopeManager } from '../src/browser/scopes.js';
+import type { SiteScopeManager } from '../src/browser/scopes.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
@@ -72,6 +74,7 @@ import {
   createProviderStore,
   createSessionStore,
   createSettingsStore,
+  createSiteScopeStore,
   createThemeStore,
   openDatabase,
 } from '../src/stores/db.js';
@@ -95,6 +98,7 @@ import type {
   ProviderStore,
   SessionStore,
   SettingsStore,
+  SiteScopeStore,
   ThemeStore,
 } from '../src/stores/types.js';
 
@@ -132,6 +136,11 @@ export interface HarnessOptions {
    * when the themes table is empty; theme routes 501 when disabled.
    */
   themes?: boolean;
+  /**
+   * Wire the M7 site-scope manager over the same db (default true). The
+   * browser scope/policy routes 501 when disabled.
+   */
+  browser?: boolean;
 }
 
 export interface Harness {
@@ -181,6 +190,9 @@ export interface Harness {
   themeStore: ThemeStore;
   settingsStore: SettingsStore;
   themes?: ThemeManager;
+  /** M7 site-scope manager + store over the SAME db (default on). */
+  scopeStore: SiteScopeStore;
+  scopes?: SiteScopeManager;
   close(): void;
 }
 
@@ -191,6 +203,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const memoryEnabled = options.memory ?? true;
   const notesPlansEnabled = options.notesPlans ?? true;
   const themesEnabled = options.themes ?? true;
+  const browserEnabled = options.browser ?? true;
   const db = openDatabase(':memory:');
   const pairingStore = createPairingStore(db);
   const sessionStore = createSessionStore(db);
@@ -322,6 +335,15 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     themes.seedIfEmpty();
   }
 
+  // M7: site-scope manager + store over the same db (default on). The store
+  // exists on every harness for row-level assertions; the manager + routes
+  // are wired unless browser: false (the 501 not_configured case).
+  const scopeStore = createSiteScopeStore(db);
+  let scopes: SiteScopeManager | undefined;
+  if (browserEnabled) {
+    scopes = createSiteScopeManager({ store: scopeStore, audit });
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -340,6 +362,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(memoryEnabled ? { memory } : {}),
     ...(notesPlansEnabled ? { notes, plans } : {}),
     ...(themesEnabled ? { themes } : {}),
+    ...(browserEnabled ? { scopes } : {}),
   });
 
   return {
@@ -383,6 +406,8 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     themeStore,
     settingsStore,
     themes,
+    scopeStore,
+    scopes,
     close(): void {
       db.close();
     },

@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '@partner/shared';
+import type { SiteScopeRecord } from '@partner/shared';
 import type {
   AuditRow,
   AuditStore,
@@ -45,6 +46,7 @@ import type {
   SessionRow,
   SessionStore,
   SettingsStore,
+  SiteScopeStore,
   ThemeRow,
   ThemeRowPatch,
   ThemeStore,
@@ -305,6 +307,19 @@ CREATE TABLE IF NOT EXISTS themes (
   light_json TEXT NOT NULL,
   dark_json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- M7 browser site-scopes table (PLAN-M7.md, additive schema v8). One row per
+-- origin the user has explicitly configured (origin PK); ABSENCE of a row
+-- means the default 'ask' scope. Origins are ids/ownership metadata only —
+-- page content never reaches the core, let alone this table. Scope values
+-- are validated by the scope manager; the column default mirrors the shared
+-- SiteScope default.
+
+CREATE TABLE IF NOT EXISTS site_scopes (
+  origin TEXT PRIMARY KEY,
+  scope TEXT NOT NULL DEFAULT 'ask',
   updated_at INTEGER NOT NULL
 );
 `;
@@ -1341,6 +1356,44 @@ export function createThemeStore(db: Database.Database): ThemeStore {
     count(): number {
       const row = countAll.get() as { n: number };
       return row.n;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M7 site-scopes row store (PLAN-M7.md — additive schema v8). Plain typed
+// CRUD with NO business logic; the scope manager (core/src/browser/scopes.ts)
+// owns origin normalization, blocklist precedence and scope validation.
+// Stores never read the clock: writes take explicit timestamps.
+// ---------------------------------------------------------------------------
+
+const SITE_SCOPE_COLUMNS = `origin, scope, updated_at AS updatedAt`;
+
+export function createSiteScopeStore(db: Database.Database): SiteScopeStore {
+  const upsert = db.prepare(
+    `INSERT INTO site_scopes (origin, scope, updated_at) VALUES (@origin, @scope, @updatedAt)
+     ON CONFLICT(origin) DO UPDATE SET
+       scope = excluded.scope,
+       updated_at = excluded.updated_at`,
+  );
+  const findByOrigin = db.prepare(`SELECT ${SITE_SCOPE_COLUMNS} FROM site_scopes WHERE origin = ?`);
+  const listAll = db.prepare(
+    `SELECT ${SITE_SCOPE_COLUMNS} FROM site_scopes ORDER BY origin ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM site_scopes WHERE origin = ?');
+
+  return {
+    upsert(row: SiteScopeRecord): void {
+      upsert.run({ ...row });
+    },
+    findByOrigin(origin: string): SiteScopeRecord | undefined {
+      return findByOrigin.get(origin) as SiteScopeRecord | undefined;
+    },
+    list(): SiteScopeRecord[] {
+      return listAll.all() as SiteScopeRecord[];
+    },
+    remove(origin: string): void {
+      remove.run(origin);
     },
   };
 }

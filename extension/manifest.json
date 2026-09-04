@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Partner",
+  "version": "0.7.0",
+  "description": "Partner browser bridge: capture and act on pages through your local Partner core over native messaging (PLAN-M7).",
+  "permissions": ["nativeMessaging", "storage", "activeTab"],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "Partner"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

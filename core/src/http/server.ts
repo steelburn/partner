@@ -36,6 +36,7 @@ import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
+import type { SiteScope } from '@partner/shared';
 import { redactString } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
@@ -70,6 +71,8 @@ import type { PlanManager } from '../plans/index.js';
 import { PlanError, planErrorStatus } from '../plans/index.js';
 import type { ThemeManager } from '../theming/manager.js';
 import { ThemeError, themeErrorStatus } from '../theming/errors.js';
+import type { SiteScopeManager } from '../browser/scopes.js';
+import { BrowserError, browserErrorStatus } from '../browser/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -133,6 +136,12 @@ export interface CoreAppOptions {
    * responds 501 not_configured.
    */
   themes?: ThemeManager;
+  /**
+   * M7 site-scope manager (optional so M0-M6 harnesses compile unchanged).
+   * When absent the /v1/browser/scopes + /v1/browser/policy surface responds
+   * 501 not_configured.
+   */
+  scopes?: SiteScopeManager;
 }
 
 const SSE_HEADERS = {
@@ -448,6 +457,25 @@ function requireThemes(options: CoreAppOptions, res: Response): ThemeManager | n
     return null;
   }
   return themes;
+}
+
+/** Guard: returns the M7 site-scope manager or 501s. */
+function requireScopes(options: CoreAppOptions, res: Response): SiteScopeManager | null {
+  const scopes = options.scopes;
+  if (!scopes) {
+    notConfigured(res, 'browser scope manager');
+    return null;
+  }
+  return scopes;
+}
+
+/** Send a typed BrowserError response; false when err is not a BrowserError. */
+function sendBrowserError(res: Response, err: unknown): boolean {
+  if (err instanceof BrowserError) {
+    res.status(browserErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
 }
 
 /** Send a typed ToolError response; false when err is not a ToolError. */
@@ -1939,6 +1967,60 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     await sessions.revoke(token);
     audit.log('session', 'session.revoke', 'web', { sessionId: session.id });
     res.status(204).end();
+  });
+
+  // -------------------------------------------------------------------------
+  // M7 browser site-scope surface (PLAN-M7 wire spec). Per-origin consent
+  // for browser capture/action: list/put/delete configured scopes and read
+  // the RESOLVED policy (built-in blocklist -> stored scope -> default
+  // 'ask'). Every route authed; blocked origins are immutable (404 on
+  // mutation). Responses carry origins only — never page content — and the
+  // manager keeps audit rows to origins/scopes (no page text anywhere).
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/browser/scopes', requireSession(sessions), (_req: Request, res: Response) => {
+    const scopes = requireScopes(options, res);
+    if (!scopes) return;
+    res.json({ scopes: scopes.list() });
+  });
+
+  api.put('/v1/browser/scopes/:origin', requireSession(sessions), (req: Request, res: Response) => {
+    const scopes = requireScopes(options, res);
+    if (!scopes) return;
+    const origin = String(req.params.origin ?? '');
+    const body = (req.body ?? {}) as { scope?: unknown };
+    const scope = body.scope as SiteScope;
+    try {
+      res.json(scopes.set(origin, scope));
+    } catch (err) {
+      if (sendBrowserError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/browser/scopes/:origin', requireSession(sessions), (req: Request, res: Response) => {
+    const scopes = requireScopes(options, res);
+    if (!scopes) return;
+    const origin = String(req.params.origin ?? '');
+    try {
+      scopes.clear(origin);
+    } catch (err) {
+      if (sendBrowserError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.get('/v1/browser/policy/:origin', requireSession(sessions), (req: Request, res: Response) => {
+    const scopes = requireScopes(options, res);
+    if (!scopes) return;
+    const origin = String(req.params.origin ?? '');
+    try {
+      res.json(scopes.policy(origin));
+    } catch (err) {
+      if (sendBrowserError(res, err)) return;
+      throw err;
+    }
   });
 
   app.use(api);

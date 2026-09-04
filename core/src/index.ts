@@ -46,6 +46,7 @@ export {
   createProviderStore,
   createSessionStore,
   createSettingsStore,
+  createSiteScopeStore,
   createThemeStore,
   openDatabase,
   assertFts5,
@@ -98,6 +99,7 @@ export type {
   SessionStore,
   SettingsRow,
   SettingsStore,
+  SiteScopeStore,
   ThemeRow,
   ThemeRowPatch,
   ThemeStore,
@@ -263,6 +265,36 @@ export {
 } from './theming/index.js';
 export type { ThemePreset } from './theming/index.js';
 
+// ---- M7 browser site scopes + native messaging (PLAN-M7.md) ----------------
+export {
+  createSiteScopeManager,
+  normalizeOrigin,
+  isBlockedHost,
+  SITE_BLOCKLIST,
+  SITE_SCOPES,
+  CAPTURE_SCOPES,
+} from './browser/scopes.js';
+export type { SiteScopeManager, SiteScopeManagerOptions } from './browser/scopes.js';
+export { BrowserError, browserError, browserErrorStatus } from './browser/errors.js';
+export type { BrowserErrorCode } from './browser/errors.js';
+export {
+  createNativeSession,
+  demoAnalyzeReply,
+  readFrame,
+  writeFrame,
+  ANALYZE_CHAR_BUDGET,
+  ANALYZE_SELECTION_PREVIEW_CHARS,
+  ANALYZE_SYSTEM_PROMPT,
+} from './native/index.js';
+export type {
+  NativeSessionDeps,
+  NativeSessionIo,
+  NativeSessionResult,
+  NmCommandError,
+} from './native/index.js';
+export { MAX_FRAME_BYTES, NmError, nmError } from './native/index.js';
+export type { NmErrorCode } from './native/index.js';
+
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
@@ -287,6 +319,7 @@ import {
   createEpisodeStore,
   createMemoryFtsStore,
   createSettingsStore,
+  createSiteScopeStore,
   createThemeStore,
 } from './stores/db.js';
 import type {
@@ -302,6 +335,7 @@ import type {
   ProfileEntryStore,
   ProviderStore,
   SettingsStore,
+  SiteScopeStore,
   ThemeStore,
 } from './stores/types.js';
 import { createPersonaManager } from './personas/manager.js';
@@ -338,6 +372,10 @@ import { createPlanManager } from './plans/index.js';
 import type { PlanManager } from './plans/index.js';
 import { createThemeManager } from './theming/index.js';
 import type { ThemeManager } from './theming/index.js';
+import { createSiteScopeManager } from './browser/scopes.js';
+import type { SiteScopeManager } from './browser/scopes.js';
+import { createNativeSession } from './native/index.js';
+import type { NativeSessionDeps } from './native/index.js';
 import {
   createNoteLinkStore,
   createNoteStore,
@@ -382,6 +420,9 @@ export interface CoreBundle {
   themes: ThemeManager;
   themeStore: ThemeStore;
   settingsStore: SettingsStore;
+  /** M7 site-scope manager + store (schema v8, PLAN-M7.md). */
+  scopes: SiteScopeManager;
+  scopeStore: SiteScopeStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -498,6 +539,13 @@ export function createCore(config: CoreConfig): CoreBundle {
   });
   themes.seedIfEmpty();
 
+  // M7: per-origin browser scopes over the SAME db (schema v8). The store is
+  // additive + idempotent; the manager resolves policy against the built-in
+  // blocklist first (blocked origins immutable), then the stored scope, then
+  // the default 'ask'. Only origins cross this surface — never page content.
+  const scopeStore = createSiteScopeStore(db);
+  const scopes = createSiteScopeManager({ store: scopeStore, audit });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -517,6 +565,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     notes,
     plans,
     themes,
+    scopes,
   });
 
   return {
@@ -551,6 +600,8 @@ export function createCore(config: CoreConfig): CoreBundle {
     themes,
     themeStore,
     settingsStore,
+    scopes,
+    scopeStore,
     app,
     close(): void {
       try {
@@ -580,6 +631,31 @@ export async function startServer(config: CoreConfig = loadConfig()): Promise<{ 
 
 async function main(): Promise<void> {
   const config = loadConfig();
+
+  // M7 native-messaging mode: run the Chrome frame session over stdin/stdout
+  // and do NOT start the HTTP server. stdout carries framed responses here,
+  // so this branch never prints a banner or any other text to stdout.
+  if (process.argv.includes('--native-messaging')) {
+    const bundle = createCore(config);
+    const deps: NativeSessionDeps = {
+      version: bundle.config.version,
+      demo: bundle.config.demo,
+      schemaVersion: bundle.config.schemaVersion,
+      pairing: bundle.pairing,
+      scopes: bundle.scopes,
+      personas: bundle.personaManager,
+      providers: bundle.providerManager,
+      audit: bundle.audit,
+    };
+    try {
+      await createNativeSession(deps, { stdin: process.stdin, stdout: process.stdout });
+    } finally {
+      bundle.close();
+      process.exit(0);
+    }
+    return;
+  }
+
   const { bundle, server } = await startServer(config);
   const demoHint = config.demo ? ' · dev pairing code: GET /v1/dev/pair-code' : ' · pair via tray code';
   console.log(
