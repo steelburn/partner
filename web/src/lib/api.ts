@@ -61,22 +61,33 @@ function extractMessage(parsed: unknown): string | null {
 }
 
 /** Best-effort error text from a failed response body (capped, sanitized). */
-async function readErrorMessage(response: Response): Promise<string> {
+export async function readErrorMessage(response: Response): Promise<string> {
   let text = '';
   try {
     text = (await response.text()).trim();
   } catch {
     return `Request failed (${response.status}).`;
   }
-  if (text.length === 0) return `Request failed (${response.status}).`;
+  return extractErrorMessage(text, response.status);
+}
+
+/**
+ * Human error text from an already-consumed body string. Used by callers
+ * that must buffer the body themselves (e.g. to sniff a broker decision
+ * before falling back to the generic error). Mirrors readErrorMessage's
+ * extraction + capping exactly.
+ */
+export function extractErrorMessage(text: string, status: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return `Request failed (${status}).`;
   try {
-    const parsed: unknown = JSON.parse(text);
+    const parsed: unknown = JSON.parse(trimmed);
     const message = extractMessage(parsed);
     if (message) return message.length <= 280 ? message : `${message.slice(0, 280)}…`;
   } catch {
     // Not JSON — fall through to the raw (capped) text.
   }
-  return text.length <= 280 ? text : `${text.slice(0, 280)}…`;
+  return trimmed.length <= 280 ? trimmed : `${trimmed.slice(0, 280)}…`;
 }
 
 /**
@@ -307,7 +318,7 @@ function providerPath(id: string, suffix: '' | '/key' | '/test'): string {
 }
 
 /** Parse a 2xx JSON body; non-2xx becomes ApiRequestError with a readable message. */
-async function expectJson<T>(response: Response): Promise<T> {
+export async function expectJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new ApiRequestError(response.status, await readErrorMessage(response));
   }
@@ -319,7 +330,7 @@ async function expectJson<T>(response: Response): Promise<T> {
 }
 
 /** Require a 204 (void endpoints); non-2xx becomes ApiRequestError. */
-async function expectNoContent(response: Response, action: string): Promise<void> {
+export async function expectNoContent(response: Response, action: string): Promise<void> {
   if (!response.ok) {
     throw new ApiRequestError(response.status, await readErrorMessage(response));
   }

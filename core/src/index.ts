@@ -28,7 +28,11 @@ export type { Keychain } from './keychain/keychain.js';
 // ---- stores ----------------------------------------------------------------
 export {
   createAuditStore,
+  createFileProposalStore,
+  createGrantStore,
   createPairingStore,
+  createPendingToolStore,
+  createProjectRootStore,
   createProviderStore,
   createSessionStore,
   createSettingsStore,
@@ -37,8 +41,16 @@ export {
 export type {
   AuditRow,
   AuditStore,
+  FileProposalRow,
+  FileProposalStore,
+  GrantRow,
+  GrantStore,
   PairingRow,
   PairingStore,
+  PendingToolRow,
+  PendingToolStore,
+  ProjectRootRow,
+  ProjectRootStore,
   ProviderRow,
   ProviderRowPatch,
   ProviderStore,
@@ -87,6 +99,44 @@ export type {
 export { ProviderError } from './providers/errors.js';
 export type { ProviderErrorCode } from './providers/errors.js';
 
+// ---- M2 tool broker (files, roots, grants, pending, proposals) -------------
+export { createToolBroker } from './broker/broker.js';
+export type { ExecContext, DecideResult, ToolBroker, ToolBrokerOptions } from './broker/broker.js';
+export { ToolError, toolErrorStatus } from './broker/errors.js';
+export type { ToolErrorCode } from './broker/errors.js';
+export { FILE_TOOL_MANIFESTS, manifestFor } from './broker/toolManifests.js';
+export { createGrantManager } from './broker/grants.js';
+export type { GrantAddOptions, GrantManager, GrantManagerOptions } from './broker/grants.js';
+export { createPendingManager } from './broker/pending.js';
+export type {
+  EnqueueInput,
+  PendingDecision,
+  PendingManager,
+  PendingManagerOptions,
+} from './broker/pending.js';
+export { createProjectRootManager } from './broker/roots.js';
+export type {
+  ProjectRootManager,
+  ProjectRootManagerOptions,
+  RootFs,
+} from './broker/roots.js';
+export { canonicalize, resolveInRoot } from './files/paths.js';
+export type { ResolveResult } from './files/paths.js';
+export { createProposalManager } from './files/proposals.js';
+export type { ProposalManager, ProposalManagerOptions, ProposalView } from './files/proposals.js';
+export { createFileTools, FILE_TOOL_IDS } from './files/tools.js';
+export type {
+  ApplyResult,
+  DeleteResult,
+  EditResult,
+  FileToolDeps,
+  FileTools,
+  ListResult,
+  ReadResult,
+  SearchResult,
+  ToolExecutor,
+} from './files/tools.js';
+
 // ---- http server -----------------------------------------------------------
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
@@ -99,7 +149,12 @@ import {
   createSessionStore,
   createAuditStore,
   createProviderStore,
+  createProjectRootStore,
+  createGrantStore,
+  createPendingToolStore,
+  createFileProposalStore,
 } from './stores/db.js';
+import type { ProviderStore } from './stores/types.js';
 import { createKeychainFake, createKeychainNative } from './keychain/keychain.js';
 import { createPairingManager } from './http/pairing.js';
 import type { PairingManager } from './http/pairing.js';
@@ -110,7 +165,17 @@ import type { AuditService } from './services/redaction.js';
 import { demoProvider } from './gateway/demo.js';
 import { createProviderManager } from './providers/providerManager.js';
 import type { ProviderManager } from './providers/providerManager.js';
-import type { ProviderStore } from './stores/types.js';
+import { createToolBroker } from './broker/broker.js';
+import type { ToolBroker } from './broker/broker.js';
+import { createGrantManager } from './broker/grants.js';
+import type { GrantManager } from './broker/grants.js';
+import { createPendingManager } from './broker/pending.js';
+import type { PendingManager } from './broker/pending.js';
+import { createProjectRootManager } from './broker/roots.js';
+import type { ProjectRootManager } from './broker/roots.js';
+import { createFileTools } from './files/tools.js';
+import { createProposalManager } from './files/proposals.js';
+import type { ProposalManager } from './files/proposals.js';
 import { createCoreApp } from './http/server.js';
 
 export interface CoreBundle {
@@ -122,6 +187,12 @@ export interface CoreBundle {
   audit: AuditService;
   providerStore: ProviderStore;
   providerManager: ProviderManager;
+  /** M2 broker + its managers (wired on every core; roots are added at runtime). */
+  broker: ToolBroker;
+  projectRootManager: ProjectRootManager;
+  grantManager: GrantManager;
+  pendingManager: PendingManager;
+  proposalManager: ProposalManager;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -151,6 +222,28 @@ export function createCore(config: CoreConfig): CoreBundle {
   const providerStore = createProviderStore(db);
   const providerManager = createProviderManager({ store: providerStore, keychain, audit });
 
+  // M2: tool broker over the SAME in-memory/file DB — roots/grants/pending/
+  // proposals tables (schema v3) + the six files.* tools. Roots are added at
+  // runtime (a registered dir must exist), so wiring here needs no temp dir.
+  const projectRootManager = createProjectRootManager({ store: createProjectRootStore(db) });
+  const grantManager = createGrantManager({ store: createGrantStore(db) });
+  const pendingManager = createPendingManager({
+    store: createPendingToolStore(db),
+    // Approve + remember persists a user grant for (tool, project).
+    onCreateGrant: (row, note) =>
+      grantManager.add(row.toolId, row.projectId ?? '', note === undefined ? {} : { note }).id,
+  });
+  const proposalStore = createFileProposalStore(db);
+  const proposalManager = createProposalManager({ store: proposalStore });
+  const broker = createToolBroker({
+    roots: projectRootManager,
+    grants: grantManager,
+    pending: pendingManager,
+    proposals: proposalManager,
+    tools: createFileTools({ proposals: proposalStore }),
+    audit,
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -163,6 +256,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     audit,
     providers: config.demo ? [demoProvider()] : [],
     providerManager,
+    broker,
   });
 
   return {
@@ -174,6 +268,11 @@ export function createCore(config: CoreConfig): CoreBundle {
     audit,
     providerStore,
     providerManager,
+    broker,
+    projectRootManager,
+    grantManager,
+    pendingManager,
+    proposalManager,
     app,
     close(): void {
       try {

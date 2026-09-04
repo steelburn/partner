@@ -12,8 +12,16 @@ import { SCHEMA_VERSION } from '@partner/shared';
 import type {
   AuditRow,
   AuditStore,
+  FileProposalRow,
+  FileProposalStore,
+  GrantRow,
+  GrantStore,
   PairingRow,
   PairingStore,
+  PendingToolRow,
+  PendingToolStore,
+  ProjectRootRow,
+  ProjectRootStore,
   ProviderRow,
   ProviderRowPatch,
   ProviderStore,
@@ -79,6 +87,56 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- M2 tool-broker tables (PLAN-M2.md, additive schema v3). project_roots are
+-- the only filesystem the broker can see; grants are the (tool, project)
+-- allow-list; pending_tools is the approval queue; file_proposals holds
+-- write-preview diffs until apply/discard. Content-bearing proposal text is
+-- stored locally BY DESIGN (the diff must survive a core restart); it never
+-- crosses audit or logs.
+
+CREATE TABLE IF NOT EXISTS project_roots (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  path TEXT NOT NULL UNIQUE,
+  read_only INTEGER NOT NULL DEFAULT 0,
+  added_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS grants (
+  id TEXT PRIMARY KEY,
+  tool_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'user',
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pending_tools (
+  id TEXT PRIMARY KEY,
+  tool_id TEXT NOT NULL,
+  project_id TEXT,
+  params TEXT NOT NULL,
+  risk TEXT NOT NULL,
+  requested_by TEXT NOT NULL DEFAULT 'web',
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER,
+  decision TEXT,
+  decided_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS file_proposals (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  original_mtime INTEGER NOT NULL,
+  original_content TEXT,
+  proposed_content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  applied_at INTEGER,
+  discarded_at INTEGER
+);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -97,6 +155,23 @@ const PROVIDER_COLUMNS = `
   id, name, kind, source, endpoint, default_models AS defaultModels,
   enabled, budget_cents AS budgetCents, key_ref AS keyRef,
   last_health AS lastHealth, created_at AS createdAt, updated_at AS updatedAt`;
+
+const PROJECT_ROOT_COLUMNS = `
+  id, label, path, read_only AS readOnly, added_at AS addedAt`;
+
+const GRANT_COLUMNS = `
+  id, tool_id AS toolId, project_id AS projectId, source,
+  created_at AS createdAt, expires_at AS expiresAt, note`;
+
+const PENDING_TOOL_COLUMNS = `
+  id, tool_id AS toolId, project_id AS projectId, params, risk,
+  requested_by AS requestedBy, created_at AS createdAt,
+  decided_at AS decidedAt, decision, decided_by AS decidedBy`;
+
+const FILE_PROPOSAL_COLUMNS = `
+  id, project_id AS projectId, path, original_mtime AS originalMtime,
+  original_content AS originalContent, proposed_content AS proposedContent,
+  created_at AS createdAt, applied_at AS appliedAt, discarded_at AS discardedAt`;
 
 /** snake_case column -> camelCase row key for the whitelisted update patch. */
 type ProviderPatchKey =
@@ -290,6 +365,145 @@ export function createProviderStore(db: Database.Database): ProviderStore {
     },
     remove(id: string): void {
       remove.run(id);
+    },
+  };
+}
+
+/**
+ * M2 project-root row store. Plain CRUD; path canonicalization/validation
+ * belongs to the root manager (broker/roots.ts).
+ */
+export function createProjectRootStore(db: Database.Database): ProjectRootStore {
+  const insert = db.prepare(
+    `INSERT INTO project_roots (id, label, path, read_only, added_at)
+     VALUES (@id, @label, @path, @readOnly, @addedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${PROJECT_ROOT_COLUMNS} FROM project_roots WHERE id = ?`);
+  const findByPath = db.prepare(`SELECT ${PROJECT_ROOT_COLUMNS} FROM project_roots WHERE path = ?`);
+  const listAll = db.prepare(
+    `SELECT ${PROJECT_ROOT_COLUMNS} FROM project_roots ORDER BY added_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM project_roots WHERE id = ?');
+
+  return {
+    insert(row: ProjectRootRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ProjectRootRow | undefined {
+      return findById.get(id) as ProjectRootRow | undefined;
+    },
+    findByPath(path: string): ProjectRootRow | undefined {
+      return findByPath.get(path) as ProjectRootRow | undefined;
+    },
+    list(): ProjectRootRow[] {
+      return listAll.all() as ProjectRootRow[];
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+/**
+ * M2 grant row store (tool x project allow-list). Expiry is enforced by the
+ * grant manager at read time; this store is plain CRUD.
+ */
+export function createGrantStore(db: Database.Database): GrantStore {
+  const insert = db.prepare(
+    `INSERT INTO grants (id, tool_id, project_id, source, created_at, expires_at, note)
+     VALUES (@id, @toolId, @projectId, @source, @createdAt, @expiresAt, @note)`,
+  );
+  const findById = db.prepare(`SELECT ${GRANT_COLUMNS} FROM grants WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${GRANT_COLUMNS} FROM grants ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM grants WHERE id = ?');
+
+  return {
+    insert(row: GrantRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): GrantRow | undefined {
+      return findById.get(id) as GrantRow | undefined;
+    },
+    list(): GrantRow[] {
+      return listAll.all() as GrantRow[];
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+/**
+ * M2 approval-queue row store. `params` is a pre-serialized JSON string;
+ * open/closed semantics live in the pending manager (broker/pending.ts).
+ */
+export function createPendingToolStore(db: Database.Database): PendingToolStore {
+  const insert = db.prepare(
+    `INSERT INTO pending_tools (id, tool_id, project_id, params, risk, requested_by, created_at)
+     VALUES (@id, @toolId, @projectId, @params, @risk, @requestedBy, @createdAt)`,
+  );
+  const findById = db.prepare(`SELECT ${PENDING_TOOL_COLUMNS} FROM pending_tools WHERE id = ?`);
+  const listOpen = db.prepare(
+    `SELECT ${PENDING_TOOL_COLUMNS} FROM pending_tools
+     WHERE decided_at IS NULL ORDER BY created_at ASC, rowid ASC`,
+  );
+  const updateDecision = db.prepare(
+    'UPDATE pending_tools SET decided_at = ?, decision = ?, decided_by = ? WHERE id = ?',
+  );
+
+  return {
+    insert(row: PendingToolRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): PendingToolRow | undefined {
+      return findById.get(id) as PendingToolRow | undefined;
+    },
+    listOpen(): PendingToolRow[] {
+      return listOpen.all() as PendingToolRow[];
+    },
+    updateDecision(id: string, decidedAt: number, decision: string, decidedBy: string): void {
+      updateDecision.run(decidedAt, decision, decidedBy, id);
+    },
+  };
+}
+
+/**
+ * M2 file-proposal row store (write-preview diffs). Content is stored here
+ * BY DESIGN (diff survives restarts) but never crosses audit/logs/responses
+ * beyond the explicit GET-proposal payload.
+ */
+export function createFileProposalStore(db: Database.Database): FileProposalStore {
+  const insert = db.prepare(
+    `INSERT INTO file_proposals (id, project_id, path, original_mtime, original_content,
+                                 proposed_content, created_at)
+     VALUES (@id, @projectId, @path, @originalMtime, @originalContent,
+             @proposedContent, @createdAt)`,
+  );
+  const findById = db.prepare(`SELECT ${FILE_PROPOSAL_COLUMNS} FROM file_proposals WHERE id = ?`);
+  const listOpen = db.prepare(
+    `SELECT ${FILE_PROPOSAL_COLUMNS} FROM file_proposals
+     WHERE applied_at IS NULL AND discarded_at IS NULL ORDER BY created_at DESC, rowid DESC`,
+  );
+  const apply = db.prepare('UPDATE file_proposals SET applied_at = ? WHERE id = ?');
+  const discard = db.prepare('UPDATE file_proposals SET discarded_at = ? WHERE id = ?');
+
+  return {
+    insert(row: FileProposalRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): FileProposalRow | undefined {
+      return findById.get(id) as FileProposalRow | undefined;
+    },
+    listOpen(): FileProposalRow[] {
+      return listOpen.all() as FileProposalRow[];
+    },
+    markApplied(id: string, at: number): void {
+      apply.run(at, id);
+    },
+    markDiscarded(id: string, at: number): void {
+      discard.run(at, id);
     },
   };
 }

@@ -143,3 +143,100 @@ export interface ProviderStore {
   update(id: string, patch: ProviderRowPatch): void;
   remove(id: string): void;
 }
+
+// ---------------------------------------------------------------------------
+// M2 tool-broker tables (PLAN-M2.md — additive schema v3). Row profile only;
+// managers (broker/*, files/*) own validation, grants, and filesystem rules.
+// ---------------------------------------------------------------------------
+
+/** `project_roots` row — the ONLY filesystem surface the broker can see. */
+export interface ProjectRootRow {
+  id: string;
+  label: string;
+  /** Canonical absolute path (symlinks resolved at add time). */
+  path: string;
+  /** 0 | 1. Write tools refuse read-only roots. */
+  readOnly: number;
+  addedAt: number;
+}
+
+export interface ProjectRootStore {
+  insert(row: ProjectRootRow): void;
+  findById(id: string): ProjectRootRow | undefined;
+  /** Canonical path uniqueness (UNIQUE constraint); undefined when absent. */
+  findByPath(path: string): ProjectRootRow | undefined;
+  /** Creation order (oldest first). */
+  list(): ProjectRootRow[];
+  remove(id: string): void;
+}
+
+/** `grants` row — (tool, project) allow-list; expiry optional. */
+export interface GrantRow {
+  id: string;
+  toolId: string;
+  projectId: string;
+  /** 'user' in v1 (persona/skill arrive with M3/M8). */
+  source: string;
+  createdAt: number;
+  /** Epoch ms or null (never expires). */
+  expiresAt: number | null;
+  note: string | null;
+}
+
+export interface GrantStore {
+  insert(row: GrantRow): void;
+  findById(id: string): GrantRow | undefined;
+  /** ALL rows including expired ones (manager filters at read). */
+  list(): GrantRow[];
+  remove(id: string): void;
+}
+
+/** `pending_tools` row — an approval-queue entry (open until decided). */
+export interface PendingToolRow {
+  id: string;
+  toolId: string;
+  projectId: string | null;
+  /** JSON string of the original (redaction-safe by construction at the broker). */
+  params: string;
+  /** ToolRisk, denormalized so the queue renders without a manifest lookup. */
+  risk: string;
+  requestedBy: string;
+  createdAt: number;
+  decidedAt: number | null;
+  /** 'approve' | 'deny' | null while open. */
+  decision: string | null;
+  decidedBy: string | null;
+}
+
+export interface PendingToolStore {
+  insert(row: PendingToolRow): void;
+  findById(id: string): PendingToolRow | undefined;
+  /** Open rows only (decided_at IS NULL), oldest first — the approval queue. */
+  listOpen(): PendingToolRow[];
+  /** Close a row with a decision. */
+  updateDecision(id: string, decidedAt: number, decision: string, decidedBy: string): void;
+}
+
+/** `file_proposals` row — a files.edit write-preview awaiting apply/discard. */
+export interface FileProposalRow {
+  id: string;
+  projectId: string;
+  /** Relative path inside the root (POSIX form). */
+  path: string;
+  /** Original file mtime captured at proposal time (epoch ms). */
+  originalMtime: number;
+  originalContent: string | null;
+  proposedContent: string;
+  createdAt: number;
+  appliedAt: number | null;
+  discardedAt: number | null;
+}
+
+export interface FileProposalStore {
+  insert(row: FileProposalRow): void;
+  findById(id: string): FileProposalRow | undefined;
+  /** Open rows (neither applied nor discarded) newest first — pending diffs. */
+  listOpen(): FileProposalRow[];
+  markApplied(id: string, at: number): void;
+  markDiscarded(id: string, at: number): void;
+}

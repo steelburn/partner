@@ -20,6 +20,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
+import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import { redactString } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
@@ -38,6 +39,9 @@ import { ProviderError } from '../providers/errors.js';
 import type { PairingManager } from './pairing.js';
 import type { SessionInfo, SessionManager } from './session.js';
 import type { AuditService } from '../services/redaction.js';
+import type { ToolBroker } from '../broker/broker.js';
+import type { ToolErrorCode } from '../broker/errors.js';
+import { ToolError, toolErrorStatus } from '../broker/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -59,6 +63,12 @@ export interface CoreAppOptions {
    * through it (budget-wrapped); otherwise the demo/legacy fallback applies.
    */
   providerManager?: ProviderManager;
+  /**
+   * M2 tool broker (optional so M0/M1 harnesses compile unchanged). When
+   * absent the whole /v1/roots|/v1/grants|/v1/tools surface responds 501
+   * not_configured (mirrors the provider manager).
+   */
+  broker?: ToolBroker;
 }
 
 const SSE_HEADERS = {
@@ -175,8 +185,8 @@ function endpointAuditTarget(raw: unknown): string {
   }
 }
 
-function notConfigured(res: Response): void {
-  res.status(501).json({ error: 'not_configured', message: 'provider manager is not wired' });
+function notConfigured(res: Response, what = 'provider manager'): void {
+  res.status(501).json({ error: 'not_configured', message: `${what} is not wired` });
 }
 
 /** Guard: returns the providerManager or 501s (no manager wired). */
@@ -190,6 +200,35 @@ function requireProviderManager(
     return null;
   }
   return manager;
+}
+
+/** Guard: returns the M2 tool broker or 501s (no broker wired). */
+function requireBroker(options: CoreAppOptions, res: Response): ToolBroker | null {
+  const broker = options.broker;
+  if (!broker) {
+    notConfigured(res, 'tool broker');
+    return null;
+  }
+  return broker;
+}
+
+/** Send a typed ToolError response; false when err is not a ToolError. */
+function sendToolError(res: Response, err: unknown): boolean {
+  if (err instanceof ToolError) {
+    res.status(toolErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** denied reason -> loopback status (see broker/errors.ts mappings). */
+function deniedStatus(reason: string): number {
+  return toolErrorStatus(reason as ToolErrorCode);
+}
+
+/** Session kind as the audit/decision actor ('web' unless something else). */
+function actorOf(session: SessionInfo): string {
+  return session.kind !== '' ? session.kind : 'web';
 }
 
 export function createCoreApp(options: CoreAppOptions): express.Express {
@@ -599,6 +638,208 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       ? Math.min(MAX_AUDIT_LIMIT, Math.max(1, raw))
       : DEFAULT_AUDIT_LIMIT;
     res.json({ entries: audit.list(limit) });
+  });
+
+  // -------------------------------------------------------------------------
+  // M2 tool surface (PLAN-M2 wire spec) — project roots, grants, the broker
+  // exec route, the approval queue, and write-preview proposals. Everything
+  // 501s when no broker is wired. Responses use the shared wire types only;
+  // params/results with content never reach audit (broker summarizes).
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/roots', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    res.json({ roots: broker.roots.list() });
+  });
+
+  api.post('/v1/roots', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const actor = actorOf(res.locals.session as SessionInfo);
+    try {
+      const root = broker.roots.add((req.body ?? {}) as ProjectRootInput);
+      audit.log(actor, 'roots.add', root.id, { label: root.label, readOnly: root.readOnly });
+      res.status(201).json(root);
+    } catch (err) {
+      if (sendToolError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/roots/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const actor = actorOf(res.locals.session as SessionInfo);
+    const id = String(req.params.id ?? '');
+    try {
+      broker.roots.remove(id);
+      audit.log(actor, 'roots.remove', id, {});
+      res.status(204).end();
+    } catch (err) {
+      if (sendToolError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/grants', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    res.json({ grants: broker.grants.list() });
+  });
+
+  api.post('/v1/grants', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const actor = actorOf(res.locals.session as SessionInfo);
+    const body = (req.body ?? {}) as { toolId?: unknown; projectId?: unknown; note?: unknown };
+    const toolId = typeof body.toolId === 'string' ? body.toolId.trim() : '';
+    const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+    if (toolId === '') {
+      res.status(400).json({ error: 'bad_params', message: 'toolId is required' });
+      return;
+    }
+    if (!broker.manifests.some((m) => m.id === toolId)) {
+      res.status(400).json({ error: 'unknown_tool', message: 'no such tool' });
+      return;
+    }
+    if (projectId === '' || broker.roots.getById(projectId) === null) {
+      res.status(404).json({ error: 'not_found', message: 'project root not found' });
+      return;
+    }
+    const note = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : undefined;
+    const grant = broker.grants.add(toolId, projectId, note === undefined ? {} : { note });
+    audit.log(actor, 'grant.add', projectId, { toolId, projectId, grantId: grant.id, source: 'user' });
+    res.status(201).json(grant);
+  });
+
+  api.delete('/v1/grants/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const actor = actorOf(res.locals.session as SessionInfo);
+    const id = String(req.params.id ?? '');
+    try {
+      const grant = broker.grants.list().find((g) => g.id === id);
+      broker.grants.remove(id);
+      audit.log(actor, 'grants.remove', id, {
+        toolId: grant?.toolId,
+        projectId: grant?.projectId,
+      });
+      res.status(204).end();
+    } catch (err) {
+      if (sendToolError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // Broker exec + decision routes. `respondExec` maps the wire outcome to the
+  // loopback status: executed 200, needs_approval 202, denied by reason code.
+  const respondExec = (res: Response, response: ToolExecResponse): void => {
+    if (response.outcome === 'executed') {
+      res.status(200).json(response);
+      return;
+    }
+    if (response.outcome === 'needs_approval') {
+      res.status(202).json(response);
+      return;
+    }
+    res.status(deniedStatus(response.reason)).json(response);
+  };
+
+  api.post('/v1/tools/exec', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const session = res.locals.session as SessionInfo;
+    const body = (req.body ?? {}) as { tool?: unknown; params?: unknown };
+    const tool = typeof body.tool === 'string' ? body.tool : '';
+    if (tool === '') {
+      res.status(400).json({ error: 'bad_params', message: 'tool is required' });
+      return;
+    }
+    const response = broker.exec(tool, body.params, {
+      requestedBy: session.kind === 'persona' || session.kind === 'skill' ? session.kind : 'web',
+    });
+    respondExec(res, response);
+  });
+
+  api.get('/v1/tools/pending', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    res.json({ pending: broker.pending.list() });
+  });
+
+  api.post('/v1/tools/pending/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const actor = actorOf(res.locals.session as SessionInfo);
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as {
+      decision?: unknown;
+      remember?: unknown;
+      note?: unknown;
+    };
+    const decision = body.decision === 'deny' ? 'deny' : body.decision === 'approve' ? 'approve' : null;
+    if (decision === null) {
+      res.status(400).json({ error: 'bad_params', message: "decision must be 'approve' or 'deny'" });
+      return;
+    }
+    const note = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : undefined;
+    try {
+      const result = broker.decide(id, {
+        decision,
+        remember: body.remember === true,
+        ...(note !== undefined ? { note } : {}),
+      }, actor);
+      res.status(200).json(result);
+    } catch (err) {
+      if (sendToolError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/tools/proposals/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const view = broker.getProposal(String(req.params.id ?? ''));
+    if (!view) {
+      res.status(404).json({ error: 'not_found', message: 'proposal not found' });
+      return;
+    }
+    res.json(view);
+  });
+
+  api.post('/v1/proposals/:id/apply', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const session = res.locals.session as SessionInfo;
+    const proposalId = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as { projectId?: unknown };
+    const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+    if (projectId === '') {
+      res.status(400).json({ error: 'bad_params', message: 'projectId is required' });
+      return;
+    }
+    // files.apply is HIGH risk — always asks unless an explicit user grant
+    // exists (the broker decides); this route just forwards the wire params.
+    const response = broker.exec('files.apply', { projectId, proposalId }, {
+      requestedBy: session.kind === 'persona' || session.kind === 'skill' ? session.kind : 'web',
+    });
+    respondExec(res, response);
+  });
+
+  api.delete('/v1/proposals/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = requireBroker(options, res);
+    if (!broker) return;
+    const actor = actorOf(res.locals.session as SessionInfo);
+    const id = String(req.params.id ?? '');
+    try {
+      broker.discardProposal(id);
+      audit.log(actor, 'proposal.discard', id, {});
+      res.status(204).end();
+    } catch (err) {
+      if (sendToolError(res, err)) return;
+      throw err;
+    }
   });
 
   // Revoke the presented session (used by "Unpair"/"Pair again").
