@@ -44,9 +44,9 @@ describe('M11 F2 search chat tool', () => {
     const response = await external?.exec('search', { query: 'pizza' });
     expect(response).toMatchObject({ outcome: 'executed' });
     if (response?.outcome === 'executed') {
-      expect(response.result).toEqual({
-        results: [{ title: 'Hit A', url: 'https://a.example', content: 'a snippet' }],
-      });
+      expect(String(response.result.query)).toBe('pizza');
+      expect(String(response.result.result_1)).toContain('Hit A');
+      expect(String(response.result.result_1)).toContain('https://a.example');
     }
   });
 

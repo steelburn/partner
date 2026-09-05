@@ -52,6 +52,17 @@ export interface ChatToolBrokerLike {
 export interface ChatToolPassDeps {
   persona: Persona;
   broker: ChatToolBrokerLike;
+  /**
+   * M11 F2 external tools (e.g. the network search backend): manifests are
+   * merged into the catalog; `allow` gates them (default-deny); `exec` may
+   * be async (network). Only EXTERNAL-manifest tools ever dispatch here —
+   * broker tools always stay on broker.exec.
+   */
+  external?: {
+    manifests: ReadonlyArray<ToolManifest>;
+    allow(toolId: string): boolean;
+    exec(toolId: string, args: Record<string, unknown>): Promise<ToolExecResponse> | ToolExecResponse;
+  };
   audit: AuditService;
   /** Persist a system note into the conversation transcript (no-op guard). */
   appendSystemNote: (content: string) => void;
@@ -68,7 +79,10 @@ export interface ChatToolPassResult {
 }
 
 /** Run every directive in the assistant reply text through gate + broker. */
-export function runChatToolPass(text: string, deps: ChatToolPassDeps): ChatToolPassResult {
+export async function runChatToolPass(
+  text: string,
+  deps: ChatToolPassDeps,
+): Promise<ChatToolPassResult> {
   return runToolDirectives(
     parseReplyTools(text).map((directive) => ({
       toolId: directive.toolId,
@@ -85,10 +99,10 @@ export function runChatToolPass(text: string, deps: ChatToolPassDeps): ChatToolP
  *
  * @param calls native calls (name + raw JSON-string arguments)
  */
-export function runNativeToolCalls(
+export async function runNativeToolCalls(
   calls: Array<{ id?: string | null; name?: string | null; arguments?: string | null }>,
   deps: ChatToolPassDeps,
-): ChatToolPassResult {
+): Promise<ChatToolPassResult> {
   const directives: Array<{ toolId: string; args: Record<string, unknown> }> = [];
   for (const call of calls) {
     const toolId = typeof call.name === 'string' && call.name.trim() !== '' ? call.name.trim() : '';
@@ -109,19 +123,23 @@ export function runNativeToolCalls(
   return runToolDirectives(directives, deps);
 }
 
-function runToolDirectives(
+async function runToolDirectives(
   directives: Array<{ toolId: string; args: Record<string, unknown> }>,
   deps: ChatToolPassDeps,
-): ChatToolPassResult {
+): Promise<ChatToolPassResult> {
   const { persona, broker, audit } = deps;
   const now = deps.now ?? Date.now;
   const manifestById = new Map<string, ToolManifest>(broker.manifests.map((m) => [m.id, m]));
+  const externalById = new Map<string, ToolManifest>(
+    (deps.external?.manifests ?? []).map((m) => [m.id, m]),
+  );
   const decisions: ChatToolDecision[] = [];
 
   for (const directive of directives) {
-    const outcome = handleDirective(
+    const outcome = await handleDirective(
       { toolId: directive.toolId, args: directive.args },
       manifestById,
+      externalById,
       deps,
       now(),
     );
@@ -143,23 +161,37 @@ function runToolDirectives(
   return { decisions };
 }
 
-function handleDirective(
+async function handleDirective(
   directive: PersonaToolDirective,
   manifestById: Map<string, ToolManifest>,
+  externalById: Map<string, ToolManifest>,
   deps: ChatToolPassDeps,
   at: number,
-): ChatToolDecision | null {
+): Promise<ChatToolDecision | null> {
   const { persona, broker, appendSystemNote } = deps;
   const toolId = directive.toolId;
-  const manifest = manifestById.get(toolId);
+  const externalManifest = externalById.get(toolId);
+  const manifest = manifestById.get(toolId) ?? externalManifest;
   if (manifest === undefined) {
     appendSystemNote(`The tool "${toolId}" is not available — continue without it.`);
     return { toolId, decision: 'refused', reason: 'unknown_tool' };
   }
 
+  // External tools are user-gated (e.g. search must be enabled + keyed).
+  if (externalManifest !== undefined && deps.external?.allow(toolId) !== true) {
+    appendSystemNote(
+      `The tool "${toolId}" is disabled — enable it (and configure it) before asking for it.`,
+    );
+    return { toolId, decision: 'refused', reason: 'external_disabled' };
+  }
+
   const args = directive.args ?? {};
   const projectId = typeof args.projectId === 'string' ? args.projectId : '';
-  const hasGrant = projectId !== '' ? broker.grants.hasGrant(toolId, projectId, at) : false;
+  // External tools have no project grant; "enabled backend" IS the consent.
+  const hasGrant =
+    projectId !== ''
+      ? broker.grants.hasGrant(toolId, projectId, at)
+      : externalManifest !== undefined;
 
   const gate = authorizeTool(persona.independence.level, manifest, {
     toolId,
@@ -175,6 +207,14 @@ function handleDirective(
   }
 
   if (gate.decision === 'queued') {
+    if (externalManifest !== undefined) {
+      // External tools only run at levels the gate allowed as granted
+      // (medium risk needs auto+); there is no project approval queue here.
+      appendSystemNote(
+        `The tool "${toolId}" needs an auto-or-above persona with the backend enabled — nothing ran.`,
+      );
+      return { toolId, decision: 'refused', reason: 'needs_grant_or_level' };
+    }
     if (projectId === '') {
       appendSystemNote(
         `The tool "${toolId}" needs a projectId argument — nothing was executed.`,
@@ -201,9 +241,15 @@ function handleDirective(
     return { toolId, decision: 'queued', pendingId };
   }
 
-  // gate: executed — run through the broker (a grant was present at gate
-  // time; a mid-flight revocation surfaces as needs_approval).
-  const response = broker.exec(toolId, args, { requestedBy: 'persona' });
+  // gate: executed. Broker tools run on the broker; EXTERNAL tools run on
+  // the external executor (the dispatch bug of an earlier draft — dispatching
+  // broker tools to the external executor — is fixed by the manifest check).
+  let response: ToolExecResponse;
+  if (externalManifest !== undefined && deps.external !== undefined) {
+    response = await deps.external.exec(toolId, args);
+  } else {
+    response = broker.exec(toolId, args, { requestedBy: 'persona' });
+  }
   if (response.outcome === 'executed') {
     const summary = summarizeToolResult(response.result ?? {});
     appendSystemNote(`[tool ${toolId} result]\n${summary}\n[end tool ${toolId} result]`);

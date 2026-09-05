@@ -314,3 +314,118 @@ describe('M11 F2 native tool calls (route)', () => {
     }
   });
 });
+
+describe('M11 F2 chat search tool (route)', () => {
+  it('executes a directive search through the enabled backend and persists the result note', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      // Fake Tavily backend on loopback.
+      const backend = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { query?: string };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              results: [{ title: body.query ?? 'q', url: 'https://found.example', content: 'search snippet body' }],
+            }),
+          );
+        });
+      });
+      await new Promise<void>((done) => backend.listen(0, '127.0.0.1', done));
+      const { port } = backend.address() as AddressInfo;
+      servers.push({
+        close: async () => {
+          backend.closeAllConnections?.();
+          await new Promise<void>((r) => backend.close(() => r()));
+        },
+      });
+      const search = h.search as NonNullable<Harness['search']>;
+      search.updateConfig({ enabled: true, provider: 'tavily', endpoint: `http://127.0.0.1:${port}/search` });
+      await search.setKey('sk-chat-search-1234567890');
+
+      const upstream = await startDirectiveUpstream(
+        'Let me look.\n[[partner:tool search {"query":"pizza recipes"}]]',
+      );
+      servers.push(upstream);
+      const provider = await h.providerManager.create({
+        name: 'search-upstream',
+        endpoint: upstream.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-search-chat-12345678');
+
+      const analyst = h.personas.get('p-analyst');
+      await request(h.app)
+        .put(`/v1/personas/${analyst?.id}`)
+        .set(authed(token))
+        .send({
+          name: analyst?.name,
+          character: analyst?.character,
+          model: analyst?.model,
+          independence: { level: 'auto', requireHumanFor: ['high'], autoScopes: [] },
+          memory: analyst?.memory,
+          isDefault: analyst?.isDefault,
+        });
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-analyst', messages: [{ role: 'user', content: 'search the web' }] });
+      expect(chat.status).toBe(200);
+      const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(chat.text);
+      const detail = h.conversations.get(meta?.[1] ?? '');
+      const note = detail.messages.find((m) => m.content.includes('[tool search result]'));
+      expect(note).toBeDefined();
+      expect(note?.content).toContain('found.example'); // snippet kept in the note
+      const audit = h.audit.query({ limit: 20, action: 'chat.tool' });
+      expect(audit.some((r) => r.target === 'search' && r.details.includes('executed'))).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses the search directive when the backend is disabled (default-deny)', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const upstream = await startDirectiveUpstream(
+        'I would search.\n[[partner:tool search {"query":"anything"}]]',
+      );
+      servers.push(upstream);
+      const provider = await h.providerManager.create({
+        name: 'search-off-upstream',
+        endpoint: upstream.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-search-off-12345678');
+      const analyst = h.personas.get('p-analyst');
+      await request(h.app)
+        .put(`/v1/personas/${analyst?.id}`)
+        .set(authed(token))
+        .send({
+          name: analyst?.name,
+          character: analyst?.character,
+          model: analyst?.model,
+          independence: { level: 'auto', requireHumanFor: ['high'], autoScopes: [] },
+          memory: analyst?.memory,
+          isDefault: analyst?.isDefault,
+        });
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-analyst', messages: [{ role: 'user', content: 'search the web' }] });
+      expect(chat.status).toBe(200);
+      const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(chat.text);
+      const detail = h.conversations.get(meta?.[1] ?? '');
+      const note = detail.messages.find((m) => m.content.includes('is disabled'));
+      expect(note).toBeDefined();
+      expect(note?.content).toContain('enable it');
+    } finally {
+      h.close();
+    }
+  });
+});

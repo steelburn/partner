@@ -145,6 +145,16 @@ production build green):
       + route tests. Chat-integration of the search tool itself and a UI
       panel remain for a later slice.
 
+- [x] **F2 search IN CHAT** — the tool pass became async with an
+      external-executor seam; dispatch is fixed to EXTERNAL manifests only
+      (the earlier draft bug that routed broker tools through the search
+      executor is root-caused + corrected), so `search` directives/native
+      calls run against the enabled backend (auto+ personas; disabled
+      backend = default-deny `external_disabled` note) while broker tools
+      stay on broker.exec. Results are flattened so the summarizer keeps
+      titles/urls/snippets in the persisted note. Route-integration tests
+      cover enabled-execute and disabled-refuse.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet

@@ -90,6 +90,7 @@ import type { SearchManager } from '../search/manager.js';
 import { SearchError, searchErrorStatus } from '../search/errors.js';
 import { applyStructuredGuidance } from '../chat/instructions.js';
 import { runChatToolPass, runNativeToolCalls } from '../chat/toolPass.js';
+import { searchToolExternal } from '../search/tool.js';
 import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
@@ -1382,6 +1383,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           options.broker !== undefined
         ) {
           const activeConversationId: string = conversationId;
+          const searchExternal = searchToolExternal(options.search);
           try {
             const appendSystemNote = (content: string): void => {
               try {
@@ -1399,17 +1401,19 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 logPersistenceFailure('tool note', noteErr);
               }
             };
-            runChatToolPass(deltaText, {
+            await runChatToolPass(deltaText, {
               persona: routingPersona,
               broker: options.broker,
+              external: searchExternal,
               audit,
               appendSystemNote,
             });
             // M11 F2 native function calls (same gate/broker, same notes).
             if (nativeCalls.length > 0) {
-              runNativeToolCalls(nativeCalls, {
+              await runNativeToolCalls(nativeCalls, {
                 persona: routingPersona,
                 broker: options.broker,
+                external: searchExternal,
                 audit,
                 appendSystemNote,
               });

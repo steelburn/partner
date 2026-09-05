@@ -42,16 +42,13 @@ export function searchToolExternal(search: SearchManager | undefined): SearchToo
       if (query === '') return { outcome: 'denied', reason: 'missing_query' };
       try {
         const result = await search.search(query, 5);
-        return {
-          outcome: 'executed',
-          result: {
-            results: result.hits.map((hit) => ({
-              title: hit.title,
-              url: hit.url,
-              content: hit.snippet,
-            })),
-          },
-        };
+        // Flatten hits to scalars so the generic summarizer keeps titles,
+        // urls and snippets legible in the persisted system note.
+        const flat: Record<string, unknown> = { query };
+        result.hits.forEach((hit, index) => {
+          flat[`result_${index + 1}`] = [hit.title, hit.url, hit.snippet ?? ''].filter(Boolean).join('\n');
+        });
+        return { outcome: 'executed', result: flat };
       } catch (err) {
         return {
           outcome: 'denied',
