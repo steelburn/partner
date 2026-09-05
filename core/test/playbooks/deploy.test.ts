@@ -114,7 +114,7 @@ describe('deploy package step', () => {
       for (const file of result.files) {
         expect(existsSync(file), file).toBe(true);
       }
-      const names = result.files.map((f) => f.split('/').pop());
+      const names = result.files.map((f) => f.split(/[\\/]/).pop());
       expect(names).toEqual(expect.arrayContaining(['Dockerfile', '.dockerignore', 'README.md', 'build.sh']));
 
       // Dockerfile text: node:20-alpine, PORT env, CMD core-bundle.cjs — and
@@ -126,9 +126,12 @@ describe('deploy package step', () => {
       expect(result.dockerfile).not.toContain('deploy');
       expect(readFileSync(join(outDir, 'Dockerfile'), 'utf8')).toBe(result.dockerfile);
 
-      // build.sh is executable and references the project dir for the caller.
-      const mode = statSync(join(outDir, 'build.sh')).mode;
-      expect(mode & 0o111).not.toBe(0);
+      // build.sh is executable (POSIX hosts only — Windows has no exec bit)
+      // and references the project dir for the caller.
+      if (process.platform !== 'win32') {
+        const mode = statSync(join(outDir, 'build.sh')).mode;
+        expect(mode & 0o111).not.toBe(0);
+      }
       expect(readFileSync(join(outDir, 'build.sh'), 'utf8')).toContain(projectDir);
 
       // README documents the environment gate (no live push in M9).

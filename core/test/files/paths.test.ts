@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { canonicalize, resolveInRoot } from '../../src/files/paths.js';
 import type { ToolError } from '../../src/broker/errors.js';
-import { makeTempRoot, removeTempRoot } from '../helpers.js';
+import { makeTempRoot, removeTempRoot, canCreateSymlinks } from '../helpers.js';
 
 const dirs: string[] = [];
 
@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe('canonicalize', () => {
-  it('resolves symlinks to the real path', () => {
+  it.skipIf(!canCreateSymlinks())('resolves symlinks to the real path', () => {
     const root = tempDir();
     mkdirSync(join(root, 'real-dir'));
     symlinkSync(join(root, 'real-dir'), join(root, 'alias'));
@@ -98,7 +98,7 @@ describe('resolveInRoot rejections', () => {
     expectCode(() => resolveInRoot(root, 'C:/Windows/x'), 'outside_root');
   });
 
-  it('rejects a symlink whose realpath escapes the root (dir and file links)', () => {
+  it.skipIf(!canCreateSymlinks())('rejects a symlink whose realpath escapes the root (dir and file links)', () => {
     const root = tempDir();
     const outside = tempDir();
     writeFileSync(join(outside, 'secret.txt'), 'secret');
@@ -121,7 +121,7 @@ describe('resolveInRoot rejections', () => {
     expectCode(() => resolveInRoot(root, 'no/file.txt'), 'outside_root');
   });
 
-  it('accepts a symlink that stays INSIDE the root', () => {
+  it.skipIf(!canCreateSymlinks())('accepts a symlink that stays INSIDE the root', () => {
     const root = tempDir();
     mkdirSync(join(root, 'real'));
     writeFileSync(join(root, 'real', 'ok.txt'), 'ok');

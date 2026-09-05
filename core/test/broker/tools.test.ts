@@ -25,7 +25,7 @@ import type { FileTools } from '../../src/files/tools.js';
 import type { ProjectRoot } from '@partner/shared/tools.js';
 import type { ToolError } from '../../src/broker/errors.js';
 import type { FileProposalStore } from '../../src/stores/types.js';
-import { makeTempRoot, removeTempRoot } from '../helpers.js';
+import { makeTempRoot, removeTempRoot, canCreateSymlinks } from '../helpers.js';
 
 const dirs: string[] = [];
 
@@ -166,7 +166,7 @@ describe('files.read', () => {
 });
 
 describe('files.search', () => {
-  it('finds plain text and skips node_modules, .git, .partner-trash, symlinks and binaries', () => {
+  it.skipIf(!canCreateSymlinks())('finds plain text and skips node_modules, .git, .partner-trash, symlinks and binaries', () => {
     const { tools, root, rootPath } = env();
     const outside = tempRoot();
     write(outside, 'out.txt', 'needle outside root');

@@ -403,13 +403,20 @@ describe('skill runner — budgets, crashes, caps, env', () => {
       const skill = fixtureSkill(env, 'env-skill', `export function run(){
         return {
           hasHome: 'HOME' in process.env,
-          hasPath: 'PATH' in process.env,
+          pathValue: process.env.PATH ?? null,
           skillDirSet: process.env.PARTNER_SKILL_DIR !== undefined,
         };
       }`);
       const out = await invoke(env, skill);
       expect(out.ok).toBe(true);
-      expect(out.result).toEqual({ hasHome: false, hasPath: false, skillDirSet: true });
+      const result = out.result as { hasHome: boolean; pathValue: string | null; skillDirSet: boolean };
+      // HOME never reaches the worker on any platform.
+      expect(result.hasHome).toBe(false);
+      // PATH is absent entirely on POSIX; on Windows the OS injects a PATH
+      // slot but the runner pins it to '' so the core's PATH never leaks.
+      expect(result.pathValue === null || result.pathValue === '').toBe(true);
+      // The worker still gets its three knobs.
+      expect(result.skillDirSet).toBe(true);
     } finally {
       env.close();
     }

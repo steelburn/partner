@@ -237,11 +237,16 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
 
     const child: ChildProcess = fork(workerPath, [], {
       // Minimal env on purpose: the skill never inherits the core's
-      // environment (keys/PATH) — only its own three knobs.
+      // environment (keys/PATH) — only its own three knobs. On Windows,
+      // child_process merges parent variables (PATH among them) into any
+      // env that omits them, so pin PATH to empty there — the worker boots
+      // via process.execPath and never needs the parent's PATH, and a skill
+      // cannot reach host tooling through it.
       env: {
         PARTNER_SKILL_DIR: skillDir,
         PARTNER_SKILL_ENTRY: skill.manifest.entrypoint,
         PARTNER_SKILL_MAX_RESULT_BYTES: String(maxResultBytes),
+        ...(process.platform === 'win32' ? { PATH: '' } : {}),
       },
       // Run from INSIDE the store dir so bare-specifier resolution cannot
       // walk up into the repo's node_modules (M8 review finding 2 — belt).

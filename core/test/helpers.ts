@@ -9,7 +9,7 @@
  * with {@link makeTempRoot} (node:os tmpdir + mkdtemp) and removed by the
  * test.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -561,7 +561,60 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   };
 }
 
-/** Recursively remove a {@link makeTempRoot} directory (test teardown). */
+/**
+ * Recursively remove a {@link makeTempRoot} directory (test teardown).
+ *
+ * On Windows, child processes spawned inside the root (skill workers, etc.)
+ * release their cwd/file handles asynchronously and antivirus scanners can
+ * briefly pin files, so a single rmSync races and throws EBUSY/EPERM. Retry
+ * with a short backoff before giving up — harmless elsewhere.
+ */
 export function removeTempRoot(path: string): void {
-  rmSync(path, { recursive: true, force: true });
+  let lastError: unknown;
+  // rmSync's own maxRetries covers short Windows handle-release/AV races;
+  // the outer loop adds a bounded pause between full attempts.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 40 });
+      return;
+    } catch (error) {
+      lastError = error;
+      const end = Date.now() + 80 * (attempt + 1);
+      while (Date.now() < end) {
+        /* short sync pause — teardown only */
+      }
+    }
+  }
+  throw lastError;
+}
+
+let symlinkSupportedCache: boolean | undefined;
+
+/**
+ * Whether this OS/test-runner can actually create symlinks. Windows without
+ * Developer Mode (or an elevated shell) throws EPERM on symlinkSync, so the
+ * path-escape tests that NEED real symlinks cannot run there.
+ */
+export function canCreateSymlinks(): boolean {
+  if (symlinkSupportedCache !== undefined) return symlinkSupportedCache;
+  let probe: string | undefined;
+  try {
+    probe = makeTempRoot();
+    const target = join(probe, 'target');
+    const link = join(probe, 'link');
+    mkdirSync(target);
+    symlinkSync(target, link);
+    symlinkSupportedCache = true;
+  } catch {
+    symlinkSupportedCache = false;
+  } finally {
+    if (probe !== undefined) {
+      try {
+        rmSync(probe, { recursive: true, force: true });
+      } catch {
+        /* probe cleanup best-effort */
+      }
+    }
+  }
+  return symlinkSupportedCache;
 }

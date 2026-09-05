@@ -3,6 +3,7 @@
  * directory, canonicalizes + symlink-resolves it, rejects duplicates; list /
  * getById / remove behave; the four M2 tables exist on a fresh schema v3 db.
  */
+import { makeTempRoot, removeTempRoot, canCreateSymlinks } from '../helpers.js';
 import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,7 +11,6 @@ import { openDatabase, createProjectRootStore } from '../../src/stores/db.js';
 import { createProjectRootManager } from '../../src/broker/roots.js';
 import type { ProjectRootManager } from '../../src/broker/roots.js';
 import type { ToolError } from '../../src/broker/errors.js';
-import { makeTempRoot, removeTempRoot } from '../helpers.js';
 
 const dirs: string[] = [];
 
@@ -42,7 +42,7 @@ describe('project root manager', () => {
     db.close();
   });
 
-  it('add requires an absolute existing directory and canonicalizes', () => {
+  it.skipIf(!canCreateSymlinks())('add requires an absolute existing directory and canonicalizes', () => {
     const { manager } = newManager();
     const dir = tempDir();
     mkdirSync(join(dir, 'nested'));
