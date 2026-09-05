@@ -49,9 +49,7 @@ jobs:
           # (the default enumerator chokes on the newer VS installs) and a
           # python version node-gyp supports.
           npm_config_msvs_version: '2022'
-        run: |
-          npm install
-          npm install -D @tauri-apps/cli
+        run: npm ci
 
       - name: Real icons (regenerate from source)
         run: |
