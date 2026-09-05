@@ -479,12 +479,19 @@ describe('chat-time tailoring over the wire', () => {
 
       expect(upstream.bodies).toHaveLength(1);
       const sent = upstream.bodies[0];
+      const researcher = h.personas.get('p-researcher');
+      // M4 order: profile prelude first, then the persona identity system
+      // prompt (M3 multi-turn fix), then the client's user message.
       expect(sent?.messages[0]).toEqual({
         role: 'system',
         content:
           '<Partner profile you should honor>\n- preference: always start with a tldr (evidence: in 6 of 10 asks)',
       });
-      expect(sent?.messages[1]).toEqual({ role: 'user', content: 'help me write' });
+      expect(sent?.messages[1]).toEqual({
+        role: 'system',
+        content: researcher?.character.systemPrompt,
+      });
+      expect(sent?.messages[2]).toEqual({ role: 'user', content: 'help me write' });
 
       // The prelude is NOT persisted: only user + assistant turns exist.
       const meta = events.find((e) => e.type === 'done_meta') as
@@ -521,8 +528,14 @@ describe('chat-time tailoring over the wire', () => {
         .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
       expect(chat.status).toBe(200);
       const sent = upstream.bodies[0];
-      // First message is the client's own — no injected system prelude.
-      expect(sent?.messages[0]).toEqual({ role: 'user', content: 'hi' });
+      const researcher = h.personas.get('p-researcher');
+      // No prelude (no confirmed GLOBAL entries): the persona identity
+      // system prompt leads, then the client's own user message.
+      expect(sent?.messages[0]).toEqual({
+        role: 'system',
+        content: researcher?.character.systemPrompt,
+      });
+      expect(sent?.messages[1]).toEqual({ role: 'user', content: 'hi' });
     } finally {
       h.close();
     }

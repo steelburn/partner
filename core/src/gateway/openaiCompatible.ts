@@ -240,6 +240,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
             messages: req.messages,
             stream: true,
             stream_options: { include_usage: true },
+            ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
           }),
           signal: controller.signal,
         });

@@ -51,6 +51,8 @@ export interface ChatRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  /** Sampling temperature override (persona character); omitted = upstream default. */
+  temperature?: number;
   /** External cancellation (e.g. client disconnect / budget stop). When it
    *  fires the provider stream is aborted WITHOUT an error event. */
   signal?: AbortSignal;

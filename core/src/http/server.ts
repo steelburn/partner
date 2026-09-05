@@ -31,7 +31,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
-import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient, ProviderSummary } from '@partner/shared';
+import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
@@ -205,6 +205,62 @@ const MAX_AUDIT_LIMIT = 500;
 /** The origin used for session binding is the (allowlisted) Host header. */
 function originOf(req: Request): string {
   return String(req.headers.host ?? '').toLowerCase();
+}
+
+/**
+ * Cap on the persisted prior turns replayed into the upstream request when
+ * the client sends only the newest user message (M3 multi-turn contract:
+ * the SPA posts one message + conversationId; the core rebuilds context).
+ */
+const MAX_CONTEXT_MESSAGES = 40;
+
+/**
+ * Assemble the upstream message list for a chat turn.
+ *
+ * Order: persona system prompt (identity) -> M4 profile prelude (context) ->
+ * prior persisted turns (only when the client sent the newest user turn and
+ * the conversation already has history) -> the request's own messages.
+ * When the client already supplied a full transcript (2+ messages) it is
+ * used verbatim — no history is replayed to avoid duplication.
+ */
+function assembleRequestMessages(input: {
+  persona: Persona | null;
+  /** Stored prior turns (oldest first, current turn NOT included). */
+  history: ConversationMessage[];
+  /** Sanitized request body messages. */
+  requestMessages: ChatMessage[];
+  /** M4 profile tailoring to honor (already trimmed to null when absent). */
+  profilePrelude?: string | null;
+}): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  // M4 profile prelude keeps its documented position as the FIRST system
+  // message when active (memoryRoutes contract); the persona's identity
+  // system prompt follows it.
+  if (
+    input.profilePrelude !== undefined &&
+    input.profilePrelude !== null &&
+    input.profilePrelude.trim() !== ''
+  ) {
+    out.push({
+      role: 'system',
+      content: '<Partner profile you should honor>\n' + input.profilePrelude,
+    });
+  }
+  const systemPrompt = input.persona?.character.systemPrompt.trim() ?? '';
+  if (systemPrompt !== '') {
+    out.push({ role: 'system', content: systemPrompt });
+  }
+  const singleNewUserTurn =
+    input.requestMessages.length === 1 && input.requestMessages[0]?.role === 'user';
+  if (singleNewUserTurn && input.history.length > 0) {
+    for (const row of input.history.slice(-MAX_CONTEXT_MESSAGES)) {
+      out.push({ role: row.role, content: row.content });
+    }
+  }
+  for (const message of input.requestMessages) {
+    out.push(message);
+  }
+  return out;
 }
 
 function sanitizeMessages(input: unknown): ChatMessage[] | null {
@@ -812,6 +868,22 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       console.error(`[partner-core] chat persist (${what}) failed:`, redactString(message));
     };
 
+    // Prior persisted turns (oldest first) captured AFTER the auto
+    // conversation exists but BEFORE the current user turn is appended, so
+    // the upstream context never duplicates the incoming message. Set by
+    // whichever branch streams the turn (managed or legacy/demo).
+    let priorHistory: ConversationMessage[] = [];
+    const capturePriorHistory = (): void => {
+      if (conversationId === null) return;
+      try {
+        const detail = (conversationManager as ConversationManager).get(conversationId);
+        priorHistory = detail.messages;
+      } catch (err) {
+        priorHistory = [];
+        logPersistenceFailure('history', err);
+      }
+    };
+
     const ensureConversation = (): void => {
       if (!persist || conversationId !== null) return;
       try {
@@ -956,6 +1028,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // The turn will stream: create the auto conversation + persist the
       // incoming user message BEFORE streaming (best effort).
       ensureConversation();
+      capturePriorHistory();
       persistUserTurn();
 
       res.status(200);
@@ -978,28 +1051,29 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       };
       res.on('close', abortOnClose);
 
-      // M4 chat-time tailoring (PLAN-M4.md): when a persona routes through a
-      // provider AND confirmed-global profile entries exist, PREPEND the
-      // profile prelude as a system message to the UPSTREAM request only.
-      // Demo and one-shot paths never reach here, the injected prelude is
-      // never persisted (only user+assistant turns are stored), and the
-      // chat.stream audit count still reflects the client's own messages.
-      let requestMessages: ChatMessage[] = messages;
-      if (routingPersona !== null && options.memory) {
-        const tailoring = buildTailoring(options.memory.profile, routingPersona.id);
-        if (tailoring !== null) {
-          requestMessages = [
-            { role: 'system', content: '<Partner profile you should honor>\n' + tailoring },
-            ...messages,
-          ];
-        }
-      }
+      // Upstream context (M3 multi-turn + persona identity): the persona's
+      // system prompt first, then the M4 profile prelude, then the prior
+      // persisted turns (SPA sends only the newest user message) and finally
+      // the request's own messages. The prelude is never persisted.
+      const tailoring =
+        routingPersona !== null && options.memory
+          ? buildTailoring(options.memory.profile, routingPersona.id)
+          : null;
+      const requestMessages = assembleRequestMessages({
+        persona: routingPersona,
+        history: priorHistory,
+        requestMessages: messages,
+        profilePrelude: tailoring,
+      });
 
       const chatRequest: ChatRequest = {
         model,
         messages: requestMessages,
         stream: true,
         signal: controller.signal,
+        ...(routingPersona !== null
+          ? { temperature: routingPersona.character.temperature }
+          : {}),
       };
       let events = 0;
       let ok = true;
@@ -1121,9 +1195,19 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
 
     // The turn will stream: auto conversation + persisted user turn first.
     ensureConversation();
+    capturePriorHistory();
     persistUserTurn();
 
-    const chatRequest: ChatRequest = { model, messages, stream: true };
+    const chatRequest: ChatRequest = {
+      model,
+      messages: assembleRequestMessages({
+        persona: routingPersona,
+        history: priorHistory,
+        requestMessages: messages,
+      }),
+      stream: true,
+      ...(routingPersona !== null ? { temperature: routingPersona.character.temperature } : {}),
+    };
 
     res.status(200);
     res.set(SSE_HEADERS);
