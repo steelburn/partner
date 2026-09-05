@@ -77,18 +77,23 @@ jobs:
 
       - name: Sidecar placeholder (renamed node, per Tauri triple)
         run: |
-          for /f "delims=" %%i in ('where node') do @copy /y "%%i" shell\src-tauri\binaries\partner-core-x86_64-pc-windows-msvc.exe >nul
+          for /f "delims=" %%i in ('where node') do @copy /y "%%i" shell\src-tauri\binaries\partner-core-x86_64-pc-windows-msvc.exe
+          if not exist shell\src-tauri\binaries\partner-core-x86_64-pc-windows-msvc.exe (echo SIDECAR_COPY_FAILED & exit /b 1)
 
       - name: Stage shell resources (self-contained core bundle)
         run: |
           if not exist shell\src-tauri\resources mkdir shell\src-tauri\resources
-          copy /y shell\artifacts\core-bundle.cjs shell\src-tauri\resources\core-bundle.cjs >nul
+          copy /y shell\artifacts\core-bundle.cjs shell\src-tauri\resources\core-bundle.cjs || (echo BUNDLE_COPY_FAILED & exit /b 1)
           if exist shell\src-tauri\resources\node_modules rmdir /s /q shell\src-tauri\resources\node_modules
-          xcopy /e /i /q /y shell\artifacts\node_modules shell\src-tauri\resources\node_modules >nul
+          xcopy /e /i /y shell\artifacts\node_modules shell\src-tauri\resources\node_modules || (echo NODE_MODULES_COPY_FAILED & exit /b 1)
           if exist shell\src-tauri\resources\web-dist rmdir /s /q shell\src-tauri\resources\web-dist
-          xcopy /e /i /q /y web\dist shell\src-tauri\resources\web-dist >nul
+          xcopy /e /i /y web\dist shell\src-tauri\resources\web-dist || (echo WEBDIST_COPY_FAILED & exit /b 1)
           if exist shell\src-tauri\resources\skills-catalog rmdir /s /q shell\src-tauri\resources\skills-catalog
-          xcopy /e /i /q /y skills-catalog shell\src-tauri\resources\skills-catalog >nul
+          xcopy /e /i /y skills-catalog shell\src-tauri\resources\skills-catalog || (echo SKILLS_COPY_FAILED & exit /b 1)
+          echo --- staged resources tree ---
+          dir shell\src-tauri\resources
+          dir /s /b shell\src-tauri\resources\core-bundle.cjs shell\src-tauri\resources\node_modules shell\src-tauri\resources\web-dist shell\src-tauri\resources\skills-catalog 2>nul | find /c "."
+          echo --- end staged resources ---
 
       - name: Build + bundle (NSIS)
         run: |
