@@ -17,6 +17,7 @@ import {
   normalizeEndpoint,
   parseBudgetDollars,
   parseModelList,
+  remainingBudgetLabel,
   sourceLabel,
   validateEndpoint,
 } from './lib/providers.js';
@@ -293,6 +294,13 @@ function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }:
   const modelCount = provider.defaultModels.length || provider.health.models.length;
   const health = describeHealth(provider.health, modelCount);
   const budget = budgetLabel(provider.budgetCents);
+  // M10: the providers list carries current window spend for budgeted
+  // providers — show how much of the cap is left this window.
+  const withSpend = provider as ProviderSummary & { spentCents?: number | null };
+  const remaining =
+    withSpend.spentCents === undefined || withSpend.spentCents === null
+      ? null
+      : remainingBudgetLabel(provider.budgetCents, withSpend.spentCents);
   const idle = busy === null;
 
   return (
@@ -349,7 +357,12 @@ function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }:
       ) : null}
 
       <p className={`health health-${health.tone}`}>{health.text}</p>
-      {budget ? <p className="provider-budget">{budget}</p> : null}
+      {budget ? (
+        <p className="provider-budget">
+          {budget}
+          {remaining ? ` · ${remaining}` : ''}
+        </p>
+      ) : null}
 
       {keyOpen ? (
         <form

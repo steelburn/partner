@@ -67,6 +67,31 @@ export function budgetLabel(budgetCents: number | null): string | null {
   return `$${dollars} / session`;
 }
 
+/**
+ * Remaining-budget fragment for a budgeted provider when the core reports
+ * current window spend (M10 ledger). null when there is no cap or no spend
+ * data. 1000/250 -> "$7.50 of $10 left this window".
+ */
+export function remainingBudgetLabel(
+  budgetCents: number | null | undefined,
+  spentCents: number | null | undefined,
+): string | null {
+  if (
+    budgetCents === null ||
+    budgetCents === undefined ||
+    !Number.isFinite(budgetCents) ||
+    spentCents === null ||
+    spentCents === undefined ||
+    !Number.isFinite(spentCents)
+  ) {
+    return null;
+  }
+  const left = Math.max(0, budgetCents - spentCents);
+  const money = (cents: number): string =>
+    `$${(cents / 100).toFixed(2).replace(/\.00$/, '')}`;
+  return `${money(left)} of ${money(budgetCents)} left this window`;
+}
+
 export type HealthTone = 'ok' | 'error' | 'unknown';
 
 export interface HealthLine {

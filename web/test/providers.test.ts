@@ -5,6 +5,7 @@ import {
   normalizeEndpoint,
   parseBudgetDollars,
   parseModelList,
+  remainingBudgetLabel,
   sourceLabel,
   validateEndpoint,
 } from '../src/lib/providers.js';
@@ -72,6 +73,17 @@ describe('budgetLabel', () => {
     expect(budgetLabel(200)).toBe('$2 / session');
     expect(budgetLabel(250)).toBe('$2.50 / session');
     expect(budgetLabel(255)).toBe('$2.55 / session');
+  });
+});
+
+describe('remainingBudgetLabel', () => {
+  it('renders remaining-of-cap only when both sides are known', () => {
+    expect(remainingBudgetLabel(null, 10)).toBeNull();
+    expect(remainingBudgetLabel(1000, undefined)).toBeNull();
+    expect(remainingBudgetLabel(1000, null)).toBeNull();
+    expect(remainingBudgetLabel(1000, 250)).toBe('$7.50 of $10 left this window');
+    expect(remainingBudgetLabel(100, 100)).toBe('$0 of $1 left this window');
+    expect(remainingBudgetLabel(100, 999)).toBe('$0 of $1 left this window');
   });
 });
 
