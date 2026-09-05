@@ -17,12 +17,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { ChatEvent, ChatMessage } from '@partner/shared';
+import type { ChatMessage } from '@partner/shared';
 import { demoHarness, ALLOWED_HOST } from '../helpers.js';
 import type { Harness } from '../helpers.js';
 import { sseReply } from '../support/server.js';
 
 const PROVISIONED_KEY = 'sk-test-0123456789abcdef';
+
+/** Loose SSE event shape — server events include done_meta, which is not a
+ *  member of the shared ChatEvent union used by the streaming clients. */
+interface AnyServerEvent {
+  type: string;
+  [key: string]: unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Capturing upstream: /models + /chat/completions that records request BODIES
@@ -91,7 +98,7 @@ function doneMeta(text: string): { messageId: string; conversationId: string } {
   const meta = text
     .split('\n')
     .filter((line) => line.startsWith('data: '))
-    .map((line) => JSON.parse(line.slice(6)) as ChatEvent)
+    .map((line) => JSON.parse(line.slice(6)) as AnyServerEvent)
     .find((e) => e.type === 'done_meta') as { messageId: string; conversationId: string } | undefined;
   expect(meta).toBeDefined();
   return meta as { messageId: string; conversationId: string };
