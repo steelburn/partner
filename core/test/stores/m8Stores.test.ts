@@ -4,7 +4,9 @@
  * installed skill (manifest JSON + entry SHA + status); skill_invocations is
  * a metadata log (ok/toolCalls/ms/error codes — never content). Schema stays
  * additive + idempotent: opening the same file twice (or after a re-open)
- * never fails and SCHEMA_VERSION stays 9.
+ * never fails. SCHEMA_VERSION moved 9 → 10 with the M9 wire contracts
+ * (ba83902): deploy_profiles + playbook_runs live in the shared constant
+ * while this milestone's own tables were already on the same schema.
  */
 import { describe, expect, it } from 'vitest';
 import { openDatabase, createSkillStore, createSkillInvocationStore } from '../../src/stores/db.js';
@@ -12,14 +14,14 @@ import { SCHEMA_VERSION } from '@partner/shared';
 import { makeTempRoot, removeTempRoot } from '../helpers.js';
 import { join } from 'node:path';
 
-describe('M8 skills stores (schema v9)', () => {
-  it('keeps SCHEMA_VERSION at 9 and stamps the meta row', () => {
+describe('M8 skills stores (schema v9 tables)', () => {
+  it('keeps SCHEMA_VERSION at 10 and stamps the meta row', () => {
     const db = openDatabase(':memory:');
     const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as {
       value: string;
     };
-    expect(SCHEMA_VERSION).toBe(9);
-    expect(meta.value).toBe('9');
+    expect(SCHEMA_VERSION).toBe(10);
+    expect(meta.value).toBe(String(SCHEMA_VERSION));
     db.close();
   });
 

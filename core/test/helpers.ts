@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Express } from 'express';
-import type { Keychain } from '@partner/shared';
+import type { Keychain, Persona } from '@partner/shared';
+import type { PlaybookChatTarget } from '../src/playbooks/index.js';
 import { SCHEMA_VERSION } from '@partner/shared';
 import { CORE_VERSION } from '../src/config.js';
 import { demoProvider } from '../src/gateway/demo.js';
@@ -54,6 +55,14 @@ import { createSkillManager } from '../src/skills/manager.js';
 import type { SkillManager } from '../src/skills/manager.js';
 import { createSkillRunner } from '../src/skills/runner.js';
 import type { SkillRunner } from '../src/skills/runner.js';
+import {
+  createDeployManager,
+  createPlaybookManager,
+  createPlaybookProviderResolver,
+  createToolLoop,
+} from '../src/playbooks/index.js';
+import type { DeployManager } from '../src/playbooks/deploy.js';
+import type { PlaybookManager } from '../src/playbooks/manager.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
@@ -63,6 +72,7 @@ import type { MemoryBundle } from '../src/memory/index.js';
 import {
   createAuditStore,
   createConversationStore,
+  createDeployProfileStore,
   createEpisodeStore,
   createFileProposalStore,
   createGrantStore,
@@ -75,6 +85,7 @@ import {
   createPendingToolStore,
   createPersonaStore,
   createPlanStore,
+  createPlaybookRunStore,
   createProfileStore,
   createProjectRootStore,
   createProviderStore,
@@ -89,6 +100,7 @@ import {
 import type {
   AuditStore,
   ConversationStore,
+  DeployProfileStore,
   EpisodeStore,
   FileProposalStore,
   GrantStore,
@@ -101,6 +113,7 @@ import type {
   PendingToolStore,
   PersonaStore,
   PlanStore,
+  PlaybookRunStore,
   ProfileEntryStore,
   ProjectRootStore,
   ProviderStore,
@@ -161,6 +174,25 @@ export interface HarnessOptions {
    * pass an object to point storeDir/catalogDir elsewhere.
    */
   skills?: boolean | { storeDir?: string; catalogDir?: string };
+  /**
+   * Wire the M9 playbook manager (registry + persona tool loop + run rows)
+   * over the same db (default true; needs broker + personas + notes wired).
+   * The provider resolver mirrors createCore — demo mode falls back to the
+   * demo provider so TEXT playbooks run end-to-end. Pass false for the 501
+   * not_configured surface.
+   */
+  playbooks?: boolean;
+  /**
+   * Override the playbook provider resolver (tests inject a scripted fake
+   * provider to drive persona tool loops over HTTP). Falls back to the
+   * demo/live resolver when omitted.
+   */
+  playbookProvider?: (persona: Persona) => PlaybookChatTarget | null;
+  /**
+   * Wire the M9 deploy-profile manager over the same db (default true). Pass
+   * false for the 501 not_configured surface.
+   */
+  deployProfiles?: boolean;
 }
 
 export interface Harness {
@@ -218,6 +250,11 @@ export interface Harness {
   skillInvocationStore: SkillInvocationStore;
   skills?: SkillManager;
   skillRunner?: SkillRunner;
+  /** M9 playbook + deploy stores/managers over the SAME db (default on). */
+  deployProfileStore: DeployProfileStore;
+  playbookRunStore: PlaybookRunStore;
+  deployProfiles?: import('../src/playbooks/deploy.js').DeployManager;
+  playbooks?: import('../src/playbooks/manager.js').PlaybookManager;
   close(): void;
 }
 
@@ -405,6 +442,43 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     });
   }
 
+  // M9: deploy-profile + playbook stores/managers over the same db (default
+  // on). Playbooks need the broker, personas and notes (the loop is persona-
+  // mediated); the run + profile stores exist on every harness for row-level
+  // assertions. The resolver mirrors createCore: demo falls back to the demo
+  // provider so text playbooks run end-to-end with no credentials.
+  const deployProfileStore = createDeployProfileStore(db);
+  const playbookRunStore = createPlaybookRunStore(db);
+  const deployEnabled = options.deployProfiles !== false;
+  let deployProfiles: DeployManager | undefined;
+  if (deployEnabled) {
+    deployProfiles = createDeployManager({ store: deployProfileStore, audit });
+  }
+  const playbooksEnabled =
+    options.playbooks !== false && brokerEnabled && personasEnabled && notesPlansEnabled;
+  let playbooks: PlaybookManager | undefined;
+  if (playbooksEnabled) {
+    const resolver =
+      options.playbookProvider !== undefined
+        ? options.playbookProvider
+        : createPlaybookProviderResolver({ providers: providerManager, demo });
+    const toolLoop = createToolLoop({
+      broker: broker as ToolBroker,
+      resolver,
+      audit,
+    });
+    playbooks = createPlaybookManager({
+      broker: broker as ToolBroker,
+      personas,
+      conversations,
+      notes: notes as NoteManager,
+      runs: playbookRunStore,
+      resolver,
+      loop: toolLoop,
+      audit,
+    });
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -425,6 +499,8 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(themesEnabled ? { themes } : {}),
     ...(browserEnabled ? { scopes } : {}),
     ...(skills && skillRunner ? { skills, skillRunner } : {}),
+    ...(playbooks !== undefined ? { playbooks } : {}),
+    ...(deployProfiles !== undefined ? { deployProfiles } : {}),
   });
 
   return {
@@ -474,6 +550,10 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     skillInvocationStore,
     skills,
     skillRunner,
+    deployProfileStore,
+    playbookRunStore,
+    deployProfiles,
+    playbooks,
     close(): void {
       db.close();
       if (skillsDir !== undefined) removeTempRoot(skillsDir);

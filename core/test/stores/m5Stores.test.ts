@@ -56,8 +56,9 @@ describe('schema v6 (additive M5 tables + shared FTS5)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      // M6 (PLAN-M6.md, 238b20a) raised the schema to 7 (themes table).
-      expect(SCHEMA_VERSION).toBe(9); // current schema: v9 (M8 skills, PLAN-M8.md)
+      // M6 (PLAN-M6.md, 238b20a) raised the schema to 7 (themes table). M9
+      // (PLAN-M9.md, ba83902) raised it to 10 (deploy_profiles + playbook_runs).
+      expect(SCHEMA_VERSION).toBe(10);
     } finally {
       db.close();
     }

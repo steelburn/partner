@@ -67,7 +67,7 @@ jobs:
             --outfile=shell/artifacts/core-bundle.cjs
 
       - name: Vendor natives (win32-x64 prebuilds)
-        run: npm install --prefix shell/artifacts better-sqlite3@13 @napi-rs/keyring@2
+        run: npm install --prefix shell/artifacts better-sqlite3@12.2.0 @napi-rs/keyring@2
 
       - name: Sidecar placeholder (renamed node, per Tauri triple)
         run: |

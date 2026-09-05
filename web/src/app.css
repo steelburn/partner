@@ -3565,3 +3565,444 @@ select {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+
+/* ==========================================================================
+ * M9 — Playbooks view (PLAN-M9.md provisional UI).
+ *
+ * Token-only, same discipline as M0–M8: every colour/radius/spacing value is
+ * a var(--…) token; only structural geometry (heights, viewport caps) and
+ * the code-preview family (a structural utility, no colour) use bare
+ * values. Semantic text (area tones, run status, saved-note) sits on --bg
+ * fills over --surface cards so the tone tokens hold APCA in both themes —
+ * the M4/M8 chip discipline. No glow, gradients, glass or invented shadows.
+ * ========================================================================== */
+
+.playbooks {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.playbooks-panel {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.playbooks-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.playbooks-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 76ch;
+}
+
+.pb-seg {
+  display: none;
+}
+
+.pb-seg-active {
+  display: flex;
+  flex-direction: column;
+}
+
+.run-panel,
+.deploy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.pb-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+
+.pb-alert-text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* --- Registry list ------------------------------------------------------ */
+
+.pb-columns,
+.deploy-columns {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.deploy-columns {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+}
+
+.pb-list-col,
+.pb-run-col,
+.deploy-list-col,
+.deploy-add-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.pb-list-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.pb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A registry row is a full-surface button with the five interaction states:
+ * hover/active shift the fill, focus-visible gets the 2px ring, disabled
+ * drops opacity, and the pressed row keeps the raised fill + accent name. */
+.pb-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.pb-card:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.pb-card:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.pb-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.pb-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pb-card[aria-pressed='true'] {
+  background: var(--surface-2);
+}
+
+.pb-card[aria-pressed='true']:hover:not(:disabled) .pb-card-name,
+.pb-card:hover:not(:disabled) .pb-card-name {
+  color: var(--accent);
+}
+
+.pb-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.pb-card-name {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.pb-card-desc {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Area chip + default-persona-level badge: --bg fills floating over the
+ * card so the tone text keeps its contrast in both themes. */
+.pb-area,
+.pb-level {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  background: var(--bg);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+  white-space: nowrap;
+}
+
+.pb-area-neutral {
+  color: var(--text-muted);
+}
+
+.pb-area-accent {
+  color: var(--accent);
+}
+
+.pb-area-success {
+  color: var(--success);
+}
+
+.pb-level {
+  color: var(--text-muted);
+}
+
+/* --- Run panel ---------------------------------------------------------- */
+
+.run-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.run-form-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.pb-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 76ch;
+  overflow-wrap: anywhere;
+}
+
+.pb-fields-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.pb-field-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.pb-textarea {
+  resize: vertical;
+}
+
+.pb-check {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+  min-width: 0;
+  width: fit-content;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.pb-check input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.pb-check input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.pb-check input[type='checkbox']:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Run transcript: bubbles float on the page (surface), markers and status
+ * rows are small centered system lines. The well is capped so a long run
+ * scrolls instead of stretching the page. */
+.run-transcript-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  min-height: 200px;
+  max-height: 62vh;
+}
+
+.run-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+/* Inside the transcript well the assistant bubbles read as --bg blocks. */
+.run-transcript .msg-assistant {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.pb-marker {
+  font-weight: var(--fw-medium);
+}
+
+.pb-status {
+  font-weight: var(--fw-semibold);
+}
+
+.pb-marker-error {
+  /* Error rows sit inside the transcript well (--surface); the --bg fill
+   * keeps the danger token at its small-text APCA in both themes. */
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  font-weight: var(--fw-semibold);
+  max-width: 80%;
+  padding: var(--space-2) var(--space-3);
+  align-self: center;
+}
+
+.run-status {
+  min-height: var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.run-status-text {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.pb-run-error {
+  color: var(--danger);
+}
+
+.pb-run-waiting {
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+
+.pb-run-note {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--success);
+}
+
+/* --- Deploy targets ----------------------------------------------------- */
+
+.deploy-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.deploy-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.deploy-card-meta {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.pb-pkg-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pb-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Code/path preview: structural mono utility (no colour). */
+.pb-pre,
+.pb-path {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
+    'Liberation Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.pb-path {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.pb-pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+@media (max-width: 900px) {
+  .pb-columns,
+  .deploy-columns {
+    grid-template-columns: 1fr;
+  }
+}

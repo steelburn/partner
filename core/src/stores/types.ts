@@ -751,3 +751,69 @@ export interface SkillInvocationStore {
   /** Cascade: drop a skill's invocation history on uninstall. */
   removeBySkill(skillId: string): void;
 }
+
+// ---------------------------------------------------------------------------
+// M9 playbook-run + deploy-profile row stores (PLAN-M9.md — additive schema
+// v10). Plain typed CRUD with NO business logic; the playbook manager
+// (core/src/playbooks/manager.ts) and deploy manager
+// (core/src/playbooks/deploy.ts) own validation, run-state transitions and
+// audit. Stores never read the clock: writes take explicit timestamps.
+// playbook_runs rows are metadata only — conversation transcript content
+// stays in messages; tool params/results never cross this table or audit.
+// ---------------------------------------------------------------------------
+
+/** Column projection for `deploy_profiles` (snake_case -> camelCase). */
+export interface DeployProfileRow {
+  id: string;
+  name: string;
+  /** Only 'docker-ssh' in v1 (PLAN-M9). */
+  kind: string;
+  host: string;
+  /** SSH login user when set (null = host default). */
+  username: string | null;
+  port: number;
+  /** Base path on the target host where apps land (null = default). */
+  remoteBaseDir: string | null;
+  /**
+   * JSON map of extra env the deployment should inject. NOT part of the
+   * create/update API (PLAN-M9: "env_extra not part of API") — the column
+   * exists for a later milestone; secret VALUES are never accepted.
+   */
+  envExtra: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** `playbook_runs` row — metadata of one playbook run (never content). */
+export interface PlaybookRunRow {
+  id: string;
+  playbookId: string;
+  personaId: string | null;
+  conversationId: string | null;
+  /** running|done|error|loop_exhausted (queued runs stay 'running'). */
+  status: string;
+  /** Count of executed broker tools in the loop. */
+  toolCalls: number;
+  startedAt: number;
+  finishedAt: number | null;
+  /** Coded error only — never content. */
+  error: string | null;
+}
+
+/** Whitelisted patch for an open playbook_runs row. */
+export type PlaybookRunPatch = Partial<
+  Pick<PlaybookRunRow, 'status' | 'toolCalls' | 'finishedAt' | 'error'>
+>;
+
+export interface DeployProfileStore {
+  insert(row: DeployProfileRow): void;
+  findById(id: string): DeployProfileRow | undefined;
+  list(): DeployProfileRow[];
+  remove(id: string): void;
+}
+
+export interface PlaybookRunStore {
+  insert(row: PlaybookRunRow): void;
+  findById(id: string): PlaybookRunRow | undefined;
+  update(id: string, patch: PlaybookRunPatch): void;
+}

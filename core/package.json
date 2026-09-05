@@ -14,7 +14,7 @@
   "dependencies": {
     "@napi-rs/keyring": "^2.0.0",
     "@partner/shared": "*",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^12.2.0",
     "express": "^5.2.1"
   },
   "devDependencies": {

@@ -60,7 +60,9 @@ describe('schema v7 (additive M6 themes table)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(9); // current schema: v9 (M8 skills, PLAN-M8.md)
+      // M9 (PLAN-M9.md, ba83902) raised the schema to 10 (deploy_profiles +
+      // playbook_runs); the themes milestone (M6, 238b20a) was v7.
+      expect(SCHEMA_VERSION).toBe(10);
     } finally {
       db.close();
     }

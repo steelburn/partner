@@ -12,6 +12,7 @@ import NotesView from './NotesView.js';
 import PairGate from './PairGate.js';
 import PersonaManagerView from './PersonaManagerView.js';
 import PersonaPicker from './PersonaPicker.js';
+import PlaybooksView from './PlaybooksView.js';
 import ProvidersView from './ProvidersView.js';
 import SkillsView from './SkillsView.js';
 import ThemeStudio from './ThemeStudio.js';
@@ -41,7 +42,8 @@ type ViewName =
   | 'memory'
   | 'themes'
   | 'notes'
-  | 'skills';
+  | 'skills'
+  | 'playbooks';
 
 /**
  * App shell (M3): header row carries the brand, the view switch, the active
@@ -429,6 +431,14 @@ export default function App() {
                   >
                     Skills
                   </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary view-tab"
+                    onClick={() => setView('playbooks')}
+                    aria-pressed={view === 'playbooks'}
+                  >
+                    Playbooks
+                  </button>
                 </div>
                 {personasLoaded && personas.length > 0 ? (
                   <PersonaPicker
@@ -540,6 +550,14 @@ export default function App() {
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'skills'}
+              />
+            </div>
+            <div className={view === 'playbooks' ? 'app-view app-view-active' : 'app-view'}>
+              <PlaybooksView
+                personas={personas}
+                conversations={conversations}
+                onUnpair={handleSessionLost}
+                active={view === 'playbooks'}
               />
             </div>
           </>

@@ -76,6 +76,9 @@ import { BrowserError, browserErrorStatus } from '../browser/errors.js';
 import type { SkillManager } from '../skills/manager.js';
 import type { SkillRunner } from '../skills/runner.js';
 import { SkillError, skillErrorStatus } from '../skills/errors.js';
+import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
+import type { DeployManager } from '../playbooks/deploy.js';
+import { PlaybookError, playbookErrorStatus } from '../playbooks/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -155,6 +158,17 @@ export interface CoreAppOptions {
    * absent POST /v1/skills/:id/invoke responds 501 not_configured.
    */
   skillRunner?: SkillRunner;
+  /**
+   * M9 playbook manager (optional so M0-M8 harnesses compile unchanged).
+   * When absent the /v1/playbooks surface responds 501 not_configured.
+   */
+  playbooks?: PlaybookManager;
+  /**
+   * M9 deploy-profile manager (optional so M0-M8 harnesses compile
+   * unchanged). When absent the /v1/deploy-profiles surface responds 501
+   * not_configured.
+   */
+  deployProfiles?: DeployManager;
 }
 
 const SSE_HEADERS = {
@@ -244,6 +258,18 @@ function requireSession(sessions: SessionManager) {
 
 function writeSse(res: Response, event: ServerChatEvent): void {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+/** SSE writer for the playbook run/resume streams (local event union). */
+function writePbSse(res: Response, event: PbEvent): void {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+/** Body-object helper: the playbook run input envelope. */
+function bodyInputs(raw: unknown): Record<string, unknown> | null {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
 }
 
 /** ProviderError code -> loopback HTTP status (see providers/errors.ts). */
@@ -500,6 +526,35 @@ function requireSkillRunner(options: CoreAppOptions, res: Response): SkillRunner
     return null;
   }
   return runner;
+}
+
+/** Guard: returns the M9 playbook manager or 501s. */
+function requirePlaybooks(options: CoreAppOptions, res: Response): PlaybookManager | null {
+  const playbooks = options.playbooks;
+  if (!playbooks) {
+    notConfigured(res, 'playbook manager');
+    return null;
+  }
+  return playbooks;
+}
+
+/** Guard: returns the M9 deploy-profile manager or 501s. */
+function requireDeployProfiles(options: CoreAppOptions, res: Response): DeployManager | null {
+  const profiles = options.deployProfiles;
+  if (!profiles) {
+    notConfigured(res, 'deploy manager');
+    return null;
+  }
+  return profiles;
+}
+
+/** Send a typed PlaybookError response; false when err is not a PlaybookError. */
+function sendPlaybookError(res: Response, err: unknown): boolean {
+  if (err instanceof PlaybookError) {
+    res.status(playbookErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
 }
 
 /** Send a typed SkillError response; false when err is not a SkillError. */
@@ -2196,6 +2251,163 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // results of a run, not transport errors.
     res.json(result);
   });
+
+  // -------------------------------------------------------------------------
+  // M9 playbook + deploy-target surface (PLAN-M9 wire spec). Playbooks list
+  // the registry; POST /:id/run streams the persona tool loop as SSE
+  // (run_start / loop_step / persona_tool / delta / usage / done / run_end),
+  // persisting a playbook_runs row + an optional conversation transcript +
+  // save-as-note. Resume continues a run that stopped queued for a human
+  // approval (the M2 decide route already executed/denied the tool).
+  // Deploy profiles are plain CRUD + the package step. Every route authed;
+  // audit rows are playbook.run/playbook.resume/deploy-profile.* with
+  // ids/names/counts/decisions only — never playbook text or tool content.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/playbooks', requireSession(sessions), (req: Request, res: Response) => {
+    const playbooks = requirePlaybooks(options, res);
+    if (!playbooks) return;
+    res.json({ playbooks: playbooks.listPlaybooks() });
+  });
+
+  api.post('/v1/playbooks/:id/run', requireSession(sessions), async (req: Request, res: Response) => {
+    const playbooks = requirePlaybooks(options, res);
+    if (!playbooks) return;
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as {
+      personaId?: unknown;
+      conversationId?: unknown;
+      inputs?: unknown;
+      note?: unknown;
+    };
+    const inputs = bodyInputs(body.inputs);
+    if (inputs === null) {
+      res.status(400).json({ error: 'invalid_input', message: 'inputs must be an object' });
+      return;
+    }
+    const personaId = optionalString(body.personaId);
+    const conversationId = optionalString(body.conversationId);
+
+    let prepared;
+    try {
+      prepared = await playbooks.prepare({
+        playbookId: id,
+        ...(personaId !== undefined ? { personaId } : {}),
+        ...(conversationId !== undefined ? { conversationId } : {}),
+        inputs,
+      });
+    } catch (err) {
+      if (sendPlaybookError(res, err)) return;
+      throw err;
+    }
+
+    res.status(200);
+    res.set(SSE_HEADERS);
+    res.flushHeaders();
+    try {
+      for await (const event of prepared.events) {
+        writePbSse(res, event);
+      }
+    } catch {
+      if (!res.writableEnded) {
+        writePbSse(res, { type: 'error', message: 'playbook_stream_failed' });
+      }
+    } finally {
+      res.end();
+    }
+  });
+
+  api.post(
+    '/v1/playbooks/runs/:id/resume',
+    requireSession(sessions),
+    async (req: Request, res: Response) => {
+      const playbooks = requirePlaybooks(options, res);
+      if (!playbooks) return;
+      const runId = String(req.params.id ?? '');
+      const body = (req.body ?? {}) as { pendingId?: unknown };
+      const pendingId = optionalString(body.pendingId);
+      if (pendingId === undefined) {
+        res.status(400).json({ error: 'invalid_input', message: 'pendingId is required' });
+        return;
+      }
+
+      let prepared;
+      try {
+        prepared = playbooks.prepareResume(runId, pendingId);
+      } catch (err) {
+        if (sendPlaybookError(res, err)) return;
+        throw err;
+      }
+
+      res.status(200);
+      res.set(SSE_HEADERS);
+      res.flushHeaders();
+      try {
+        for await (const event of prepared.events) {
+          writePbSse(res, event);
+        }
+      } catch {
+        if (!res.writableEnded) {
+          writePbSse(res, { type: 'error', message: 'playbook_stream_failed' });
+        }
+      } finally {
+        res.end();
+      }
+    },
+  );
+
+  api.get('/v1/deploy-profiles', requireSession(sessions), (_req: Request, res: Response) => {
+    const profiles = requireDeployProfiles(options, res);
+    if (!profiles) return;
+    res.json({ profiles: profiles.list() });
+  });
+
+  api.post('/v1/deploy-profiles', requireSession(sessions), (req: Request, res: Response) => {
+    const profiles = requireDeployProfiles(options, res);
+    if (!profiles) return;
+    try {
+      const profile = profiles.create(req.body);
+      res.status(201).json(profile);
+    } catch (err) {
+      if (sendPlaybookError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/deploy-profiles/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const profiles = requireDeployProfiles(options, res);
+    if (!profiles) return;
+    const id = String(req.params.id ?? '');
+    try {
+      profiles.remove(id);
+      res.status(204).end();
+    } catch (err) {
+      if (sendPlaybookError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post(
+    '/v1/deploy-profiles/:id/package',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const profiles = requireDeployProfiles(options, res);
+      if (!profiles) return;
+      const id = String(req.params.id ?? '');
+      const body = (req.body ?? {}) as { projectDir?: unknown; outDir?: unknown };
+      try {
+        const result = profiles.package(id, {
+          projectDir:
+            typeof body.projectDir === 'string' ? body.projectDir : '',
+          outDir: typeof body.outDir === 'string' ? body.outDir : '',
+        });
+        res.json(result);
+      } catch (err) {
+        if (sendPlaybookError(res, err)) return;
+        throw err;
+      }
+    },
+  );
 
   app.use(api);
 

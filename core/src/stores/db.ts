@@ -71,6 +71,11 @@ import type {
   PlanRow,
   PlanRowPatch,
   PlanStore,
+  DeployProfileRow,
+  DeployProfileStore,
+  PlaybookRunPatch,
+  PlaybookRunRow,
+  PlaybookRunStore,
 } from './types.js';
 
 const SCHEMA_SQL = `
@@ -365,6 +370,42 @@ CREATE TABLE IF NOT EXISTS skill_invocations (
 
 CREATE INDEX IF NOT EXISTS idx_skill_invocations_skill
   ON skill_invocations(skill_id, started_at);
+
+-- M9 playbook + deploy-target tables (PLAN-M9.md, additive schema v10).
+-- deploy_profiles are connection descriptors for the Ship playbook
+-- (kind docker-ssh v1; env_extra is a JSON map column held for later
+-- injection — secret VALUES never cross the API). playbook_runs is a
+-- metadata row per capability run (playbook/persona/conversation ids +
+-- status + tool-call count): conversation text lives in messages and tool
+-- params/results never reach this table, let alone audit.
+
+CREATE TABLE IF NOT EXISTS deploy_profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'docker-ssh',
+  host TEXT NOT NULL,
+  username TEXT,
+  port INTEGER DEFAULT 22,
+  remote_base_dir TEXT,
+  env_extra TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS playbook_runs (
+  id TEXT PRIMARY KEY,
+  playbook_id TEXT NOT NULL,
+  persona_id TEXT,
+  conversation_id TEXT,
+  status TEXT NOT NULL DEFAULT 'running',
+  tool_calls INTEGER NOT NULL DEFAULT 0,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_persona
+  ON playbook_runs(persona_id, started_at);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -1548,6 +1589,93 @@ export function createSkillInvocationStore(db: Database.Database): SkillInvocati
     },
     removeBySkill(skillId: string): void {
       removeBySkill.run(skillId);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M9 row stores (PLAN-M9.md — additive schema v10). Plain typed CRUD with NO
+// business logic; the deploy manager (playbooks/deploy.ts) and playbook
+// manager (playbooks/manager.ts) own validation, run-state transitions and
+// audit. Stores never read the clock: writes take explicit timestamps.
+// ---------------------------------------------------------------------------
+
+const DEPLOY_PROFILE_COLUMNS = `
+  id, name, kind, host, username, port,
+  remote_base_dir AS remoteBaseDir, env_extra AS envExtra,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const PLAYBOOK_RUN_COLUMNS = `
+  id, playbook_id AS playbookId, persona_id AS personaId,
+  conversation_id AS conversationId, status,
+  tool_calls AS toolCalls, started_at AS startedAt,
+  finished_at AS finishedAt, error`;
+
+export function createDeployProfileStore(db: Database.Database): DeployProfileStore {
+  const insert = db.prepare(
+    `INSERT INTO deploy_profiles (id, name, kind, host, username, port,
+                                  remote_base_dir, env_extra, created_at, updated_at)
+     VALUES (@id, @name, @kind, @host, @username, @port,
+             @remoteBaseDir, @envExtra, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(
+    `SELECT ${DEPLOY_PROFILE_COLUMNS} FROM deploy_profiles WHERE id = ?`,
+  );
+  const listAll = db.prepare(
+    `SELECT ${DEPLOY_PROFILE_COLUMNS} FROM deploy_profiles ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM deploy_profiles WHERE id = ?');
+
+  return {
+    insert(row: DeployProfileRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): DeployProfileRow | undefined {
+      return findById.get(id) as DeployProfileRow | undefined;
+    },
+    list(): DeployProfileRow[] {
+      return listAll.all() as DeployProfileRow[];
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+export function createPlaybookRunStore(db: Database.Database): PlaybookRunStore {
+  const insert = db.prepare(
+    `INSERT INTO playbook_runs (id, playbook_id, persona_id, conversation_id, status,
+                                tool_calls, started_at, finished_at, error)
+     VALUES (@id, @playbookId, @personaId, @conversationId, @status,
+             @toolCalls, @startedAt, @finishedAt, @error)`,
+  );
+  const findById = db.prepare(
+    `SELECT ${PLAYBOOK_RUN_COLUMNS} FROM playbook_runs WHERE id = ?`,
+  );
+  const update = db.prepare(
+    `UPDATE playbook_runs SET
+       status = COALESCE(@status, status),
+       tool_calls = COALESCE(@toolCalls, tool_calls),
+       finished_at = COALESCE(@finishedAt, finished_at),
+       error = COALESCE(@error, error)
+     WHERE id = @id`,
+  );
+
+  return {
+    insert(row: PlaybookRunRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): PlaybookRunRow | undefined {
+      return findById.get(id) as PlaybookRunRow | undefined;
+    },
+    update(id: string, patch: PlaybookRunPatch): void {
+      update.run({
+        id,
+        status: patch.status ?? null,
+        toolCalls: patch.toolCalls ?? null,
+        finishedAt: patch.finishedAt ?? null,
+        error: patch.error ?? null,
+      });
     },
   };
 }

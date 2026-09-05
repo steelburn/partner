@@ -29,6 +29,7 @@ export type { Keychain } from './keychain/keychain.js';
 export {
   createAuditStore,
   createConversationStore,
+  createDeployProfileStore,
   createEpisodeStore,
   createFileProposalStore,
   createGrantStore,
@@ -41,6 +42,7 @@ export {
   createPendingToolStore,
   createPersonaStore,
   createPlanStore,
+  createPlaybookRunStore,
   createProfileStore,
   createProjectRootStore,
   createProviderStore,
@@ -94,6 +96,8 @@ export type {
   ProfileEntryStore,
   ProjectRootRow,
   ProjectRootStore,
+  DeployProfileRow,
+  DeployProfileStore,
   ProviderRow,
   ProviderRowPatch,
   ProviderStore,
@@ -102,6 +106,9 @@ export type {
   SettingsRow,
   SettingsStore,
   SiteScopeStore,
+  PlaybookRunPatch,
+  PlaybookRunRow,
+  PlaybookRunStore,
   SkillInvocationRow,
   SkillInvocationStore,
   SkillRow,
@@ -331,6 +338,44 @@ export { MAX_FRAME_BYTES, NmError, nmError } from './native/index.js';
 export type { NmErrorCode } from './native/index.js';
 
 // ---- http server -----------------------------------------------------------
+// ---- playbooks + deploy targets (M9) ---------------------------------------
+export {
+  createDeployManager,
+  createPlaybookManager,
+  createPlaybookProviderResolver,
+  createToolLoop,
+  listPlaybooks,
+  playbookById,
+  parseReplyTools,
+  lastDirective,
+  authorizeTool,
+  summarizeToolResult,
+  buildUserMessage,
+  PlaybookError,
+  playbookError,
+  playbookErrorStatus,
+  LOOP_MAX_ROUNDS,
+  TOOL_RESULT_EXCERPT_CHARS,
+  PLAYBOOKS,
+} from './playbooks/index.js';
+export type {
+  DeployManager,
+  DeployManagerOptions,
+  DeployPackageInput,
+  LoopEvent,
+  LoopProviderResolver,
+  LoopStatus,
+  PbEvent,
+  PbRunOutcome,
+  PlaybookChatTarget,
+  PlaybookManager,
+  PlaybookManagerOptions,
+  PreparedPlaybookRun,
+  ToolLoop,
+  ToolLoopDeps,
+  ToolLoopResult,
+  ToolLoopRunRequest,
+} from './playbooks/index.js';
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
 export type { ChatDoneMetaEvent, ServerChatEvent } from './http/server.js';
@@ -358,6 +403,8 @@ import {
   createSkillInvocationStore,
   createSkillStore,
   createThemeStore,
+  createDeployProfileStore,
+  createPlaybookRunStore,
 } from './stores/db.js';
 import type {
   ConversationStore,
@@ -376,6 +423,8 @@ import type {
   SkillInvocationStore,
   SkillStore,
   ThemeStore,
+  DeployProfileStore,
+  PlaybookRunStore,
 } from './stores/types.js';
 import { createPersonaManager } from './personas/manager.js';
 import type { PersonaManager } from './personas/manager.js';
@@ -419,6 +468,13 @@ import { createSkillManager } from './skills/manager.js';
 import type { SkillManager } from './skills/manager.js';
 import { createSkillRunner } from './skills/runner.js';
 import type { SkillRunner } from './skills/runner.js';
+import {
+  createDeployManager,
+  createPlaybookManager,
+  createPlaybookProviderResolver,
+  createToolLoop,
+} from './playbooks/index.js';
+import type { DeployManager, PlaybookManager } from './playbooks/index.js';
 import {
   createNoteLinkStore,
   createNoteStore,
@@ -471,6 +527,11 @@ export interface CoreBundle {
   skillRunner: SkillRunner;
   skillStore: SkillStore;
   skillInvocationStore: SkillInvocationStore;
+  /** M9 playbook + deploy surfaces (schema v10, PLAN-M9.md). */
+  playbooks: PlaybookManager;
+  playbookRunStore: PlaybookRunStore;
+  deployProfiles: DeployManager;
+  deployProfileStore: DeployProfileStore;
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -617,6 +678,35 @@ export function createCore(config: CoreConfig): CoreBundle {
     invocations: skillInvocationStore,
   });
 
+  // M9: playbooks + deploy targets over the SAME db (schema v10). The deploy
+  // manager owns profile CRUD validation + the package step; the playbook
+  // manager orchestrates persona tool loops (broker-mediated, approval-queue
+  // aware) over the registry's declarative summaries. The provider resolver
+  // mirrors chat routing and keeps the demo provider OUT of live tool loops
+  // (demo text playbooks still run against the deterministic provider).
+  const deployProfileStore = createDeployProfileStore(db);
+  const deployProfiles = createDeployManager({ store: deployProfileStore, audit });
+  const playbookRunStore = createPlaybookRunStore(db);
+  const playbookProviderResolver = createPlaybookProviderResolver({
+    providers: providerManager,
+    demo: config.demo,
+  });
+  const toolLoop = createToolLoop({
+    broker,
+    resolver: playbookProviderResolver,
+    audit,
+  });
+  const playbooks = createPlaybookManager({
+    broker,
+    personas: personaManager,
+    conversations: conversationManager,
+    notes,
+    runs: playbookRunStore,
+    resolver: playbookProviderResolver,
+    loop: toolLoop,
+    audit,
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -639,6 +729,8 @@ export function createCore(config: CoreConfig): CoreBundle {
     scopes,
     skills,
     skillRunner,
+    playbooks,
+    deployProfiles,
   });
 
   return {
@@ -679,6 +771,10 @@ export function createCore(config: CoreConfig): CoreBundle {
     skillRunner,
     skillStore,
     skillInvocationStore,
+    playbooks,
+    playbookRunStore,
+    deployProfiles,
+    deployProfileStore,
     app,
     close(): void {
       try {
