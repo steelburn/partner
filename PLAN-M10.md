@@ -1,10 +1,29 @@
 # M10 — Hardening & alpha (encryption, budgets, audit UI, degrade chat, packaging)
 
-Status: **spec** · Repo: `~/apps/partner` · Master plan: `PLAN.md` (§11, §15
+Status: **in progress** · Repo: `~/apps/partner` · Master plan: `PLAN.md` (§11, §15
 M10, §17) · Gates: same as M0–M9, PLUS the whole matrix must stay green on
 the self-hosted **verify** CI (`Linux` + `Windows` runners,
 `.github/workflows/verify.yml`) — the milestone that finally has CI to
 regress against.
+
+## Progress (2026-09-05)
+
+- [x] W2 redaction sweep (patterns + matrix + route guarantee + inventory doc)
+- [x] W3 budgets that bind (spend ledger schema v11 + pre-turn refusal +
+      settle-on-finish + remaining-budget UI)
+- [x] W4 Audit tab (server filters + eleventh view + export + e2e; ux_audit
+      PASSED)
+- [x] W1 encryption at rest (spike recorded above: Decision A adopted and
+      implemented — whole-file via the better-sqlite3-multiple-ciphers
+      alias; keychain-held key; plaintext refusal; containers on node 22)
+- [x] W5 session-only chat (direct endpoint client + PairGate entry +
+      in-memory key; browser pass against a local CORS stub)
+- [x] W6 packaging PREP (official icon set, bundle.resources restored,
+      self-hosted Windows workflow stages resources) — AWAITING one green
+      run on the self-hosted Windows runner (dispatch windows-build)
+- [ ] W7 verification checklist written (`docs/VERIFY-M10.md`) — runner
+      confirmations + fresh-context review + HANDOFF refresh + PLAN.md M10
+      tick remain
 
 ## Goal
 
