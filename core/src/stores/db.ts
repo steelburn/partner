@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '@partner/shared';
 import type { SiteScopeRecord } from '@partner/shared';
 import type {
+  AuditQuery,
   AuditRow,
   AuditStore,
   ConversationRow,
@@ -636,6 +637,27 @@ export function createAuditStore(db: Database.Database): AuditStore {
     },
     list(limit: number): AuditRow[] {
       return list.all(limit) as AuditRow[];
+    },
+    listFiltered(query: AuditQuery): AuditRow[] {
+      const clauses: string[] = [];
+      const args: unknown[] = [];
+      if (query.actor !== undefined && query.actor !== '') {
+        clauses.push('actor = ?');
+        args.push(query.actor);
+      }
+      if (query.action !== undefined && query.action !== '') {
+        // Substring match (instr avoids LIKE-escape pitfalls on action ids).
+        clauses.push('instr(action, ?) > 0');
+        args.push(query.action);
+      }
+      if (query.q !== undefined && query.q !== '') {
+        clauses.push('(instr(target, ?) > 0 OR instr(details, ?) > 0)');
+        args.push(query.q, query.q);
+      }
+      const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+      const sql = `SELECT ${AUDIT_COLUMNS} FROM audit_log${where} ORDER BY id DESC LIMIT ?`;
+      args.push(query.limit);
+      return (db.prepare(sql).all(...(args as never[])) as AuditRow[]) ?? [];
     },
   };
 }

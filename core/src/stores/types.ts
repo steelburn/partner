@@ -73,10 +73,24 @@ export interface AuditRow {
   createdAt: number;
 }
 
+/** Filtered audit query (all filters optional, limit required). */
+export interface AuditQuery {
+  /** Newest-first cap. */
+  limit: number;
+  /** Exact actor match (session / persona / web). */
+  actor?: string;
+  /** Substring match on the action id (e.g. 'chat', 'playbook'). */
+  action?: string;
+  /** Substring match across target + details (never on unredacted text). */
+  q?: string;
+}
+
 export interface AuditStore {
   add(actor: string, action: string, target: string, details: string, createdAt: number): number;
   /** Newest first, capped at limit. */
   list(limit: number): AuditRow[];
+  /** Newest first with optional filters, capped at limit. */
+  listFiltered(query: AuditQuery): AuditRow[];
 }
 
 export interface SettingsRow {

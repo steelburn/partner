@@ -367,3 +367,36 @@ describe('robust errors & session revocation (review fixes)', () => {
     }
   });
 });
+
+describe('audit filters (M10 W4)', () => {
+  it('filters by actor, action substring and free text; actors list stays clean', async () => {
+    const h = demoHarness();
+    try {
+      const code = await fetchDevCode(h.app);
+      const token = await pair(h.app, code);
+      const authed = (): Record<string, string> => ({
+        Host: ALLOWED_HOST,
+        Authorization: `Bearer ${token}`,
+      });
+      // Seed a spread of rows through the real service (redacted by design).
+      h.audit.log('session', 'chat.stream', 'gpt-4o', { ok: true, events: 3, sessionId: 's1' });
+      h.audit.log('persona', 'playbook.run', 'docgen', { runId: 'r1', status: 'done' });
+      h.audit.log('web', 'provider.create', 'p-9', { name: 'ne1' });
+      h.audit.log('session', 'chat.stream', 'gpt-4o', { ok: false, events: 0, sessionId: 's1' });
+
+      const byActor = await request(h.app).get('/v1/audit?actor=persona').set(authed());
+      expect(byActor.body.entries).toHaveLength(1);
+      expect(byActor.body.entries[0].action).toBe('playbook.run');
+
+      const byAction = await request(h.app).get('/v1/audit?action=chat&limit=50').set(authed());
+      expect(byAction.body.entries.length).toBeGreaterThanOrEqual(2);
+      expect(byAction.body.entries.every((e: { action: string }) => e.action.includes('chat'))).toBe(true);
+
+      const byQ = await request(h.app).get('/v1/audit?q=ne1').set(authed());
+      expect(byQ.body.entries).toHaveLength(1);
+      expect(byQ.body.entries[0].action).toBe('provider.create');
+    } finally {
+      h.close();
+    }
+  });
+});

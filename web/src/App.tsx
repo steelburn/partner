@@ -5,6 +5,7 @@ import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import type { StreamDoneMeta } from './lib/api.js';
 import type { ThemeTokenPair } from './lib/theme-helpers.js';
 import ChatStrip from './ChatStrip.js';
+import AuditView from './AuditView.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
 import MemoryView from './MemoryView.js';
@@ -43,7 +44,8 @@ type ViewName =
   | 'themes'
   | 'notes'
   | 'skills'
-  | 'playbooks';
+  | 'playbooks'
+  | 'audit';
 
 /**
  * App shell (M3): header row carries the brand, the view switch, the active
@@ -439,6 +441,14 @@ export default function App() {
                   >
                     Playbooks
                   </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary view-tab"
+                    onClick={() => setView('audit')}
+                    aria-pressed={view === 'audit'}
+                  >
+                    Audit
+                  </button>
                 </div>
                 {personasLoaded && personas.length > 0 ? (
                   <PersonaPicker
@@ -558,6 +568,12 @@ export default function App() {
                 conversations={conversations}
                 onUnpair={handleSessionLost}
                 active={view === 'playbooks'}
+              />
+            </div>
+            <div className={view === 'audit' ? 'app-view app-view-active' : 'app-view'}>
+              <AuditView
+                onUnpair={handleSessionLost}
+                active={view === 'audit'}
               />
             </div>
           </>

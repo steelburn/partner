@@ -1327,7 +1327,16 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const limit = Number.isFinite(raw)
       ? Math.min(MAX_AUDIT_LIMIT, Math.max(1, raw))
       : DEFAULT_AUDIT_LIMIT;
-    res.json({ entries: audit.list(limit) });
+    const opt = (v: unknown): string | undefined =>
+      typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+    res.json({
+      entries: audit.query({
+        limit,
+        actor: opt(req.query.actor),
+        action: opt(req.query.action),
+        q: opt(req.query.q),
+      }),
+    });
   });
 
   // -------------------------------------------------------------------------

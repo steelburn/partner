@@ -7,7 +7,7 @@
  * table, request logs, or any downstream consumer.
  */
 import { redactJson, redactString, redactValue } from '@partner/shared';
-import type { AuditRow, AuditStore } from '../stores/types.js';
+import type { AuditQuery, AuditRow, AuditStore } from '../stores/types.js';
 
 export { redactJson, redactString, redactValue };
 
@@ -19,6 +19,8 @@ export interface AuditService {
   log(actor: string, action: string, target: string, details: unknown): void;
   /** Newest first, capped at limit (used by GET /v1/audit). */
   list(limit: number): AuditRow[];
+  /** Newest first with optional actor/action/q filters, capped at limit. */
+  query(criteria: AuditQuery): AuditRow[];
 }
 
 export function auditLog(deps: { store: AuditStore; now?: () => number }): AuditService {
@@ -29,6 +31,9 @@ export function auditLog(deps: { store: AuditStore; now?: () => number }): Audit
     },
     list(limit: number): AuditRow[] {
       return deps.store.list(limit);
+    },
+    query(criteria: AuditQuery): AuditRow[] {
+      return deps.store.listFiltered(criteria);
     },
   };
 }

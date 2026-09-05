@@ -4006,3 +4006,184 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+ * M10 — Audit view (PLAN-M10.md W4). Token-only: colours/radius/spacing are
+ * var(--…) tokens; chips are --bg fills floating on --surface rows so tone
+ * text keeps its APCA in both themes (M4/M8 discipline). No glow, gradients,
+ * glass or invented shadows. Interactive elements reuse .btn/.field (their
+ * focus/disabled states ship with those classes).
+ * ========================================================================== */
+
+.audit {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.audit-panel {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.audit-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.audit-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 76ch;
+}
+
+.audit-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.audit-filters .label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.audit-actor {
+  max-width: 180px;
+}
+
+.audit-filters .field {
+  width: auto;
+  min-width: 200px;
+}
+
+.audit-export {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.audit-export-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-right: var(--space-1);
+}
+
+.audit-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.audit-row {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.audit-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Area chip: --bg fill floating over the row so tone text holds contrast. */
+.audit-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  background: var(--bg);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+}
+
+.audit-chip-chat,
+.audit-chip-playbook {
+  color: var(--accent);
+}
+
+.audit-chip-provider {
+  color: var(--text);
+}
+
+
+.audit-chip-skill {
+  color: var(--danger);
+}
+
+.audit-chip-other {
+  color: var(--text-muted);
+}
+
+.audit-time {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.audit-actor {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  flex: none;
+}
+
+.audit-action {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
+    'Liberation Mono', monospace;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.audit-target {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.audit-details {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+  overflow-wrap: normal;
+}
