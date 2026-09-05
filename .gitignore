@@ -15,3 +15,10 @@ shell/src-tauri/target/
 # Demo webapp container: staged bundle + built SPA (docker build context)
 docker/webapp-demo/core-bundle.cjs
 docker/webapp-demo/web/
+
+# Shell resources are staged fresh at build time (CI + local); only the
+# skills-catalog source stays tracked.
+shell/src-tauri/resources/core-bundle.cjs
+shell/src-tauri/resources/node_modules/
+shell/src-tauri/resources/web-dist/
+shell/src-tauri/resources/skills/
