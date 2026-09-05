@@ -181,3 +181,63 @@ describe('M11 F2 native tool calls (runNativeToolCalls)', async () => {
   });
 });
 
+
+describe('M11 F2 external array dispatch guard', () => {
+  it('routes broker tools to the broker and external tools to their owner', async () => {
+    const notes: string[] = [];
+    const brokerCalls: string[] = [];
+    const searchCalls: string[] = [];
+    const mcpCalls: string[] = [];
+    const broker = brokerLike({
+      grants: { hasGrant: () => true },
+      exec: (toolId) => {
+        brokerCalls.push(toolId);
+        return { outcome: 'executed' as const, result: { content: 'broker read' } };
+      },
+    });
+    const external = [
+      {
+        manifests: [
+          { id: 'search' as never, description: 's', risk: 'medium' as const, confirm: 'once' as const, network: true, scope: { kind: 'project' } as const },
+        ],
+        allow: (id: string) => id === 'search',
+        exec: async (id: string) => {
+          searchCalls.push(id);
+          return { outcome: 'executed' as const, result: { query: 'q' } };
+        },
+      },
+      {
+        manifests: [],
+        allow: (id: string) => id.startsWith('mcp:') && id.startsWith('mcp:on/'),
+        match: (id: string) =>
+          id.startsWith('mcp:on/')
+            ? ({ id: id as never, description: 'm', risk: 'medium' as const, confirm: 'once' as const, network: true, scope: { kind: 'project' } as const } as const)
+            : undefined,
+        exec: async (id: string) => {
+          mcpCalls.push(id);
+          return { outcome: 'executed' as const, result: { output_1: 'mcp text' } };
+        },
+      },
+    ];
+    const deps: ChatToolPassDeps = {
+      persona: persona('auto'),
+      broker,
+      external,
+      audit: auditLog({ store: createAuditStore(openDatabase(':memory:')) }),
+      appendSystemNote: (content) => notes.push(content),
+    };
+    await runChatToolPass(
+      [
+        '[[partner:tool files.read {"projectId":"p","path":"a"}]]',
+        '[[partner:tool search {"query":"x"}]]',
+        '[[partner:tool mcp:on/doIt {}]]',
+      ].join('\n'),
+      deps,
+    );
+    expect(brokerCalls).toEqual(['files.read']);
+    expect(searchCalls).toEqual(['search']);
+    expect(mcpCalls).toEqual(['mcp:on/doIt']);
+    expect(notes.join('\n')).toContain('broker read');
+    expect(notes.join('\n')).toContain('mcp text');
+  });
+});

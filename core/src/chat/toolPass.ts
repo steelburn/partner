@@ -53,16 +53,20 @@ export interface ChatToolPassDeps {
   persona: Persona;
   broker: ChatToolBrokerLike;
   /**
-   * M11 F2 external tools (e.g. the network search backend): manifests are
-   * merged into the catalog; `allow` gates them (default-deny); `exec` may
-   * be async (network). Only EXTERNAL-manifest tools ever dispatch here —
-   * broker tools always stay on broker.exec.
+   * M11 F2/F2-MCP external tools (network search, MCP servers…): each entry
+   * contributes manifests, an allow() gate (default-deny) and an exec() that
+   * may be async. A tool id may also be resolved dynamically via `match`
+   * (used by MCP, whose tool ids only exist per server at run time). Only
+   * EXTERNAL tools ever dispatch here — broker tools always stay on
+   * broker.exec.
    */
-  external?: {
+  external?: ReadonlyArray<{
     manifests: ReadonlyArray<ToolManifest>;
     allow(toolId: string): boolean;
     exec(toolId: string, args: Record<string, unknown>): Promise<ToolExecResponse> | ToolExecResponse;
-  };
+    /** Dynamic resolution for ids not in `manifests` (e.g. mcp:<server>/<t>). */
+    match?(toolId: string): ToolManifest | undefined;
+  }>;
   audit: AuditService;
   /** Persist a system note into the conversation transcript (no-op guard). */
   appendSystemNote: (content: string) => void;
@@ -130,8 +134,9 @@ async function runToolDirectives(
   const { persona, broker, audit } = deps;
   const now = deps.now ?? Date.now;
   const manifestById = new Map<string, ToolManifest>(broker.manifests.map((m) => [m.id, m]));
+  const external = deps.external ?? [];
   const externalById = new Map<string, ToolManifest>(
-    (deps.external?.manifests ?? []).map((m) => [m.id, m]),
+    external.flatMap((provider) => provider.manifests.map((m) => [m.id, m] as const)),
   );
   const decisions: ChatToolDecision[] = [];
 
@@ -140,6 +145,7 @@ async function runToolDirectives(
       { toolId: directive.toolId, args: directive.args },
       manifestById,
       externalById,
+      external,
       deps,
       now(),
     );
@@ -165,20 +171,31 @@ async function handleDirective(
   directive: PersonaToolDirective,
   manifestById: Map<string, ToolManifest>,
   externalById: Map<string, ToolManifest>,
+  external: ReadonlyArray<{
+    manifests: ReadonlyArray<ToolManifest>;
+    allow(toolId: string): boolean;
+    exec(toolId: string, args: Record<string, unknown>): Promise<ToolExecResponse> | ToolExecResponse;
+    match?(toolId: string): ToolManifest | undefined;
+  }>,
   deps: ChatToolPassDeps,
   at: number,
 ): Promise<ChatToolDecision | null> {
   const { persona, broker, appendSystemNote } = deps;
   const toolId = directive.toolId;
-  const externalManifest = externalById.get(toolId);
-  const manifest = manifestById.get(toolId) ?? externalManifest;
+  // The owning external provider: ALLOWED providers win (a provider whose
+  // allow() is false never owns its tool id — that reads as disabled).
+  const owner = external.find((provider) => provider.allow(toolId));
+  const dynamicManifest = owner?.match?.(toolId);
+  const staticExternal = externalById.get(toolId);
+  const manifest = manifestById.get(toolId) ?? staticExternal ?? dynamicManifest;
   if (manifest === undefined) {
     appendSystemNote(`The tool "${toolId}" is not available — continue without it.`);
     return { toolId, decision: 'refused', reason: 'unknown_tool' };
   }
 
-  // External tools are user-gated (e.g. search must be enabled + keyed).
-  if (externalManifest !== undefined && deps.external?.allow(toolId) !== true) {
+  // A static external tool whose provider is not allowed = disabled.
+  const externalTool = staticExternal !== undefined || dynamicManifest !== undefined;
+  if (externalTool && owner === undefined) {
     appendSystemNote(
       `The tool "${toolId}" is disabled — enable it (and configure it) before asking for it.`,
     );
@@ -188,10 +205,7 @@ async function handleDirective(
   const args = directive.args ?? {};
   const projectId = typeof args.projectId === 'string' ? args.projectId : '';
   // External tools have no project grant; "enabled backend" IS the consent.
-  const hasGrant =
-    projectId !== ''
-      ? broker.grants.hasGrant(toolId, projectId, at)
-      : externalManifest !== undefined;
+  const hasGrant = projectId !== '' ? broker.grants.hasGrant(toolId, projectId, at) : owner !== undefined;
 
   const gate = authorizeTool(persona.independence.level, manifest, {
     toolId,
@@ -207,7 +221,7 @@ async function handleDirective(
   }
 
   if (gate.decision === 'queued') {
-    if (externalManifest !== undefined) {
+    if (owner !== undefined) {
       // External tools only run at levels the gate allowed as granted
       // (medium risk needs auto+); there is no project approval queue here.
       appendSystemNote(
@@ -242,11 +256,11 @@ async function handleDirective(
   }
 
   // gate: executed. Broker tools run on the broker; EXTERNAL tools run on
-  // the external executor (the dispatch bug of an earlier draft — dispatching
-  // broker tools to the external executor — is fixed by the manifest check).
+  // their owning external executor (never the broker, and broker tools never
+  // reach an external executor).
   let response: ToolExecResponse;
-  if (externalManifest !== undefined && deps.external !== undefined) {
-    response = await deps.external.exec(toolId, args);
+  if (owner !== undefined) {
+    response = await owner.exec(toolId, args);
   } else {
     response = broker.exec(toolId, args, { requestedBy: 'persona' });
   }

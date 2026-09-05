@@ -161,6 +161,16 @@ production build green):
       `lib/search.ts`, token-styled). Enabling unlocks the chat `search`
       tool at auto+ personas.
 
+- [x] **Persona MCP auto-calls (F2)** — the tool-pass external seam now
+      takes an ARRAY of providers; `mcp:<serverId>/<tool>` ids resolve
+      dynamically via `match` for ENABLED servers (default-deny; disabled
+      servers and wrong formats refuse), medium-risk gated (auto+ personas),
+      executed through the MCP manager (one stdio session per call) with
+      flattened text outputs; broker tools are provably never routed to an
+      external executor (regression-guard test). Directive grammar widened to
+      allow `:` and `/` in tool ids. Unit + multi-provider dispatch tests;
+      suites: core 670, web 440.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet

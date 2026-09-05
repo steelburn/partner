@@ -23,7 +23,7 @@ import type { PersonaToolDirective } from '@partner/shared';
 export const DIRECTIVE_OPEN = '[[partner:tool ';
 
 /** Tool-id token: dotted ids (files.read) plus _ and - (shared ToolId shape). */
-const TOOL_ID_PATTERN = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:[ \t]+(.*))?$/;
+const TOOL_ID_PATTERN = /^([A-Za-z0-9][A-Za-z0-9.:_/-]*)(?:[ \t]+(.*))?$/;
 
 function parseLine(line: string): PersonaToolDirective | null {
   const trimmed = line.trim();

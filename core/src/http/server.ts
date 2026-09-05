@@ -91,6 +91,7 @@ import { SearchError, searchErrorStatus } from '../search/errors.js';
 import { applyStructuredGuidance } from '../chat/instructions.js';
 import { runChatToolPass, runNativeToolCalls } from '../chat/toolPass.js';
 import { searchToolExternal } from '../search/tool.js';
+import { mcpToolExternal } from '../mcp/tool.js';
 import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
@@ -1383,7 +1384,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           options.broker !== undefined
         ) {
           const activeConversationId: string = conversationId;
-          const searchExternal = searchToolExternal(options.search);
+          const externalTools = [
+            searchToolExternal(options.search),
+            mcpToolExternal(options.mcp),
+          ].filter((tool): tool is NonNullable<typeof tool> => tool !== undefined);
           try {
             const appendSystemNote = (content: string): void => {
               try {
@@ -1404,7 +1408,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             await runChatToolPass(deltaText, {
               persona: routingPersona,
               broker: options.broker,
-              external: searchExternal,
+              external: externalTools,
               audit,
               appendSystemNote,
             });
@@ -1413,7 +1417,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               await runNativeToolCalls(nativeCalls, {
                 persona: routingPersona,
                 broker: options.broker,
-                external: searchExternal,
+                external: externalTools,
                 audit,
                 appendSystemNote,
               });
