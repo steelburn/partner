@@ -13,10 +13,12 @@
 #     linux-x64 prebuild in the tarball and that prebuild needs GLIBC_2.33;
 #     this runner's glibc is older, so the rebuild step removes it and
 #     node-gyp-compiles against the runner's libc (gcc9: -std=c++2a patch).
-#   * Windows: Node 22 + Git-bash at C:\Program Files\Git\bin\bash.EXE
-#     (the runner has no pwsh; its PowerShell execution policy blocks
-#     script steps; GitHub's bash auto-discovery picks the WSL shim, so the
-#     shell is pinned to Git bash). Native modules use win32 prebuilds.
+#   * Windows: Node 22 + cmd steps (the runner has no pwsh, its PowerShell
+#     execution policy blocks script steps, and custom-bash-shell paths
+#     break this runner's path handling). Natives use win32 prebuilds.
+#
+# The web/extension suites must run FROM their own directories (vitest
+# resolves the config include relative to the invocation cwd).
 #
 # Trigger: push to master or manual (Actions -> Verify -> Run workflow).
 name: verify
@@ -66,17 +68,17 @@ jobs:
         run: npm test
 
       - name: Web suite
-        run: npx vitest run --config web/vitest.config.ts
+        run: cd web && npx vitest run
 
       - name: Extension suite
-        run: npx vitest run --config extension/vitest.config.ts
+        run: cd extension && npx vitest run
 
   verify-windows:
     name: verify (windows)
     runs-on: [self-hosted, Windows]
     defaults:
       run:
-        shell: 'C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}'
+        shell: cmd
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +98,7 @@ jobs:
         run: npm test
 
       - name: Web suite
-        run: npx vitest run --config web/vitest.config.ts
+        run: cd web && npx vitest run
 
       - name: Extension suite
-        run: npx vitest run --config extension/vitest.config.ts
+        run: cd extension && npx vitest run
