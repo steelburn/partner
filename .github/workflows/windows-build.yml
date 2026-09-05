@@ -46,6 +46,7 @@ jobs:
         run: |
           if exist "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" ("C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) else (echo NO_VSWHERE)
           where cl 2>nul || echo NO_CL_ON_PATH
+          exit /b 0
 
       - name: Rust toolchain (MSVC)
         uses: dtolnay/rust-toolchain@stable
