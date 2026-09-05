@@ -16,3 +16,4 @@ export * from './notes.js';
 export * from './theming.js';
 export * from './browser.js';
 export * from './skills.js';
+export * from './playbooks.js';
