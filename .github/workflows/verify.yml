@@ -94,6 +94,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install (npm rebuilds the aliased native — python + VS 2022)
+      - name: Allow PowerShell for node-gyp VS discovery (runner policy)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force"
+
         env:
           npm_config_msvs_version: '2022'
         run: npm ci

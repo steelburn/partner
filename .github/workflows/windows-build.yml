@@ -56,6 +56,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install npm deps + Tauri CLI (npm rebuilds the aliased native)
+      - name: Allow PowerShell for node-gyp VS discovery (runner policy)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force"
+
         env:
           npm_config_msvs_version: '2022'
         run: npm ci
