@@ -271,3 +271,34 @@ describe('recent invocations', () => {
     expect(await listInvocations(TOKEN, 'hello-skill', { fetchImpl: b })).toEqual([INVOCATION]);
   });
 });
+
+describe('invoke 2xx runner envelopes (M8 review finding 1)', () => {
+  it('maps the core 200 {ok:false,error} shape to a coded result', async () => {
+    const { fetchImpl } = recordFetch(() =>
+      jsonResponse({ ok: false, error: 'tool_denied', meta: { id: 'inv-1' } }),
+    );
+    const result = await invokeSkill(TOKEN, 'files-preview', { args: {} }, { fetchImpl });
+    expect(result).toEqual({
+      ok: false,
+      code: 'tool_denied',
+      message: 'A tool request was denied',
+    });
+  });
+
+  it('maps budget_exceeded and caps_exceeded labels from 200 bodies', async () => {
+    const budget = recordFetch(() => jsonResponse({ ok: false, error: 'budget_exceeded' }));
+    const b = await invokeSkill(TOKEN, 's', {}, { fetchImpl: budget.fetchImpl });
+    expect(b).toMatchObject({ ok: false, code: 'budget_exceeded' });
+
+    const caps = recordFetch(() => jsonResponse({ ok: false, error: 'caps_exceeded' }));
+    const c = await invokeSkill(TOKEN, 's', {}, { fetchImpl: caps.fetchImpl });
+    expect(c).toMatchObject({ ok: false, code: 'caps_exceeded' });
+  });
+
+  it('still throws on a 2xx body with neither result nor a coded error', async () => {
+    const { fetchImpl } = recordFetch(() => jsonResponse({ nope: true }));
+    await expect(invokeSkill(TOKEN, 's', {}, { fetchImpl })).rejects.toThrow(
+      /unexpected shape/,
+    );
+  });
+});

@@ -10,6 +10,7 @@
  * ':memory:' so nothing touches the OS keychain or disk.
  */
 import { SCHEMA_VERSION } from '@partner/shared';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -100,12 +101,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxAttempts: readInt(env.PAIR_MAX_ATTEMPTS, 3, 1, 100),
     lockMs: readInt(env.PAIR_LOCK_MS, 300_000, 1, Number.MAX_SAFE_INTEGER),
     sessionTtlMs: readInt(env.SESSION_TTL_MS, THIRTY_DAYS_MS, 1, Number.MAX_SAFE_INTEGER),
-    // M8: installed skill code lives next to this core's SQLite under
-    // <db dir>/skills/ (per-core profile — user-scoped store). Demo mode
-    // defaults to ./data/skills relative to the core's working directory;
-    // packaged shells will point SKILLS_DIR at app-data explicitly.
+    // M8: installed skill code lives per-core. LIVE: next to this core's
+    // SQLite under <db dir>/skills/. DEMO: under the OS temp dir so skills
+    // can never walk up into the repo tree / repo node_modules, and the
+    // worker additionally runs with cwd inside its own store dir (review
+    // finding 2). Packaged shells override SKILLS_DIR explicitly.
     skillsDir:
-      env.SKILLS_DIR?.trim() || join(dbPath === ':memory:' ? './data' : dirname(dbPath), 'skills'),
+      env.SKILLS_DIR?.trim() ||
+      (dbPath === ':memory:'
+        ? join(tmpdir(), 'partner-demo-skills')
+        : join(dirname(dbPath), 'skills')),
     // The checked-in local catalog (no remote gallery in M8). Resolved from
     // this source file so tsx/vitest runs work from any working directory.
     skillsCatalogDir:

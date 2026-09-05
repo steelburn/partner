@@ -31,7 +31,8 @@
  */
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { redactString } from '@partner/shared';
@@ -41,6 +42,8 @@ import type { AuditService } from '../services/redaction.js';
 import type { SkillInvocationStore } from '../stores/types.js';
 
 const DEFAULT_BUDGET_MS = 30_000;
+/** Hard ceiling on a skill's declared budget (M8 review finding 4). */
+const MAX_SKILL_TIME_MS = 300_000;
 const DEFAULT_MAX_ARGS_BYTES = 64 * 1024;
 const DEFAULT_MAX_RESULT_BYTES = 1024 * 1024;
 const MAX_ERROR_CODE = 200;
@@ -110,9 +113,12 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
 
   function budgetMsOf(skill: SkillDetail): number {
     const timeMs = skill.manifest.budget?.timeMs;
-    return typeof timeMs === 'number' && Number.isFinite(timeMs) && timeMs > 0
-      ? timeMs
-      : DEFAULT_BUDGET_MS;
+    const raw =
+      typeof timeMs === 'number' && Number.isFinite(timeMs) && timeMs > 0
+        ? timeMs
+        : DEFAULT_BUDGET_MS;
+    // Ceiling so a bad/edited manifest cannot hold a worker forever.
+    return Math.min(raw, MAX_SKILL_TIME_MS);
   }
 
   /** Record the meta row + audit for a settled (or pre-spawn-failed) run. */
@@ -192,6 +198,30 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
     const budgetMs = budgetMsOf(skill);
     const workerPath = WORKER_PATH;
     const skillDir = join(dataDir, skill.id);
+    mkdirSync(skillDir, { recursive: true });
+
+    // Integrity pre-check (M8 review finding 5): refuse to run code whose
+    // entry no longer matches the hash recorded at install. Skills without a
+    // recorded baseline (inline test doubles) skip the check.
+    if (skill.sha256 !== undefined && skill.sha256 !== '') {
+      try {
+        const entryAbs = join(skillDir, skill.manifest.entrypoint);
+        const digest = createHash('sha256').update(readFileSync(entryAbs)).digest('hex');
+        if (digest !== skill.sha256) {
+          const meta = record(skill, startedAt, now(), personaId, 0, {
+            ok: false,
+            error: 'integrity',
+          });
+          return { ok: false, error: 'integrity', meta };
+        }
+      } catch {
+        const meta = record(skill, startedAt, now(), personaId, 0, {
+          ok: false,
+          error: 'integrity',
+        });
+        return { ok: false, error: 'integrity', meta };
+      }
+    }
 
     const child: ChildProcess = fork(workerPath, [], {
       // Minimal env on purpose: the skill never inherits the core's
@@ -201,6 +231,9 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         PARTNER_SKILL_ENTRY: skill.manifest.entrypoint,
         PARTNER_SKILL_MAX_RESULT_BYTES: String(maxResultBytes),
       },
+      // Run from INSIDE the store dir so bare-specifier resolution cannot
+      // walk up into the repo's node_modules (M8 review finding 2 — belt).
+      cwd: skillDir,
       execArgv: [],
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     });
@@ -355,6 +388,16 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         }
         if (msg.type === 'result') {
           if (msg.ok === true) {
+            // A result in flight when the budget/abort fired must NOT count
+            // as success (M8 review finding 3).
+            if (budgetKilled) {
+              fail('budget_exceeded');
+              return;
+            }
+            if (aborted) {
+              fail('aborted');
+              return;
+            }
             const text = typeof msg.text === 'string' ? msg.text : '';
             if (Buffer.byteLength(text, 'utf8') > maxResultBytes) {
               fail('caps_exceeded');

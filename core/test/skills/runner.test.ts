@@ -10,6 +10,7 @@
  */
 import { describe, expect, it, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { SkillDetail, SkillInvocationMeta } from '@partner/shared';
 import type { ToolBroker } from '../../src/broker/broker.js';
@@ -125,7 +126,9 @@ function fixtureSkill(env: Env, id: string, code: string, overrides: Partial<Ski
   const dir = join(env.dataDir, id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'entry.mjs'), code);
-  return detailOf(id, overrides);
+  const detail = detailOf(id, overrides);
+  // Baseline the entry hash so the runner's integrity check matches.
+  return { ...detail, sha256: createHash('sha256').update(code).digest('hex') };
 }
 
 function detailOf(id: string, overrides: Partial<SkillDetail['manifest']> = {}): SkillDetail {
@@ -444,6 +447,23 @@ describe('skill runner — budgets, crashes, caps, env', () => {
         expect(typeof details.ms).toBe('number');
         expect(JSON.stringify(details)).not.toContain('hello-skill code');
       }
+    } finally {
+      env.close();
+    }
+  });
+});
+
+describe('skill runner — integrity (M8 review finding 5)', () => {
+  it('refuses to run an entry modified since install', async () => {
+    const env = buildEnv();
+    try {
+      env.manager.install('hello-skill');
+      const detail = env.manager.get('hello-skill') as SkillDetail;
+      // Tamper with the installed code after install.
+      writeFileSync(join(env.dataDir, 'hello-skill', 'entry.mjs'), 'export async function run(){ return {x:1}; }');
+      const out = await invoke(env, detail, { name: 'Ada' });
+      expect(out.ok).toBe(false);
+      expect(out.error).toBe('integrity');
     } finally {
       env.close();
     }

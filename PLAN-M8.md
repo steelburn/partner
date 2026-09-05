@@ -20,7 +20,11 @@ profile).
   check is a SHA-256 recorded at install from the local catalog (nothing
   remote). Update/consent flow works but only for local catalog editions.
 - Worker sandbox = **child process + IPC** (no network by default, broker-
-  mediated tools, budgets, kill); OS-level jail (seccomp/containers) later.
+  mediated tools, budgets, kill); the worker runs with **cwd inside its own
+  store dir** and a minimal env, and demo-mode stores live under the OS temp
+  dir (outside any repo) so skills cannot reach repo `node_modules` or the
+  core DB by bare-specifier resolution. v1 catalog is trusted first-party;
+  OS-level jail (seccomp/containers) is a later hardening step.
 
 ## Skill model (shared contracts)
 

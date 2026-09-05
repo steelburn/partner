@@ -148,6 +148,12 @@ export const INVOCATION_ERROR_LABELS: Record<string, string> = {
   crashed: 'Skill crashed',
   denied: 'Invocation denied',
   tool_denied: 'A tool request was denied',
+  caps_exceeded: 'Result was too large — run stopped',
+  skill_error: 'The skill reported an error',
+  aborted: 'Run aborted',
+  integrity: 'Skill code changed since install — refused',
+  persona_paused: 'That persona is paused',
+  no_provider: 'No model provider configured',
 };
 
 /** Human label for a coded invocation failure (unknown codes get a fallback). */

@@ -45,6 +45,12 @@ export const INVOCATION_ERROR_CODES = [
   'crashed',
   'denied',
   'tool_denied',
+  'caps_exceeded',
+  'skill_error',
+  'aborted',
+  'integrity',
+  'persona_paused',
+  'no_provider',
 ] as const;
 
 export type InvocationErrorCode = (typeof INVOCATION_ERROR_CODES)[number];
@@ -252,6 +258,12 @@ const INVOCATION_ERROR_LABELS_FOR_CLIENT: Record<InvocationErrorCode, string> = 
   crashed: 'Skill crashed',
   denied: 'Invocation denied',
   tool_denied: 'A tool request was denied',
+  caps_exceeded: 'Result was too large — run stopped',
+  skill_error: 'The skill reported an error',
+  aborted: 'Run aborted',
+  integrity: 'Skill code changed since install — refused',
+  persona_paused: 'That persona is paused',
+  no_provider: 'No model provider configured',
 };
 
 
@@ -329,6 +341,15 @@ export async function invokeSkill(
   const parsed = await expectJson<unknown>(response);
   if (isRecord(parsed) && 'result' in parsed) {
     return { ok: true, result: parsed.result };
+  }
+  // The core answers runner outcomes (tool_denied/budget_exceeded/crashed/
+  // caps_exceeded/...) as HTTP 200 {ok:false, error, meta} — map those here
+  // so the console can render the real code (M8 review finding 1).
+  if (isRecord(parsed) && parsed.ok === false && typeof parsed.error === 'string') {
+    const code = isKnownCode(parsed.error) ? parsed.error : null;
+    if (code !== null) {
+      return { ok: false, code, message: INVOCATION_ERROR_LABELS_FOR_CLIENT[code] };
+    }
   }
   throw new ApiRequestError(response.status, 'The invoke response had an unexpected shape.');
 }
