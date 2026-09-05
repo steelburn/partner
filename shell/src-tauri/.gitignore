@@ -4,7 +4,6 @@
 /gen/schemas
 
 # Local build inputs produced by `cargo tauri icon` and the sidecar build
-/icons
 /binaries/partner-core-*
 
 *.sig

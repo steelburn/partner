@@ -51,11 +51,6 @@ jobs:
           npm_config_msvs_version: '2022'
         run: npm ci
 
-      - name: Real icons (regenerate from source)
-        run: |
-          Push-Location shell/src-tauri
-          npx tauri icon icons/icon-src.png
-          Pop-Location
 
       - name: Build web UI
         run: npm run build -w web
