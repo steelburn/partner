@@ -1,11 +1,14 @@
 import { useState, type FormEvent } from 'react';
 import { ApiRequestError, fetchDemoPairCode, requestPair } from './lib/api.js';
 import { storeToken } from './lib/token.js';
+import SessionChat from './SessionChat.js';
 
 export interface PairGateProps {
   /** Called once a session token has been stored. */
   onPaired: () => void;
 }
+
+type GateMode = 'pair' | 'session';
 
 interface Hint {
   text: string;
@@ -21,6 +24,7 @@ function sanitizeCode(raw: string): string {
  * core displays the 6-digit code (tray notification / pairing page).
  */
 export default function PairGate({ onPaired }: PairGateProps) {
+  const [mode, setMode] = useState<GateMode>('pair');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
@@ -87,6 +91,10 @@ export default function PairGate({ onPaired }: PairGateProps) {
     if (canConnect) void connect();
   };
 
+  if (mode === 'session') {
+    return <SessionChat onBack={() => setMode('pair')} />;
+  }
+
   return (
     <section className="gate" aria-label="Pair this browser">
       <div className="gate-panel">
@@ -135,6 +143,19 @@ export default function PairGate({ onPaired }: PairGateProps) {
             {demoBusy ? 'Getting code…' : 'Get demo pairing code'}
           </button>
         </div>
+
+        <p className="gate-alt">
+          No Partner core on this machine?{' '}
+          <button
+            type="button"
+            className="btn-link"
+            disabled={busy || demoBusy}
+            onClick={() => setMode('session')}
+          >
+            Use session-only chat
+          </button>{' '}
+          — talk to your own endpoint with the key kept in this tab only.
+        </p>
 
         <div className="gate-feedback" aria-live="polite">
           {error ? (
