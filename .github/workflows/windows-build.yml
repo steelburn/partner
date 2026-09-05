@@ -33,7 +33,7 @@ jobs:
     runs-on: [self-hosted, Windows]
     defaults:
       run:
-        shell: "C:Program FilesGitinash.EXE --noprofile --norc -e -o pipefail {0}"
+        shell: "C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
