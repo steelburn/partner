@@ -27,9 +27,18 @@ describe('loadConfig', () => {
     expect(cfg.dbPath).toBe('./data/partner.db');
   });
 
-  it('rejects a non-loopback HOST (sidecar binds loopback by construction)', () => {
-    expect(() => loadConfig({ ...NO_ENV, HOST: '0.0.0.0' })).toThrow(/loopback/);
-    expect(() => loadConfig({ ...NO_ENV, HOST: '192.168.1.5' })).toThrow(/loopback/);
+  it('rejects a non-loopback HOST in live mode (sidecar binds loopback by construction)', () => {
+    expect(() => loadConfig({ ...NO_ENV, HOST: '0.0.0.0', DEMO_MODE: '0' })).toThrow(/loopback/);
+    expect(() => loadConfig({ ...NO_ENV, HOST: '192.168.1.5', DEMO_MODE: '0' })).toThrow(/loopback/);
+  });
+
+  it('demo mode MAY bind outward (container/dev webapp) with loopback still default', () => {
+    const bound = loadConfig({ ...NO_ENV, HOST: '0.0.0.0' });
+    expect(bound.host).toBe('0.0.0.0');
+    expect(bound.demo).toBe(true);
+    // Session/UI origins stay loopback-derived regardless of the bind.
+    expect(bound.hostAllowlist).toEqual(['127.0.0.1:4390', 'localhost:4390']);
+    expect(loadConfig(NO_ENV).host).toBe('127.0.0.1');
   });
 
   it('DEMO_MODE accepts explicit truthy/falsy spellings', () => {

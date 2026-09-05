@@ -11,3 +11,7 @@ data/
 shell/artifacts/
 shell/src-tauri/binaries/partner-core-*
 shell/src-tauri/target/
+
+# Demo webapp container: staged bundle + built SPA (docker build context)
+docker/webapp-demo/core-bundle.cjs
+docker/webapp-demo/web/

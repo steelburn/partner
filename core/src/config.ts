@@ -76,13 +76,21 @@ function readInt(raw: string | undefined, fallback: number, min: number, max: nu
  */
 export function loadConfig(env: Record<string, string | undefined> = process.env): CoreConfig {
   const port = readInt(env.PORT, DEFAULT_PORT, 1, 65535);
-  const host = env.HOST?.trim() || DEFAULT_HOST;
-  // The M0 sidecar is loopback-only BY CONSTRUCTION: allowlisting loopback
-  // Host headers is meaningless if the socket can be bound outward.
-  if (!['127.0.0.1', '::1', 'localhost'].includes(host)) {
-    throw new Error(`HOST must be a loopback address (127.0.0.1 / ::1 / localhost); got "${host}"`);
-  }
   const demo = readBool(env.DEMO_MODE, true);
+  const host = env.HOST?.trim() || DEFAULT_HOST;
+  // Loopback-only BY CONSTRUCTION for the sidecar in LIVE mode: allowlisting
+  // loopback Host headers is meaningless if the socket can bind outward, and
+  // a live core holds keys + file roots. DEMO mode may bind outward (e.g. a
+  // demo webapp container behind a published port) — it has an in-memory DB,
+  // a fake keychain, a fake provider and no secrets, so exposure is bounded
+  // to the demo surface (the /v1/dev/pair-code auto-pair stays demo-only).
+  const loopbackHosts = ['127.0.0.1', '::1', 'localhost'];
+  if (!loopbackHosts.includes(host) && !demo) {
+    throw new Error(
+      `HOST must be a loopback address (127.0.0.1 / ::1 / localhost) in live mode; ` +
+        `got "${host}". Non-loopback binding is demo-mode only (container/dev).`,
+    );
+  }
   // Demo mode defaults to an in-memory DB; an explicit DB_PATH always wins.
   const dbPath = env.DB_PATH?.trim() || (demo ? ':memory:' : DEFAULT_DB_PATH);
   // Demo mode short-circuits to the in-memory fake keychain (spec); an
