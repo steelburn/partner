@@ -1,9 +1,4 @@
 {
-  // M0 scaffold — verify with cargo check once Rust is installed.
-  // Tauri v2 capability for the main window. The core sidecar is spawned from
-  // Rust (setup hook) and does NOT need IPC permissions; the shell entries
-  // below are reserved for future UI-driven shell usage. `core:default` is the
-  // minimal safe baseline (event/window basics only — no fs, no http).
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the Partner main window",

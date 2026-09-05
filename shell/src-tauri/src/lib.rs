@@ -49,11 +49,14 @@ fn wait_for_core(timeout: Duration) -> std::io::Result<()> {
 
 /// Owns the core child process; `kill()` runs when the app (and this managed
 /// state) drops, so the sidecar never outlives the shell.
-struct CoreChild(CommandChild);
+struct CoreChild(Option<CommandChild>);
 
 impl Drop for CoreChild {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        // kill(self) consumes the child, so take it out of the Option first.
+        if let Some(child) = self.0.take() {
+            let _ = child.kill();
+        }
     }
 }
 
@@ -64,7 +67,7 @@ fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .sidecar(CORE_SIDECAR)?
         .envs(CORE_ENV.iter().copied())
         .spawn()?;
-    app.manage(CoreChild(child));
+    app.manage(CoreChild(Some(child)));
 
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {

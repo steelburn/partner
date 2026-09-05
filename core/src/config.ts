@@ -113,9 +113,21 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         : join(dirname(dbPath), 'skills')),
     // The checked-in local catalog (no remote gallery in M8). Resolved from
     // this source file so tsx/vitest runs work from any working directory.
+    // Bundled artifacts (import.meta.url empty) fall back to cwd-relative so
+    // boot never throws; SKILLS_CATALOG_DIR overrides in packaged runs.
     skillsCatalogDir:
-      env.SKILLS_CATALOG_DIR?.trim() || fileURLToPath(new URL('../../skills-catalog/', import.meta.url)),
+      env.SKILLS_CATALOG_DIR?.trim() ||
+      (metaUrlOfBundle()
+        ? fileURLToPath(new URL('../../skills-catalog/', (import.meta as { url?: string }).url as string))
+        : join(process.cwd(), 'skills-catalog')),
     schemaVersion: SCHEMA_VERSION,
     version: CORE_VERSION,
   };
+}
+
+/** True when import.meta.url is a real URL (dev/tsx); false in bundled CJS
+ *  artifacts where esbuild emits an empty object. */
+export function metaUrlOfBundle(): boolean {
+  const url = (import.meta as { url?: string }).url;
+  return typeof url === 'string' && url !== '';
 }

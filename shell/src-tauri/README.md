@@ -62,3 +62,30 @@ cargo tauri build          # emits installer + updater artifacts per target
   config) — see `lib.rs`.
 - Resource wiring for the bundled runtime: node binary as the sidecar +
   bundled JS / pruned `node_modules` under `bundle.resources`.
+
+## Desktop run (after the container gate)
+
+The gate container proves compile + webview boot headlessly. On a real
+desktop (with a display), the full path is:
+
+```bash
+# 1. system deps once (Ubuntu 24.04)
+sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev \
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# 2. build the core sidecar artifact + run the shell (two terminals)
+npm run dev:core                              # core on :4390 (demo)
+# OR run the headless gate: shell/docker/gate/run.sh inside partner-gate
+
+# 3. build & run the shell WITHOUT its own sidecar spawn (core is up)
+cd src-tauri && CARGO_TARGET_DIR=/tmp/pt cargo build
+PARTNER_NO_SIDECAR=1 /tmp/pt/debug/partner-shell
+
+# Real sidecar wiring (packaged app): replace the dummy
+# binaries/partner-core-<triple> with the SEA/bundled-node artifact, drop
+# PARTNER_NO_SIDECAR, then `cargo tauri build` on the desktop machine.
+```
+Caveats recorded by the gate run: bundle-safe `import.meta` handling in the
+core (entry guard, catalog dir, worker path); strict-JSON tauri config +
+capabilities; icons required by tauri-build.

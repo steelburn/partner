@@ -29,20 +29,22 @@ ls -la "$SHELL_BIN"
 
 # 2) Sidecar core artifact: bundle the TS core to one CJS file (natives kept
 #    external) and vendor those natives under the artifact's node_modules.
-echo "[gate] bundle core (esbuild)…"
-cd "$REPO"
-node node_modules/esbuild/bin/esbuild core/src/index.ts \
-  --bundle --platform=node --format=cjs --target=node18 \
-  --external:better-sqlite3 --external:@napi-rs/keyring \
-  --outfile="$ART/core-bundle.cjs" 2>&1 | tail -2
-mkdir -p "$ART/node_modules"
-npm install --no-save --prefix "$ART" better-sqlite3@13 @napi-rs/keyring@2 >/dev/null 2>&1 || \
-  echo "[gate] vendor install warnings ignored (native compile may have been used)"
+#    Bundling runs on the HOST (Node 22 - container node 18 crashes esbuild);
+#    run.sh only uses the prebuilt artifact if present.
+if [ ! -f "$ART/core-bundle.cjs" ]; then
+  echo "[gate] SKIP bundle (expected on the host: node node_modules/esbuild/bin/esbuild ... --outfile=$ART/core-bundle.cjs)"
+  exit 2
+fi
+if [ ! -d "$ART/node_modules/better-sqlite3" ]; then
+  echo "[gate] SKIP vendor install (expected on the host: npm install --prefix $ART better-sqlite3@13 @napi-rs/keyring@2)"
+  exit 2
+fi
 
 # 3) Headless core boot: health + serves the built web UI.
 echo "[gate] boot core artifact (headless)…"
 cd "$ART"
 PORT=4391 DEMO_MODE=1 HOST=127.0.0.1 STATIC_DIR="$REPO/web/dist" \
+  SKILLS_CATALOG_DIR="$REPO/skills-catalog" SKILLS_DIR=/tmp/gate-skills \
   node core-bundle.cjs >"$ART/gate-core.log" 2>&1 &
 CORE_PID=$!
 cleanup() { kill "$CORE_PID" 2>/dev/null || true; }
@@ -62,6 +64,7 @@ XVFB_PID=$!
 sleep 1
 export DISPLAY=:99
 PORT=4390 DEMO_MODE=1 HOST=127.0.0.1 STATIC_DIR="$REPO/web/dist" \
+  SKILLS_CATALOG_DIR="$REPO/skills-catalog" SKILLS_DIR=/tmp/gate-skills \
   node "$ART/core-bundle.cjs" >"$ART/gate-gui-core.log" 2>&1 &
 GUI_CORE=$!
 for i in $(seq 1 60); do

@@ -153,9 +153,15 @@ test. No product UI is designed here — this is plumbing to prove the spine.
       the real spawned process.
 - [x] Spike decision recorded in `core/docs/spike-sidecar.md`; core serves
       the built SPA at `/` when a static dir is configured (stub, review-
-      closed). **Remaining environment gate:** the packaged Tauri shell
-      launching the sidecar needs a Rust toolchain (not present on this
-      machine) — steps in `shell/src-tauri/README.md`.
+      closed). **RESOLVED via `shell/docker/gate/` (container toolchain,
+      Sep 2026):** `partner-shell` compiles (debug, Ubuntu 24.04 + webkit2gtk
+      4.1); the bundled core artifact (single-file CJS + vendored natives)
+      boots and serves `/v1/health` + the web UI (200); the shell runs under
+      Xvfb and its webview paints the real Partner SPA (verified by exact
+      design-token colors in the screenshot histogram). Remaining desktop
+      caveats recorded in `shell/src-tauri/README.md`: run on a real display
+      without `PARTNER_NO_SIDECAR`, and wire the real sidecar artifact
+      (SEA/bundled-node) at bundle time on a desktop machine.
 - [x] `DESIGN.md` draft exists (tokens module matches it; dark palette
       contrast-tuned; ux_audit passes on all asserted pairs).
 

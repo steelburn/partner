@@ -753,10 +753,15 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-// CLI entry guard: listen only when executed directly (tsx src/index.ts),
-// never when imported (vitest, integration tests, web/shell packages).
+// CLI entry guard: listen only when executed directly (tsx src/index.ts, or a
+// bundled CJS artifact whose import.meta.url is empty), never when imported
+// (vitest, integration tests, web/shell packages).
 const entryArg = process.argv[1];
-if (entryArg !== undefined && import.meta.url === pathToFileURL(entryArg).href) {
+const metaUrl = (import.meta as { url?: string }).url;
+const isDirectEntry =
+  entryArg !== undefined &&
+  (metaUrl === undefined || metaUrl === '' || metaUrl === pathToFileURL(entryArg).href);
+if (isDirectEntry) {
   main().catch((err: unknown) => {
     console.error('partner-core failed to start:', err instanceof Error ? err.message : err);
     process.exit(1);

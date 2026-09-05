@@ -48,7 +48,19 @@ const DEFAULT_MAX_ARGS_BYTES = 64 * 1024;
 const DEFAULT_MAX_RESULT_BYTES = 1024 * 1024;
 const MAX_ERROR_CODE = 200;
 
-const WORKER_PATH = fileURLToPath(new URL('./worker-runner.mjs', import.meta.url));
+/** Worker harness path. In dev/tsx, import.meta.url is real; in a bundled
+ *  CJS artifact it is empty, so fall back to a cwd-relative path (packaged
+ *  runs ship the harness next to the bundle). */
+/** Worker harness path. Real URL in dev/tsx; in a bundled CJS artifact
+ *  esbuild emits an empty object for import.meta, so fall back to a
+ *  cwd-relative path (packaged runs ship the harness next to the bundle). */
+const WORKER_PATH = (() => {
+  const url = (import.meta as { url?: string }).url;
+  if (typeof url === 'string' && url !== '') {
+    return fileURLToPath(new URL('./worker-runner.mjs', url));
+  }
+  return join(process.cwd(), 'worker-runner.mjs');
+})();
 
 export interface SkillRunnerOptions {
   /** Per-core skill store root (config.skillsDir) — code lives at dataDir/<id>/. */
