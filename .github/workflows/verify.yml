@@ -1,0 +1,69 @@
+# Partner — full verification matrix (self-hosted runners)
+#
+# The milestone gate for this repo is: typecheck (shared/core/web/extension)
+# + the full vitest matrix — root core suite, web suite, extension suite —
+# green on BOTH platforms, because several behaviours genuinely differ:
+#   * Linux runs the symlink path-escape tests (Windows without Developer
+#     Mode skips them) and asserts the strict minimal-env skill guarantee.
+#   * Windows exercises the PATH pinning, teardown/AV retry paths and the
+#     drive-letter package-root handling.
+#
+# Runs on the repo's self-hosted runners by design (the M9+ verification
+# flow happens here, not on hosted minutes). Runner labels below follow the
+# GitHub defaults registered with a self-hosted runner: `self-hosted` plus
+# the OS label. If your runners use custom labels, adjust the `runs-on`
+# lines — dispatch will report "no runner matching the requested labels".
+#
+# Trigger: push to master or manual (Actions -> Verify -> Run workflow).
+name: verify
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["master"]
+
+jobs:
+  verify-linux:
+    name: verify (linux)
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck (shared, core, web, extension)
+        run: npm run typecheck
+      - name: Root suite (core + shared + e2e incl. M9 spawned-core e2e)
+        run: npm test
+      - name: Web suite
+        run: npx vitest run --config web/vitest.config.ts
+      - name: Extension suite
+        run: npx vitest run --config extension/vitest.config.ts
+
+  verify-windows:
+    name: verify (windows)
+    runs-on: [self-hosted, Windows]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck (shared, core, web, extension)
+        run: npm run typecheck
+      - name: Root suite (core + shared + e2e incl. M9 spawned-core e2e)
+        run: npm test
+      - name: Web suite
+        run: npx vitest run --config web/vitest.config.ts
+      - name: Extension suite
+        run: npx vitest run --config extension/vitest.config.ts

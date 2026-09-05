@@ -156,6 +156,12 @@ export interface ToolLoop {
   drop(runId: string): void;
   /** True while the engine still holds state (e.g. queued runs). */
   has(runId: string): boolean;
+  /**
+   * Persona identity of the queued run waiting on an approval row, or null.
+   * Lets the tools/pending surface tag a persona-requested row with the
+   * persona's display name (PLAN-M9 "Builder · files.read").
+   */
+  waitingPersona(pendingId: string): { id: string; name: string } | null;
 }
 
 const DIRECTIVE_MARKER = '[[partner:tool';
@@ -569,6 +575,14 @@ export function createToolLoop(deps: ToolLoopDeps): ToolLoop {
     },
     has(runId: string): boolean {
       return states.has(runId);
+    },
+    waitingPersona(pendingId: string): { id: string; name: string } | null {
+      for (const state of states.values()) {
+        if (state.waitingOn !== undefined && state.waitingOn.pendingId === pendingId) {
+          return { id: state.persona.id, name: state.persona.name };
+        }
+      }
+      return null;
     },
   };
 }

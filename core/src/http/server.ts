@@ -27,8 +27,8 @@
  * SSE payloads — every audit write goes through the redaction service. Chat
  * content is never audited either: message rows carry only ids/lengths.
  */
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ProviderClient, ProviderSummary } from '@partner/shared';
@@ -78,7 +78,7 @@ import type { SkillRunner } from '../skills/runner.js';
 import { SkillError, skillErrorStatus } from '../skills/errors.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
-import { PlaybookError, playbookErrorStatus } from '../playbooks/errors.js';
+import { PlaybookError, playbookError, playbookErrorStatus } from '../playbooks/errors.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -1980,7 +1980,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/tools/pending', requireSession(sessions), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
-    res.json({ pending: broker.pending.list() });
+    // Persona-requested rows get their persona's identity so the queue can
+    // tag them like "Builder · files.read" (PLAN-M9 Web bullet). Lookup is
+    // live (only while the queued run still waits); plain rows stay as-is.
+    const pending = broker.pending.list().map((row) => {
+      if (row.requestedBy !== 'persona') return { ...row, personaName: null };
+      const persona = options.playbooks?.personaForPending(row.id) ?? null;
+      return { ...row, personaName: persona === null ? null : persona.name };
+    });
+    res.json({ pending });
   });
 
   api.post('/v1/tools/pending/:id', requireSession(sessions), (req: Request, res: Response) => {
@@ -2255,13 +2263,14 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // -------------------------------------------------------------------------
   // M9 playbook + deploy-target surface (PLAN-M9 wire spec). Playbooks list
   // the registry; POST /:id/run streams the persona tool loop as SSE
-  // (run_start / loop_step / persona_tool / delta / usage / done / run_end),
+  // (loop_step / persona_tool / delta / usage / done, terminal done_meta),
   // persisting a playbook_runs row + an optional conversation transcript +
-  // save-as-note. Resume continues a run that stopped queued for a human
-  // approval (the M2 decide route already executed/denied the tool).
-  // Deploy profiles are plain CRUD + the package step. Every route authed;
-  // audit rows are playbook.run/playbook.resume/deploy-profile.* with
-  // ids/names/counts/decisions only — never playbook text or tool content.
+  // save-as-note. A run that pauses on a queued persona tool ends its stream
+  // with done_meta {status:'running', pendingId}; resume continues it after
+  // the M2 decide route executed/denied the tool. Deploy profiles are plain
+  // CRUD + the package step. Every route authed; audit rows are
+  // playbook.run/playbook.resume/deploy-profile.* with ids/names/counts/
+  // decisions only — never playbook text or tool content.
   // -------------------------------------------------------------------------
 
   api.get('/v1/playbooks', requireSession(sessions), (req: Request, res: Response) => {
@@ -2287,6 +2296,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
     const personaId = optionalString(body.personaId);
     const conversationId = optionalString(body.conversationId);
+    // Save-as-note shortcut (PLAN-M9 run body `note?`): fold the top-level
+    // flag into the inputs envelope where the manager gates the save.
+    if (body.note === true && !('saveNote' in inputs)) {
+      inputs.saveNote = true;
+    }
 
     let prepared;
     try {
@@ -2395,12 +2409,41 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       if (!profiles) return;
       const id = String(req.params.id ?? '');
       const body = (req.body ?? {}) as { projectDir?: unknown; outDir?: unknown };
-      try {
-        const result = profiles.package(id, {
-          projectDir:
-            typeof body.projectDir === 'string' ? body.projectDir : '',
-          outDir: typeof body.outDir === 'string' ? body.outDir : '',
+      const projectDir = typeof body.projectDir === 'string' ? body.projectDir.trim() : '';
+      const outDir = typeof body.outDir === 'string' ? body.outDir.trim() : '';
+      // Package materializes a deployable bundle on disk, so both paths must
+      // stay inside a granted project root (PLAN-M9: "into a folder under a
+      // granted project root") — never an arbitrary writable location.
+      const roots = options.broker?.roots.list() ?? [];
+      const underRoot = (candidate: string, canonical: boolean): boolean => {
+        if (candidate === '' || !isAbsolute(candidate)) return false;
+        let resolved: string;
+        try {
+          resolved = canonical ? realpathSync(candidate) : resolve(candidate);
+        } catch {
+          return false;
+        }
+        return roots.some((root) => {
+          const base = resolve(root.path);
+          return resolved === base || resolved.startsWith(base + sep);
         });
+      };
+      if (roots.length === 0) {
+        res.status(400).json({
+          error: 'invalid_input',
+          message: 'no project roots are registered — add one in the Files view first',
+        });
+        return;
+      }
+      if (!underRoot(projectDir, true) || !underRoot(outDir, false)) {
+        res.status(400).json({
+          error: 'invalid_input',
+          message: 'projectDir and outDir must be inside a granted project root',
+        });
+        return;
+      }
+      try {
+        const result = profiles.package(id, { projectDir, outDir });
         res.json(result);
       } catch (err) {
         if (sendPlaybookError(res, err)) return;

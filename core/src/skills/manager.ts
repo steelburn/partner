@@ -112,6 +112,29 @@ export function createSkillManager(options: SkillManagerOptions): SkillManager {
   const { store, invocations, storeDir, catalogDir, tools, audit } = options;
   const now = options.now ?? Date.now;
 
+  /**
+   * Wipe a directory tree, retrying briefly on Windows EBUSY/EPERM — a skill
+   * worker that just exited (or an antivirus scanner) can hold a file handle
+   * for a few hundred ms after the process is gone, and an uninstall/install
+   * must not 500 on that transient race.
+   */
+  function removeTree(target: string): void {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        return;
+      } catch (error) {
+        lastError = error;
+        const end = Date.now() + 60 * (attempt + 1);
+        while (Date.now() < end) {
+          /* short pause before retry */
+        }
+      }
+    }
+    throw lastError;
+  }
+
   function catalog(): CatalogReadResult {
     return readCatalog(catalogDir, { tools });
   }
@@ -140,7 +163,7 @@ export function createSkillManager(options: SkillManagerOptions): SkillManager {
     // whole bundle (manifest.json + entry.mjs + assets) verbatim.
     const target = join(storeDir, manifest.id);
     mkdirSync(storeDir, { recursive: true });
-    rmSync(target, { recursive: true, force: true });
+    removeTree(target);
     cpSync(loaded.dir, target, { recursive: true });
 
     const at = now();
@@ -200,7 +223,7 @@ export function createSkillManager(options: SkillManagerOptions): SkillManager {
   function remove(id: string): void {
     const row = requireRow(id);
     // Wipe the code dir FIRST so a crash cannot leave a runnable orphan.
-    rmSync(join(storeDir, id), { recursive: true, force: true });
+    removeTree(join(storeDir, id));
     invocations.removeBySkill(id);
     store.remove(id);
     audit.log('web', 'skill.uninstall', id, { version: row.version });

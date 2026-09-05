@@ -261,6 +261,21 @@ function QueueSection({ pending, roots, onRefreshPending, onRemembered }: QueueS
   );
 }
 
+/**
+ * Human requester tag for a queue row: persona rows show the persona's name
+ * ("Builder · …" per PLAN-M9) with 'Persona' as the honest fallback; skill
+ * and manual rows get their plain labels.
+ */
+function queueRequesterLabel(item: PendingToolCall): string {
+  if (item.requestedBy === 'persona') {
+    return item.personaName !== undefined && item.personaName !== null && item.personaName !== ''
+      ? item.personaName
+      : 'Persona';
+  }
+  if (item.requestedBy === 'skill') return 'Skill';
+  return 'Web';
+}
+
 function QueueItem({
   item,
   projectLabel,
@@ -357,7 +372,7 @@ function QueueItem({
         {pendingLabel(item.toolId, item.params, { projectLabel })}
       </p>
       <p className="queue-meta">
-        {item.requestedBy} · {formatWhen(item.createdAt)}
+        {queueRequesterLabel(item)} · {formatWhen(item.createdAt)}
       </p>
       {error ? (
         <p className="row-error" role="alert">

@@ -224,8 +224,10 @@ export function validatePortInput(raw: string): string | null {
 export function validateAbsoluteDir(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return 'Path is required.';
-  if (!trimmed.startsWith('/')) {
-    return 'Enter an absolute path starting with / — packaging only runs under granted project roots.';
+  // POSIX '/…' or Windows drive form 'C:\…' / 'C:/…' — a granted root on the
+  // documented Windows dev host is drive-letter absolute.
+  if (!/^(\/|[A-Za-z]:[\\/])/.test(trimmed)) {
+    return 'Enter an absolute path (e.g. C:\\Projects\\app or /home/me/app) — packaging only runs under granted project roots.';
   }
   return null;
 }

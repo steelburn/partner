@@ -109,6 +109,11 @@ describe('host + dir validation', () => {
     expect(validateAbsoluteDir('')).toBe('Path is required.');
     expect(validateAbsoluteDir('relative/dir')).toContain('absolute');
     expect(validateAbsoluteDir('/home/me/projects/foo')).toBeNull();
+    // Windows drive-letter absolute paths are valid too (grant roots on the
+    // documented Windows dev host are drive-letter absolute).
+    expect(validateAbsoluteDir('C:\\Projects\\app')).toBeNull();
+    expect(validateAbsoluteDir('C:/Projects/app')).toBeNull();
+    expect(validateAbsoluteDir('D:\\x')).toBeNull();
   });
 });
 

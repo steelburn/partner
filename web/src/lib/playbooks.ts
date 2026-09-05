@@ -19,12 +19,12 @@
  * owns the web-side contract; guards are tolerant so an unexpected frame is
  * dropped instead of failing the stream (same discipline as asChatEvent).
  *
- * Route notes for integration: REST paths below follow PLAN-M9.md
+ * Route notes for integration: REST paths follow PLAN-M9.md
  * (`/v1/playbooks`, `/v1/playbooks/:id/run`, `/v1/deploy-profiles`). The
  * run *resume* route (a run that paused on a queued persona tool is
- * continued after the human approves it in the queue) follows the persisted
- * playbook_runs table as `/v1/playbook-runs/:runId/resume` — kept as one
- * constant so a core-side alignment is a one-line change.
+ * continued after the human approves it in the queue) is
+ * `POST /v1/playbooks/runs/:runId/resume` — matching the core registration
+ * (core/src/http/server.ts) so UI resume and the wire agree.
  */
 
 import {
@@ -44,7 +44,9 @@ import type {
 } from '@partner/shared';
 
 const PLAYBOOKS_PATH = '/v1/playbooks';
-const PLAYBOOK_RUNS_PATH = '/v1/playbook-runs';
+// Resume re-enters a paused run: POST /v1/playbooks/runs/:runId/resume
+// (registered in core/src/http/server.ts — one constant, one route).
+const PLAYBOOK_RUNS_PATH = '/v1/playbooks/runs';
 const DEPLOY_PROFILES_PATH = '/v1/deploy-profiles';
 
 export type { FetchLike };
@@ -411,7 +413,7 @@ export async function runPlaybook(
 }
 
 /**
- * POST /v1/playbook-runs/:runId/resume {pendingId} — continue a run that
+ * POST /v1/playbooks/runs/:runId/resume {pendingId} — continue a run that
  * paused on a queued persona tool after the human approved/denied it. The
  * stream delivers the remaining loop events and the final done_meta.
  */

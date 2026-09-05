@@ -114,12 +114,19 @@ create a deploy profile → package under a temp root → files exist.
 
 ## Exit criteria (tick PLAN.md M9)
 
-- [ ] Persona tool loop (levels + queue tagging + bounded looping) and text
+- [x] Persona tool loop (levels + queue tagging + bounded looping) and text
       playbooks + vibe-code via broker, test-covered; deploy profiles CRUD +
-      package; playbook_runs audit.
-- [ ] Playbooks view + queue persona tags, token-only.
-- [ ] Typechecks, root + web suites green; env gates documented (search/send/
-      live ship).
+      package under granted roots; playbook_runs audit. (Fresh-context review
+      findings closed 2026-09-05: run stream now ends in the spec `done_meta`
+      frame — pause `{status:'running',pendingId}` / terminal with
+      noteId+noteTitle; resume route aligned `/v1/playbooks/runs/:id/resume`;
+      top-level `note` body field folds into `inputs.saveNote`; queue rows
+      carry the persona name; resume of a finished run is 409; package paths
+      must sit under a registered project root.)
+- [x] Playbooks view + queue persona tags, token-only (ux_audit PASSED).
+- [x] Typechecks, root (555) + web (406) + extension (54) suites green;
+      spawned-core M9 e2e added (`tests/e2e-playbooks.test.ts`); env gates
+      documented (search/send/live ship).
 
 ## Out of scope
 

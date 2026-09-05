@@ -538,7 +538,7 @@ apps/partner/
 - [ ] **M8 — Skills runtime.** Manifest + signing + hash verify, sandboxed
       workers, permission enforcement, audit, install/update/uninstall flows,
       local catalog + registry protocol.
-- [ ] **M9 — Capability playbooks.** Research, vibe-code, docgen, email
+- [x] **M9 — Capability playbooks.** Research, vibe-code, docgen, email
       draft, presentation, analysis, design-prototype flows wired to personas
       (depth per §6), plus the **Ship/deploy playbook** (deploy-target
       profiles, build → push → deploy → health check → URL) and the

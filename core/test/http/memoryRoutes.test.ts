@@ -33,11 +33,15 @@ function parseSse(text: string): Array<{ type: string; [key: string]: unknown }>
     .map((line) => JSON.parse(line.slice('data: '.length)) as { type: string; [key: string]: unknown });
 }
 
-/** SSE text minus done_meta lines (ids are random per conversation). */
+/** SSE text minus done_meta lines (ids are random per conversation) and
+ *  timing noise — the demo provider reports real measured latencyMs, which
+ *  varies 0/1ms between runs under parallel load and is not part of the
+ *  memory-on-vs-off property under test. */
 function withoutMeta(text: string): string {
   return text
     .split('\n')
     .filter((line) => line.startsWith('data: ') && !line.includes('"type":"done_meta"'))
+    .map((line) => line.replace(/"latencyMs":\d+/g, '"latencyMs":0'))
     .join('\n');
 }
 

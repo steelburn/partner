@@ -51,7 +51,6 @@ export const PLAYBOOKS: readonly PlaybookSummary[] = [
       { name: 'topic', hint: 'What to research', optional: true },
       { name: 'sourceText', hint: 'Pasted source material to work from', optional: true },
       { name: 'noteId', hint: 'Existing note id to summarize/extend', optional: true },
-      { name: 'saveNote', hint: 'Save the result as a note', optional: true },
     ],
   },
   {
@@ -66,7 +65,6 @@ export const PLAYBOOKS: readonly PlaybookSummary[] = [
       { name: 'prompt', hint: 'What the document should cover', optional: true },
       { name: 'docType', hint: 'e.g. spec | guide | proposal', optional: true },
       { name: 'noteId', hint: 'Existing note to expand into a document', optional: true },
-      { name: 'saveNote', hint: 'Save the result as a note', optional: true },
     ],
   },
   {
@@ -95,7 +93,6 @@ export const PLAYBOOKS: readonly PlaybookSummary[] = [
       { name: 'prompt', hint: 'Topic, audience and desired takeaway', optional: true },
       { name: 'slides', hint: 'Target number of slides', optional: true },
       { name: 'noteId', hint: 'Existing note to turn into a deck outline', optional: true },
-      { name: 'saveNote', hint: 'Save the outline as a note', optional: true },
     ],
   },
   {
@@ -110,7 +107,6 @@ export const PLAYBOOKS: readonly PlaybookSummary[] = [
       { name: 'csv', hint: 'Pasted CSV/TSV data', optional: true },
       { name: 'question', hint: 'What you want to know about the data', optional: true },
       { name: 'noteId', hint: 'Note whose content is the dataset', optional: true },
-      { name: 'saveNote', hint: 'Save the analysis as a note', optional: true },
     ],
   },
   {
@@ -125,7 +121,6 @@ export const PLAYBOOKS: readonly PlaybookSummary[] = [
       { name: 'brief', hint: 'What is being designed and for whom', optional: true },
       { name: 'tokens', hint: 'Design tokens (colors/type/spacing)', optional: true },
       { name: 'noteId', hint: 'Existing spec note to prototype from', optional: true },
-      { name: 'saveNote', hint: 'Save the prototype spec as a note', optional: true },
     ],
   },
   {

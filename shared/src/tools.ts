@@ -69,6 +69,11 @@ export interface PendingToolCall {
   risk: ToolRisk;
   requestedBy: ToolRequestedBy;
   createdAt: number;
+  /**
+   * Display name of the persona behind a `requestedBy: 'persona'` row
+   * (route-enriched at GET /v1/tools/pending; absent/undefined otherwise).
+   */
+  personaName?: string | null;
 }
 
 export type ToolExecResponse =

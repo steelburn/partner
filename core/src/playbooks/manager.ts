@@ -42,21 +42,27 @@ export const RUN_NOTE_CONTENT_CAP = 6000;
 /** Text deliverable cap when saving a run result as a note. */
 export const RUN_NOTE_TEXT_CAP = 60_000;
 
-export type PbEvent =
-  | { type: 'run_start'; runId: string; playbookId: string; personaId: string | null }
-  | LoopEvent
-  | {
-      type: 'run_end';
-      runId: string;
-      status: ToolLoopResult['status'];
-      text: string;
-      rounds: number;
-      toolCalls: number;
-      messageId?: string;
-      conversationId?: string | null;
-      noteId?: string | null;
-      error?: string;
-    };
+export type PbRunMetaStatus = 'running' | 'done' | 'error' | 'loop_exhausted';
+
+/**
+ * Terminal/pause meta of a playbook run stream (PLAN-M9 wire spec: "final
+ * done_meta"). A paused run (queued persona tool) ends its stream with
+ * status 'running' + the pendingId it waits on; a finished run carries the
+ * terminal status and, when the answer was saved as a note, noteId/noteTitle.
+ */
+export interface PbDoneMeta {
+  type: 'done_meta';
+  runId: string;
+  status: PbRunMetaStatus;
+  /** Non-null only when the run paused on a queued persona tool. */
+  pendingId: string | null;
+  /** Set when the final answer was saved as a note. */
+  noteId: string | null;
+  noteTitle: string | null;
+  conversationId: string | null;
+}
+
+export type PbEvent = LoopEvent | PbDoneMeta;
 
 export interface PbRunOutcome extends ToolLoopResult {
   playbookId: string;
@@ -68,7 +74,7 @@ export interface PbRunOutcome extends ToolLoopResult {
 export interface PreparedPlaybookRun {
   playbook: PlaybookSummary;
   persona: Persona;
-  /** Full SSE event stream; the terminal run_end carries the outcome. */
+  /** Full SSE event stream; the terminal done_meta carries the outcome. */
   events: AsyncGenerator<PbEvent, PbRunOutcome, unknown>;
 }
 
@@ -103,6 +109,8 @@ export interface PlaybookManager {
   /** Prepare a resume after a queued tool was decided. Unknown run ->
    *  not_found; queue row still open -> conflict (not_decided). */
   prepareResume(runId: string, pendingId: string): PreparedPlaybookRun;
+  /** Persona identity behind a persona-requested approval row (queue tag). */
+  personaForPending(pendingId: string): { id: string; name: string } | null;
 }
 
 interface PreparedState {
@@ -369,6 +377,42 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
     return outcome;
   }
 
+  /**
+   * The spec terminal event for an outcome: a queued persona tool pauses the
+   * stream with status 'running' + the approval row id; everything else is a
+   * terminal done/loop_exhausted/error meta (noteId/title when saved).
+   */
+  function doneMetaFor(state: PreparedState, outcome: PbRunOutcome): PbDoneMeta {
+    if (outcome.status === 'queued') {
+      return {
+        type: 'done_meta',
+        runId: state.runId,
+        status: 'running',
+        pendingId: outcome.pendingId ?? null,
+        noteId: null,
+        noteTitle: null,
+        conversationId: state.conversationId ?? null,
+      };
+    }
+    const status: PbRunMetaStatus =
+      outcome.status === 'done' ||
+      outcome.status === 'loop_exhausted' ||
+      outcome.status === 'error'
+        ? outcome.status
+        : 'error';
+    const noteId = outcome.noteId;
+    const savedNote = noteId !== undefined && noteId !== null;
+    return {
+      type: 'done_meta',
+      runId: state.runId,
+      status,
+      pendingId: null,
+      noteId: savedNote ? noteId : null,
+      noteTitle: savedNote ? state.playbook.name : null,
+      conversationId: outcome.conversationId ?? null,
+    };
+  }
+
   /** Pipe a loop generator into PbEvents, capturing its return value. */
   async function* pipeLoop(
     source: AsyncGenerator<LoopEvent, ToolLoopResult, unknown>,
@@ -469,12 +513,6 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
     void persistUserTurn(state, messages);
 
     async function* events(): AsyncGenerator<PbEvent, PbRunOutcome, unknown> {
-      yield {
-        type: 'run_start',
-        runId,
-        playbookId: playbookRef.id,
-        personaId: personaRef.id,
-      };
       const outcome = yield* pipeLoop(
         loop.run({
           runId,
@@ -487,7 +525,7 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
         state,
         'playbook.run',
       );
-      yield { type: 'run_end', ...outcome };
+      yield doneMetaFor(state, outcome);
       return outcome;
     }
 
@@ -500,6 +538,11 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
     prepareResume(runId: string, pendingId: string): PreparedPlaybookRun {
       const row = runs.findById(runId);
       if (row === undefined) throw playbookError('not_found', 'playbook run not found');
+      // Only a run still waiting (status 'running' on a queued tool) may be
+      // resumed — a finished row must not be replayed over its audit state.
+      if (row.status !== 'running') {
+        throw playbookError('conflict', 'playbook run is not waiting on an approval');
+      }
       const pending = broker.pending.get(pendingId);
       if (pending === undefined) {
         throw playbookError('not_found', 'pending approval not found');
@@ -528,11 +571,14 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
           state,
           'playbook.resume',
         );
-        yield { type: 'run_end', ...outcome };
+        yield doneMetaFor(state, outcome);
         return outcome;
       }
 
       return { playbook, persona, events: events() };
+    },
+    personaForPending(pendingId: string): { id: string; name: string } | null {
+      return loop.waitingPersona(pendingId);
     },
   };
 }

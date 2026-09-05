@@ -301,7 +301,7 @@ describe('playbook run stream', () => {
       onEvent: (event) => events.push(event.type),
     });
     expect(result).toEqual({ ok: true });
-    expect(calls[0]?.input).toBe('/v1/playbook-runs/run-9/resume');
+    expect(calls[0]?.input).toBe('/v1/playbooks/runs/run-9/resume');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(bodyOf(calls[0]!)).toEqual({ pendingId: 'p-77' });
     expect(events).toEqual(['delta', 'done_meta']);

@@ -97,8 +97,8 @@ describe('playbook registry', () => {
       expect(audit?.details).not.toContain('demo:');
 
       const starts = events.map((e) => e.type);
-      expect(starts[0]).toBe('run_start');
-      expect(starts[starts.length - 1]).toBe('run_end');
+      expect(starts[0]).toBe('loop_step');
+      expect(starts[starts.length - 1]).toBe('done_meta');
       expect(events.some((e) => e.type === 'delta')).toBe(true);
       expect(events.some((e) => e.type === 'loop_step')).toBe(true);
     } finally {

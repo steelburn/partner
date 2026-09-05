@@ -2,13 +2,15 @@
  * M9 playbook + deploy HTTP surface tests (PLAN-M9 wire spec).
  *
  * Every route authed (401 without a token); GET /v1/playbooks returns the
- * registry metadata; POST /:id/run streams SSE (run_start / loop_step /
- * persona_tool / delta / done / run_end) for a demo text playbook against
+ * registry metadata; POST /:id/run streams SSE (loop_step / persona_tool /
+ * delta / done, terminal done_meta) for a demo text playbook against
  * the demo provider and persists a playbook_runs row (+ transcript when a
- * conversationId is given); a paused persona is 423; a non-demo harness with
- * nothing configured is no_provider 501; resume is 404 for an unknown run.
+ * conversationId is given); the top-level `note` body field saves the final
+ * answer as a note; a paused persona is 423; a non-demo harness with
+ * nothing configured is no_provider 501; resume is 404 for an unknown run,
+ * 409 for a run not waiting, and streams the tail after an approve.
  * Deploy profiles: create/list/remove + validation errors + the package step
- * into a temp outDir.
+ * under a granted project root (unregistered paths are refused).
  */
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -95,26 +97,59 @@ describe('playbook routes', () => {
       expect(res.headers['content-type']).toContain('text/event-stream');
 
       const events = parseSse(res.text);
-      expect(events[0]).toMatchObject({ type: 'run_start', playbookId: 'docgen' });
       const types = events.map((e) => (e as { type: string }).type);
       expect(types).toContain('loop_step');
       expect(types).toContain('delta');
       expect(types).toContain('done');
-      expect(types[types.length - 1]).toBe('run_end');
-      const runEnd = events[events.length - 1] as {
+      expect(types).not.toContain('run_start');
+      expect(types).not.toContain('run_end');
+      expect(types[types.length - 1]).toBe('done_meta');
+      const meta = events[events.length - 1] as {
         type: string;
-        status: string;
-        text: string;
         runId: string;
+        status: string;
+        noteId: string | null;
+        noteTitle: string | null;
+        pendingId: string | null;
+        conversationId: string | null;
       };
-      expect(runEnd.status).toBe('done');
-      expect(runEnd.text).toMatch(/^demo: received \d+ characters$/);
+      expect(meta.status).toBe('done');
+      expect(meta.pendingId).toBeNull();
       // Persisted run row + playbook.run audit (ids/counts only).
-      const row = h.playbookRunStore.findById(runEnd.runId);
+      const row = h.playbookRunStore.findById(meta.runId);
       expect(row?.status).toBe('done');
       expect(row?.personaId).toBe('p-scribe');
       const audit = h.audit.list(50).find((a) => a.action === 'playbook.run');
       expect(audit?.details).toContain('"status":"done"');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('the top-level note field saves the final answer as a note', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/playbooks/docgen/run')
+        .set(authed(token))
+        .send({ personaId: 'p-scribe', inputs: { prompt: 'Notes for the note test' }, note: true });
+      expect(res.status).toBe(200);
+      const events = parseSse(res.text);
+      const meta = events[events.length - 1] as {
+        type: string;
+        status: string;
+        noteId: string | null;
+        noteTitle: string | null;
+      };
+      expect(meta.type).toBe('done_meta');
+      expect(meta.status).toBe('done');
+      expect(meta.noteId).not.toBeNull();
+      expect(meta.noteTitle).toBe('Docgen');
+      const notes = h.notes as NonNullable<Harness['notes']>;
+      const created = notes.list().find((n) => n.id === meta.noteId);
+      expect(created).toBeDefined();
+      expect(notes.get(meta.noteId as string)?.content).toMatch(/^demo: received/);
     } finally {
       h.close();
     }
@@ -242,14 +277,30 @@ describe('playbook routes', () => {
             (e as { decision?: string }).decision === 'queued',
         ) as { pendingId: string } | undefined;
         expect(queued).toBeDefined();
-        const runEnd = events[events.length - 1] as { runId: string; status: string };
-        expect(runEnd.status).toBe('queued');
+        // The run pauses: the terminal frame is done_meta status running +
+        // the approval row id (the web wait/resume contract).
+        const pauseMeta = events[events.length - 1] as {
+          type: string;
+          runId: string;
+          status: string;
+          pendingId: string | null;
+        };
+        expect(pauseMeta.type).toBe('done_meta');
+        expect(pauseMeta.status).toBe('running');
+        expect(pauseMeta.pendingId).toBe(queued?.pendingId ?? null);
         // The run row is still 'running' while waiting on the approval.
-        expect(h.playbookRunStore.findById(runEnd.runId)?.status).toBe('running');
+        expect(h.playbookRunStore.findById(pauseMeta.runId)?.status).toBe('running');
+
+        // The approval queue tags the row with the persona's name.
+        const queue = await request(h.app).get('/v1/tools/pending').set(authed(token));
+        expect(queue.status).toBe(200);
+        const queuedRow = queue.body.pending.find((p: { id: string }) => p.id === queued?.pendingId);
+        expect(queuedRow.requestedBy).toBe('persona');
+        expect(queuedRow.personaName).toBe('Builder');
 
         // Resume before the decision -> conflict.
         const open = await request(h.app)
-          .post(`/v1/playbooks/runs/${runEnd.runId}/resume`)
+          .post(`/v1/playbooks/runs/${pauseMeta.runId}/resume`)
           .set(authed(token))
           .send({ pendingId: queued?.pendingId ?? '' });
         expect(open.status).toBe(409);
@@ -265,20 +316,27 @@ describe('playbook routes', () => {
 
         // Resume now streams the final answer.
         const resumed = await request(h.app)
-          .post(`/v1/playbooks/runs/${runEnd.runId}/resume`)
+          .post(`/v1/playbooks/runs/${pauseMeta.runId}/resume`)
           .set(authed(token))
           .send({ pendingId: queued?.pendingId ?? '' });
         expect(resumed.status).toBe(200);
         const resumedEvents = parseSse(resumed.text);
-        const finalEnd = resumedEvents[resumedEvents.length - 1] as {
+        const finalMeta = resumedEvents[resumedEvents.length - 1] as {
           type: string;
           status: string;
           text: string;
         };
-        expect(finalEnd.type).toBe('run_end');
-        expect(finalEnd.status).toBe('done');
-        expect(finalEnd.text).toBe('route-final answer');
-        expect(h.playbookRunStore.findById(runEnd.runId)?.status).toBe('done');
+        expect(finalMeta.type).toBe('done_meta');
+        expect(finalMeta.status).toBe('done');
+        expect(h.playbookRunStore.findById(pauseMeta.runId)?.status).toBe('done');
+
+        // A finished run is not resumable (409 — never replay over its audit).
+        const replay = await request(h.app)
+          .post(`/v1/playbooks/runs/${pauseMeta.runId}/resume`)
+          .set(authed(token))
+          .send({ pendingId: queued?.pendingId ?? '' });
+        expect(replay.status).toBe(409);
+        expect(replay.body.error).toBe('conflict');
       } finally {
         h.close();
       }
@@ -331,15 +389,31 @@ describe('deploy-profile routes', () => {
     }
   });
 
-  it('package writes the bundle under outDir and returns files + dockerfile', async () => {
+  it('package writes the bundle under a granted root; unregistered paths refused', async () => {
     const h = demoHarness();
     const dir = makeTempRoot();
+    const outside = makeTempRoot();
     try {
       const token = await pairToken(h);
       const profile = await request(h.app)
         .post('/v1/deploy-profiles')
         .set(authed(token))
         .send({ name: 'ship', host: 'app.example.org' });
+
+      // No root registered yet -> refused (never an arbitrary writable path).
+      const noRoots = await request(h.app)
+        .post(`/v1/deploy-profiles/${profile.body.id as string}/package`)
+        .set(authed(token))
+        .send({ projectDir: dir, outDir: join(dir, 'out') });
+      expect(noRoots.status).toBe(400);
+      expect(noRoots.body.error).toBe('invalid_input');
+
+      // Register the project dir as a granted root, then package succeeds.
+      (h.broker as NonNullable<Harness['broker']>).roots.add({
+        label: 'ship-root',
+        path: dir,
+        readOnly: false,
+      });
       const pkg = await request(h.app)
         .post(`/v1/deploy-profiles/${profile.body.id as string}/package`)
         .set(authed(token))
@@ -349,6 +423,14 @@ describe('deploy-profile routes', () => {
       expect(pkg.body.files).toHaveLength(4);
       expect(pkg.body.outDir).toBe(join(dir, 'out'));
 
+      // projectDir or outDir OUTSIDE every granted root -> refused.
+      const escape = await request(h.app)
+        .post(`/v1/deploy-profiles/${profile.body.id as string}/package`)
+        .set(authed(token))
+        .send({ projectDir: dir, outDir: join(outside, 'x') });
+      expect(escape.status).toBe(400);
+      expect(escape.body.error).toBe('invalid_input');
+
       const pkgBad = await request(h.app)
         .post('/v1/deploy-profiles/not-there/package')
         .set(authed(token))
@@ -356,6 +438,7 @@ describe('deploy-profile routes', () => {
       expect(pkgBad.status).toBe(404);
     } finally {
       removeTempRoot(dir);
+      removeTempRoot(outside);
       h.close();
     }
   });
