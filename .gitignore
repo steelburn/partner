@@ -22,3 +22,4 @@ shell/src-tauri/resources/core-bundle.cjs
 shell/src-tauri/resources/node_modules/
 shell/src-tauri/resources/web-dist/
 shell/src-tauri/resources/skills/
+shell/src-tauri/resources/skills-catalog/
