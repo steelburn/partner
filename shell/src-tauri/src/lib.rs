@@ -75,8 +75,19 @@ impl Drop for CoreChild {
 /// PARTNER_NO_SIDECAR skips the spawn entirely (headless gate smoke).
 fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let res_dir = app.path().resource_dir()?;
-    let staged_bundle = res_dir.join("core-bundle.cjs");
-    let staged_web = res_dir.join("web-dist");
+    // NSIS per-user installs place bundle.resources under <exe>/resources;
+    // dev runs (and other bundlers) put them flat at resource_dir. Resolve
+    // whichever layout actually staged the bundle.
+    let staged_root = {
+        let nested = res_dir.join("resources");
+        if nested.join("core-bundle.cjs").is_file() {
+            nested
+        } else {
+            res_dir.clone()
+        }
+    };
+    let staged_bundle = staged_root.join("core-bundle.cjs");
+    let staged_web = staged_root.join("web-dist");
     let bundle: std::path::PathBuf = if staged_bundle.exists() {
         staged_bundle
     } else if let Some(p) = std::env::var_os("PARTNER_CORE_BUNDLE") {
@@ -104,8 +115,8 @@ fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         envs.push(("STATIC_DIR", dir.to_string_lossy().to_string()));
     }
     // Keep skills out of cwd-dependent paths in packaged runs.
-    envs.push(("SKILLS_DIR", res_dir.join("skills").to_string_lossy().to_string()));
-    envs.push(("SKILLS_CATALOG_DIR", res_dir.join("skills-catalog").to_string_lossy().to_string()));
+    envs.push(("SKILLS_DIR", staged_root.join("skills").to_string_lossy().to_string()));
+    envs.push(("SKILLS_CATALOG_DIR", staged_root.join("skills-catalog").to_string_lossy().to_string()));
     for (key, value) in envs.iter() {
         cmd = cmd.env(key, value);
     }
