@@ -28,6 +28,8 @@ import { auditLog } from '../src/services/redaction.js';
 import type { AuditService } from '../src/services/redaction.js';
 import { createKeychainFake } from '../src/keychain/keychain.js';
 import { createProviderManager } from '../src/providers/providerManager.js';
+import { createSpendLedgerManager } from '../src/gateway/spend.js';
+import type { SpendLedgerManager } from '../src/gateway/spend.js';
 import type { ProviderManager } from '../src/providers/providerManager.js';
 import { createToolBroker } from '../src/broker/broker.js';
 import type { ToolBroker } from '../src/broker/broker.js';
@@ -94,6 +96,7 @@ import {
   createSiteScopeStore,
   createSkillInvocationStore,
   createSkillStore,
+  createSpendLedgerStore,
   createThemeStore,
   openDatabase,
 } from '../src/stores/db.js';
@@ -201,6 +204,8 @@ export interface Harness {
   pairing: PairingManager;
   sessions: SessionManager;
   audit: AuditService;
+  /** M10 cumulative spend ledger (same db). */
+  spendLedger: SpendLedgerManager;
   pairingStore: PairingStore;
   sessionStore: SessionStore;
   auditStore: AuditStore;
@@ -283,6 +288,8 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const keychain = createKeychainFake();
   const providerStore = createProviderStore(db);
   const providerManager = createProviderManager({ store: providerStore, keychain, audit });
+  // M10: cumulative spend ledger over the same db (PLAN-M10 W3).
+  const spendLedger = createSpendLedgerManager({ store: createSpendLedgerStore(db) });
 
   // M2: broker over the same db — the manager/queue stores exist on every
   // harness so row-level assertions are possible; managers + broker are wired
@@ -501,6 +508,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(skills && skillRunner ? { skills, skillRunner } : {}),
     ...(playbooks !== undefined ? { playbooks } : {}),
     ...(deployProfiles !== undefined ? { deployProfiles } : {}),
+    spendLedger,
   });
 
   return {
@@ -509,6 +517,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     pairing,
     sessions,
     audit,
+    spendLedger,
     pairingStore,
     sessionStore,
     auditStore,

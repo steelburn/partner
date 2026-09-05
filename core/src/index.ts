@@ -51,6 +51,7 @@ export {
   createSiteScopeStore,
   createSkillInvocationStore,
   createSkillStore,
+  createSpendLedgerStore,
   createThemeStore,
   openDatabase,
   assertFts5,
@@ -405,6 +406,7 @@ import {
   createThemeStore,
   createDeployProfileStore,
   createPlaybookRunStore,
+  createSpendLedgerStore,
 } from './stores/db.js';
 import type {
   ConversationStore,
@@ -438,6 +440,11 @@ import type { SessionManager } from './http/session.js';
 import { auditLog } from './services/redaction.js';
 import type { AuditService } from './services/redaction.js';
 import { demoProvider } from './gateway/demo.js';
+import {
+  createSpendLedgerManager,
+  SPEND_WINDOW_MS,
+} from './gateway/spend.js';
+import type { SpendLedgerManager } from './gateway/spend.js';
 import { createProviderManager } from './providers/providerManager.js';
 import type { ProviderManager } from './providers/providerManager.js';
 import { createToolBroker } from './broker/broker.js';
@@ -553,6 +560,8 @@ export function createCore(config: CoreConfig): CoreBundle {
   });
   const sessions = createSessionManager(createSessionStore(db), { ttlMs: config.sessionTtlMs });
   const audit = auditLog({ store: createAuditStore(db) });
+  // M10 cumulative spend ledger over the same db (PLAN-M10 W3).
+  const spendLedger = createSpendLedgerManager({ store: createSpendLedgerStore(db) });
 
   // M1: provider profiles (row store) + manager (keychain + probe logic). In
   // demo mode the store is ':memory:' and the keychain is the fake, so the
@@ -717,6 +726,7 @@ export function createCore(config: CoreConfig): CoreBundle {
     pairing,
     sessions,
     audit,
+    spendLedger,
     providers: config.demo ? [demoProvider()] : [],
     providerManager,
     broker,

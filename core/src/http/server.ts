@@ -41,6 +41,7 @@ import { redactString } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
 import { centsForTokens } from '../gateway/pricing.js';
+import type { SpendLedgerManager } from '../gateway/spend.js';
 import { resolveChatModel } from '../gateway/resolver.js';
 import { UpstreamError } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
@@ -100,6 +101,13 @@ export interface CoreAppOptions {
    * through it (budget-wrapped); otherwise the demo/legacy fallback applies.
    */
   providerManager?: ProviderManager;
+  /**
+   * M10 cumulative spend ledger (optional so older harnesses compile
+   * unchanged). When present, provider chat with a budgetCents cap is
+   * refused BEFORE a turn streams once the rolling window is spent, and
+   * each finished turn settles its cents into the ledger.
+   */
+  spendLedger?: SpendLedgerManager;
   /**
    * M2 tool broker (optional so M0/M1 harnesses compile unchanged). When
    * absent the whole /v1/roots|/v1/grants|/v1/tools surface responds 501
@@ -904,6 +912,47 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         throw err;
       }
 
+      // M10 cumulative budget (PLAN-M10 W3): a provider WITH a budgetCents
+      // cap is refused BEFORE this turn streams when its rolling-window
+      // spend has already reached the cap — the upstream is never called.
+      // The per-response tracker below remains the mid-stream hard stop.
+      const ledger = options.spendLedger;
+      const budgetCents = managedProvider.budgetCents ?? null;
+      if (ledger !== undefined && budgetCents !== null) {
+        const spentCents = ledger.spent(managedProvider.id);
+        if (spentCents >= budgetCents) {
+          res.status(200);
+          res.set(SSE_HEADERS);
+          res.flushHeaders();
+          writeSse(res, {
+            type: 'budget_reached',
+            message: 'provider budget exhausted — no more turns until the spend window rolls',
+            spentCents,
+            limitCents: budgetCents,
+            requests: 0,
+            limitRequests: null,
+          });
+          res.end();
+          audit.log('session', 'chat.stream', model, {
+            ok: false,
+            over: true,
+            budgetRefused: true,
+            events: 0,
+            messages: messages.length,
+            sessionId: session.id,
+            providerId: managedProvider.id,
+            ...(routingPersonaId !== null ? { personaId: routingPersonaId } : {}),
+            ...(conversationId !== null ? { conversationId } : {}),
+          });
+          audit.log('session', 'provider.budget', managedProvider.id, {
+            event: 'refused',
+            spentCents,
+            limitCents: budgetCents,
+          });
+          return;
+        }
+      }
+
       // The turn will stream: create the auto conversation + persist the
       // incoming user message BEFORE streaming (best effort).
       ensureConversation();
@@ -913,13 +962,13 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.set(SSE_HEADERS);
       res.flushHeaders();
 
-      // Defense-in-depth spend cap (PLAN-M1 'budget'). Off when the provider
-      // has no budgetCents. Enforcement is WITHIN this response: deltas are
-      // charged as they stream (char/4 token estimate, conservative default
-      // price for unknown models) and the upstream is ABORTED the moment the
-      // cap is exceeded — one budget_reached event, never a done. Final usage
-      // reconciles the estimate with the real token count.
-      const budgetCents = managedProvider.budgetCents ?? null;
+      // Defense-in-depth spend cap (PLAN-M1 'budget'): the per-response
+      // tracker layered UNDER the M10 cumulative ledger. Enforcement is
+      // WITHIN this response: deltas are charged as they stream (char/4
+      // token estimate, conservative default price for unknown models) and
+      // the upstream is ABORTED the moment the cap is exceeded — one
+      // budget_reached event, never a done. Final usage reconciles the
+      // estimate with the real token count.
       const tracker = createBudgetTracker({ budgetCents });
 
       // Client disconnect / budget stop: abort the upstream stream.
@@ -956,6 +1005,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       let ok = true;
       let over = false;
       let estTokens = 0;
+      // M10 cumulative ledger settlement: exact cents once a usage event
+      // reconciles the turn, otherwise the conservative estimate; null when
+      // nothing was billable (external abort). Settled once per turn.
+      let settledCents: number | null = null;
 
       const emitBudgetReached = (spentCents: number): void => {
         writeSse(res, {
@@ -976,6 +1029,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               const tentative = tracker.spentCents + centsForTokens(model, estTokens);
               if (tentative >= budgetCents) {
                 over = true;
+                settledCents = tentative;
                 controller.abort();
                 emitBudgetReached(tentative);
                 break;
@@ -989,6 +1043,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           if (event.type === 'usage') {
             // Reconcile with the real count (est was tentative only).
             const rec = tracker.charge({ model, totalTokens: event.totalTokens });
+            settledCents = rec.spentCents;
             if (rec.over) {
               over = true;
               controller.abort();
@@ -1005,6 +1060,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           observeEvent(event);
         }
         persistAssistantTurn(sawDone, deltaText, doneModel, doneLatencyMs);
+        // Natural end without a usage event: settle the conservative
+        // estimate so the ledger still reflects the turn.
+        if (settledCents === null && estTokens > 0) {
+          settledCents = centsForTokens(model, estTokens);
+        }
       } catch {
         // External abort (client gone) ends the generator silently; only
         // surface an error if the socket is still open.
@@ -1013,6 +1073,27 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           writeSse(res, { type: 'error', message: 'provider_stream_failed' });
         }
       } finally {
+        // M10 cumulative ledger settle — once per turn, from the exact
+        // usage reconciliation or the conservative estimate. External
+        // aborts that produced nothing leave settledCents null.
+        if (
+          ledger !== undefined &&
+          budgetCents !== null &&
+          settledCents !== null &&
+          settledCents > 0
+        ) {
+          const rec = ledger.charge({
+            providerId: managedProvider.id,
+            cents: settledCents,
+          });
+          audit.log('session', 'provider.budget', managedProvider.id, {
+            event: 'charged',
+            cents: settledCents,
+            spentCents: rec.spentCents,
+            limitCents: budgetCents,
+            ...(rec.spentCents >= budgetCents ? { reached: true } : {}),
+          });
+        }
         res.removeListener('close', abortOnClose);
         res.end();
         audit.log('session', 'chat.stream', model, {
@@ -1081,7 +1162,20 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/providers', requireSession(sessions), (_req: Request, res: Response) => {
     const manager = requireProviderManager(options, res);
     if (!manager) return;
-    res.json({ providers: manager.list() });
+    // M10: providers with a budget cap carry their current window spend so
+    // the UI can show remaining budget (additive field; ledger optional).
+    const ledger = options.spendLedger;
+    const providers = manager.list();
+    res.json({
+      providers:
+        ledger === undefined
+          ? providers
+          : providers.map((p) =>
+              p.budgetCents === null || p.budgetCents === undefined
+                ? p
+                : { ...p, spentCents: ledger.spent(p.id) },
+            ),
+    });
   });
 
   api.post('/v1/providers', requireSession(sessions), async (req: Request, res: Response) => {

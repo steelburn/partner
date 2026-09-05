@@ -947,3 +947,101 @@ describe('demo double (offline llm-self-service import)', () => {
     }
   });
 });
+
+describe('M10 cumulative spend ledger (route-level enforcement)', () => {
+  function chatCalls(upstream: FakeUpstream): number {
+    return upstream.requests.filter((r) => (r.url ?? '').includes('/chat/completions')).length;
+  }
+
+  async function addCappedProvider(h: Harness, upstream: FakeUpstream, budgetCents: number) {
+    const token = await pairToken(h);
+    const created = await request(h.app)
+      .post('/v1/providers')
+      .set(authed(token))
+      .send({ name: 'ledger', endpoint: upstream.base, budgetCents, defaultModels: ['gpt-4o'] });
+    const id = (created.body as { id: string }).id;
+    await request(h.app).post(`/v1/providers/${id}/key`).set(authed(token)).send({ key: PROVISIONED_KEY });
+    return { token, id };
+  }
+
+  it('refuses a turn BEFORE streaming once the window spend reaches the cap', async () => {
+    const upstream = await track(await startFakeUpstream());
+    const h = demoHarness();
+    try {
+      const { token, id } = await addCappedProvider(h, upstream, 100);
+      // Seed the ledger to the cap (as if earlier turns had spent it).
+      h.spendLedger.charge({ providerId: id, cents: 100 });
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content: 'another turn' }], model: 'gpt-4o' });
+      expect(chat.status).toBe(200);
+      const events = parseSse(chat.text);
+      expect(events.map((e) => e.type)).toEqual(['budget_reached']);
+      expect(chat.text).not.toContain('"type":"delta"');
+      expect(chat.text).not.toContain('"type":"done"');
+      // The upstream was NEVER contacted for this turn.
+      expect(chatCalls(upstream)).toBe(0);
+
+      // Audit rows: chat.stream refused + a provider.budget refused row
+      // carrying ids/cents only.
+      const refused = h.audit.list(100).find((r) => r.action === 'provider.budget');
+      expect(refused).toBeDefined();
+      expect(refused?.details).toContain('"event":"refused"');
+      expect(JSON.stringify(refused)).not.toContain(PROVISIONED_KEY);
+
+      // GET /v1/providers surfaces the spent amount for budgeted providers.
+      const list = await request(h.app).get('/v1/providers').set(authed(token));
+      const row = (list.body.providers as Array<{ id: string; spentCents?: number }>).find(
+        (p) => p.id === id,
+      );
+      expect(row?.spentCents).toBe(100);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('settles each finished turn and refuses the turn that would cross the cap', async () => {
+    const upstream = await track(await startFakeUpstream());
+    const h = demoHarness();
+    try {
+      // gpt-4o usage fixture = 10_000 tokens ≈ 5 cents per turn (pricing.ts).
+      // Cap 10: turn 1 (5) and turn 2 (5 → 10) stream; the NEXT turn is
+      // refused because the ledger already sits at the cap before it starts.
+      const { token, id } = await addCappedProvider(h, upstream, 10);
+      const chat = () =>
+        request(h.app)
+          .post('/v1/chat')
+          .set(authed(token))
+          .send({ messages: [{ role: 'user', content: 'charge me' }], model: 'gpt-4o' });
+
+      const turn1 = await chat();
+      expect(turn1.status).toBe(200);
+      expect(turn1.text).toContain('"type":"done"');
+      expect(h.spendLedger.spent(id)).toBe(5);
+
+      const turn2 = await chat();
+      expect(turn2.status).toBe(200);
+      expect(turn2.text).toContain('"type":"done"');
+      expect(h.spendLedger.spent(id)).toBe(10);
+
+      // Turn 3: the ledger is already at the cap (10 >= 10) -> refused
+      // before the upstream is contacted for this turn.
+      const callsBefore = chatCalls(upstream);
+      const turn3 = await chat();
+      expect(turn3.status).toBe(200);
+      const events = parseSse(turn3.text);
+      expect(events.map((e) => e.type)).toEqual(['budget_reached']);
+      expect(chatCalls(upstream)).toBe(callsBefore);
+
+      const charged = h.audit
+        .list(100)
+        .filter((r) => r.action === 'provider.budget' && r.details.includes('"event":"charged"'));
+      expect(charged.length).toBeGreaterThanOrEqual(2);
+      expect(JSON.stringify(charged)).not.toContain('charge me');
+    } finally {
+      h.close();
+    }
+  });
+});
