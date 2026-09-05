@@ -226,6 +226,36 @@ describe('full demo round trip', () => {
     }
   });
 
+  it('GET /v1/audit never leaks a secret seeded straight into the audit service', async () => {
+    const h = demoHarness();
+    try {
+      const code = await fetchDevCode(h.app);
+      const token = await pair(h.app, code);
+      // Worst case: a caller passes a secret-shaped detail object. The single
+      // serialization point must scrub it before the row (and the API) see it.
+      h.audit.log('web', 'provider.create', 'p-1', {
+        name: 'ne1',
+        key: 'sk-live-9999888877776666',
+        endpoint: 'https://ne1/v1',
+        env: '{"DATABASE_URL":"postgres://u:routeSecretPass123@db/x"}',
+        note: 'pem -----BEGIN PRIVATE KEY-----\nabcDefGhiJkl123\n-----END PRIVATE KEY-----',
+      });
+      const res = await request(h.app)
+        .get('/v1/audit')
+        .set('Host', ALLOWED_HOST)
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      const blob = JSON.stringify(res.body);
+      expect(blob).not.toContain('sk-live-9999888877776666');
+      expect(blob).not.toContain('routeSecretPass123');
+      expect(blob).not.toContain('abcDefGhiJkl123');
+      expect(blob).not.toContain('BEGIN PRIVATE KEY');
+      expect(blob).toContain('ne1');
+    } finally {
+      h.close();
+    }
+  });
+
   it('malformed chat bodies are 400 and unknown routes are 404', async () => {
     const h = demoHarness();
     try {

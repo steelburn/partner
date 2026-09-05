@@ -357,7 +357,9 @@ describe('skill runner — budgets, crashes, caps, env', () => {
       expect(out.ok).toBe(true);
       const all = env.lines.join('\n');
       expect(all).toContain('[skill log-skill] started reading');
-      expect(all).toContain('sk-***[redacted]');
+      // The secret value is scrubbed wholesale (the field assignment wins
+      // over the sk- token marker, so no raw material survives either way).
+      expect(all).toContain('***[redacted]');
       expect(all).not.toContain('sk-abcdefgh12345678');
       // Skill logs NEVER reach audit (rows carry ids/counts only).
       for (const row of env.audit.list(100)) {

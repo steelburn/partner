@@ -20,15 +20,77 @@ describe('redaction helpers', () => {
     expect(out).toContain('sk-***[redacted]');
   });
 
+  it('scrubs PEM private-key blocks wholesale', () => {
+    const pem = `-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIExampleBase64\n-----END EC PRIVATE KEY-----`;
+    const out = redactString(`key material: ${pem} (end)`);
+    expect(out).not.toContain('ExampleBase64');
+    expect(out).not.toContain('BEGIN EC PRIVATE KEY');
+    expect(out).toContain('redacted pem private key');
+  });
+
+  it('scrubs embedded JSON/header secret assignments inside strings', () => {
+    const out = redactString(
+      'payload {"client_secret":"aVeryLongSecretValue123","passwordCipher":"cipherBlobValue456789"} and apiKey=sk-proj-AAAABBBBCCCCDDDD',
+    );
+    expect(out).not.toContain('aVeryLongSecretValue123');
+    expect(out).not.toContain('cipherBlobValue456789');
+    expect(out).not.toContain('sk-proj-AAAABBBBCCCCDDDD');
+    expect(out).toContain('client_secret'); // key name survives, value is gone
+  });
+
+  it('scrubs secret values in URL query strings but keeps benign params', () => {
+    const out = redactString('https://x.dev/v1/chat?token=abc12345def&q=hello');
+    expect(out).not.toContain('abc12345def');
+    expect(out).toContain('q=hello');
+  });
+
+  it('prose that merely contains the word key/token is NOT mangled', () => {
+    const out = redactString('monkey: banana and a key: thing and token bucket');
+    expect(out).toBe('monkey: banana and a key: thing and token bucket');
+  });
+
   it('redactValue replaces values under sensitive keys wholesale', () => {
-    const out = redactValue({ token: 'raw-token', nested: { password: 'p', ok: 'fine' } });
-    expect(out).toEqual({ token: '***[redacted]', nested: { password: '***[redacted]', ok: 'fine' } });
+    const out = redactValue({
+      token: 'raw-token',
+      nested: { password: 'p', ok: 'fine' },
+      privateKey: 'pem-here',
+      clientSecret: 'cs',
+      credential: 'cred',
+      passphrase: 'pp',
+      passwordCipher: 'envelope',
+      runId: 'keep-me',
+    });
+    expect(out).toEqual({
+      token: '***[redacted]',
+      nested: { password: '***[redacted]', ok: 'fine' },
+      privateKey: '***[redacted]',
+      clientSecret: '***[redacted]',
+      credential: '***[redacted]',
+      passphrase: '***[redacted]',
+      passwordCipher: '***[redacted]',
+      runId: 'keep-me',
+    });
   });
 
   it('redactJson output never contains a secret', () => {
     const json = redactJson({ apiKey: 'sk-abc1234567890123', text: 'Bearer eyJhbGciOi.raw' });
     expect(json).not.toContain('sk-');
     expect(json).not.toContain('eyJhbGciOi.raw');
+  });
+
+  it('seeded call-site-shaped payloads never leak (provider/playbook/skill/deploy shapes)', () => {
+    const json = redactJson({
+      provider: { name: 'ne1', key: 'sk-live-0000111122223333', endpoint: 'https://x/v1' },
+      run: { runId: 'r-1', status: 'done', error: 'upstream said Authorization: Bearer abcdefgh12345678' },
+      skill: { id: 'hello', manifest: { network: false } },
+      profile: { host: '10.0.0.1', env: '{"DATABASE_URL":"postgres://u:superSecretPass123@db/x"}' },
+      ok: true,
+    });
+    expect(json).not.toContain('sk-live-0000111122223333');
+    expect(json).not.toContain('abcdefgh12345678');
+    expect(json).not.toContain('superSecretPass123');
+    expect(json).toContain('r-1');
+    expect(json).toContain('postgres://u:');
   });
 });
 
