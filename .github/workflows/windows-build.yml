@@ -1,0 +1,84 @@
+# Partner — Windows desktop build (produces partner-shell.exe + NSIS installer)
+#
+# To use: push this repo to GitHub, then either tag a release (v*) or run the
+# workflow manually (Actions -> Windows build -> Run workflow). Artifacts land
+# on the workflow run page. This is also where the resources-embedding open
+# item from shell/src-tauri/README-windows.md should be closed deterministically:
+# stage shell/src-tauri/resources BEFORE the build and restore the
+# "resources": ["resources/**"] key in tauri.conf.json, then confirm the
+# build script no longer warns about the glob.
+name: windows-build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust toolchain (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: shell/src-tauri
+
+      - name: Install npm deps + Tauri CLI
+        run: |
+          npm install
+          npm install -D @tauri-apps/cli
+
+      - name: Real icons (regenerate from source)
+        run: |
+          Push-Location shell
+          npx tauri icon .\src-tauri\icons\icon-src.png
+          Pop-Location
+
+      - name: Build web UI
+        run: npm run build -w web
+
+      - name: Bundle core artifact (CJS, natives external)
+        run: |
+          npx esbuild core/src/index.ts --bundle --platform=node --format=cjs `
+            --target=node18 --external:better-sqlite3 --external:@napi-rs/keyring `
+            --outfile=shell/artifacts/core-bundle.cjs
+
+      - name: Vendor natives (win32-x64 prebuilds)
+        run: npm install --prefix shell/artifacts better-sqlite3@13 @napi-rs/keyring@2
+
+      - name: Sidecar placeholder (renamed node, per Tauri triple)
+        run: |
+          New-Item -ItemType Directory -Force shell/src-tauri/binaries | Out-Null
+          Copy-Item (Get-Command node).Source `
+            shell/src-tauri/binaries/partner-core-x86_64-pc-windows-msvc.exe -Force
+
+      - name: Build + bundle (NSIS)
+        run: |
+          Push-Location shell
+          npx tauri build --bundles nsis
+          Pop-Location
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: partner-windows
+          path: |
+            shell/src-tauri/target/release/partner-shell.exe
+            shell/src-tauri/target/release/bundle/nsis/*.exe
+            shell/artifacts/core-bundle.cjs
+          if-no-files-found: error
