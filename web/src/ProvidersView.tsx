@@ -25,6 +25,7 @@ import {
 } from './lib/providers.js';
 import { readStoredToken } from './lib/token.js';
 import { McpPanel } from './McpPanel.js';
+import { SearchPanel } from './SearchPanel.js';
 
 export interface ProvidersViewProps {
   /** Forget the session and return to the pairing gate (auth failure). */
@@ -190,6 +191,7 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
           onSessionLost={handleSessionLost}
         />
         <McpPanel onUnpair={handleSessionLost} />
+        <SearchPanel onUnpair={handleSessionLost} />
       </div>
     </section>
   );

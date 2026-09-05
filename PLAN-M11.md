@@ -155,6 +155,12 @@ production build green):
       titles/urls/snippets in the persisted note. Route-integration tests
       cover enabled-execute and disabled-refuse.
 
+- [x] **F2 search UI panel** — Providers gains an Internet-search card:
+      enable/disable, provider select, endpoint override, keychain key
+      store/remove, and an inline test search with result list (client
+      `lib/search.ts`, token-styled). Enabling unlocks the chat `search`
+      tool at auto+ personas.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
