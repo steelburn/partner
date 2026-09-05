@@ -6,3 +6,8 @@ data/
 .test
 .DS_Store
 *.tsbuildinfo
+
+# Packaged-app gate artifacts (container build)
+shell/artifacts/
+shell/src-tauri/binaries/partner-core-*
+shell/src-tauri/target/

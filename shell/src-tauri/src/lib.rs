@@ -94,8 +94,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            spawn_core(app)?;
-            // Give the sidecar a moment to bind before the webview (declared
+            // PARTNER_NO_SIDECAR (headless gate / CI smoke): the artifact core
+            // is started out-of-band on :4390, so the shell must not double-
+            // spawn a sidecar. Normal desktop runs keep the default spawn.
+            if std::env::var_os("PARTNER_NO_SIDECAR").is_none() {
+                spawn_core(app)?;
+            } else {
+                println!("[shell] PARTNER_NO_SIDECAR set — skipping core sidecar spawn");
+            }
+            // Give the core a moment to bind before the webview (declared
             // in tauri.conf.json at CORE_URL) finishes its first navigation.
             match wait_for_core(Duration::from_secs(10)) {
                 Ok(()) => println!("[shell] core is up at {CORE_URL}"),
