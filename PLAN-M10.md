@@ -18,12 +18,15 @@ regress against.
       alias; keychain-held key; plaintext refusal; containers on node 22)
 - [x] W5 session-only chat (direct endpoint client + PairGate entry +
       in-memory key; browser pass against a local CORS stub)
-- [x] W6 packaging PREP (official icon set, bundle.resources restored,
-      self-hosted Windows workflow stages resources) — AWAITING one green
-      run on the self-hosted Windows runner (dispatch windows-build)
-- [ ] W7 verification checklist written (`docs/VERIFY-M10.md`) — runner
-      confirmations + fresh-context review + HANDOFF refresh + PLAN.md M10
-      tick remain
+- [x] W6 packaging PREP + GREEN RUN (official icon set; bundle.resources as
+      bare dir [resources] — glob 0.3.4 "resources/**" matches dirs only;
+      createUpdaterArtifacts=false; workflow stages resources; windows-build
+      green; NSIS installer verified env-free)
+- [x] W7 verification checklist written (docs/VERIFY-M10.md); Windows runner
+      confirmations GREEN (verify linux+windows legs, windows-build NSIS artifact
+      boots env-free: core on 127.0.0.1:4390, demo=on schema=v11); M10
+      fresh-context review APPROVED-WITH-NOTES (F1-F9 closed); HANDOFF-WINDOWS.md
+      refreshed; PLAN.md M10 tick below
 
 ## Goal
 

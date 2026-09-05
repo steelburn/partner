@@ -1,97 +1,91 @@
-# Partner on Windows — build & run the .exe
+# Partner on Windows — build, bundle & run the .exe
 
-> Handoff & full project state: `HANDOFF-WINDOWS.md` at the repo root
-> (Windows CI status, the RC.EXE icon blocker, and verified baseline = tag `v0.1.0`).
+> Handoff & full project state: `HANDOFF-WINDOWS.md` at the repo root.
+> Verified on a real Windows 11 machine + self-hosted runner (2026-09-05):
+> the NSIS installer builds green in CI and the installed `partner-shell.exe`
+> boots the core sidecar with NO environment variables.
 
-Status: **runbook (toolchain is Windows-only; verified-equivalent on Linux via
-`shell/docker/gate`)**. The desktop shell (`partner-shell`) is plain Tauri v2
-Rust and the core is pure Node ≥ 18, so Windows is fully supported. Nothing
-here has been executed on a real Windows machine yet — treat it as the
-canonical steps + the places that will need one tweak each.
+## Status
 
-## Prerequisites (one-time)
+**Executed and verified end-to-end.** `.github/workflows/windows-build.yml`
+(stages resources → `npm ci` native rebuild → esbuild core bundle → `tauri
+build --bundles nsis`) is green on the self-hosted Windows runner
+(`win-intel-i5-core-ultra`, label `[self-hosted, Windows]`). The uploaded
+`partner-windows` artifact contains `partner-shell.exe`, the
+`Partner_0.0.0_x64-setup.exe` NSIS installer, and the core bundle. Silent
+install (`setup.exe /S`) then launching `partner-shell.exe` with an empty env
+starts the core on `127.0.0.1:4390` (`demo=on schema=v11`).
 
-1. **Rust (MSVC):** install from <https://rustup.rs> with the default
-   `stable-x86_64-pc-windows-msvc` toolchain.
-2. **VS Build Tools 2022** — Workload "Desktop development with C++" (Tauri
-   links against MSVC; MinGW is not supported).
-3. **WebView2 Runtime** — preinstalled on Windows 10/11.
-4. Node.js ≥ 20 (LTS) + npm.
+## Prerequisites (one-time, per machine)
 
-## Build steps (PowerShell, repo root)
+1. **VS Build Tools 2022** — workload **"Desktop development with C++"**
+   (MSVC 14.4x + Windows SDK). Verified: vswhere must answer
+   `-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64`. `cl.exe` is
+   NOT on PATH — node-gyp/cargo discover it via vswhere.
+2. **Rust** — `stable-x86_64-pc-windows-msvc` (CI: `dtolnay/rust-toolchain`;
+   locally: rustup).
+3. **Node 22 + npm** (the SQLCipher-fork prebuilds need node ≥ 22).
+4. **WebView2 Runtime** — preinstalled on Windows 10/11.
+5. **Smart App Control OFF** (Windows Security → App & browser control).
+   SAC blocks unsigned cargo build scripts (`os error 4551`) —
+   intermittent, heuristic, and fatal for any native compile.
+6. **Git for Windows first on PATH** for the runner. `bash`-using actions
+   (e.g. `dtolnay/rust-toolchain`) otherwise resolve the WindowsApps WSL shim
+   and die with `CreateProcessCommon: execvpe(/bin/bash) failed`.
+   Restart the runner after changing PATH.
+
+## Build (CI, from the repo root)
 
 ```powershell
-# 0) Install deps + the Tauri CLI (prebuilt binary, used for icons/build)
-npm install
-npm install -D @tauri-apps/cli            # adds it to shell toolchain only
-
-# 1) Real icons (the checked-in ones are Linux gate placeholders)
-npx tauri icon .\src-tauri\icons\icon-src.png
-#    ^ run from shell/ — regenerates icons/ incl. a real .ico for Windows
-
-# 2) Build the core sidecar artifact (native deps must be Windows builds —
-#    installing on Windows fetches win32-x64 prebuilds automatically)
-node node_modules/esbuild/bin/esbuild core/src/index.ts --bundle `
-  --platform=node --format=cjs --target=node18 `
-  --external:better-sqlite3 --external:@napi-rs/keyring `
+# Self-hosted runner only. Dispatch: Actions -> windows-build
+# (or `POST .../actions/workflows/windows-build.yml/dispatches`).
+npm ci                              # rebuilds aliased better-sqlite3 (MSVC)
+npm run build -w web                # web/dist
+npx esbuild core/src/index.ts --bundle --platform=node --format=cjs `
+  --target=node18 --external:better-sqlite3 --external:@napi-rs/keyring `
   --outfile=shell/artifacts/core-bundle.cjs
-npm install --prefix shell/artifacts better-sqlite3@npm:better-sqlite3-multiple-ciphers@^13.0.3 @napi-rs/keyring@2
-
-# 3) Build the web UI (served by the core)
-npm run build -w web
-
-# 4) Sidecar placeholder (the node runtime binary, renamed per Tauri triple)
-Copy-Item (Get-Command node).Source `
-  shell/src-tauri/binaries/partner-core-x86_64-pc-windows-msvc.exe
-
-# 5) Compile the shell
-cd shell/src-tauri
-cargo build
+npm install --prefix shell/artifacts `
+  better-sqlite3@npm:better-sqlite3-multiple-ciphers@^13.0.3 @napi-rs/keyring@2
+rem Sidecar = bundled node, renamed per Tauri triple:
+for /f "delims=" %i in ('where node') do copy /y "%i" `
+  shell\src-tauri\binaries\partner-core-x86_64-pc-windows-msvc.exe
+rem Stage the self-contained tree tauri embeds (see "resources" below):
+xcopy /e /i /y shell\artifacts\core-bundle.cjs shell\src-tauri\resources\
+xcopy /e /i /y shell\artifacts\node_modules  shell\src-tauri\resources\node_modules\
+xcopy /e /i /y web\dist                  shell\src-tauri\resources\web-dist\
+xcopy /e /i /y skills-catalog            shell\src-tauri\resources\skills-catalog\
+cd shell
+npx tauri build --bundles nsis
 ```
 
-## Run (two-process dev, like the Linux gate)
+## Run (packaged)
+
+Silent-install the NSIS output, then launch:
 
 ```powershell
-# T1 — core artifact on :4390 (demo)
-$env:PORT='4390'; $env:DEMO_MODE='1'
-node ..\..\shell\artifacts\core-bundle.cjs
-
-# T2 — the shell (it spawns the sidecar itself with the env below)
-$env:PARTNER_CORE_BUNDLE = '..\..\shell\artifacts\core-bundle.cjs'
-$env:PARTNER_STATIC_DIR  = '..\..\web\dist'
-.\target\debug\partner-shell.exe
+.\Partner_0.0.0_x64-setup.exe /S
+Start-Process "$env:LOCALAPPDATA\Partner\partner-shell.exe"
+# Expect: core sidecar on 127.0.0.1:4390, "[shell] core is up",
+# Tauri window at http://127.0.0.1:4390
 ```
 
-`partner-shell.exe` opens the Partner UI (core already bound by the bundle —
-the shell only verifies the port and paints the webview). A standalone
-single-file installer that embeds the core needs the Tauri **resources
-embedding** step resolved first (see "Open item" below).
+`spawn_core` in `shell/src-tauri/src/lib.rs` resolves the staged tree from
+`<resource_dir>/resources` (NSIS layout) **or** flat `resource_dir` (dev),
+strips tauri's verbatim `\\?\` prefix (node's CJS loader cannot run a
+`\\?\C:\...` main script — it lstat's `C:` and dies), then spawns the
+`partner-core` sidecar with the bundle path + `PORT/HOST/STATIC_DIR/SKILLS_*`
+env. Dev fallbacks `PARTNER_CORE_BUNDLE` / `PARTNER_STATIC_DIR` /
+`PARTNER_NO_SIDECAR` still apply.
 
-## Installer (`.msi` / `.exe` setup)
+## resources: why it is a bare dir
 
-```powershell
-npx tauri build          # run from shell/ — produces target/release/partner-shell.exe
-                         # plus NSIS .exe / MSI installers under target/release/bundle/
-```
-
-**RESOLVED in the repo (2026-09-05):** `bundle.resources` is restored
-(`"resources": ["resources/**"]`), the icon set is regenerated by the official
-`tauri icon` tool (real multi-image `.ico`), and `.github/workflows/
-windows-build.yml` stages `resources/{core-bundle.cjs, node_modules, web-dist,
-skills-catalog}` on the self-hosted Windows runner before `tauri build`.
-Expected result: `partner-shell.exe` runs with NO `PARTNER_CORE_BUNDLE` env and
-the build no longer warns about the resources glob. (Legacy note below for the
-history.)
-
-**Open item before the installer is self-contained (pre-resolver history):** `bundle.resources` was
-removed because tauri-build's glob base could not be resolved headlessly in
-the Linux gate container. On the Windows machine, stage
-`src-tauri/resources/{core-bundle.cjs, node_modules, web-dist}` **before**
-`cargo build` and restore `"resources": ["resources/**"]` in `tauri.conf.json`
-— then confirm the build script stops warning (`glob pattern … not found`) and
-that `partner-shell.exe` runs **without** the `PARTNER_CORE_BUNDLE` env. That
-is the one remaining packaging task; everything else in this file is expected
-to work as written.
+`bundle.resources` in `tauri.conf.json` must be **`["resources"]`** (a bare
+directory → tauri walks it), NOT `"resources/**"`: glob 0.3.4 matches
+directories only for a trailing `/**`, so tauri-build reports
+`glob pattern resources/** path not found or didn't match any files`
+(GlobPathNotFound, zero *files*) even when the dir is full. NSIS then places
+the walked tree under `<exe>/resources/…`, which is why `spawn_core` checks
+both roots.
 
 ## Gotchas
 
@@ -99,7 +93,11 @@ to work as written.
   sign later.
 - Keyring on Windows = DPAPI via `@napi-rs/keyring` (works; first unlock is
   silent).
-- The dummy sidecar `partner-core-x86_64-pc-windows-msvc.exe` is just `node`
-  renamed — fine for dev; the real SEA/bundled core replaces it for release.
-- `shell/docker/gate` is Linux-only (container toolchain); on Windows use the
-  steps above natively.
+- The `partner-core` sidecar **is** the bundled Node runtime renamed per
+  Tauri's per-triple convention (spike-sidecar.md) — it runs
+  `resources/core-bundle.cjs`, which resolves `better-sqlite3` +
+  `@napi-rs/keyring` from `resources/node_modules`.
+- PowerShell execution policy is GPO-pinned on this machine — workflow steps
+  use `shell: cmd`, not pwsh.
+- `createUpdaterArtifacts` is `false` (no `tauri-plugin-updater` + no signing
+  keys yet); signed updates are a post-M10 item.

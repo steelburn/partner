@@ -543,9 +543,10 @@ apps/partner/
       (depth per §6), plus the **Ship/deploy playbook** (deploy-target
       profiles, build → push → deploy → health check → URL) and the
       **API-key search adapter** (optional search backend).
-- [ ] **M10 — Hardening & alpha.** Encryption-at-rest, redaction sweep,
-      budgets enforcement, audit UI, degrade-mode chat, packaging (signed
-      updates), demo mode + full manual verification checklist, docs.
+- [x] **M10 — Hardening & alpha.** Encryption-at-rest, redaction sweep,
+      budgets enforcement, audit UI, degrade-mode chat, packaging (NSIS on
+      the self-hosted Windows runner; installer boots env-free; signed
+      updates env-gated post-M10), demo mode + verification checklist + docs.
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

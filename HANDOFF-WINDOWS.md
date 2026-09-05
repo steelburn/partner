@@ -2,142 +2,118 @@
 
 **Purpose:** everything an agent needs to continue from a **Windows machine,
 cloning `github.com/steelburn/partner`**, plus a full project status snapshot
-so no local-only context is lost. Written 2026-09-05.
+so no local-only context is lost. Refreshed 2026-09-05 (Windows CI green).
 
 ## TL;DR
 
-- Product milestones **M0–M8 are complete and verified** (each reviewed by a
-  fresh-context agent; suites green at their time). The packaged-app gate
-  (M0) is **resolved** — Linux container proof in `shell/docker/gate/`.
-- **M9 (capability playbooks) is implemented on `master` but NOT verified** —
-  its writer output was accidentally swept into CI commit `1073aef`
-  (`ci: pin better-sqlite3 …`). TypeScript compiles (shared/core/web), but
-  **no test suites have run against it** and the milestone exit checklist is
-  open. Verify first, then integrate/review like the earlier milestones.
-- Windows desktop CI (`.github/workflows/windows-build.yml`) is **blocked at
-  the Tauri icon-resource step**: `tauri-winres` → `RC.EXE failed to compile
-  the resource file`. Everything before it now passes (npm ci with pinned
-  `better-sqlite3@^12.2.0`, icons committed, toolchain steps). See "Windows
-  CI blocker" below.
-- **Stable, fully-verified tree for packaging work: tag `v0.1.0`.**
-  `master` additionally carries unverified M9 code (harmless to the shell
-  build, which never imports it).
+- Product milestones **M0–M9 are complete and verified** (fresh-context
+  reviews closed; exit checklists ticked). **M10 (Hardening & alpha) is
+  implemented: W1 encryption-at-rest, W2 redaction sweep, W3 budgets, W4
+  audit UI, W5 session-only chat, W6 packaging — all done and reviewed
+  (findings F1–F9 closed).** Remaining M10: PLAN tick + this handoff.
+- **Windows desktop CI is GREEN.** `verify` runs on the self-hosted Linux +
+  Windows runners (`win-intel-i5-core-ultra`, label `[self-hosted, Windows]`)
+  and passes end-to-end on both. `windows-build` produces the NSIS installer;
+  the **installed app boots env-free** (core on `127.0.0.1:4390`,
+  `demo=on schema=v11`).
+- Repo: `github.com/steelburn/partner` (private), default branch `master`,
+  pushed direct. `verify` auto-triggers on push; `windows-build` triggers on
+  workflow_dispatch / `v*` tags.
 
-## Repo map (cloned)
+## Machine prerequisites (this runner/dev box)
+
+1. **VS Build Tools 2022, workload "Desktop development with C++"** (MSVC
+   14.44 + Windows SDK 10.0.26100 verified). Needed by npm ci (node-gyp
+   rebuild of the aliased `better-sqlite3`) AND cargo/NSIS.
+2. **Rust stable-msvc** (CI installs via dtolnay; ~/.rustup on this box).
+3. **Node 22** (SQLCipher-fork prebuilds need node ≥ 22).
+4. **Smart App Control OFF** (Windows Security). SAC blocks unsigned cargo
+   build scripts intermittently (`os error 4551`) — must be off for any
+   native compile.
+5. **Git for Windows first on PATH** — bash-using actions
+   (`dtolnay/rust-toolchain`, …) resolve WindowsApps' WSL shim otherwise.
+   Restart the runner after PATH changes.
+6. **PowerShell execution policy is GPO-pinned** — workflow steps use
+   `shell: cmd` (pwsh unusable; node-gyp's PS discovery also blocked, so
+   node-gyp falls back to vswhere — works with the workload installed).
+
+## Repo map
 
 ```
-.github/workflows/windows-build.yml   Windows desktop CI (blocked at RC.EXE)
-shell/             Tauri v2 app (src-tauri; icons committed; binaries ignored)
-shell/docker/gate/ Linux toolchain gate (Dockerfile + run.sh) — proof + real sidecar
-shell/windows/build-windows.ps1       Windows build/run helper
-shell/src-tauri/README-windows.md     Windows runbook (incl. the open item)
+.github/workflows/verify.yml          CI: linux+windows legs, all suites
+.github/workflows/windows-build.yml   Desktop build: stage → npm ci → bundle → tauri build nsis
+shell/             Tauri v2 app (src-tauri; icons; resources gitignored, staged by CI)
+shell/src-tauri/README-windows.md     Windows runbook (verified state + resources rationale)
 core/              Node core (loopback API, broker, personas, memory, notes,
-                   theming, NM mode, skills, playbooks[M9])
-web/               React SPA (Vite)
+                   theming, NM mode, skills, playbooks, encrypted DB, budgets,
+                   audit log w/ redaction)
+web/               React SPA (Vite; Audit tab, session-only chat, budget UI)
 extension/         MV3 extension (native-messaging bridge) + README runbook
-shared/src/        cross-package wire contracts (schema currently v10)
-PLAN.md + PLAN-M0..M9.md   milestone specs (M9 = current)
+shared/src/        wire contracts (schema v11), theme tokens, redaction
+tests/             cross-cutting e2e (spawn real demo core; audit, playbooks)
+PLAN.md + PLAN-M0..M10.md             milestone specs (M10 = current)
 skills-catalog/    local skills (hello-skill, note-echo, files-preview)
-tests/             cross-cutting e2e (spawn real demo core on 127.0.0.1)
+docker/webapp-demo/  demo container (node:22-alpine; core bundle + web/dist)
+docs/              VERIFY-M10.md checklist, redaction-inventory, migrate-plaintext
 ```
 
-## How to run locally (Windows — the pickup goal)
+## Verification commands (all green locally + on CI)
 
-Prereqs: Rust (MSVC) + VS Build Tools (C++), Node ≥ 20, WebView2. Then, in
-PowerShell at the repo root:
-
-```powershell
-npm ci                                  # lockfile present; better-sqlite3 pinned
-npm run build -w web
-npx esbuild core/src/index.ts --bundle --platform=node --format=cjs --target=node18 `
-  --external:better-sqlite3 --external:@napi-rs/keyring `
-  --outfile=shell/artifacts/core-bundle.cjs
-npm install --prefix shell/artifacts better-sqlite3@npm:better-sqlite3-multiple-ciphers@^13.0.3 @napi-rs/keyring@2  # win32 prebuilds (SQLCipher fork, node>=22)
-Copy-Item (Get-Command node).Source shell/src-tauri/binaries/partner-core-x86_64-pc-windows-msvc.exe
-cd shell/src-tauri; cargo build
-# run: terminal1 = demo core bundle on :4390 ; terminal2:
-#   $env:PARTNER_CORE_BUNDLE='<abs path to core-bundle.cjs>'
-#   $env:PARTNER_STATIC_DIR='<abs path to web/dist>'
-#   .\target\debug\partner-shell.exe
+```bash
+npx vitest run                 # root suite (~582 tests)
+(cd web && npx vitest run)     # web suite (~422)
+npx vitest run --config extension/vitest.config.ts   # (~54)
+npm run typecheck              # workspaces
 ```
 
-## Windows CI blocker — RC.EXE + the icon resource
+Windows leg skips 5 env-gated symlink tests (no Developer Mode) — expected.
 
-Repro: `npx tauri build --bundles nsis` on `windows-latest`; every run now
-fails in `tauri-winres`:
+## Windows build (CI path — no local Rust/MSVC needed)
 
-```
-thread 'main' panicked at .../tauri-winres-0.3.6/src/lib.rs:543:14:
-  called `Result::unwrap()` on an `Err` value: Failed("RC.EXE failed to compile specified resource file")
-```
+1. Stage happens inside the workflow: web build → esbuild core bundle →
+   vendor natives (`shell/artifacts`) → sidecar placeholder (node renamed to
+   `binaries/partner-core-x86_64-pc-windows-msvc.exe`) → copy all four into
+   `shell/src-tauri/resources/` → `tauri build --bundles nsis`.
+2. Artifact `partner-windows` (36 MB): `partner-shell.exe` + NSIS setup +
+   `core-bundle.cjs`.
+3. NSIS embeds the staged tree at `<exe>/resources/…`; `spawn_core`
+   (`shell/src-tauri/src/lib.rs`) resolves staged files from
+   `<resource_dir>/resources` or flat `resource_dir`, **strips the `\\?\`
+   verbatim prefix** (node's CJS loader dies on `\\?\C:\…` main scripts),
+   spawns the sidecar, waits for the port. Dev fallbacks
+   `PARTNER_CORE_BUNDLE`/`PARTNER_STATIC_DIR`/`PARTNER_NO_SIDECAR` remain.
 
-History of attempts (all committed, for reference):
+### Resources gotcha (fixed, documented in README-windows.md)
 
-- Root `npm install` forced `better-sqlite3` source builds → fixed by making
-  `@tauri-apps/cli` a root devDependency (`npm ci`, single clean install) and
-  pinning `better-sqlite3@^12.2.0` (v13 lacks win32/node22 prebuilds on the
-  runner). Also set `npm_config_msvs_version: '2022'` + Python 3.12.
-- Icons were gitignored (`shell/src-tauri/.gitignore` had `/icons`) →
-  un-ignored and committed the set + `icon-src.png`.
-- `npx tauri icon` failed on the runner (path resolution) → replaced with a
-  committed, hand-generated `icon.ico`; RC.EXE still refuses it (PNG-in-ICO
-  and a classic BMP ICO were both tried → both rejected, so the resource
-  compiler itself is rejecting the file format; a **real multi-image .ico
-  generated by `npx tauri icon` on a Windows machine is the expected fix**).
-- The last dispatch (`33948692835`) was cancelled by the operator — no
-  further retries were run.
+`bundle.resources` must be `["resources"]` (bare dir → walk). `"resources/**"`
+matches **directories only** in glob 0.3.4, so tauri-build fails with
+`glob pattern resources/** path not found or didn't match any files` even
+when the dir is full of files.
 
-Hypotheses, in order to try on a Windows box:
-
-1. **Generate a real icon set with the official generator** (most likely):
-   `cd shell/src-tauri && npx tauri icon icons/icon-src.png` (source image
-   committed). Commit the output (real `.ico` + `.icns`). Keep
-   `bundle.icon` set to `icons/32x32.png, icons/128x128.png,
-   icons/128x128@2x.png, icons/icon.ico`.
-2. If RC.EXE still fails, check whether `rc.exe` is being located at all
-   (tauri-winres v0.3.6 discovery vs the newer VS on the runner) — try
-   `npm_config_msvs_version=2022` at the **cargo** step too, or pin a
-   `tauri`/`tauri-build` version pair whose `tauri-winres` is known-good.
-3. Fallback to get an artifact: `npx tauri build` **without**
-   `--bundles nsis` produces the raw `partner-shell.exe` (dev-style: needs
-   the core running via `PARTNER_CORE_BUNDLE`, or the resources-embedding
-   open item resolved).
-
-When the icon step passes, expect the remaining work to be the
-**resources-embedding open item** (see `shell/src-tauri/README-windows.md`):
-stage `shell/src-tauri/resources/{core-bundle.cjs,node_modules,web-dist}`
-before `cargo build` and confirm the Tauri build script stops warning about
-the resources glob — that is what makes the NSIS installer self-contained
-(no env var needed).
-
-## State ledger (as of this commit)
+## State ledger
 
 | Area | State |
 |---|---|
-| M0 spine → M8 skills | ✅ verified (reviews closed) |
-| M9 playbooks | ⚠️ implemented on master (in `1073aef`), typechecks green, **tests not yet run / not reviewed** — verify first |
-| Packaged-app gate | ✅ container proof (`shell/docker/gate`); real sidecar spawn works; standalone installer embedding = open item |
-| Windows CI | 🔴 blocked at RC.EXE icon resource (see above); clean baseline = tag `v0.1.0` |
-| GitHub | `steelburn/partner` (private); Actions `windows-build` active; `v0.1.0` tag pushed |
-| Env-gated by design | Chrome click-through (extension), live ship deploys, email/presentation sending, browser-driven research search |
-
-## M9 verification commands (before treating master as green)
-
-```bash
-npx tsc --noEmit -p shared/tsconfig.json && npx tsc --noEmit -p core/tsconfig.json && npx tsc --noEmit -p web/tsconfig.json
-npx vitest run                # root suite (expect ~508 pre-M9 + M9 additions)
-(cd web && npx vitest run)    # web suite (expect ~368 + M9 additions)
-npx vitest run --config extension/vitest.config.ts
-```
-Then run the same fresh-context review + exit-checklist flow used for M0–M8
-(see PLAN-M9.md "Exit criteria"): the M9 milestones never got that pass.
+| M0 spine → M9 playbooks | ✅ verified + reviewed (closed) |
+| M10 W1 encryption-at-rest | ✅ SQLCipher-style whole-file (Decision A); OS-keychain key; live mode refuses plaintext (docs/migrate-plaintext.md) |
+| M10 W2 redaction sweep | ✅ single serialization point; seeded-secret audit test; docs/redaction-inventory.md |
+| M10 W3 budgets | ✅ spend ledger (rolling 30-day window), chat pre-turn refusal, provider budget audit |
+| M10 W4 audit UI | ✅ Audit tab (11th), filters, JSON/Markdown export, e2e |
+| M10 W5 session-only chat | ✅ direct OpenAI-compatible streaming; key memory-only; PairGate entry |
+| M10 W6 packaging | ✅ windows-build green; NSIS installer boots env-free (demo=on, schema v11) |
+| M10 W7 verify docs | ⚠️ VERIFY-M10.md written; PLAN-M10 final tick in progress |
+| CI | 🟢 verify: linux + windows legs green on self-hosted runners; windows-build green (dispatch) |
+| Env-gated by design | Chrome click-through (extension), live ship deploys, email/presentation sending, browser-driven research search, signed updater artifacts |
 
 ## Local-only artifacts (NOT on GitHub)
 
-- `shell/artifacts/` (core-bundle.cjs + vendored node_modules + gate logs +
-  `gate-shot.png` screenshot proof) — gitignored; regenerated by the
-  build steps above.
-- The `partner-gate` Docker image + `partner-target` cargo volume (this
-  machine only).
-- Background M9 writer transcripts under
-  `/tmp/pi-subagents-1000/…/tasks/wf_c5052fe6402f.*` (agent lane reports).
+- `shell/artifacts/` (core-bundle.cjs + vendored node_modules) — gitignored,
+  regenerated by CI steps / stage scripts.
+- Demo container `partner-webapp-demo` (rebuilt w/ node:22; verified then
+  removed) — rebuild from `docker/webapp-demo/` if needed.
+- Local demo core script `/tmp/partner-webapp.sh`; demo core was on
+  `127.0.0.1:4390` serving `web/dist` (stopped during packaging smoke tests;
+  restart via the script if needed).
+- `~/.cargo` rustup toolchain + registry on this box (runner shares it).
+- GitHub token for API/curl at `$TMP/gh-token.txt` (scopes repo+workflow;
+  NOT `read:org`, so `gh auth login` validation fails — use curl).
