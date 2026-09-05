@@ -55,7 +55,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install npm deps + Tauri CLI
+      - name: Install npm deps + Tauri CLI (npm rebuilds the aliased native)
+        env:
+          npm_config_msvs_version: '2022'
         run: npm ci
 
       - name: Build web UI

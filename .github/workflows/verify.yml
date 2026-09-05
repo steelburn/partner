@@ -88,7 +88,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install
+      - name: Setup Python 3.12 (node-gyp for the aliased native)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install (npm rebuilds the aliased native — python + VS 2022)
+        env:
+          npm_config_msvs_version: '2022'
         run: npm ci
 
       - name: Typecheck (shared, core, web, extension)
