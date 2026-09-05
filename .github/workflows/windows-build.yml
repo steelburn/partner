@@ -15,6 +15,16 @@
 # resources — no PARTNER_CORE_BUNDLE env needed.
 #
 # Trigger: manual (Actions -> Windows build) or a v* tag.
+#
+# tauri.conf sets createUpdaterArtifacts: true; signed updater artifacts need
+# TAURI_SIGNING_PRIVATE_KEY (+ pubkey) in the environment. Until a signing
+# cert/keys exist, if the bundler demands the key, gate the flag behind
+# config/env (signed updates are env-gated per PLAN-M10 W6.3 anyway).
+#
+# tauri.conf sets createUpdaterArtifacts: true; signed updater artifacts need
+# TAURI_SIGNING_PRIVATE_KEY (+ pubkey) in the environment. Until a signing
+# cert/keys exist, if the bundler demands the key, gate the flag behind
+# config/env (signed updates are env-gated per PLAN-M10 W6.3 anyway).
 name: windows-build
 
 on:
@@ -27,7 +37,7 @@ jobs:
     runs-on: [self-hosted, Windows]
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
     steps:
       - name: Checkout
         uses: actions/checkout@v4

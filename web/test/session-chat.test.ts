@@ -115,4 +115,42 @@ describe('streamSessionChat', () => {
     );
     expect(outcome.kind).toBe('aborted');
   });
+
+  it('flushes a final unterminated data frame (no trailing newline)', async () => {
+    // The endpoint closes cleanly after a data line WITHOUT '\n\n' — the
+    // last delta must still arrive.
+    const body = 'data: {"choices":[{"delta":{"content":"tail"}}]}';
+    const { fetchImpl } = recordFetch(() =>
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+    const deltas: string[] = [];
+    const { outcome, assistant } = await streamSessionChat(
+      { fetchImpl, endpoint: 'https://x.dev/v1', key: KEY, model: MODEL, messages },
+      (d) => deltas.push(d),
+    );
+    expect(outcome).toEqual({ ok: true });
+    expect(assistant).toBe('tail');
+    expect(deltas).toEqual(['tail']);
+  });
+
+  it('surfaces a mid-stream error frame without echoing the key', async () => {
+    const { fetchImpl } = recordFetch(() =>
+      sseBody([
+        'data: {"choices":[{"delta":{"content":"part"}}]}',
+        `data: {"error":{"message":"upstream broke with ${KEY}"}}`,
+        'data: [DONE]',
+      ]),
+    );
+    const { outcome, assistant } = await streamSessionChat(
+      { fetchImpl, endpoint: 'https://x.dev/v1', key: KEY, model: MODEL, messages },
+      () => undefined,
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.kind).toBe('http');
+    expect(JSON.stringify(outcome.message)).not.toContain(KEY);
+    expect(assistant).toBe('part');
+  });
 });

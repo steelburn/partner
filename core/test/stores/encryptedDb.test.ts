@@ -93,10 +93,11 @@ describe('ensureDbKey (M10 W1)', () => {
     expect(second).toBe(first); // read back, not rotated
   });
 
-  it('ignores a malformed stored value and writes a fresh key', async () => {
+  it('REFUSES a malformed stored value instead of rotating it silently', async () => {
     const keychain: Keychain = createKeychainFake();
     await keychain.set('partner', 'db-key', 'not-hex');
-    const key = await ensureDbKey(keychain);
-    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    await expect(ensureDbKey(keychain)).rejects.toThrow(/malformed/);
+    // The bad value is left intact for a deliberate decision — never rotated.
+    expect(await keychain.get('partner', 'db-key')).toBe('not-hex');
   });
 });

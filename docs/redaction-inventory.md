@@ -6,7 +6,7 @@ The single serialization point: every audit row funnels through
 a secret that reaches a `details` object is scrubbed before storage — the
 API, logs and UI can only ever read redacted rows.
 
-## Call-site families (85 `audit.log` call sites in `core/src`)
+## Call-site families (~92 `audit.log` call sites (drifts as routes land) in `core/src`)
 
 | Family | Audit actions | Secret-bearing risk | Notes |
 |---|---|---|---|

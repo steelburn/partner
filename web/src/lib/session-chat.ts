@@ -140,6 +140,34 @@ export async function streamSessionChat(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let streamError: string | null = null;
+    // Returns false when the stream should stop ([DONE]); records a
+    // mid-stream error frame instead of dropping it silently.
+    const handleFrame = (raw: string): boolean => {
+      const trimmed = raw.trim();
+      if (!trimmed.startsWith('data:')) return true;
+      const payload = trimmed.slice(5).trim();
+      if (payload === '[DONE]') return false;
+      try {
+        const parsed = JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string } }>;
+          error?: { message?: string };
+        };
+        if (parsed.error !== undefined && typeof parsed.error.message === 'string') {
+          streamError = parsed.error.message;
+          return false;
+        }
+        const content = parsed?.choices?.[0]?.delta?.content;
+        if (typeof content === 'string' && content.length > 0) {
+          assistant += content;
+          onDelta(content);
+        }
+      } catch {
+        // Ignore malformed frames defensively; a run of them still fails
+        // cleanly when the stream ends without content.
+      }
+      return true;
+    };
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -147,26 +175,26 @@ export async function streamSessionChat(
       const frames = buffer.split('\n');
       buffer = frames.pop() ?? '';
       for (const line of frames) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const payload = trimmed.slice(5).trim();
-        if (payload === '[DONE]') return { outcome: { ok: true }, assistant };
-        try {
-          const parsed = JSON.parse(payload) as {
-            choices?: Array<{ delta?: { content?: string } }>;
-          };
-          const content = parsed?.choices?.[0]?.delta?.content;
-          if (typeof content === 'string' && content.length > 0) {
-            assistant += content;
-            onDelta(content);
-          }
-        } catch {
-          // Ignore malformed frames defensively; a run of them still fails
-          // cleanly when the stream ends without content.
-        }
+        if (!handleFrame(line)) return finishStream();
       }
     }
-    return { outcome: { ok: true }, assistant };
+    // A clean close may leave ONE unterminated data frame in the buffer
+    // (endpoint sent no trailing newline) — flush it so the last delta is
+    // never dropped.
+    if (buffer.trim() !== '') {
+      if (!handleFrame(buffer)) return finishStream();
+    }
+    return finishStream();
+    function finishStream(): { outcome: SessionChatOutcome; assistant: string } {
+      if (streamError !== null) {
+        const safe = streamError.slice(0, 200).replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***');
+        return {
+          outcome: { ok: false, kind: 'http', message: `The endpoint reported: ${safe}` },
+          assistant,
+        };
+      }
+      return { outcome: { ok: true }, assistant };
+    }
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') {
       return { outcome: { ok: false, kind: 'aborted', message: 'Stopped.' }, assistant };

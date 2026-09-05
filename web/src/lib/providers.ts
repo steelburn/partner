@@ -58,13 +58,13 @@ export function validateEndpoint(raw: string): string | null {
 }
 
 /**
- * Human label for a per-session budget in cents. null when the cap is off.
- * 200 -> "$2 / session", 250 -> "$2.50 / session", 255 -> "$2.55 / session".
+ * Human label for a provider budget cap in cents. null when the cap is off.
+ * 200 -> "$2 / 30-day window", 250 -> "$2.50 / 30-day window", 255 -> "$2.55 …".
  */
 export function budgetLabel(budgetCents: number | null): string | null {
   if (budgetCents === null || !Number.isFinite(budgetCents)) return null;
   const dollars = (budgetCents / 100).toFixed(2).replace(/\.00$/, '');
-  return `$${dollars} / session`;
+  return `$${dollars} / 30-day window`;
 }
 
 /**

@@ -1227,6 +1227,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const id = String(req.params.id ?? '');
     try {
       await manager.remove(id);
+      // M10 W3: drop the provider's spend ledger row with it (no stale spend
+      // if the same profile id is re-created in the window).
+      options.spendLedger?.reset(id);
     } catch (err) {
       if (sendProviderError(res, err)) return;
       throw err;

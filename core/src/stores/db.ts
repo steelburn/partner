@@ -579,6 +579,9 @@ export function openEncryptedDatabase(location: string, keyHex: string): Databas
   if (location === ':memory:') {
     throw new Error('openEncryptedDatabase requires a file path (never :memory:)');
   }
+  if (!/^[0-9a-f]{64}$/.test(keyHex)) {
+    throw new Error('openEncryptedDatabase requires a 64-char hex key (32 bytes)');
+  }
   mkdirSync(dirname(location), { recursive: true });
   const existed = existsSync(location) && statSync(location).size > 0;
   const db = new Database(location);
@@ -631,7 +634,7 @@ export function openEncryptedDatabase(location: string, keyHex: string): Databas
       throw new Error(
         `plaintext Partner database detected at ${location} — M10 requires ` +
           'encryption at rest. Export your data or remove the file to start fresh ' +
-          '(see docs for the migration path).',
+          '(see docs/migrate-plaintext.md).',
       );
     }
     throw new Error(`refusing to open ${location}: not a Partner database`);

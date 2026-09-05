@@ -8,11 +8,14 @@
 #   * Windows exercises the PATH pinning, teardown/AV retry paths and the
 #     drive-letter package-root handling.
 #
-# Runs on the repo's self-hosted runners by design (the M9+ verification
-# flow happens here, not on hosted minutes). Runner labels below follow the
-# GitHub defaults registered with a self-hosted runner: `self-hosted` plus
-# the OS label. If your runners use custom labels, adjust the `runs-on`
-# lines — dispatch will report "no runner matching the requested labels".
+# Runs on the repo's self-hosted runners by design. Runner prerequisites:
+#   * Linux: Node 22, and python3 + make + g++ — better-sqlite3-multiple-
+#     ciphers is BUILT FROM SOURCE here because its published linux-x64
+#     prebuild requires GLIBC_2.33 (Ubuntu 22.04+); this runner's glibc is
+#     older, so the native module must link against the runner's libc.
+#   * Windows: Node 22 + Windows PowerShell 5.1 (the runner has no pwsh;
+#     `shell: powershell` is used). Native modules use their win32
+#     prebuilds.
 #
 # Trigger: push to master or manual (Actions -> Verify -> Run workflow).
 name: verify
@@ -33,7 +36,19 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install
+      - name: Native build tools (python3, make, g++)
+        run: |
+          if sudo -n true 2>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq python3 make g++
+          else
+            echo "no passwordless sudo — ensure python3, make and g++ are on this runner"
+            command -v python3 && command -v make && command -v g++ || exit 1
+          fi
+      - name: Install (natives built from source for this runner's glibc)
+        env:
+          # The fork's linux-x64 prebuild needs GLIBC_2.33; build against the
+          # runner's own libc instead.
+          npm_config_build_from_source: 'true'
         run: npm ci
       - name: Typecheck (shared, core, web, extension)
         run: npm run typecheck
@@ -49,7 +64,7 @@ jobs:
     runs-on: [self-hosted, Windows]
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node 22

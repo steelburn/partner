@@ -69,10 +69,10 @@ describe('normalizeEndpoint / validateEndpoint', () => {
 describe('budgetLabel', () => {
   it('renders cents as compact dollar text; null stays null', () => {
     expect(budgetLabel(null)).toBeNull();
-    expect(budgetLabel(0)).toBe('$0 / session');
-    expect(budgetLabel(200)).toBe('$2 / session');
-    expect(budgetLabel(250)).toBe('$2.50 / session');
-    expect(budgetLabel(255)).toBe('$2.55 / session');
+    expect(budgetLabel(0)).toBe('$0 / 30-day window');
+    expect(budgetLabel(200)).toBe('$2 / 30-day window');
+    expect(budgetLabel(250)).toBe('$2.50 / 30-day window');
+    expect(budgetLabel(255)).toBe('$2.55 / 30-day window');
   });
 });
 

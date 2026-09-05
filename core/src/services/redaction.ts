@@ -5,6 +5,11 @@
  * `details` with the shared redaction helpers BEFORE it touches storage, so a
  * secret that slips into a details object can never reach the audit_log
  * table, request logs, or any downstream consumer.
+ *
+ * INVARIANT: `actor`/`action`/`target` are stored verbatim, so every callsite
+ * keeps them ID/LABEL-shaped (actors: session/web/persona/skill; actions:
+ * dotted ids; targets: ids/hosts/models). Only `details` may carry free text,
+ * and it is redacted at this single serialization point.
  */
 import { redactJson, redactString, redactValue } from '@partner/shared';
 import type { AuditQuery, AuditRow, AuditStore } from '../stores/types.js';

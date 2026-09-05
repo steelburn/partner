@@ -16,12 +16,21 @@ const HEX_RE = /^[0-9a-f]{64}$/;
 /**
  * Read the existing DB cipher key or create + persist a fresh one. Returns
  * the 32-byte key as 64 hex chars (the `PRAGMA key = "x'…'"` form — no
- * SQLCipher KDF). Throws when the keychain is unavailable.
+ * SQLCipher KDF). A stored value that is present-but-malformed is REFUSED
+ * (rotating it would orphan an existing encrypted database silently).
  */
 export async function ensureDbKey(keychain: Keychain): Promise<string> {
   const existing = await keychain.get(KEYCHAIN_SERVICE, DB_KEY_ACCOUNT);
-  if (existing !== null && HEX_RE.test(existing)) return existing;
-  const fresh = randomBytes(32).toString('hex');
-  await keychain.set(KEYCHAIN_SERVICE, DB_KEY_ACCOUNT, fresh);
-  return fresh;
+  if (existing === null) {
+    const fresh = randomBytes(32).toString('hex');
+    await keychain.set(KEYCHAIN_SERVICE, DB_KEY_ACCOUNT, fresh);
+    return fresh;
+  }
+  if (HEX_RE.test(existing)) return existing;
+  throw new Error(
+    `the stored database key (service ${KEYCHAIN_SERVICE}, account ${DB_KEY_ACCOUNT}) is ` +
+      'malformed — refusing to rotate it because an existing database may be ' +
+      'encrypted under it. Remove the account (and the database) deliberately ' +
+      'to start fresh.',
+  );
 }

@@ -5,13 +5,21 @@
  *
  * One row per provider in spend_ledger holds the CURRENT rolling budget
  * window (default 30 days). Semantics:
- *   - spent(providerId)        — cents in the current window (rolls an
- *                                 expired window back to zero lazily).
+ *   - spent(providerId)      — cents in the current window (rolls an
+ *                              expired window back to zero lazily).
  *   - charge(providerId, cents) — persist a settlement for the window;
- *                                 returns the new total + whether a
- *                                 configured cap (checked by the caller) is
- *                                 now over.
- *   - reset(providerId)         — clear the window (budget changed to off).
+ *                              returns the new total + whether a
+ *                              configured cap (checked by the caller) is
+ *                              now over.
+ *   - reset(providerId)      — clear the window (provider deleted).
+ *
+ * WINDOW MODEL (documented tradeoff): this is a QUANTIZED current-window
+ * ledger, not a strict trailing-30-days total — one row per provider; when
+ * the window expires, ALL spend in it rolls to zero (spend from just before
+ * the boundary is not aged out individually). The cap therefore binds on a
+ * 30-day-aligned window rather than any sliding 30-day span. That is a
+ * deliberate simplicity/robustness choice for alpha; per-charge aging would
+ * need the composite (provider_id, window_start) row shape.
  *
  * The manager holds no secrets and never sees model/usage details beyond
  * cents. Over-budget refusal happens BEFORE a turn streams (route layer);
