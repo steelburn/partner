@@ -27,9 +27,6 @@ pub const CORE_PORT: u16 = 4390;
 /// per-triple build artifact to this name at bundle time (binaries/README.md).
 pub const CORE_SIDECAR: &str = "partner-core";
 
-/// Env handed to the core process. PORT/HOST mirror core/src/config.ts.
-const CORE_ENV: &[(&str, &str)] = &[("PORT", "4390"), ("HOST", "127.0.0.1")];
-
 /// Polls the loopback port until the core accepts connections.
 fn wait_for_core(timeout: Duration) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
@@ -61,12 +58,59 @@ impl Drop for CoreChild {
 }
 
 /// Spawns the core sidecar and forwards its stdout/stderr to the shell logs.
+///
+/// The sidecar is the platform node runtime binary (renamed partner-core
+/// by tauri-build). It needs ONE argument — the bundled core script — which
+/// ships under Tauri resources next to the web UI. Bundled-node runtime per
+/// core/docs/spike-sidecar.md.
+///
+/// Resource layout (built by shell/docker/gate/run.sh on Linux and
+/// shell/windows/build-windows.ps1 on Windows):
+///   resources/core-bundle.cjs        (esbuild CJS bundle of core/src)
+///   resources/node_modules/…         (vendored better-sqlite3 + keyring)
+///   resources/web-dist/              (built web UI, served by the core)
+///
+/// Dev fallbacks: PARTNER_CORE_BUNDLE / PARTNER_STATIC_DIR point at a
+/// host-side bundle + web dist when the resources were not staged;
+/// PARTNER_NO_SIDECAR skips the spawn entirely (headless gate smoke).
 fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut rx, child) = app
-        .shell()
-        .sidecar(CORE_SIDECAR)?
-        .envs(CORE_ENV.iter().copied())
-        .spawn()?;
+    let res_dir = app.path().resource_dir()?;
+    let staged_bundle = res_dir.join("core-bundle.cjs");
+    let staged_web = res_dir.join("web-dist");
+    let bundle: std::path::PathBuf = if staged_bundle.exists() {
+        staged_bundle
+    } else if let Some(p) = std::env::var_os("PARTNER_CORE_BUNDLE") {
+        std::path::PathBuf::from(p)
+    } else {
+        eprintln!(
+            "[shell] core bundle not staged under resources — start the core \
+             separately on :4390 or set PARTNER_CORE_BUNDLE"
+        );
+        return Ok(());
+    };
+    let web: Option<std::path::PathBuf> = if staged_web.is_dir() {
+        Some(staged_web)
+    } else {
+        std::env::var_os("PARTNER_STATIC_DIR").map(std::path::PathBuf::from)
+    };
+
+    let mut cmd = app.shell().sidecar(CORE_SIDECAR)?;
+    cmd = cmd.arg(bundle.to_string_lossy().to_string());
+    let mut envs: Vec<(&str, String)> = vec![
+        ("PORT", CORE_PORT.to_string()),
+        ("HOST", CORE_HOST.to_string()),
+    ];
+    if let Some(dir) = web {
+        envs.push(("STATIC_DIR", dir.to_string_lossy().to_string()));
+    }
+    // Keep skills out of cwd-dependent paths in packaged runs.
+    envs.push(("SKILLS_DIR", res_dir.join("skills").to_string_lossy().to_string()));
+    envs.push(("SKILLS_CATALOG_DIR", res_dir.join("skills-catalog").to_string_lossy().to_string()));
+    for (key, value) in envs.iter() {
+        cmd = cmd.env(key, value);
+    }
+
+    let (mut rx, child) = cmd.spawn()?;
     app.manage(CoreChild(Some(child)));
 
     tauri::async_runtime::spawn(async move {
@@ -83,7 +127,6 @@ fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         "[core] terminated unexpectedly: code={:?} signal={:?}",
                         payload.code, payload.signal
                     );
-                    // TODO(M1+): restart/recovery policy + user-facing dialog.
                     break;
                 }
                 _ => {}

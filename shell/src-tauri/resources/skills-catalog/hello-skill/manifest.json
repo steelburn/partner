@@ -1,0 +1,16 @@
+{
+  "id": "hello-skill",
+  "name": "Hello Skill",
+  "description": "Returns a friendly greeting echoing the name argument.",
+  "author": "Partner Samples",
+  "version": "0.1.0",
+  "entrypoint": "entry.mjs",
+  "permissions": {
+    "tools": [],
+    "network": false,
+    "risk": "low"
+  },
+  "budget": {
+    "timeMs": 10000
+  }
+}
