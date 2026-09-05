@@ -50,6 +50,13 @@ jobs:
         with:
           workspaces: shell/src-tauri
 
+- name: Diagnostics (VS / vswhere / PS policy)
+        run: |
+          if exist "C:Program Files (x86)Microsoft Visual StudioInstallerswhere.exe" ("C:Program Files (x86)Microsoft Visual StudioInstallerswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) else (echo NO_VSWHERE)
+          where cl 2>nul || echo NO_CL_ON_PATH
+          powershell -NoProfile -Command "Get-ExecutionPolicy -List"
+
+
       - name: Allow PowerShell for node-gyp VS discovery (runner policy)
         run: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force"
 
