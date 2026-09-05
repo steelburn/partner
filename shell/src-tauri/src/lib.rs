@@ -27,6 +27,20 @@ pub const CORE_PORT: u16 = 4390;
 /// per-triple build artifact to this name at bundle time (binaries/README.md).
 pub const CORE_SIDECAR: &str = "partner-core";
 
+/// Strips the `\\?\` verbatim prefix tauri's path resolver returns on Windows
+/// (node's CJS loader cannot resolve verbatim main-script paths).
+fn normalize_win_path(p: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = p.to_str() {
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                return std::path::PathBuf::from(stripped);
+            }
+        }
+    }
+    p
+}
+
 /// Polls the loopback port until the core accepts connections.
 fn wait_for_core(timeout: Duration) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
@@ -75,6 +89,10 @@ impl Drop for CoreChild {
 /// PARTNER_NO_SIDECAR skips the spawn entirely (headless gate smoke).
 fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let res_dir = app.path().resource_dir()?;
+    // tauri returns verbatim (`\\?\`-prefixed) paths on Windows; node cannot
+    // load a `\\?\C:\...` main script (its loader lstat's `C:` and dies), so
+    // normalize before handing paths to the sidecar.
+    let res_dir = normalize_win_path(res_dir);
     // NSIS per-user installs place bundle.resources under <exe>/resources;
     // dev runs (and other bundlers) put them flat at resource_dir. Resolve
     // whichever layout actually staged the bundle.
