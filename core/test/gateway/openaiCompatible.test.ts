@@ -302,3 +302,60 @@ describe('M11 F2 native tool calls', () => {
     }
   });
 });
+
+describe('M11 multimodal image parts', () => {
+  it('serializes a message with an inline image into an OpenAI content array', async () => {
+    let body: { messages?: unknown[] } | undefined;
+    const s = await captureServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      req.on('end', () => {
+        try {
+          body = JSON.parse(raw) as { messages?: unknown[] };
+        } catch {
+          body = undefined;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    await collect(
+      client.chatStream(
+        chatRequest({
+          messages: [
+            { role: 'user', content: 'what is this?', image: { mime: 'image/png', dataBase64: 'QUJD' } },
+          ],
+        }),
+      ),
+    );
+    const user = (body?.messages ?? [])[0] as { content?: unknown };
+    expect(user).toMatchObject({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is this?' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+      ],
+    });
+  });
+
+  it('leaves plain text messages byte-identical', async () => {
+    let body: { messages?: unknown[] } | undefined;
+    const s = await captureServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      req.on('end', () => {
+        body = JSON.parse(raw) as { messages?: unknown[] };
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    await collect(client.chatStream(chatRequest({ messages: [{ role: 'user', content: 'hi' }] })));
+    expect(body?.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+});

@@ -21,6 +21,7 @@
 
 import type {
   ChatEvent,
+  ChatMessage,
   ChatRequest,
   HealthReport,
   ProviderClient,
@@ -167,6 +168,28 @@ function textOfChoice(raw: unknown): string | null {
     if (typeof d.content === 'string' && d.content !== '') return d.content;
   }
   return null;
+}
+
+/** Serialize chat messages for the wire: plain text messages pass through
+ *  unchanged; messages with an inline image become an OpenAI content array. */
+function openAiMessages(messages: ChatMessage[]): unknown[] {
+  return messages.map((message) => {
+    if (message.image !== undefined) {
+      return {
+        role: message.role,
+        content: [
+          { type: 'text', text: message.content === '' ? '(image)' : message.content },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:${message.image.mime};base64,${message.image.dataBase64}`,
+            },
+          },
+        ],
+      };
+    }
+    return { role: message.role, content: message.content };
+  });
 }
 
 function usageEvent(raw: unknown): ChatEvent | null {
@@ -322,7 +345,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
           headers: requestHeaders(apiKey, 'text/event-stream'),
           body: JSON.stringify({
             model: req.model,
-            messages: req.messages,
+            messages: openAiMessages(req.messages),
             stream: true,
             stream_options: { include_usage: true },
             ...(req.tools !== undefined && req.tools.length > 0 ? { tools: req.tools } : {}),

@@ -74,6 +74,13 @@ export interface ChatToolSpec {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /**
+   * M11 multimodal: an inline image payload rides the message to the
+   * provider ONLY (never persisted). Adapters serialize it into an OpenAI
+   * content array when the target model is image-capable; plain text
+   * messages are untouched.
+   */
+  image?: { mime: string; dataBase64: string };
 }
 
 export interface ChatRequest {

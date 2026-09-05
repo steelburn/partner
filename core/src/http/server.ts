@@ -44,6 +44,7 @@ import { createBudgetTracker } from '../gateway/budget.js';
 import { centsForTokens } from '../gateway/pricing.js';
 import type { SpendLedgerManager } from '../gateway/spend.js';
 import { resolveChatModel } from '../gateway/resolver.js';
+import { isImageCapableModel } from '../gateway/vision.js';
 import { UpstreamError } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import {
@@ -1279,6 +1280,38 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             broker.roots.list().find((root) => root.id === rootId)?.label ?? null,
         });
         if (excerpt !== '') appendAttachmentContext(requestMessages, excerpt);
+      }
+
+      // M11 multimodal: a bound IMAGE attachment rides the newest user turn
+      // as an inline image part — but ONLY to an image-capable model in the
+      // managed path. The persisted turn stays plain text.
+      if (persistedUserMessageId !== null && options.attachments && isImageCapableModel(model)) {
+        try {
+          const metas = options.attachments
+            .metaForMessage(persistedUserMessageId)
+            .filter((meta) => meta.mime.startsWith('image/') && meta.size <= 3 * 1024 * 1024);
+          const meta = metas[0] ?? null;
+          if (meta !== null && conversationId !== null) {
+            const image = options.attachments.content(conversationId, meta.id);
+            if (image !== null) {
+              for (let index = requestMessages.length - 1; index >= 0; index -= 1) {
+                const message = requestMessages[index];
+                if (message && message.role === 'user') {
+                  requestMessages[index] = {
+                    ...message,
+                    image: {
+                      mime: image.mime,
+                      dataBase64: image.data.toString('base64'),
+                    },
+                  };
+                  break;
+                }
+              }
+            }
+          }
+        } catch (imgErr) {
+          logPersistenceFailure('image part', imgErr);
+        }
       }
 
       const chatRequest: ChatRequest = {

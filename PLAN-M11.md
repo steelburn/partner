@@ -171,6 +171,14 @@ production build green):
       allow `:` and `/` in tool ids. Unit + multi-provider dispatch tests;
       suites: core 670, web 440.
 
+- [x] **Multimodal image parts (F1/C2, managed path)** — bound image
+      attachments ride the newest user turn as an OpenAI content array
+      (data URL image_url) ONLY when the resolved model is image-capable
+      (vision-family hint util + inlineable-mime check, 3 MB cap); plain-text
+      turns stay byte-identical. Persistence unchanged. Adapter + helper +
+      route-integration tests (capable model inlines; non-capable stays
+      text); suites: core 676, web 440.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
