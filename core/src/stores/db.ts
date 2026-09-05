@@ -5,7 +5,7 @@
  * re-open after a crash mid-migration) is safe. WAL is enabled for file DBs;
  * ':memory:' databases are used by DEMO_MODE and every unit test.
  */
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '@partner/shared';
@@ -559,6 +559,88 @@ export function openDatabase(location: string): Database.Database {
   db.pragma('journal_mode = WAL');
   applySchema(db);
   return db;
+}
+
+/**
+ * Open a LIVE-mode file database with whole-file encryption (M10 W1,
+ * Decision A: `better-sqlite3` is aliased to the SQLCipher-compatible
+ * better-sqlite3-multiple-ciphers fork; the key pragma uses the 32-byte hex
+ * form so no SQLCipher KDF is involved).
+ *
+ * - A NEW (or empty) file is created encrypted with `keyHex`.
+ * - An EXISTING PLAINTEXT Partner DB is refused with a migration message
+ *   (the cipher open of plaintext yields "file is not a database", so this
+ *   function pre-detects it with a plain open + schema probe).
+ * - A wrong key / non-Partner file fails with a clear error.
+ * `:memory:` is never encrypted here (demo/tests unchanged) — callers must
+ * not pass it.
+ */
+export function openEncryptedDatabase(location: string, keyHex: string): Database.Database {
+  if (location === ':memory:') {
+    throw new Error('openEncryptedDatabase requires a file path (never :memory:)');
+  }
+  mkdirSync(dirname(location), { recursive: true });
+  const existed = existsSync(location) && statSync(location).size > 0;
+  const db = new Database(location);
+  const probe = (): boolean => {
+    try {
+      db.prepare('SELECT count(*) FROM sqlite_master').get();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!existed) {
+    // Fresh file: key it BEFORE anything can be written.
+    db.pragma(`key = "x'${keyHex}'"`);
+    db.pragma('journal_mode = WAL');
+    applySchema(db);
+    return db;
+  }
+  // Existing file: try the KEYED open first (an SQLCipher file without its
+  // key can masquerade as readable plaintext, so the keyed probe decides).
+  db.pragma(`key = "x'${keyHex}'"`);
+  if (probe()) {
+    db.pragma('journal_mode = WAL');
+    applySchema(db);
+    return db;
+  }
+  db.close();
+  // Keyed open failed. Re-probe WITHOUT a key to tell a pre-M10 PLAINTEXT
+  // Partner DB (migration required) from a wrong-key/corrupt file.
+  const plain = new Database(location);
+  let plaintextOk = false;
+  try {
+    plain.prepare('SELECT count(*) FROM sqlite_master').get();
+    plaintextOk = true;
+  } catch {
+    plaintextOk = false;
+  }
+  if (plaintextOk) {
+    let partner = false;
+    try {
+      partner =
+        plain
+          .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+          .get() !== undefined;
+    } catch {
+      partner = false;
+    }
+    plain.close();
+    if (partner) {
+      throw new Error(
+        `plaintext Partner database detected at ${location} — M10 requires ` +
+          'encryption at rest. Export your data or remove the file to start fresh ' +
+          '(see docs for the migration path).',
+      );
+    }
+    throw new Error(`refusing to open ${location}: not a Partner database`);
+  }
+  plain.close();
+  throw new Error(
+    `unable to open ${location}: wrong database key, or the file is not an ` +
+      'encrypted Partner database',
+  );
 }
 
 export function createPairingStore(db: Database.Database): PairingStore {

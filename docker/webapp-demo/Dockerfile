@@ -18,13 +18,14 @@
 # bundle step): core-bundle.cjs + web/ (built SPA). Native modules are
 # installed fresh here for linux-glibc (better-sqlite3 + @napi-rs/keyring
 # prebuilds), so the image is independent of the build host's OS.
-FROM node:20-slim
+FROM node:22-slim
 
 WORKDIR /app
 ENV NODE_ENV=production
 
 # Native runtime deps (linux prebuilds — never copied from the build host).
-RUN npm install --no-save --no-audit --no-fund better-sqlite3@12.2.0 @napi-rs/keyring@2 \
+RUN npm install --no-save --no-audit --no-fund \
+    better-sqlite3@npm:better-sqlite3-multiple-ciphers@^13.0.3 @napi-rs/keyring@2 \
   && rm -rf /root/.npm
 
 COPY core-bundle.cjs /app/core-bundle.cjs

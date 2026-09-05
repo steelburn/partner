@@ -57,6 +57,21 @@ cipher header check) and refused with a migration message: alpha provides
 `core/src/tools/migrate-plaintext.mjs`-style export guidance (documented),
 not silent re-encryption.
 
+**Spike result — 2026-09-05 (recorded): Decision A adopted.**
+`better-sqlite3` is aliased to `better-sqlite3-multiple-ciphers@^13.0.3`
+(npm alias keeps every import site, bundle external, and the OS-level name
+unchanged). Verified on win32/node22 AND linux-glibc/node:22-slim
+(container): keyed file DB + WAL ok; the `assertFts5` probe passes under the
+cipher build; 10k-row fixture opens/queries in <500ms; wrong key and
+plaintext files both fail with a clean "file is not a database"; a 32-byte
+hex key via `PRAGMA key = "x'…'"` skips the SQLCipher KDF. One ABI finding:
+the fork's prebuilds cover node >= 22 only — node:20-slim SEGFAULTS on
+load, so container bases must be node:22-slim (matches the repo engine
+guard `>=22`); docker/webapp-demo + the Ship bundle template were bumped.
+`KEYCHAIN_KIND=fake` with a FILE db is refused in live mode (config guard);
+plaintext detection at keyed open refuses pre-M10 DBs with a migration
+message. `:memory:`/demo paths are untouched.
+
 **Decision B (fallback if the spike fails): app-level AES-GCM per row**
 (256-bit, random 12-byte IV, AAD = table+id — the llm-self-service
 precedent). Applied to the *non-indexed* sensitive families first:

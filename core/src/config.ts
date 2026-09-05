@@ -96,6 +96,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // Demo mode short-circuits to the in-memory fake keychain (spec); an
   // explicit KEYCHAIN_KIND override only applies in live mode.
   const keychain: KeychainKind = demo ? 'fake' : env.KEYCHAIN_KIND === 'fake' ? 'fake' : 'native';
+  // M10 W1: a live-mode FILE database is whole-file encrypted with a key held
+  // in the OS keychain — the in-memory fake keychain cannot protect a file
+  // (the key would vanish on restart), so refuse the combination loudly.
+  if (!demo && keychain === 'fake' && dbPath !== ':memory:') {
+    throw new Error(
+      'live mode with the fake keychain cannot protect a file database — ' +
+        'use the OS keychain, or DB_PATH=:memory: for a non-persistent session',
+    );
+  }
 
   return {
     port,

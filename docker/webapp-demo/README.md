@@ -41,6 +41,6 @@ core inside the container (in-memory DB; state resets on restart).
 
 ## Layout
 
-- `Dockerfile` — node:20-slim runtime; expects `core-bundle.cjs` + `web/`
+- `Dockerfile` — node:22-slim runtime (better-sqlite3-multiple-ciphers prebuilds cover node >= 22); expects `core-bundle.cjs` + `web/`
   in the build context (staged by the scripts, gitignored).
 - `stage.sh` / `stage.ps1` — build web, bundle core, stage, `docker build`.

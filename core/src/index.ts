@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
 import type { Keychain } from '@partner/shared';
-import type { Database } from 'better-sqlite3';
+import Database from 'better-sqlite3';
 
 // ---- config ----------------------------------------------------------------
 export { CORE_VERSION, DEFAULT_DB_PATH, DEFAULT_HOST, DEFAULT_PORT, loadConfig } from './config.js';
@@ -407,6 +407,7 @@ import {
   createDeployProfileStore,
   createPlaybookRunStore,
   createSpendLedgerStore,
+  openEncryptedDatabase,
 } from './stores/db.js';
 import type {
   ConversationStore,
@@ -433,6 +434,7 @@ import type { PersonaManager } from './personas/manager.js';
 import { createConversationManager } from './conversations/manager.js';
 import type { ConversationManager } from './conversations/manager.js';
 import { createKeychainFake, createKeychainNative } from './keychain/keychain.js';
+import { ensureDbKey } from './keychain/dbKey.js';
 import { createPairingManager } from './http/pairing.js';
 import type { PairingManager } from './http/pairing.js';
 import { createSessionManager } from './http/session.js';
@@ -491,7 +493,7 @@ import {
 
 export interface CoreBundle {
   config: CoreConfig;
-  db: Database;
+  db: Database.Database;
   keychain: Keychain;
   pairing: PairingManager;
   sessions: SessionManager;
@@ -545,11 +547,34 @@ export interface CoreBundle {
 }
 
 /**
- * Build the full M0 core in-process (config -> app). Does NOT listen; call
- * {@link startServer} for the bound server.
+ * Open the core's database for a config: demo/:memory: stays plaintext;
+ * a LIVE file database is opened whole-file-encrypted (M10 W1) with the
+ * keychain-held cipher key (created on first use).
  */
-export function createCore(config: CoreConfig): CoreBundle {
-  const db = openDatabase(config.dbPath);
+async function openCoreDatabase(config: CoreConfig): Promise<Database.Database> {
+  if (config.demo || config.dbPath === ':memory:') return openDatabase(config.dbPath);
+  const keychain: Keychain =
+    config.keychain === 'native' ? createKeychainNative() : createKeychainFake();
+  const keyHex = await ensureDbKey(keychain);
+  return openEncryptedDatabase(config.dbPath, keyHex);
+}
+
+/**
+ * Build the full M0 core in-process (config -> app). Does NOT listen; call
+ * {@link startServer} for the bound server. Live-mode file databases must
+ * be opened encrypted first (pass the db from {@link openCoreDatabase});
+ * demo/:memory: builds stay synchronous and untouched.
+ */
+export function createCore(config: CoreConfig, db?: Database.Database): CoreBundle {
+  if (db === undefined) {
+    if (!config.demo && config.dbPath !== ':memory:') {
+      throw new Error(
+        'live-mode file databases must be opened encrypted — boot via startServer ' +
+          '(openCoreDatabase), not createCore with a plaintext open',
+      );
+    }
+    db = openDatabase(config.dbPath);
+  }
   const keychain = config.keychain === 'native' ? createKeychainNative() : createKeychainFake();
 
   const pairing = createPairingManager(createPairingStore(db), {
@@ -807,7 +832,8 @@ function listen(app: Express, port: number, host: string): Promise<Server> {
  * Build the core and bind the loopback HTTP server. Resolves once listening.
  */
 export async function startServer(config: CoreConfig = loadConfig()): Promise<{ bundle: CoreBundle; server: Server }> {
-  const bundle = createCore(config);
+  const db = await openCoreDatabase(config);
+  const bundle = createCore(config, db);
   const server = await listen(bundle.app, config.port, config.host);
   return { bundle, server };
 }
@@ -819,7 +845,8 @@ async function main(): Promise<void> {
   // and do NOT start the HTTP server. stdout carries framed responses here,
   // so this branch never prints a banner or any other text to stdout.
   if (process.argv.includes('--native-messaging')) {
-    const bundle = createCore(config);
+    const db = await openCoreDatabase(config);
+    const bundle = createCore(config, db);
     const deps: NativeSessionDeps = {
       version: bundle.config.version,
       demo: bundle.config.demo,

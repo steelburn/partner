@@ -35,7 +35,7 @@ node node_modules/esbuild/bin/esbuild core/src/index.ts --bundle `
   --platform=node --format=cjs --target=node18 `
   --external:better-sqlite3 --external:@napi-rs/keyring `
   --outfile=shell/artifacts/core-bundle.cjs
-npm install --prefix shell/artifacts better-sqlite3@13 @napi-rs/keyring@2
+npm install --prefix shell/artifacts better-sqlite3@npm:better-sqlite3-multiple-ciphers@^13.0.3 @napi-rs/keyring@2
 
 # 3) Build the web UI (served by the core)
 npm run build -w web

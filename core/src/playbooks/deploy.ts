@@ -107,7 +107,7 @@ const DOCKERFILE_TEMPLATE = (profileName: string): string => `# Partner containe
 # Profile: ${profileName}
 # Build the bundle with build.sh on the build host, then:
 #   docker build -t <app> . && docker run -p 4390:4390 <app>
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=4390
@@ -191,7 +191,7 @@ ${files.map((file) => `- \`${file}\``).join('\n')}
 
 - Native modules (better-sqlite3, keyring) are copied from the build host —
   build on the same OS/arch as the target, or rebuild them in a multi-stage
-  Dockerfile for \`node:20-alpine\` (musl).
+  Dockerfile for \`node:22-alpine\` (musl).
 - The core serves the API on \`PORT\` (default 4390); pairing/session
   security is unchanged.
 - LIVE push/deploy to org infrastructure is environment-gated and NOT part

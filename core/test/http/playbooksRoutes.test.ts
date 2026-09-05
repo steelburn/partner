@@ -419,7 +419,7 @@ describe('deploy-profile routes', () => {
         .set(authed(token))
         .send({ projectDir: dir, outDir: join(dir, 'out') });
       expect(pkg.status).toBe(200);
-      expect(pkg.body.dockerfile).toContain('node:20-alpine');
+      expect(pkg.body.dockerfile).toContain('node:22-alpine');
       expect(pkg.body.files).toHaveLength(4);
       expect(pkg.body.outDir).toBe(join(dir, 'out'));
 

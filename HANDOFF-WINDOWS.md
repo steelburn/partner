@@ -52,7 +52,7 @@ npm run build -w web
 npx esbuild core/src/index.ts --bundle --platform=node --format=cjs --target=node18 `
   --external:better-sqlite3 --external:@napi-rs/keyring `
   --outfile=shell/artifacts/core-bundle.cjs
-npm install --prefix shell/artifacts better-sqlite3@12.2.0 @napi-rs/keyring@2   # win32 prebuilds
+npm install --prefix shell/artifacts better-sqlite3@npm:better-sqlite3-multiple-ciphers@^13.0.3 @napi-rs/keyring@2  # win32 prebuilds (SQLCipher fork, node>=22)
 Copy-Item (Get-Command node).Source shell/src-tauri/binaries/partner-core-x86_64-pc-windows-msvc.exe
 cd shell/src-tauri; cargo build
 # run: terminal1 = demo core bundle on :4390 ; terminal2:

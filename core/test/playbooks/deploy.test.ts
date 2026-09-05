@@ -117,9 +117,9 @@ describe('deploy package step', () => {
       const names = result.files.map((f) => f.split(/[\\/]/).pop());
       expect(names).toEqual(expect.arrayContaining(['Dockerfile', '.dockerignore', 'README.md', 'build.sh']));
 
-      // Dockerfile text: node:20-alpine, PORT env, CMD core-bundle.cjs — and
+      // Dockerfile text: node:22-alpine, PORT env, CMD core-bundle.cjs — and
       // NO connection data (host/username never leak into the bundle).
-      expect(result.dockerfile).toContain('node:20-alpine');
+      expect(result.dockerfile).toContain('node:22-alpine');
       expect(result.dockerfile).toContain('ENV PORT=4390');
       expect(result.dockerfile).toContain('CMD ["node", "core-bundle.cjs"]');
       expect(result.dockerfile).not.toContain('10.11.12.13');

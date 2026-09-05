@@ -60,10 +60,16 @@ describe('loadConfig', () => {
     expect(cfg.dbPath).toBe('/tmp/live.db');
     // Demo always uses the fake keychain.
     expect(cfg.keychain).toBe('fake');
+  });
 
-    const live = loadConfig({ ...NO_ENV, DEMO_MODE: '0', KEYCHAIN_KIND: 'fake' });
-    expect(live.demo).toBe(false);
-    expect(live.keychain).toBe('fake');
+  it('M10 W1: live + fake keychain is refused for FILE dbs (in-memory ok)', () => {
+    // A live file DB needs the OS keychain to hold the cipher key.
+    expect(() => loadConfig({ ...NO_ENV, DEMO_MODE: '0', KEYCHAIN_KIND: 'fake' })).toThrow(
+      /fake keychain cannot protect a file database/,
+    );
+    expect(() =>
+      loadConfig({ ...NO_ENV, DEMO_MODE: '0', KEYCHAIN_KIND: 'fake', DB_PATH: ':memory:' }),
+    ).not.toThrow();
   });
 
   it('garbage numbers fall back to defaults instead of crashing', () => {
