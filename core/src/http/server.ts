@@ -35,7 +35,7 @@ import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, Provider
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
-import type { McpCallInput, McpServerInput, McpServerUpdate } from '@partner/shared';
+import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import type { SiteScope } from '@partner/shared';
 import { redactString } from '@partner/shared';
@@ -86,6 +86,8 @@ import type { AssetManager } from '../assets/manager.js';
 import { AssetError, assetErrorStatus } from '../assets/errors.js';
 import type { McpManager } from '../mcp/manager.js';
 import { McpError, mcpErrorStatus } from '../mcp/errors.js';
+import type { SearchManager } from '../search/manager.js';
+import { SearchError, searchErrorStatus } from '../search/errors.js';
 import { applyStructuredGuidance } from '../chat/instructions.js';
 import { runChatToolPass, runNativeToolCalls } from '../chat/toolPass.js';
 import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
@@ -205,6 +207,12 @@ export interface CoreAppOptions {
    * When absent the /v1/mcp surface responds 501 not_configured.
    */
   mcp?: McpManager;
+  /**
+   * M11 F2 search manager (optional so M0-M10 harnesses compile unchanged).
+   * When absent the /v1/search surface responds 501 not_configured and the
+   * chat search tool is not offered.
+   */
+  search?: SearchManager;
   /**
    * M9 deploy-profile manager (optional so M0-M8 harnesses compile
    * unchanged). When absent the /v1/deploy-profiles surface responds 501
@@ -572,6 +580,25 @@ function requirePersonaManager(options: CoreAppOptions, res: Response): PersonaM
     return null;
   }
   return manager;
+}
+
+/** Guard: returns the M11 F2 search manager or 501s. */
+function requireSearch(options: CoreAppOptions, res: Response): SearchManager | null {
+  const search = options.search;
+  if (!search) {
+    notConfigured(res, 'search manager');
+    return null;
+  }
+  return search;
+}
+
+/** Send a typed SearchError response; false when not one. */
+function sendSearchError(res: Response, err: unknown): boolean {
+  if (err instanceof SearchError) {
+    res.status(searchErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
 }
 
 /** Guard: returns the M11 F2 MCP manager or 501s. */
@@ -1356,26 +1383,27 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         ) {
           const activeConversationId: string = conversationId;
           try {
+            const appendSystemNote = (content: string): void => {
+              try {
+                (conversationManager as ConversationManager).append(
+                  activeConversationId,
+                  'system',
+                  {
+                    content,
+                    personaId: null,
+                    model: doneModel,
+                    latencyMs: null,
+                  },
+                );
+              } catch (noteErr) {
+                logPersistenceFailure('tool note', noteErr);
+              }
+            };
             runChatToolPass(deltaText, {
               persona: routingPersona,
               broker: options.broker,
               audit,
-              appendSystemNote: (content: string) => {
-                try {
-                  (conversationManager as ConversationManager).append(
-                    activeConversationId,
-                    'system',
-                    {
-                      content,
-                      personaId: null,
-                      model: doneModel,
-                      latencyMs: null,
-                    },
-                  );
-                } catch (noteErr) {
-                  logPersistenceFailure('tool note', noteErr);
-                }
-              },
+              appendSystemNote,
             });
             // M11 F2 native function calls (same gate/broker, same notes).
             if (nativeCalls.length > 0) {
@@ -1383,22 +1411,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 persona: routingPersona,
                 broker: options.broker,
                 audit,
-                appendSystemNote: (content: string) => {
-                  try {
-                    (conversationManager as ConversationManager).append(
-                      activeConversationId,
-                      'system',
-                      {
-                        content,
-                        personaId: null,
-                        model: doneModel,
-                        latencyMs: null,
-                      },
-                    );
-                  } catch (noteErr) {
-                    logPersistenceFailure('tool note', noteErr);
-                  }
-                },
+                appendSystemNote,
               });
             }
           } catch (toolErr) {
@@ -2217,6 +2230,71 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       .catch((err) => {
         if (sendMcpError(res, err)) return;
         res.status(500).json({ error: 'internal', message: 'tool call failed' });
+      });
+  });
+
+  // -----------------------------------------------------------------------
+  // M11 F2 search surface (PLAN-M11.md): one optional API-key backend.
+  // Config + key are default-deny (enabled flag + keychain-held key); the
+  // query route is the USER-initiated search (explicit consent). The same
+  // backend powers the chat `search` tool (directive/native) via
+  // searchToolExternal. Audit: query LENGTH + hit count only.
+  // -----------------------------------------------------------------------
+
+  api.get('/v1/search/config', requireSession(sessions), (_req: Request, res: Response) => {
+    const search = requireSearch(options, res);
+    if (!search) return;
+    void search.hasKey().then((hasKey) => {
+      res.status(200).json({ ...search.config(), hasKey });
+    });
+  });
+
+  api.put('/v1/search/config', requireSession(sessions), (req: Request, res: Response) => {
+    const search = requireSearch(options, res);
+    if (!search) return;
+    try {
+      const next = search.updateConfig((req.body ?? {}) as SearchConfigInput);
+      void search.hasKey().then((hasKey) => {
+        res.status(200).json({ ...next, hasKey });
+      });
+    } catch (err) {
+      if (sendSearchError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/search/key', requireSession(sessions), (req: Request, res: Response) => {
+    const search = requireSearch(options, res);
+    if (!search) return;
+    const body = (req.body ?? {}) as { key?: unknown };
+    void search
+      .setKey(typeof body.key === 'string' ? body.key : '')
+      .then(() => res.status(204).end())
+      .catch((err) => {
+        if (sendSearchError(res, err)) return;
+        throw err;
+      });
+  });
+
+  api.delete('/v1/search/key', requireSession(sessions), (_req: Request, res: Response) => {
+    const search = requireSearch(options, res);
+    if (!search) return;
+    void search.removeKey().then(() => res.status(204).end());
+  });
+
+  api.post('/v1/search/query', requireSession(sessions), (req: Request, res: Response) => {
+    const search = requireSearch(options, res);
+    if (!search) return;
+    const body = (req.body ?? {}) as { query?: unknown; maxResults?: unknown };
+    void search
+      .search(
+        typeof body.query === 'string' ? body.query : '',
+        typeof body.maxResults === 'number' ? body.maxResults : undefined,
+      )
+      .then((result) => res.status(200).json(result))
+      .catch((err) => {
+        if (sendSearchError(res, err)) return;
+        res.status(500).json({ error: 'internal', message: 'search failed' });
       });
   });
 

@@ -491,6 +491,8 @@ import { createAssetManager } from './assets/index.js';
 import type { AssetManager } from './assets/index.js';
 import { createMcpManager } from './mcp/index.js';
 import type { McpManager } from './mcp/index.js';
+import { createSearchManager } from './search/index.js';
+import type { SearchManager } from './search/index.js';
 import {
   createDeployManager,
   createPlaybookManager,
@@ -535,6 +537,8 @@ export interface CoreBundle {
   assets: AssetManager;
   /** M11 F2 MCP manager (stdio client config + user tool calls). */
   mcp: McpManager;
+  /** M11 F2 search manager (optional API-key search backend). */
+  search: SearchManager;
   /** M4 memory managers + stores (wired on every core over the same db). */
   memory: MemoryBundle;
   profileStore: ProfileEntryStore;
@@ -729,6 +733,13 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   // column (M3) is the per-persona override and the settings store holds the
   // global active_theme key.
   const settingsStore = createSettingsStore(db);
+  // M11 F2 search: optional API-key backend (config in settings, key in the
+  // OS keychain, default-deny OFF). No schema change — schema v12 stands.
+  const search = createSearchManager({
+    settings: settingsStore,
+    keychain,
+    audit,
+  });
   const themeStore = createThemeStore(db);
   const themes = createThemeManager({
     store: themeStore,
@@ -817,6 +828,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     attachments,
     assets,
     mcp,
+    search,
     memory,
     notes,
     plans,
@@ -852,6 +864,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     attachments,
     assets,
     mcp,
+    search,
     memory,
     profileStore,
     episodeStore,

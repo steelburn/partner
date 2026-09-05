@@ -77,6 +77,8 @@ import { createAssetManager } from '../src/assets/index.js';
 import type { AssetManager } from '../src/assets/index.js';
 import { createMcpManager } from '../src/mcp/index.js';
 import type { McpManager } from '../src/mcp/index.js';
+import { createSearchManager } from '../src/search/index.js';
+import type { SearchManager } from '../src/search/index.js';
 import { createMemoryBundle, createSummarizeResolver } from '../src/memory/index.js';
 import type { MemoryBundle } from '../src/memory/index.js';
 import {
@@ -252,6 +254,8 @@ export interface Harness {
   assets?: AssetManager;
   /** M11 F2 MCP manager (stdio servers). */
   mcp?: McpManager;
+  /** M11 F2 search manager (API-key backend, default-deny). */
+  search?: SearchManager;
   /** M4 memory stores + managers over the SAME db (default on). */
   profileStore: ProfileEntryStore;
   episodeStore: EpisodeStore;
@@ -447,6 +451,13 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   // (the 501 not_configured case).
   const themeStore = createThemeStore(db);
   const settingsStore = createSettingsStore(db);
+  // M11 F2: search backend (config in settings, key in the fake/native
+  // keychain — default-deny OFF until enabled).
+  const search = createSearchManager({
+    settings: settingsStore,
+    keychain,
+    audit,
+  });
   let themes: ThemeManager | undefined;
   if (themesEnabled) {
     themes = createThemeManager({
@@ -559,6 +570,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     attachments: attachments,
     assets: assets,
     mcp: mcp,
+    search: search,
     ...(memoryEnabled ? { memory } : {}),
     ...(notesPlansEnabled ? { notes, plans } : {}),
     ...(themesEnabled ? { themes } : {}),
@@ -601,6 +613,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     attachments,
     assets,
     mcp,
+    search,
     profileStore,
     episodeStore,
     memoryFtsStore,

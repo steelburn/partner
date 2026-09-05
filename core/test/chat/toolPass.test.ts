@@ -66,27 +66,27 @@ function makeDeps(
 const directive = (toolId = 'files.read', args: Record<string, unknown> = { projectId: 'proj-1', path: 'a.md' }): string =>
   `Let me check that.\n[[partner:tool ${toolId} ${JSON.stringify(args)}]]`;
 
-describe('M11 F2 chat tool pass', () => {
-  it('executes a granted directive and appends the result note', () => {
+describe('M11 F2 chat tool pass', async () => {
+  it('executes a granted directive and appends the result note', async () => {
     const notes: string[] = [];
     const broker = brokerLike({
       grants: { hasGrant: () => true },
       exec: () => ({ outcome: 'executed', result: { content: 'hello world' } }),
     });
-    const result = runChatToolPass(directive(), makeDeps(persona('auto'), broker, notes));
+    const result = await runChatToolPass(directive(), makeDeps(persona('auto'), broker, notes));
     expect(result.decisions).toEqual([{ toolId: 'files.read', decision: 'executed' }]);
     expect(notes.join('\n')).toContain('[tool files.read result]');
     expect(notes.join('\n')).toContain('hello world');
   });
 
-  it('assist level refuses with a note (propose only)', () => {
+  it('assist level refuses with a note (propose only)', async () => {
     const notes: string[] = [];
-    const result = runChatToolPass(directive(), makeDeps(persona('assist'), brokerLike({}), notes));
+    const result = await runChatToolPass(directive(), makeDeps(persona('assist'), brokerLike({}), notes));
     expect(result.decisions[0]).toMatchObject({ decision: 'refused', reason: 'assist_level_no_tools' });
     expect(notes[0]).toContain('refused');
   });
 
-  it('queues an approval for a persona whose request is not auto-granted', () => {
+  it('queues an approval for a persona whose request is not auto-granted', async () => {
     const notes: string[] = [];
     const queued: string[] = [];
     const broker = brokerLike({
@@ -98,35 +98,35 @@ describe('M11 F2 chat tool pass', () => {
         },
       },
     });
-    const result = runChatToolPass(directive(), makeDeps(persona('suggest'), broker, notes));
+    const result = await runChatToolPass(directive(), makeDeps(persona('suggest'), broker, notes));
     expect(result.decisions[0]).toMatchObject({ decision: 'queued', pendingId: 'pending-1' });
     expect(notes[0]).toContain('awaiting your approval');
   });
 
-  it('unknown tools and missing projectId refuse with clear notes', () => {
+  it('unknown tools and missing projectId refuse with clear notes', async () => {
     const notes: string[] = [];
-    const missing = runChatToolPass(
+    const missing = await runChatToolPass(
       directive('files.deploy', {}),
       makeDeps(persona('auto'), brokerLike({}), notes),
     );
     expect(missing.decisions[0]).toMatchObject({ decision: 'refused', reason: 'unknown_tool' });
     notes.length = 0;
-    const noProject = runChatToolPass(
+    const noProject = await runChatToolPass(
       directive('files.read', {}),
       makeDeps(persona('suggest'), brokerLike({}), notes),
     );
     expect(noProject.decisions[0]).toMatchObject({ decision: 'refused', reason: 'missing_project' });
   });
 
-  it('a persona tool ban refuses even when granted (M11 F3)', () => {
+  it('a persona tool ban refuses even when granted (M11 F3)', async () => {
     const notes: string[] = [];
     const p = { ...persona('autonomous'), policy: { tools: { banned: ['files.read'] } } };
     const broker = brokerLike({ grants: { hasGrant: () => true } });
-    const result = runChatToolPass(directive(), makeDeps(p, broker, notes));
+    const result = await runChatToolPass(directive(), makeDeps(p, broker, notes));
     expect(result.decisions[0]).toMatchObject({ decision: 'refused', reason: 'tool_banned_by_persona' });
   });
 
-  it('audits every decision id-only', () => {
+  it('audits every decision id-only', async () => {
     const db = openDatabase(':memory:');
     try {
       const audit = auditLog({ store: createAuditStore(db) });
@@ -137,7 +137,7 @@ describe('M11 F2 chat tool pass', () => {
         audit,
         appendSystemNote: (content) => notes.push(content),
       };
-      runChatToolPass(directive(), deps);
+      await runChatToolPass(directive(), deps);
       const rows = audit.query({ limit: 10, action: 'chat.tool' });
       expect(rows.length).toBe(1);
       expect(rows[0]?.target).toBe('files.read');
@@ -151,14 +151,14 @@ describe('M11 F2 chat tool pass', () => {
 // Keep the shared directive type referenced (parse input shape).
 export type { PersonaToolDirective };
 
-describe('M11 F2 native tool calls (runNativeToolCalls)', () => {
-  it('parses JSON arguments and executes under a grant', () => {
+describe('M11 F2 native tool calls (runNativeToolCalls)', async () => {
+  it('parses JSON arguments and executes under a grant', async () => {
     const notes: string[] = [];
     const broker = brokerLike({
       grants: { hasGrant: () => true },
       exec: () => ({ outcome: 'executed' as const, result: { content: 'native read ok' } }),
     });
-    const result = runNativeToolCalls(
+    const result = await runNativeToolCalls(
       [{ id: 'call_1', name: 'files.read', arguments: '{"projectId":"proj-1","path":"a.txt"}' }],
       makeDeps(persona('auto'), broker, notes),
     );
@@ -166,9 +166,9 @@ describe('M11 F2 native tool calls (runNativeToolCalls)', () => {
     expect(notes.join('\n')).toContain('native read ok');
   });
 
-  it('skips empty names and treats unparsable arguments as a refusal-relevant call', () => {
+  it('skips empty names and treats unparsable arguments as a refusal-relevant call', async () => {
     const notes: string[] = [];
-    const result = runNativeToolCalls(
+    const result = await runNativeToolCalls(
       [
         { id: 'x', name: '', arguments: '{}' },
         { id: 'y', name: 'files.read', arguments: 'not-json' },
@@ -180,3 +180,4 @@ describe('M11 F2 native tool calls (runNativeToolCalls)', () => {
     expect(result.decisions[0]).toMatchObject({ toolId: 'files.read', decision: 'refused' });
   });
 });
+

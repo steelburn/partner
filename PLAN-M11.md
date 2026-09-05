@@ -135,6 +135,16 @@ production build green):
       auto-continuation is intentionally still next-turn-history based (no
       hidden replay).
 
+- [x] **F2 search backend (API-key, user-initiated)** — shared wire types,
+      `core/src/search` manager (Tavily/Brave adapters over injectable fetch,
+      default-deny OFF until enabled + keychain-held key, http-only-loopback
+      endpoints, timeouts, audit = query LENGTH + hits only), `/v1/search/*`
+      routes (config/key lifecycle, user-initiated query), wired through
+      core + harness, plus `searchToolExternal` (the chat-tool seam kept for
+      the next chat-search slice). Tests run against fake loopback upstreams
+      + route tests. Chat-integration of the search tool itself and a UI
+      panel remain for a later slice.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
