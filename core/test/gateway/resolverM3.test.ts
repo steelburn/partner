@@ -15,6 +15,7 @@ function provider(overrides: Partial<ProviderSummary> & { id: string }): Provide
     name: overrides.id,
     kind: 'openai-compatible',
     source: 'manual',
+    purpose: 'general',
     endpoint: `https://${overrides.id}.example/v1`,
     defaultModels: [],
     enabled: true,
@@ -142,5 +143,58 @@ describe('persona provider pinning', () => {
     const res = resolveChatModel({ persona: p, requestedModel: 'gpt-r', providers });
     expect(res.provider?.id).toBe('prov-b');
     expect(res.model).toBe('gpt-r');
+  });
+});
+
+describe('M11 F4 purpose-based routing', () => {
+  it('chat prefers a general provider over an earlier-created specialist', () => {
+    const vision = provider({ id: 'prov-vision', purpose: 'vision', defaultModels: ['vision-m'] });
+    const general = gpt('prov-general');
+    // Created order: vision first — but chat wants general.
+    const res = resolveChatModel({ providers: [vision, general] });
+    expect(res.provider?.id).toBe('prov-general');
+    expect(res.model).toBe('prov-general');
+  });
+
+  it('vision task class resolves to the vision provider when present', () => {
+    const general = gpt('prov-general');
+    const vision = provider({ id: 'prov-vision', purpose: 'vision', defaultModels: ['vision-m'] });
+    const res = resolveChatModel({ providers: [general, vision], taskClass: 'vision' });
+    expect(res.provider?.id).toBe('prov-vision');
+    expect(res.model).toBe('vision-m');
+  });
+
+  it('coding falls back to general when no coding provider exists', () => {
+    const general = gpt('prov-general');
+    const vision = provider({ id: 'prov-vision', purpose: 'vision', defaultModels: ['v'] });
+    const res = resolveChatModel({ providers: [vision, general], taskClass: 'coding' });
+    expect(res.provider?.id).toBe('prov-general');
+  });
+
+  it('cheap beats deep beats general in a purpose-ordered preference', () => {
+    const general = gpt('prov-general');
+    const deep = provider({ id: 'prov-deep', purpose: 'deep', defaultModels: ['deep-m'] });
+    const cheap = provider({ id: 'prov-cheap', purpose: 'cheap', defaultModels: ['cheap-m'] });
+    const res = resolveChatModel({ providers: [general, deep, cheap], taskClass: 'cheap' });
+    expect(res.provider?.id).toBe('prov-cheap');
+    expect(res.model).toBe('cheap-m');
+  });
+
+  it('persona pinned provider still beats purpose routing', () => {
+    const vision = provider({ id: 'prov-vision', purpose: 'vision', defaultModels: ['v'] });
+    const general = gpt('prov-general');
+    const p = persona({ id: 'p1', model: { taskClasses: { vision: 'm' }, providerId: 'prov-general' } });
+    const res = resolveChatModel({ persona: p, providers: [vision, general], taskClass: 'vision' });
+    expect(res.provider?.id).toBe('prov-general');
+    expect(res.model).toBe('m');
+  });
+
+  it('persona model for a task rides the purpose-fit provider when unpinned', () => {
+    const general = gpt('prov-general');
+    const coding = provider({ id: 'prov-coding', purpose: 'coding', defaultModels: ['c'] });
+    const p = persona({ id: 'p1', model: { taskClasses: { coding: 'coder-model' } } });
+    const res = resolveChatModel({ persona: p, providers: [general, coding], taskClass: 'coding' });
+    expect(res.provider?.id).toBe('prov-coding');
+    expect(res.model).toBe('coder-model');
   });
 });

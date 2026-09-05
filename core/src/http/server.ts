@@ -27,7 +27,7 @@
  * SSE payloads — every audit write goes through the redaction service. Chat
  * content is never audited either: message rows carry only ids/lengths.
  */
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
@@ -35,6 +35,7 @@ import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, Provider
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
+import type { McpCallInput, McpServerInput, McpServerUpdate } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import type { SiteScope } from '@partner/shared';
 import { redactString } from '@partner/shared';
@@ -77,6 +78,17 @@ import { BrowserError, browserErrorStatus } from '../browser/errors.js';
 import type { SkillManager } from '../skills/manager.js';
 import type { SkillRunner } from '../skills/runner.js';
 import { SkillError, skillErrorStatus } from '../skills/errors.js';
+import type { FolderManager } from '../folders/manager.js';
+import { FolderError, folderErrorStatus } from '../folders/errors.js';
+import type { AttachmentManager } from '../attachments/manager.js';
+import { AttachmentError, attachmentErrorStatus } from '../attachments/errors.js';
+import type { AssetManager } from '../assets/manager.js';
+import { AssetError, assetErrorStatus } from '../assets/errors.js';
+import type { McpManager } from '../mcp/manager.js';
+import { McpError, mcpErrorStatus } from '../mcp/errors.js';
+import { applyStructuredGuidance } from '../chat/instructions.js';
+import { runChatToolPass } from '../chat/toolPass.js';
+import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
 import { PlaybookError, playbookError, playbookErrorStatus } from '../playbooks/errors.js';
@@ -172,6 +184,28 @@ export interface CoreAppOptions {
    */
   playbooks?: PlaybookManager;
   /**
+   * M11 F11 folder manager (optional so M0-M10 harnesses compile unchanged).
+   * When absent the /v1/folders surface responds 501 not_configured and
+   * conversation folder params are refused with folder_not_configured.
+   */
+  folders?: FolderManager;
+  /**
+   * M11 F1 attachment manager (optional so M0-M10 harnesses compile
+   * unchanged). When absent the /v1/…/attachments surface responds 501
+   * not_configured and chat attachmentIds are ignored.
+   */
+  attachments?: AttachmentManager;
+  /**
+   * M11 F10 asset manager (optional so M0-M10 harnesses compile unchanged).
+   * When absent the /v1/…/assets surface responds 501 not_configured.
+   */
+  assets?: AssetManager;
+  /**
+   * M11 F2 MCP manager (optional so M0-M10 harnesses compile unchanged).
+   * When absent the /v1/mcp surface responds 501 not_configured.
+   */
+  mcp?: McpManager;
+  /**
    * M9 deploy-profile manager (optional so M0-M8 harnesses compile
    * unchanged). When absent the /v1/deploy-profiles surface responds 501
    * not_configured.
@@ -248,7 +282,27 @@ function assembleRequestMessages(input: {
   }
   const systemPrompt = input.persona?.character.systemPrompt.trim() ?? '';
   if (systemPrompt !== '') {
+    const systemIndex = out.length;
     out.push({ role: 'system', content: systemPrompt });
+    // M11 C3: teach capable personas the :::partner.* container grammar for
+    // clickable choices (F9) and assets (F10). Deterministic, opt-in per
+    // conversation feature set (default on for persisted persona chat).
+    if (input.persona !== null) {
+      applyStructuredGuidance(out, systemIndex);
+      // M11 F3: a persona's DEFAULT skills are announced so the model can
+      // call on them; bans are enforced server-side, never prompted.
+      const defaults = input.persona.policy?.skills?.default;
+      if (defaults !== undefined && defaults.length > 0) {
+        const base = out[systemIndex];
+        if (base) {
+          out[systemIndex] = {
+            ...base,
+            content:
+              `${base.content}\nSkills available to you by default: ${defaults.join(', ')}.`,
+          };
+        }
+      }
+    }
   }
   const singleNewUserTurn =
     input.requestMessages.length === 1 && input.requestMessages[0]?.role === 'user';
@@ -261,6 +315,17 @@ function assembleRequestMessages(input: {
     out.push(message);
   }
   return out;
+}
+
+function appendAttachmentContext(messages: ChatMessage[], context: string): void {
+  if (context === '') return;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.role === 'user') {
+      messages[index] = { ...message, content: `${message.content}\n\n${context}` };
+      return;
+    }
+  }
 }
 
 function sanitizeMessages(input: unknown): ChatMessage[] | null {
@@ -509,6 +574,63 @@ function requirePersonaManager(options: CoreAppOptions, res: Response): PersonaM
   return manager;
 }
 
+/** Guard: returns the M11 F2 MCP manager or 501s. */
+function requireMcp(options: CoreAppOptions, res: Response): McpManager | null {
+  const mcp = options.mcp;
+  if (!mcp) {
+    notConfigured(res, 'MCP manager');
+    return null;
+  }
+  return mcp;
+}
+
+/** Send a typed McpError response; false when not one. */
+function sendMcpError(res: Response, err: unknown): boolean {
+  if (err instanceof McpError) {
+    res.status(mcpErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** Guard: returns the M11 F10 asset manager or 501s. */
+function requireAssets(options: CoreAppOptions, res: Response): AssetManager | null {
+  const assets = options.assets;
+  if (!assets) {
+    notConfigured(res, 'asset manager');
+    return null;
+  }
+  return assets;
+}
+
+/** Send a typed AssetError response; false when not one. */
+function sendAssetError(res: Response, err: unknown): boolean {
+  if (err instanceof AssetError) {
+    res.status(assetErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** Guard: returns the M11 F1 attachment manager or 501s. */
+function requireAttachments(options: CoreAppOptions, res: Response): AttachmentManager | null {
+  const attachments = options.attachments;
+  if (!attachments) {
+    notConfigured(res, 'attachment manager');
+    return null;
+  }
+  return attachments;
+}
+
+/** Send a typed AttachmentError response; false when not one. */
+function sendAttachmentError(res: Response, err: unknown): boolean {
+  if (err instanceof AttachmentError) {
+    res.status(attachmentErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
 /** Guard: returns the M3 conversation manager or 501s. */
 function requireConversationManager(
   options: CoreAppOptions,
@@ -520,6 +642,25 @@ function requireConversationManager(
     return null;
   }
   return manager;
+}
+
+/** Guard: returns the M11 F11 folder manager or 501s. */
+function requireFolders(options: CoreAppOptions, res: Response): FolderManager | null {
+  const folders = options.folders;
+  if (!folders) {
+    notConfigured(res, 'folder manager');
+    return null;
+  }
+  return folders;
+}
+
+/** Send a typed FolderError response; false when not one. */
+function sendFolderError(res: Response, err: unknown): boolean {
+  if (err instanceof FolderError) {
+    res.status(folderErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
 }
 
 /** Guard: returns the M4 memory bundle or 501s. */
@@ -743,12 +884,16 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       conversationId?: unknown;
       personaId?: unknown;
       taskClass?: unknown;
+      attachmentIds?: unknown;
     };
     const messages = sanitizeMessages(body.messages);
     if (messages === null) {
       res.status(400).json({ error: 'invalid_messages' });
       return;
     }
+    const rawAttachmentIds = Array.isArray(body.attachmentIds)
+      ? body.attachmentIds.filter((entry): entry is string => typeof entry === 'string')
+      : [];
     const requestedModel = optionalString(body.model);
     const requestedPersonaId = optionalString(body.personaId);
     const requestedConversationId = optionalString(body.conversationId);
@@ -867,6 +1012,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[partner-core] chat persist (${what}) failed:`, redactString(message));
     };
+    // M11 F1: id of the persisted newest user turn (attachment binding +
+    // context enrichment target); null until persistUserTurn runs.
+    let persistedUserMessageId: string | null = null;
 
     // Prior persisted turns (oldest first) captured AFTER the auto
     // conversation exists but BEFORE the current user turn is appended, so
@@ -912,12 +1060,21 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             (conversationManager as ConversationManager).bindPersona(conversationId, routingPersonaId);
           }
         }
-        (conversationManager as ConversationManager).append(conversationId, 'user', {
+        const storedUser = (conversationManager as ConversationManager).append(conversationId, 'user', {
           content: lastUser.content,
           personaId: routingPersonaId,
           model: null,
           latencyMs: null,
         });
+        persistedUserMessageId = storedUser.id;
+        // Bind staged uploads named by this turn (M11 F1) — best effort.
+        if (options.attachments && rawAttachmentIds.length > 0) {
+          try {
+            options.attachments.bindToMessage(conversationId, storedUser.id, rawAttachmentIds);
+          } catch (bindErr) {
+            logPersistenceFailure('attachment bind', bindErr);
+          }
+        }
       } catch (err) {
         logPersistenceFailure('user message', err);
       }
@@ -1066,6 +1223,31 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         profilePrelude: tailoring,
       });
 
+      // M11 F1: enrich the newest user turn with its bound attachment text
+      // (extracts for text, descriptors for images) before it reaches the
+      // provider. The persisted content stays unchanged.
+      if (persistedUserMessageId !== null && options.attachments) {
+        appendAttachmentContext(
+          requestMessages,
+          options.attachments.contextForMessage(persistedUserMessageId),
+        );
+      }
+
+      // M11 F1 file refs: partner-file:// mentions inside roots the user has
+      // GRANTED files.read on are read (capped) and appended so the persona
+      // sees the file. Grant-less refs are skipped — nothing is read blindly.
+      if (options.broker !== undefined && lastUser !== undefined) {
+        const broker = options.broker;
+        const excerpt = fileRefsExcerpt(lastUser.content, {
+          hasReadGrant: (rootId: string) =>
+            broker.grants.hasGrant('files.read', rootId, Date.now()),
+          read: (params) => broker.exec('files.read', params, { requestedBy: 'web' }),
+          rootLabel: (rootId: string) =>
+            broker.roots.list().find((root) => root.id === rootId)?.label ?? null,
+        });
+        if (excerpt !== '') appendAttachmentContext(requestMessages, excerpt);
+      }
+
       const chatRequest: ChatRequest = {
         model,
         messages: requestMessages,
@@ -1134,6 +1316,46 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           observeEvent(event);
         }
         persistAssistantTurn(sawDone, deltaText, doneModel, doneLatencyMs);
+        // M11 F2 (slice 1): chat-directive tool pass. When the finished
+        // persona reply carried [[partner:tool …]] directives, authorize +
+        // broker each one; outcome notes persist as system messages so the
+        // next turn's history carries them. No auto-continuation model round.
+        if (
+          !over &&
+          sawDone &&
+          persist &&
+          conversationId !== null &&
+          routingPersona !== null &&
+          options.broker !== undefined
+        ) {
+          const activeConversationId: string = conversationId;
+          try {
+            runChatToolPass(deltaText, {
+              persona: routingPersona,
+              broker: options.broker,
+              audit,
+              appendSystemNote: (content: string) => {
+                try {
+                  (conversationManager as ConversationManager).append(
+                    activeConversationId,
+                    'system',
+                    {
+                      content,
+                      personaId: null,
+                      model: doneModel,
+                      latencyMs: null,
+                    },
+                  );
+                } catch (noteErr) {
+                  logPersistenceFailure('tool note', noteErr);
+                }
+              },
+            });
+          } catch (toolErr) {
+            // A tool-pass failure must never break the turn that finished.
+            logPersistenceFailure('tool pass', toolErr);
+          }
+        }
         // Natural end without a usage event: settle the conservative
         // estimate so the ledger still reflects the turn.
         if (settledCents === null && estTokens > 0) {
@@ -1198,13 +1420,31 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     capturePriorHistory();
     persistUserTurn();
 
+    let requestMessages = assembleRequestMessages({
+      persona: routingPersona,
+      history: priorHistory,
+      requestMessages: messages,
+    });
+    if (persistedUserMessageId !== null && options.attachments) {
+      appendAttachmentContext(
+        requestMessages,
+        options.attachments.contextForMessage(persistedUserMessageId),
+      );
+    }
+    // M11 F1 file refs (legacy/demo path mirror).
+    if (options.broker !== undefined && lastUser !== undefined) {
+      const broker = options.broker;
+      const excerpt = fileRefsExcerpt(lastUser.content, {
+        hasReadGrant: (rootId: string) => broker.grants.hasGrant('files.read', rootId, Date.now()),
+        read: (params) => broker.exec('files.read', params, { requestedBy: 'web' }),
+        rootLabel: (rootId: string) =>
+          broker.roots.list().find((root) => root.id === rootId)?.label ?? null,
+      });
+      if (excerpt !== '') appendAttachmentContext(requestMessages, excerpt);
+    }
     const chatRequest: ChatRequest = {
       model,
-      messages: assembleRequestMessages({
-        persona: routingPersona,
-        history: priorHistory,
-        requestMessages: messages,
-      }),
+      messages: requestMessages,
       stream: true,
       ...(routingPersona !== null ? { temperature: routingPersona.character.temperature } : {}),
     };
@@ -1515,11 +1755,21 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.post('/v1/conversations', requireSession(sessions), (req: Request, res: Response) => {
     const manager = requireConversationManager(options, res);
     if (!manager) return;
-    const body = (req.body ?? {}) as { personaId?: unknown; title?: unknown };
+    const body = (req.body ?? {}) as { personaId?: unknown; title?: unknown; folderId?: unknown };
+    const folderId = optionalString(body.folderId);
+    if (folderId !== undefined) {
+      const folders = requireFolders(options, res);
+      if (!folders) return;
+      if (!folders.get(folderId)) {
+        res.status(400).json({ error: 'folder_not_found', message: 'folder not found' });
+        return;
+      }
+    }
     try {
       const summary = manager.create({
         personaId: optionalString(body.personaId),
         title: optionalString(body.title),
+        ...(folderId !== undefined ? { folderId } : {}),
       });
       res.status(201).json(summary);
     } catch (err) {
@@ -1534,7 +1784,21 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const id = String(req.params.id ?? '');
     try {
       const detail = manager.get(id);
-      res.status(200).json({ conversation: detail.summary, messages: detail.messages });
+      const extra: Record<string, unknown> = {};
+      if (options.attachments) {
+        // M11 F1: attachment metadata grouped by message + staged uploads.
+        const byMessage: Record<string, unknown[]> = {};
+        const staged: unknown[] = [];
+        for (const meta of options.attachments.list(id)) {
+          if (meta.messageId === null) staged.push(meta);
+          else {
+            (byMessage[meta.messageId] ??= []).push(meta);
+          }
+        }
+        extra.attachmentsByMessage = byMessage;
+        extra.stagedAttachments = staged;
+      }
+      res.status(200).json({ conversation: detail.summary, messages: detail.messages, ...extra });
     } catch (err) {
       if (sendConversationError(res, err)) return;
       throw err;
@@ -1552,6 +1816,358 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       throw err;
     }
     res.status(204).end();
+  });
+
+  api.put('/v1/conversations/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requireConversationManager(options, res);
+    if (!manager) return;
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as { title?: unknown; folderId?: unknown };
+    const folderId = optionalString(body.folderId);
+    if (body.folderId !== undefined && body.folderId !== null) {
+      if (folderId !== undefined) {
+        const folders = requireFolders(options, res);
+        if (!folders) return;
+        if (!folders.get(folderId)) {
+          res.status(400).json({ error: 'folder_not_found', message: 'folder not found' });
+          return;
+        }
+      }
+    }
+    const title =
+      body.title === undefined || body.title === null ? undefined : String(body.title);
+    try {
+      const summary = manager.update(id, {
+        ...(title !== undefined ? { title } : {}),
+        ...(body.folderId !== undefined ? { folderId: folderId ?? null } : {}),
+      });
+      res.status(200).json({ conversation: summary });
+    } catch (err) {
+      if (sendConversationError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // M11 F11 folder surface (PLAN-M11.md) — the conversation tree: create,
+  // list, rename/move (cycle-guarded server-side), delete (children + chats
+  // reparent to the removed folder's parent = Inbox when it was a root).
+  // Every route authed; audit carries folder ids/names only.
+  // -----------------------------------------------------------------------
+
+  api.get('/v1/folders', requireSession(sessions), (_req: Request, res: Response) => {
+    const folders = requireFolders(options, res);
+    if (!folders) return;
+    res.json({ folders: folders.list() });
+  });
+
+  api.post('/v1/folders', requireSession(sessions), (req: Request, res: Response) => {
+    const folders = requireFolders(options, res);
+    if (!folders) return;
+    const body = (req.body ?? {}) as { name?: unknown; parentId?: unknown };
+    try {
+      const created = folders.create({
+        name: typeof body.name === 'string' ? body.name : '',
+        ...(optionalString(body.parentId) !== undefined
+          ? { parentId: optionalString(body.parentId) as string }
+          : {}),
+      });
+      res.status(201).json(created);
+    } catch (err) {
+      if (sendFolderError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/folders/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const folders = requireFolders(options, res);
+    if (!folders) return;
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as { name?: unknown; parentId?: unknown };
+    try {
+      const updated = folders.update(id, {
+        ...(body.name !== undefined && body.name !== null
+          ? { name: String(body.name) }
+          : {}),
+        ...(body.parentId !== undefined ? { parentId: optionalString(body.parentId) ?? null } : {}),
+      });
+      res.status(200).json(updated);
+    } catch (err) {
+      if (sendFolderError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/folders/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const folders = requireFolders(options, res);
+    if (!folders) return;
+    const id = String(req.params.id ?? '');
+    try {
+      folders.remove(id);
+    } catch (err) {
+      if (sendFolderError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  // -----------------------------------------------------------------------
+  // M11 F1 chat-attachment surface (PLAN-M11.md). Staged uploads live on a
+  // conversation until the next /v1/chat names them (attachmentIds), then
+  // bind to the persisted user turn. Payload bytes are conversation-scoped
+  // owner data served only through /content. Every route authed.
+  // -----------------------------------------------------------------------
+
+  api.get(
+    '/v1/conversations/:id/attachments',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const attachments = requireAttachments(options, res);
+      if (!attachments) return;
+      const conversationId = String(req.params.id ?? '');
+      const manager = requireConversationManager(options, res);
+      if (!manager) return;
+      try {
+        manager.get(conversationId); // 404 when the conversation is unknown
+        res.json({ attachments: attachments.list(conversationId) });
+      } catch (err) {
+        if (sendConversationError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.post(
+    '/v1/conversations/:id/attachments',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const attachments = requireAttachments(options, res);
+      if (!attachments) return;
+      const conversationId = String(req.params.id ?? '');
+      const manager = requireConversationManager(options, res);
+      if (!manager) return;
+      try {
+        manager.get(conversationId); // 404 when the conversation is unknown
+        const body = (req.body ?? {}) as { name?: unknown; mime?: unknown; dataBase64?: unknown };
+        const meta = attachments.upload(conversationId, {
+          name: typeof body.name === 'string' ? body.name : '',
+          mime: typeof body.mime === 'string' ? body.mime : '',
+          dataBase64: typeof body.dataBase64 === 'string' ? body.dataBase64 : '',
+        });
+        res.status(201).json(meta);
+      } catch (err) {
+        if (sendConversationError(res, err)) return;
+        if (sendAttachmentError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.delete(
+    '/v1/conversations/:id/attachments/:attId',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const attachments = requireAttachments(options, res);
+      if (!attachments) return;
+      const conversationId = String(req.params.id ?? '');
+      const attId = String(req.params.attId ?? '');
+      try {
+        attachments.remove(conversationId, attId);
+      } catch (err) {
+        if (sendAttachmentError(res, err)) return;
+        throw err;
+      }
+      res.status(204).end();
+    },
+  );
+
+  api.get(
+    '/v1/conversations/:id/attachments/:attId/content',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const attachments = requireAttachments(options, res);
+      if (!attachments) return;
+      const conversationId = String(req.params.id ?? '');
+      const attId = String(req.params.attId ?? '');
+      const content = attachments.content(conversationId, attId);
+      if (content === null) {
+        res.status(404).json({ error: 'not_found', message: 'attachment content not found' });
+        return;
+      }
+      res.setHeader('Content-Type', content.mime);
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(content.name)}`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(content.data);
+    },
+  );
+
+  // -----------------------------------------------------------------------
+  // M11 F10 asset surface (PLAN-M11.md) — typed saved artifacts per
+  // conversation; POST takes an ARRAY of AssetInput for one-click "save this
+  // response"; promote turns an asset into a Note (F6 handshake). Bodies are
+  // owner content; audit rows carry ids/kinds/lengths only.
+  // -----------------------------------------------------------------------
+
+  api.get(
+    '/v1/conversations/:id/assets',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const assets = requireAssets(options, res);
+      if (!assets) return;
+      const conversationId = String(req.params.id ?? '');
+      const manager = requireConversationManager(options, res);
+      if (!manager) return;
+      try {
+        manager.get(conversationId); // 404 when the conversation is unknown
+        res.json({ assets: assets.list(conversationId) });
+      } catch (err) {
+        if (sendConversationError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.post(
+    '/v1/conversations/:id/assets',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const assets = requireAssets(options, res);
+      if (!assets) return;
+      const conversationId = String(req.params.id ?? '');
+      const manager = requireConversationManager(options, res);
+      if (!manager) return;
+      try {
+        manager.get(conversationId); // 404 when the conversation is unknown
+        const raw = Array.isArray(req.body) ? req.body : (req.body as { items?: unknown })?.items;
+        const inputs = Array.isArray(raw) ? raw : [];
+        if (inputs.length === 0) {
+          res.status(400).json({ error: 'invalid_input', message: 'no assets to save' });
+          return;
+        }
+        const created = inputs.map((entry) =>
+          assets.create(conversationId, entry as Parameters<AssetManager['create']>[1]),
+        );
+        res.status(201).json({ assets: created });
+      } catch (err) {
+        if (sendConversationError(res, err)) return;
+        if (sendAssetError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.delete(
+    '/v1/conversations/:id/assets/:assetId',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const assets = requireAssets(options, res);
+      if (!assets) return;
+      const conversationId = String(req.params.id ?? '');
+      const assetId = String(req.params.assetId ?? '');
+      try {
+        assets.remove(conversationId, assetId);
+      } catch (err) {
+        if (sendAssetError(res, err)) return;
+        throw err;
+      }
+      res.status(204).end();
+    },
+  );
+
+  api.post(
+    '/v1/conversations/:id/assets/:assetId/promote',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const assets = requireAssets(options, res);
+      if (!assets) return;
+      const conversationId = String(req.params.id ?? '');
+      const assetId = String(req.params.assetId ?? '');
+      try {
+        const result = assets.promote(conversationId, assetId);
+        res.status(200).json({ noteId: result.noteId });
+      } catch (err) {
+        if (sendAssetError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------------
+  // M11 F2 MCP surface (PLAN-M11.md — slice 2). Stdio server config
+  // (default-deny OFF), tool catalog listing, and USER-initiated tool calls
+  // (the paired session is the user). Persona auto-calls arrive with the
+  // broker-integration slice. Every route authed; audit rows are
+  // mcp.* with ids/tool names only — never args or results.
+  // -----------------------------------------------------------------------
+
+  api.get('/v1/mcp/servers', requireSession(sessions), (_req: Request, res: Response) => {
+    const mcp = requireMcp(options, res);
+    if (!mcp) return;
+    res.json({ servers: mcp.list() });
+  });
+
+  api.post('/v1/mcp/servers', requireSession(sessions), (req: Request, res: Response) => {
+    const mcp = requireMcp(options, res);
+    if (!mcp) return;
+    try {
+      const server = mcp.create((req.body ?? {}) as McpServerInput);
+      res.status(201).json(server);
+    } catch (err) {
+      if (sendMcpError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.put('/v1/mcp/servers/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const mcp = requireMcp(options, res);
+    if (!mcp) return;
+    const id = String(req.params.id ?? '');
+    try {
+      const server = mcp.update(id, (req.body ?? {}) as McpServerUpdate);
+      res.status(200).json(server);
+    } catch (err) {
+      if (sendMcpError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.delete('/v1/mcp/servers/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const mcp = requireMcp(options, res);
+    if (!mcp) return;
+    const id = String(req.params.id ?? '');
+    try {
+      mcp.remove(id);
+    } catch (err) {
+      if (sendMcpError(res, err)) return;
+      throw err;
+    }
+    res.status(204).end();
+  });
+
+  api.get('/v1/mcp/servers/:id/tools', requireSession(sessions), (req: Request, res: Response) => {
+    const mcp = requireMcp(options, res);
+    if (!mcp) return;
+    const id = String(req.params.id ?? '');
+    void mcp
+      .listTools(id)
+      .then((tools) => res.status(200).json({ tools }))
+      .catch((err) => {
+        if (sendMcpError(res, err)) return;
+        res.status(500).json({ error: 'internal', message: 'could not list tools' });
+      });
+  });
+
+  api.post('/v1/mcp/servers/:id/call', requireSession(sessions), (req: Request, res: Response) => {
+    const mcp = requireMcp(options, res);
+    if (!mcp) return;
+    const id = String(req.params.id ?? '');
+    void mcp
+      .call(id, (req.body ?? {}) as McpCallInput)
+      .then((result) => res.status(200).json(result))
+      .catch((err) => {
+        if (sendMcpError(res, err)) return;
+        res.status(500).json({ error: 'internal', message: 'tool call failed' });
+      });
   });
 
   // -------------------------------------------------------------------------
@@ -2052,6 +2668,74 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // params/results with content never reach audit (broker summarizes).
   // -------------------------------------------------------------------------
 
+  // -----------------------------------------------------------------------
+  // M11 F1 file-reference autocomplete (PLAN-M11.md). Lists files inside
+  // roots the user has GRANTED files.read on only — other roots never leak
+  // filenames. Shallow sync walk (depth <= 5), dot/trash/node_modules
+  // skipped. The client turns a pick into a partner-file:// link.
+  // -----------------------------------------------------------------------
+
+  api.get('/v1/files/refs', requireSession(sessions), (req: Request, res: Response) => {
+    const broker = options.broker;
+    if (!broker) {
+      notConfigured(res, 'tool broker');
+      return;
+    }
+    const query = String(req.query.q ?? '').trim().toLowerCase();
+    const rawLimit = Number(req.query.limit ?? 24);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(Math.max(Math.round(rawLimit), 1), 50)
+      : 24;
+    const nowAt = Date.now();
+    const refs: Array<{
+      rootId: string;
+      rootLabel: string;
+      path: string;
+      kind: string;
+      size: number | null;
+    }> = [];
+    const visited = new Set<string>();
+    for (const root of broker.roots.list()) {
+      if (refs.length >= limit) break;
+      if (!broker.grants.hasGrant('files.read', root.id, nowAt)) continue;
+      const walk = (absolute: string, rel: string, depth: number): void => {
+        if (refs.length >= limit || depth > 5) return;
+        let entries;
+        try {
+          entries = readdirSync(absolute, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        for (const entry of entries) {
+          if (refs.length >= limit) return;
+          const name = entry.name;
+          if (name.startsWith('.') || name === 'node_modules') continue;
+          const childAbs = join(absolute, name);
+          const childRel = rel === '' ? name : `${rel}/${name}`;
+          if (entry.isDirectory()) {
+            walk(childAbs, childRel, depth + 1);
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          if (query !== '' && !name.toLowerCase().includes(query)) continue;
+          const key = childAbs;
+          if (visited.has(key)) continue;
+          visited.add(key);
+          let size: number | null = null;
+          try {
+            size = statSync(childAbs).size;
+          } catch {
+            size = null;
+          }
+          refs.push({ rootId: root.id, rootLabel: root.label, path: childRel, kind: 'file', size });
+        }
+      };
+      walk(root.path, '', 0);
+    }
+    res.json({ refs });
+  });
+
   api.get('/v1/roots', requireSession(sessions), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
@@ -2439,6 +3123,18 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       typeof body.personaId === 'string' && body.personaId.trim() !== ''
         ? body.personaId.trim()
         : undefined;
+    // M11 F3: a persona-level SKILL BAN refuses invoke server-side (the ban
+    // is persona policy, not a suggestion the model can talk its way past).
+    if (personaId !== undefined && options.personaManager) {
+      const persona = options.personaManager.get(personaId);
+      if (persona && (persona.policy?.skills?.banned ?? []).includes(id)) {
+        res.status(423).json({
+          error: 'skill_banned',
+          message: 'this persona is not allowed to use that skill',
+        });
+        return;
+      }
+    }
     const result = await runner.invoke(
       detail,
       body.args,

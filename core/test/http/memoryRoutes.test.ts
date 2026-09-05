@@ -487,10 +487,11 @@ describe('chat-time tailoring over the wire', () => {
         content:
           '<Partner profile you should honor>\n- preference: always start with a tldr (evidence: in 6 of 10 asks)',
       });
-      expect(sent?.messages[1]).toEqual({
-        role: 'system',
-        content: researcher?.character.systemPrompt,
-      });
+      expect(sent?.messages[1]?.role).toBe('system');
+      const identityContent = String(sent?.messages[1]?.content ?? '');
+      expect(identityContent).toContain(researcher?.character.systemPrompt ?? '');
+      // M11 C3 structured guidance rides the persona identity message.
+      expect(identityContent).toContain(':::partner.choice');
       expect(sent?.messages[2]).toEqual({ role: 'user', content: 'help me write' });
 
       // The prelude is NOT persisted: only user + assistant turns exist.
@@ -531,10 +532,9 @@ describe('chat-time tailoring over the wire', () => {
       const researcher = h.personas.get('p-researcher');
       // No prelude (no confirmed GLOBAL entries): the persona identity
       // system prompt leads, then the client's own user message.
-      expect(sent?.messages[0]).toEqual({
-        role: 'system',
-        content: researcher?.character.systemPrompt,
-      });
+      expect(sent?.messages[0]?.role).toBe('system');
+      expect(String(sent?.messages[0]?.content)).toContain(researcher?.character.systemPrompt ?? '');
+      expect(String(sent?.messages[0]?.content)).toContain(':::partner.choice');
       expect(sent?.messages[1]).toEqual({ role: 'user', content: 'hi' });
     } finally {
       h.close();

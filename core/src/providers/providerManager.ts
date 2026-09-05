@@ -9,7 +9,8 @@
  * secret lives exclusively in the keychain.
  */
 import { randomUUID } from 'node:crypto';
-import type { Keychain, ProviderHealth, ProviderInput, ProviderSource, ProviderSummary } from '@partner/shared';
+import type { Keychain, ProviderHealth, ProviderInput, ProviderPurpose, ProviderSource, ProviderSummary } from '@partner/shared';
+import { isProviderPurpose } from '@partner/shared';
 import { KEYCHAIN_SERVICE } from '../keychain/keychain.js';
 import type { AuditService } from '../services/redaction.js';
 import type { ProviderRow, ProviderStore } from '../stores/types.js';
@@ -59,11 +60,13 @@ function parseHealth(text: string | null): ProviderHealth {
 
 /** Row -> wire summary. Never exposes keyRef or any key material. */
 export function toSummary(row: ProviderRow): ProviderSummary {
+  const purpose: ProviderPurpose = isProviderPurpose(row.purpose) ? row.purpose : 'general';
   return {
     id: row.id,
     name: row.name,
     kind: 'openai-compatible',
     source: row.source === 'llm-self-service' ? 'llm-self-service' : 'manual',
+    purpose,
     endpoint: row.endpoint,
     defaultModels: parseJsonArray(row.defaultModels),
     enabled: row.enabled === 1,
@@ -175,6 +178,7 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
     }
 
     const enabled = (body.enabled ?? true) === true;
+    const purpose: ProviderPurpose = isProviderPurpose(body.purpose) ? body.purpose : 'general';
     const id = randomUUID();
     const at = now();
     const row: ProviderRow = {
@@ -182,6 +186,7 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
       name,
       kind: 'openai-compatible',
       source,
+      purpose,
       endpoint,
       defaultModels: defaultModels.length > 0 ? JSON.stringify(defaultModels) : null,
       enabled: enabled ? 1 : 0,
@@ -196,6 +201,7 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
       name,
       kind: 'openai-compatible',
       source,
+      purpose,
       enabled,
     });
     return toSummary(row);

@@ -352,6 +352,36 @@ describe('provider CRUD routes', () => {
     }
   });
 
+  it('defaults purpose to general; an explicit purpose round-trips (M11 F4)', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const created = await request(h.app)
+        .post('/v1/providers')
+        .set(authed(token))
+        .send({ name: 'plain', endpoint: 'https://api.ne1.dev/v1' });
+      expect(created.status).toBe(201);
+      expect(created.body.purpose).toBe('general');
+
+      const coding = await request(h.app)
+        .post('/v1/providers')
+        .set(authed(token))
+        .send({ name: 'coder', endpoint: 'https://api.ne1.dev/v1', purpose: 'coding' });
+      expect(coding.status).toBe(201);
+      expect(coding.body.purpose).toBe('coding');
+
+      const list = await request(h.app).get('/v1/providers').set(authed(token));
+      expect(list.status).toBe(200);
+      const purposes = (
+        (list.body as { providers: Array<{ name: string; purpose: string }> }).providers ?? []
+      ).map((p) => [p.name, p.purpose]);
+      expect(purposes).toContainEqual(['plain', 'general']);
+      expect(purposes).toContainEqual(['coder', 'coding']);
+    } finally {
+      h.close();
+    }
+  });
+
   it('rejects invalid kind (400) and bad endpoint (400)', async () => {
     const h = demoHarness();
     try {

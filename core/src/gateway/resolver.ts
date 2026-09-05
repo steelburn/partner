@@ -21,8 +21,42 @@
  * enabled provider. `provider: null` + `model: ''` is the typed "nothing
  * configured" result.
  */
-import type { Persona, ProviderSummary, TaskClass } from '@partner/shared';
+import type { Persona, ProviderPurpose, ProviderSummary, TaskClass } from '@partner/shared';
 import type { ProviderManager } from '../providers/providerManager.js';
+
+/**
+ * M11 F4 (PLAN-M11.md): which purposes serve a task class, best first.
+ * 'general' is the universal fallback and therefore never needs listing.
+ */
+const TASK_PURPOSE_ORDER: Record<TaskClass, ProviderPurpose[]> = {
+  chat: ['general'],
+  cheap: ['cheap', 'general'],
+  deep: ['deep', 'general'],
+  coding: ['coding', 'general'],
+  vision: ['vision', 'general'],
+};
+
+/** Research-style flows (F2 search/playbooks) prefer a 'research' provider. */
+export function purposeOrderForTaskClass(taskClass: TaskClass): ProviderPurpose[] {
+  return TASK_PURPOSE_ORDER[taskClass] ?? ['general'];
+}
+
+/**
+ * Best enabled provider for a preference list: first provider whose purpose
+ * matches in order, else the first 'general', else the first enabled
+ * provider (creation order preserved — same as the legacy resolver).
+ */
+export function pickProviderByPurpose(
+  enabled: ProviderSummary[],
+  preferences: ProviderPurpose[],
+): ProviderSummary | null {
+  for (const purpose of preferences) {
+    const found = enabled.find((p) => p.purpose === purpose);
+    if (found) return found;
+  }
+  const general = enabled.find((p) => p.purpose === 'general');
+  return general ?? enabled[0] ?? null;
+}
 
 export function resolveChatProvider(
   manager: ProviderManager,
@@ -62,9 +96,10 @@ export function resolveChatModel(options: ResolveChatModelOptions): ResolvedChat
   const firstEnabled: ProviderSummary | null = enabled[0] ?? null;
   const pinnedId = persona?.model.providerId;
   const pinned = pinnedId ? enabled.find((p) => p.id === pinnedId) ?? null : null;
-  // A persona model rides the persona's pinned provider when usable, else the
-  // first enabled provider.
-  const personaProvider = pinned ?? firstEnabled;
+  // Purpose-aware provider for this task class (F4): an explicit persona pin
+  // wins; otherwise prefer the provider whose purpose fits the task.
+  const personaProvider =
+    pinned ?? pickProviderByPurpose(enabled, purposeOrderForTaskClass(taskClass));
 
   if (requestedModel !== undefined) {
     // An explicit model always wins — even with no usable provider, the
@@ -86,9 +121,13 @@ export function resolveChatModel(options: ResolveChatModelOptions): ResolvedChat
     }
   }
 
-  if (firstEnabled !== null) {
-    const defaultModel = firstEnabled.defaultModels[0];
-    return { provider: firstEnabled, model: defaultModel ?? '' };
+  if (enabled.length > 0) {
+    // No persona mapping: serve the task class from the best-purpose
+    // provider's default model (F4), creation order when purposes tie.
+    const purposeProvider = pickProviderByPurpose(enabled, purposeOrderForTaskClass(taskClass));
+    const provider = purposeProvider ?? firstEnabled;
+    const defaultModel = provider?.defaultModels[0] ?? '';
+    return { provider, model: defaultModel };
   }
 
   // Typed "nothing configured": no enabled provider to route to at all.

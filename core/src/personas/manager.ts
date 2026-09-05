@@ -23,6 +23,7 @@ import type {
   PersonaIndependence,
   PersonaMemoryFlags,
   PersonaModelRouting,
+  PersonaPolicy,
   TaskClass,
   TaskClassMap,
 } from '@partner/shared';
@@ -63,6 +64,8 @@ export interface PersonaDraft {
   model?: Partial<PersonaModelRouting>;
   independence?: Partial<PersonaIndependence>;
   memory?: Partial<PersonaMemoryFlags>;
+  /** M11 F3 capability policy (skills/tools defaults + bans). */
+  policy?: PersonaPolicy;
   isDefault?: boolean;
 }
 
@@ -240,6 +243,7 @@ function toRowPersona(row: PersonaRow): Persona {
   };
   if (requireHumanFor.length > 0) independence.requireHumanFor = requireHumanFor;
   if (autoScopes.length > 0) independence.autoScopes = autoScopes;
+  const policy = parsePolicyJson(row.policy);
 
   const model: PersonaModelRouting = { taskClasses: toTaskClasses(row) };
   if (row.fallbackModel !== null) model.fallback = row.fallbackModel;
@@ -257,6 +261,7 @@ function toRowPersona(row: PersonaRow): Persona {
     model,
     independence,
     memory: toMemoryFlags(row),
+    ...(policy !== undefined ? { policy } : {}),
     isDefault: row.isDefault === 1,
     paused: row.paused === 1,
     createdAt: row.createdAt,
@@ -360,6 +365,53 @@ function normalizeMemory(raw: Partial<PersonaMemoryFlags> | undefined): PersonaM
   };
 }
 
+/** Normalize an optional F3 policy: valid arrays only, trimmed, deduped. */
+function normalizePolicy(raw: unknown): PersonaPolicy | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const body = raw as { skills?: unknown; tools?: unknown };
+  const policy: PersonaPolicy = {};
+  const strings = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const cleaned = value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+    return [...new Set(cleaned)].slice(0, 200);
+  };
+  const skills = body.skills;
+  if (skills !== undefined && skills !== null && typeof skills === 'object') {
+    const defaults = strings((skills as { default?: unknown }).default);
+    const banned = strings((skills as { banned?: unknown }).banned);
+    if (defaults !== undefined || banned !== undefined) {
+      policy.skills = {};
+      if (defaults !== undefined && defaults.length > 0) policy.skills.default = defaults;
+      if (banned !== undefined && banned.length > 0) policy.skills.banned = banned;
+    }
+  }
+  const tools = body.tools;
+  if (tools !== undefined && tools !== null && typeof tools === 'object') {
+    const allowed = strings((tools as { allowed?: unknown }).allowed);
+    const banned = strings((tools as { banned?: unknown }).banned);
+    if (allowed !== undefined || banned !== undefined) {
+      policy.tools = {};
+      if (allowed !== undefined && allowed.length > 0) policy.tools.allowed = allowed;
+      if (banned !== undefined && banned.length > 0) policy.tools.banned = banned;
+    }
+  }
+  return Object.keys(policy).length === 0 ? undefined : policy;
+}
+
+/** Parse the stored policy JSON column back to a wire policy. */
+function parsePolicyJson(json: string | null): PersonaPolicy | undefined {
+  if (json === null || json === '') return undefined;
+  try {
+    return normalizePolicy(JSON.parse(json));
+  } catch {
+    return undefined;
+  }
+}
+
 function requireName(raw: unknown): string {
   const name = typeof raw === 'string' ? raw.trim() : '';
   if (name === '') throw personaError('invalid_input', 'name is required and must be non-empty');
@@ -394,6 +446,10 @@ function personaToRow(persona: Persona): PersonaRow {
         ? JSON.stringify(persona.independence.autoScopes)
         : null,
     memoryFlags: JSON.stringify(persona.memory),
+    policy:
+      persona.policy !== undefined && Object.keys(persona.policy).length > 0
+        ? JSON.stringify(persona.policy)
+        : null,
     isDefault: persona.isDefault ? 1 : 0,
     paused: persona.paused ? 1 : 0,
     createdAt: persona.createdAt,
@@ -446,6 +502,7 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     if (body.tagline !== undefined) persona.tagline = body.tagline;
     if (body.avatar !== undefined) persona.avatar = body.avatar;
     if (body.colorTheme !== undefined) persona.colorTheme = body.colorTheme;
+    if (body.policy !== undefined) persona.policy = normalizePolicy(body.policy);
     store.insert(personaToRow(persona));
     auditPersona('persona.create', persona);
     return persona;
@@ -497,6 +554,10 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     }
     if (body.memory !== undefined) {
       current.memory = normalizeMemory({ ...current.memory, ...body.memory });
+    }
+    if (body.policy !== undefined) {
+      current.policy = normalizePolicy(body.policy);
+      if (current.policy === undefined) delete current.policy;
     }
     if (body.isDefault !== undefined) {
       if (body.isDefault) {
@@ -550,6 +611,10 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
         ? JSON.stringify(persona.independence.autoScopes)
         : null;
     patch.memoryFlags = JSON.stringify(persona.memory);
+    patch.policy =
+      persona.policy !== undefined && Object.keys(persona.policy).length > 0
+        ? JSON.stringify(persona.policy)
+        : null;
     patch.isDefault = persona.isDefault ? 1 : 0;
     patch.paused = persona.paused ? 1 : 0;
     return patch;

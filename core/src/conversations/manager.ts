@@ -78,6 +78,15 @@ export interface ConversationManager {
   get(id: string): ConversationDetail;
   /** Re-point a conversation at a persona (bumps updated_at). Unknown -> not_found. */
   bindPersona(conversationId: string, personaId: string): void;
+  /**
+   * M11 F11: rename and/or move a conversation between folders. folderId is
+   * stored as-is (null = Inbox); existence is the caller's job (routes
+   * validate against the folder manager). Unknown -> not_found.
+   */
+  update(
+    id: string,
+    patch: { title?: string; folderId?: string | null },
+  ): ConversationSummary;
   /** Delete a conversation AND its messages. Unknown -> not_found. */
   remove(id: string): void;
 }
@@ -87,6 +96,7 @@ function toSummary(row: ConversationRow, messageCount: number): ConversationSumm
     id: row.id,
     personaId: row.personaId,
     title: row.title,
+    folderId: row.folderId,
     messageCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -139,9 +149,20 @@ export function createConversationManager(
       body.title !== undefined && body.title !== null && body.title !== ''
         ? String(body.title).slice(0, 120)
         : null;
+    const folderId =
+      body.folderId !== undefined && body.folderId !== null && body.folderId !== ''
+        ? body.folderId
+        : null;
     const at = now();
     const id = randomUUID();
-    const row: ConversationRow = { id, personaId, title, createdAt: at, updatedAt: at };
+    const row: ConversationRow = {
+      id,
+      personaId,
+      title,
+      folderId,
+      createdAt: at,
+      updatedAt: at,
+    };
     stores.conversations.insert(row);
     audit.log('web', 'conversation.create', id, {
       personaId,
@@ -181,6 +202,7 @@ export function createConversationManager(
       conversationId,
       role,
       personaId,
+      contentType: 'text',
       content: body.content,
       model,
       latencyMs,
@@ -234,5 +256,34 @@ export function createConversationManager(
     stores.conversations.update(conversationId, { personaId, updatedAt: now() });
   }
 
-  return { create, append, list, get, bindPersona, remove };
+  /** M11 F11 rename/move. folderId existence is the route's responsibility. */
+  function update(
+    id: string,
+    patch: { title?: string; folderId?: string | null },
+  ): ConversationSummary {
+    const row = stores.conversations.findById(id);
+    if (!row) throw conversationError('not_found', 'conversation not found');
+    const body = (patch ?? {}) as { title?: string; folderId?: string | null };
+    const storePatch: { title?: string | null; folderId?: string | null } = {};
+    if (body.title !== undefined) {
+      storePatch.title =
+        body.title !== null && body.title !== '' ? String(body.title).slice(0, 120) : null;
+    }
+    if (body.folderId !== undefined) {
+      storePatch.folderId =
+        body.folderId === null || body.folderId === '' ? null : body.folderId;
+    }
+    if (Object.keys(storePatch).length === 0) {
+      return toSummary(row, stores.messages.countByConversation(id));
+    }
+    stores.conversations.update(id, { ...storePatch, updatedAt: now() });
+    audit.log('web', 'conversation.update', id, {
+      titleChanged: storePatch.title !== undefined,
+      folderId: storePatch.folderId === undefined ? undefined : (storePatch.folderId ?? null),
+    });
+    const updated = stores.conversations.findById(id) as ConversationRow;
+    return toSummary(updated, stores.messages.countByConversation(id));
+  }
+
+  return { create, append, list, get, bindPersona, update, remove };
 }

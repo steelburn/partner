@@ -69,12 +69,25 @@ import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
 import type { ConversationManager } from '../src/conversations/manager.js';
+import { createFolderManager } from '../src/folders/index.js';
+import type { FolderManager } from '../src/folders/index.js';
+import { createAttachmentManager } from '../src/attachments/index.js';
+import type { AttachmentManager } from '../src/attachments/index.js';
+import { createAssetManager } from '../src/assets/index.js';
+import type { AssetManager } from '../src/assets/index.js';
+import { createMcpManager } from '../src/mcp/index.js';
+import type { McpManager } from '../src/mcp/index.js';
 import { createMemoryBundle, createSummarizeResolver } from '../src/memory/index.js';
 import type { MemoryBundle } from '../src/memory/index.js';
 import {
   createAuditStore,
   createConversationStore,
   createDeployProfileStore,
+  createFolderStore,
+  createAttachmentStore,
+  createAssetStore,
+  createChatBlobStore,
+  createMcpServerStore,
   createEpisodeStore,
   createFileProposalStore,
   createGrantStore,
@@ -106,6 +119,7 @@ import type {
   DeployProfileStore,
   EpisodeStore,
   FileProposalStore,
+  FolderStore,
   GrantStore,
   MemoryFtsStore,
   MessageStore,
@@ -229,6 +243,15 @@ export interface Harness {
   conversationStore: ConversationStore;
   messageStore: MessageStore;
   conversations: ConversationManager;
+  /** M11 F11 folder manager + store over the SAME db (folders for chats). */
+  folderStore: FolderStore;
+  folders?: FolderManager;
+  /** M11 F1 chat-attachment manager (uploads + content) over the SAME db. */
+  attachments?: AttachmentManager;
+  /** M11 F10 asset manager (saved artifacts + note promotion). */
+  assets?: AssetManager;
+  /** M11 F2 MCP manager (stdio servers). */
+  mcp?: McpManager;
   /** M4 memory stores + managers over the SAME db (default on). */
   profileStore: ProfileEntryStore;
   episodeStore: EpisodeStore;
@@ -336,6 +359,21 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     audit,
   });
 
+  // M11 F11: folder manager over the same db (default on with personas). The
+  // conversations table is the edge owner, so the manager gets the
+  // conversation manager for counts + delete reassignment.
+  const folderStore = createFolderStore(db);
+  let folders: FolderManager | undefined;
+  let attachments: AttachmentManager | undefined;
+  if (personasEnabled) {
+    folders = createFolderManager({ store: folderStore, conversations, audit });
+    attachments = createAttachmentManager({
+      blobs: createChatBlobStore(db),
+      attachments: createAttachmentStore(db),
+      audit,
+    });
+  }
+
   // M4: memory stores + managers over the same db (default on). The resolver
   // mirrors createCore (persona -> provider manager) but the demo harness
   // registers no provider, so non-demo summarize falls back to the
@@ -385,6 +423,22 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       audit,
     });
   }
+
+  // M11 F10: asset manager over the same db (default on with notes).
+  let assets: AssetManager | undefined;
+  if (notesPlansEnabled) {
+    assets = createAssetManager({
+      store: createAssetStore(db),
+      notes: notes as NoteManager,
+      audit,
+    });
+  }
+
+  // M11 F2: MCP manager over the same db (default on with personas).
+  const mcp = createMcpManager({
+    store: createMcpServerStore(db),
+    audit,
+  });
 
   // M6: theme manager + stores over the same db (default on). Preset rows
   // seed only when the themes table is empty; settings hold the global
@@ -501,6 +555,10 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     broker,
     personaManager: personasEnabled ? personas : undefined,
     conversationManager: personasEnabled ? conversations : undefined,
+    folders: folders,
+    attachments: attachments,
+    assets: assets,
+    mcp: mcp,
     ...(memoryEnabled ? { memory } : {}),
     ...(notesPlansEnabled ? { notes, plans } : {}),
     ...(themesEnabled ? { themes } : {}),
@@ -538,6 +596,11 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     conversationStore,
     messageStore,
     conversations,
+    folderStore,
+    folders,
+    attachments,
+    assets,
+    mcp,
     profileStore,
     episodeStore,
     memoryFtsStore,

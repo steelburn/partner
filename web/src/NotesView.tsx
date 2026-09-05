@@ -12,6 +12,8 @@ export interface NotesViewProps {
   onUnpair: () => void;
   /** True while this view is the visible one. */
   active?: boolean;
+  /** M11 F6: increments open the quick-capture composer (global action). */
+  captureSignal?: number;
 }
 
 /**
@@ -22,7 +24,7 @@ export interface NotesViewProps {
  * planner session survives switching between them; only the visible segment
  * loads data.
  */
-export default function NotesView({ personas, onUnpair, active }: NotesViewProps) {
+export default function NotesView({ personas, onUnpair, active, captureSignal }: NotesViewProps) {
   const [tab, setTab] = useState<NotesTab>('notes');
   const notesActive = active === true && tab === 'notes';
   const plansActive = active === true && tab === 'plans';
@@ -57,7 +59,7 @@ export default function NotesView({ personas, onUnpair, active }: NotesViewProps
         </div>
 
         <div className={tab === 'notes' ? 'notes-seg notes-seg-active' : 'notes-seg'}>
-          <NotesSegment active={notesActive} onUnpair={onUnpair} />
+          <NotesSegment active={notesActive} onUnpair={onUnpair} captureSignal={captureSignal} />
         </div>
         <div className={tab === 'plans' ? 'notes-seg notes-seg-active' : 'notes-seg'}>
           <PlansSegment active={plansActive} personas={personas} onUnpair={onUnpair} />

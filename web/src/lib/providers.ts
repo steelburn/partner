@@ -5,13 +5,27 @@
  * formatting lives here.
  */
 
-import type { ProviderHealth, ProviderSource } from '@partner/shared';
+import type { ProviderHealth, ProviderPurpose, ProviderSource } from '@partner/shared';
 
 /** Display labels for the provider `source` wire field. */
 export const SOURCE_LABELS: Record<ProviderSource, string> = {
   manual: 'Manual',
   'llm-self-service': 'llm-self-service',
 };
+
+/** One-line purpose tag for a provider (M11 F4). */
+const PURPOSE_LABELS: Record<ProviderPurpose, string> = {
+  general: 'General',
+  cheap: 'Cheap',
+  deep: 'Deep',
+  coding: 'Coding',
+  vision: 'Vision',
+  research: 'Research',
+};
+
+export function purposeLabel(purpose: ProviderPurpose): string {
+  return PURPOSE_LABELS[purpose] ?? 'General';
+}
 
 export function sourceLabel(source: ProviderSource): string {
   return SOURCE_LABELS[source];

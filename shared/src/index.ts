@@ -17,3 +17,8 @@ export * from './theming.js';
 export * from './browser.js';
 export * from './skills.js';
 export * from './playbooks.js';
+export * from './folders.js';
+export * from './structured.js';
+export * from './attachments.js';
+export * from './assets.js';
+export * from './mcp.js';

@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import type { ChatEvent, ConversationMessage } from '@partner/shared';
+import type { AttachmentMeta, ChatEvent, ConversationMessage } from '@partner/shared';
 import { ApiRequestError, streamChat, type StreamDoneMeta } from './lib/api.js';
 import { getConversation } from './lib/conversations.js';
+import {
+  deleteAttachment,
+  fetchAttachmentContent,
+  fileToBase64,
+  listAttachments,
+  uploadAttachment,
+} from './lib/attachments.js';
 import { readStoredToken } from './lib/token.js';
+import { PartnerMarkdown } from './Markdown.js';
+import { CodePreview } from './CodePreview.js';
+import { AssetsDrawer, SaveAssetsDialog } from './AssetsPanel.js';
+import { extractCandidates, type AssetCandidate } from './lib/assets-extract.js';
+import { partnerFileLink, searchFileRefs, type FileRefHit } from './lib/fileRefs.js';
 
 export interface ChatStripProps {
   /** Forget the session and return to the pairing gate (auth failure). */
@@ -81,6 +93,74 @@ export default function ChatStrip({
   const [reloadToken, setReloadToken] = useState(0);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /** M11 F1 staged uploads awaiting the next turn + per-message chips. */
+  const [staged, setStaged] = useState<AttachmentMeta[]>([]);
+  const [msgAttachments, setMsgAttachments] = useState<Record<string, AttachmentMeta[]>>({});
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  /** M11 F12 code preview state (attachment source fetched on demand). */
+  const [preview, setPreview] = useState<{ title: string; source: string } | null>(null);
+  /** M11 F10 assets: drawer visibility + save-from-message state. */
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [saveTarget, setSaveTarget] = useState<{ id: string; text: string } | null>(null);
+  const [saveCandidates, setSaveCandidates] = useState<AssetCandidate[]>([]);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [assetsFlash, setAssetsFlash] = useState<string | null>(null);
+  /** M11 F1 composer @-mention state (file refs inside granted roots). */
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const [mention, setMention] = useState<{
+    start: number;
+    query: string;
+    items: FileRefHit[];
+    index: number;
+    loading: boolean;
+  } | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const [unseen, setUnseen] = useState(0);
+  const seenLenRef = useRef(0);
+
+  // M11 F8: follow the latest text. While the user is at the bottom (or has
+  // never scrolled up), every change pins the transcript to the newest line;
+  // scrolling up releases the pin and counts messages that arrive while away.
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    seenLenRef.current = rows.length;
+    if (!atBottom) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [rows, atBottom, reloadToken]);
+
+  useEffect(() => {
+    if (atBottom) {
+      setUnseen(0);
+      return;
+    }
+    if (rows.length > seenLenRef.current) {
+      setUnseen((u) => u + (rows.length - seenLenRef.current));
+    }
+  }, [rows, atBottom]);
+
+  const handleTranscriptScroll = (): void => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    setAtBottom(near);
+  };
+
+  const jumpToLatest = (): void => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setAtBottom(true);
+    setUnseen(0);
+  };
 
   useEffect(() => {
     return () => abortRef.current?.abort();
@@ -128,6 +208,134 @@ export default function ChatStrip({
     void loadHistory();
   }, [conversationId, loadHistory, reloadToken]);
 
+  // -----------------------------------------------------------------------
+  // M11 F1 attachments (staged uploads + per-message chips)
+  // -----------------------------------------------------------------------
+
+  useEffect(() => {
+    if (conversationId === null) {
+      setStaged([]);
+      setMsgAttachments({});
+      setAttachError(null);
+      return;
+    }
+    const token = readStoredToken();
+    if (!token) return;
+    let cancelled = false;
+    listAttachments(token, conversationId)
+      .then((all) => {
+        if (cancelled) return;
+        const stagedList: AttachmentMeta[] = [];
+        const byMessage: Record<string, AttachmentMeta[]> = {};
+        for (const meta of all) {
+          if (meta.messageId === null) stagedList.push(meta);
+          else (byMessage[meta.messageId] ??= []).push(meta);
+        }
+        setStaged(stagedList);
+        setMsgAttachments(byMessage);
+        setAttachError(null);
+      })
+      .catch((cause) => {
+        if (cancelled || isSessionLost(cause)) return;
+        setAttachError(cause instanceof Error ? cause.message : 'Could not load attachments.');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, reloadToken]);
+
+  const handleFiles = async (files: FileList | null): Promise<void> => {
+    if (!files || files.length === 0 || conversationId === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      onUnpair();
+      return;
+    }
+    setAttaching(true);
+    setAttachError(null);
+    try {
+      for (const file of Array.from(files)) {
+        const dataBase64 = await fileToBase64(file);
+        const meta = await uploadAttachment(token, conversationId, {
+          name: file.name,
+          mime: file.type === '' ? 'application/octet-stream' : file.type,
+          dataBase64,
+        });
+        setStaged((prev) => [...prev, meta]);
+      }
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setAttachError(
+        cause instanceof Error ? cause.message : 'Could not attach the file — try a text, image, PDF, HTML or CSS file.',
+      );
+    } finally {
+      setAttaching(false);
+      if (fileInputRef.current !== null) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveStaged = async (id: string): Promise<void> => {
+    if (conversationId === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      onUnpair();
+      return;
+    }
+    try {
+      await deleteAttachment(token, conversationId, id);
+      setStaged((prev) => prev.filter((meta) => meta.id !== id));
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setAttachError(cause instanceof Error ? cause.message : 'Could not remove the attachment.');
+    }
+  };
+
+  /** F10: copy an assistant response as markdown. */
+  const copyText = async (key: string, text: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      window.setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1200);
+    } catch {
+      setAssetsFlash('Clipboard unavailable — select the text and copy it manually.');
+    }
+  };
+
+  /** F10: open the save dialog with this response's candidates. */
+  const openSave = (id: string, text: string): void => {
+    setSaveTarget({ id, text });
+    setSaveCandidates(extractCandidates(text));
+    setAssetsFlash(null);
+  };
+
+  /** F12: preview an HTML/CSS attachment inside the sandboxed viewer. */
+  const openPreview = async (meta: AttachmentMeta): Promise<void> => {
+    if (conversationId === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      onUnpair();
+      return;
+    }
+    try {
+      const { bytes } = await fetchAttachmentContent(token, conversationId, meta.id);
+      const source = new TextDecoder().decode(bytes);
+      setPreview({ title: meta.name, source });
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setAttachError(cause instanceof Error ? cause.message : 'Could not load the file for preview.');
+    }
+  };
+
   const canSend =
     !streaming && draft.trim().length > 0 && !personaPaused && historyLoading === false;
 
@@ -152,9 +360,8 @@ export default function ChatStrip({
     });
   };
 
-  const send = async (): Promise<void> => {
-    const content = draft.trim();
-    if (content.length === 0 || streaming || personaPaused) return;
+  const runTurn = async (content: string, attachmentIds: string[] = []): Promise<void> => {
+    if (content.trim().length === 0 || streaming || personaPaused) return;
 
     const token = readStoredToken();
     if (!token) {
@@ -219,6 +426,7 @@ export default function ChatStrip({
         content,
         conversationId: conversationId ?? undefined,
         personaId: personaId ?? undefined,
+        ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
         signal: controller.signal,
         onEvent,
         onDoneMeta: (meta) => {
@@ -247,12 +455,128 @@ export default function ChatStrip({
     }
   };
 
+  /** Composer submit: send the typed draft with any staged attachments. */
+  const send = async (): Promise<void> => {
+    const content = draft.trim();
+    if (content.length === 0 || streaming || personaPaused) return;
+    const ids = staged.map((meta) => meta.id);
+    setDraft('');
+    await runTurn(content, ids);
+    if (ids.length > 0) {
+      setStaged([]);
+      setReloadToken((n) => n + 1);
+    }
+  };
+
+  /** F9: an option card answered — send the answer as a normal user turn. */
+  const handleAnswer = (message: string): void => {
+    if (streaming || personaPaused) return;
+    void runTurn(message);
+  };
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     void send();
   };
 
+  // M11 F1 @-mention helpers: keep the popup open while the token text
+  // stays contiguous, close it otherwise.
+  const updateMention = (value: string, caret: number): void => {
+    if (mention !== null) {
+      const segment = value.slice(mention.start, caret);
+      const contiguous = !/[\s()\[\]{}`]/.test(segment);
+      if (segment.startsWith('@') && contiguous) {
+        setMention((current) =>
+          current === null ? current : { ...current, query: segment.slice(1) },
+        );
+        return;
+      }
+      setMention(null);
+      return;
+    }
+    if (caret > 0 && value[caret - 1] === '@') {
+      const previous = caret >= 2 ? value[caret - 2] : '\n';
+      const allowed =
+        previous === ' ' || previous === '\n' || previous === '\t' || previous === '(' || previous === '[';
+      if (allowed) {
+        setMention({ start: caret - 1, query: '', items: [], index: 0, loading: false });
+      }
+    }
+  };
+
+  // Debounced file search while the mention popup is open (query-keyed so
+  // result state updates never re-trigger the search).
+  const mentionQuery = mention?.query ?? null;
+  useEffect(() => {
+    if (mentionQuery === null) return;
+    const token = readStoredToken();
+    if (!token) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void searchFileRefs(token, mentionQuery)
+        .then((items) => {
+          if (!cancelled) {
+            setMention((current) =>
+              current === null ? null : { ...current, items, index: 0, loading: false },
+            );
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setMention((current) =>
+              current === null ? null : { ...current, items: [], loading: false },
+            );
+          }
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [mentionQuery]);
+
+  const insertMention = (hit: FileRefHit): void => {
+    if (mention === null) return;
+    const link = partnerFileLink(hit);
+    setDraft(`${draft.slice(0, mention.start)}${link} `);
+    setMention(null);
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (mention !== null && mention.items.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMention((current) =>
+          current === null
+            ? current
+            : { ...current, index: (current.index + 1) % current.items.length },
+        );
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMention((current) =>
+          current === null
+            ? current
+            : { ...current, index: (current.index - 1 + current.items.length) % current.items.length },
+        );
+        return;
+      }
+      if (event.key === 'Enter') {
+        const pick = mention.items[mention.index];
+        if (pick) {
+          event.preventDefault();
+          insertMention(pick);
+          return;
+        }
+      }
+    }
+    if (mention !== null && event.key === 'Escape') {
+      event.preventDefault();
+      setMention(null);
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void send();
@@ -269,7 +593,12 @@ export default function ChatStrip({
 
   return (
     <section className="chat" aria-label="Chat with Partner">
-      <div className="chat-transcript" aria-live="polite">
+      <div
+        className="chat-transcript"
+        aria-live="polite"
+        ref={transcriptRef}
+        onScroll={handleTranscriptScroll}
+      >
         {historyLoading ? (
           <p className="chat-empty" aria-busy="true">
             Loading conversation…
@@ -280,20 +609,67 @@ export default function ChatStrip({
           rows.map((row) =>
             row.role === 'user' ? (
               <div key={row.key} className="msg msg-user">
-                {row.text}
+                <div className="msg-plain">{row.text}</div>
+                {msgAttachments[row.key] !== undefined && msgAttachments[row.key].length > 0 ? (
+                  <div className="attach-row" role="list" aria-label="Attached files">
+                    {msgAttachments[row.key].map((meta) => (
+                      <FileChip
+                        key={meta.id}
+                        meta={meta}
+                        conversationId={conversationId}
+                        onPreview={(m) => void openPreview(m)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : row.role === 'system' ? (
               <div key={row.key} className="msg msg-system">
-                {row.text}
+                <PartnerMarkdown text={row.text} />
               </div>
             ) : (
               <div key={row.key} className="msg msg-assistant">
-                {row.text === '' && showPending ? '…' : row.text}
+                {row.text === '' && showPending ? (
+                  '…'
+                ) : (
+                  <PartnerMarkdown text={row.text} busy={streaming} onAnswer={handleAnswer} />
+                )}
+                {row.text !== '' ? (
+                  <div className="msg-actions">
+                    <button
+                      type="button"
+                      className="btn-link msg-action"
+                      onClick={() => void copyText(row.key, row.text)}
+                      disabled={streaming}
+                    >
+                      {copiedKey === row.key ? 'Copied ✓' : 'Copy'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-link msg-action"
+                      onClick={() => openSave(row.key, row.text)}
+                      disabled={streaming || conversationId === null}
+                    >
+                      Save to Assets
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ),
           )
         )}
       </div>
+
+      {!atBottom && (streaming || unseen > 0) ? (
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm chat-jump"
+          onClick={jumpToLatest}
+          aria-label={unseen > 0 ? `Jump to latest — ${unseen} new message${unseen === 1 ? '' : 's'}` : 'Jump to latest'}
+        >
+          ↓ Latest{unseen > 0 ? ` (${unseen})` : ''}
+        </button>
+      ) : null}
 
       <div className="chat-status" aria-live="polite">
         {historyError && !streaming ? (
@@ -323,6 +699,54 @@ export default function ChatStrip({
         ) : null}
       </div>
 
+      <div className="chat-assets-bar">
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => setDrawerOpen((open) => !open)}
+          disabled={conversationId === null}
+          aria-expanded={drawerOpen}
+        >
+          {drawerOpen ? 'Hide Assets' : 'Assets'}
+        </button>
+        {assetsFlash !== null ? (
+          <span className="chat-assets-flash" role="status">
+            {assetsFlash}
+          </span>
+        ) : null}
+      </div>
+
+      {drawerOpen && conversationId !== null ? (
+        <AssetsDrawer
+          token={readStoredToken() ?? ''}
+          conversationId={conversationId}
+          onClose={() => setDrawerOpen(false)}
+          onSessionLost={onUnpair}
+          onPromoted={() => setAssetsFlash('Promoted to a note — find it under Notes.')}
+        />
+      ) : null}
+
+      {staged.length > 0 ? (
+        <div className="attach-staged" role="list" aria-label="Files ready to send">
+          {staged.map((meta) => (
+            <FileChip
+              key={meta.id}
+              meta={meta}
+              conversationId={conversationId}
+              removable
+              onRemove={(m) => void handleRemoveStaged(m.id)}
+              onPreview={(m) => void openPreview(m)}
+            />
+          ))}
+          <span className="attach-hint">sent with your next message</span>
+        </div>
+      ) : null}
+      {attachError ? (
+        <p className="chat-attach-error" role="alert">
+          {attachError}
+        </p>
+      ) : null}
+
       {personaPaused && personaId ? (
         <div className="waiting-box paused-banner" role="alert">
           <span className="waiting-text">
@@ -331,13 +755,74 @@ export default function ChatStrip({
         </div>
       ) : null}
 
+      {mention !== null ? (
+        <div className="mention-pop" role="listbox" aria-label="Reference a file">
+          {mention.loading ? (
+            <p className="mention-note">Searching…</p>
+          ) : mention.items.length === 0 ? (
+            <p className="mention-note">
+              No granted files match — grant a project root in Files, or attach a file instead.
+            </p>
+          ) : (
+            mention.items.map((hit, index) => (
+              <button
+                key={`${hit.rootId}/${hit.path}`}
+                type="button"
+                role="option"
+                aria-selected={index === mention.index}
+                className={index === mention.index ? 'mention-item mention-item-active' : 'mention-item'}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => insertMention(hit)}
+              >
+                <span className="mention-path">{hit.path}</span>
+                <span className="mention-root">{hit.rootLabel}</span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+
       <form className="chat-form" onSubmit={handleSubmit}>
+        <label
+          className={`btn btn-secondary attach-button${
+            conversationId === null || streaming || personaPaused ? ' attach-button-disabled' : ''
+          }`}
+          aria-disabled={!conversationId || streaming || personaPaused}
+          title={
+            conversationId === null
+              ? 'Start a chat before attaching files'
+              : 'Attach a file (text, image, PDF, HTML/CSS)'
+          }
+        >
+          {attaching ? 'Adding…' : '＋ Attach'}
+          <input
+            ref={fileInputRef}
+            className="attach-input"
+            type="file"
+            multiple
+            accept=".txt,.md,.csv,.json,.html,.css,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,image/*"
+            disabled={
+              conversationId === null || streaming || personaPaused || attaching
+            }
+            aria-label="Attach files to this chat"
+            onChange={(event) => void handleFiles(event.target.files)}
+          />
+        </label>
         <textarea
           id="partner-message"
+          ref={composerRef}
           className="field chat-input"
           rows={2}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            const value = event.target.value;
+            setDraft(value);
+            updateMention(value, event.target.selectionStart ?? value.length);
+          }}
+          onKeyUp={() => {
+            const el = composerRef.current;
+            if (el !== null) updateMention(el.value, el.selectionStart ?? el.value.length);
+          }}
           onKeyDown={handleKeyDown}
           placeholder={personaPaused ? 'Persona paused' : 'Message Partner…'}
           aria-label="Message to Partner"
@@ -352,6 +837,113 @@ export default function ChatStrip({
           {streaming ? 'Working…' : 'Send'}
         </button>
       </form>
+      {preview !== null ? (
+        <CodePreview title={preview.title} source={preview.source} onClose={() => setPreview(null)} />
+      ) : null}
+      {saveTarget !== null && conversationId !== null ? (
+        <SaveAssetsDialog
+          token={readStoredToken() ?? ''}
+          conversationId={conversationId}
+          messageId={saveTarget.id}
+          candidates={saveCandidates}
+          onClose={() => setSaveTarget(null)}
+          onSaved={() => setAssetsFlash('Saved to Assets ✓')}
+          onSessionLost={onUnpair}
+        />
+      ) : null}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Attachment chips (M11 F1 + F12): name/size, an inline image thumbnail, a
+// Preview action for HTML/CSS, and an optional remove control for staged
+// uploads. Content bytes are fetched with the session token — never URLs.
+// ---------------------------------------------------------------------------
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isImage(mime: string): boolean {
+  return mime.startsWith('image/');
+}
+
+function isPreviewable(mime: string): boolean {
+  return mime === 'text/html' || mime === 'text/css';
+}
+
+function AttachmentThumb({
+  meta,
+  conversationId,
+}: {
+  meta: AttachmentMeta;
+  conversationId: string | null;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (conversationId === null || meta.size > 3 * 1024 * 1024) return;
+    const token = readStoredToken();
+    if (!token) return;
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    void fetchAttachmentContent(token, conversationId, meta.id)
+      .then(({ bytes }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: meta.mime }));
+        setUrl(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+    };
+  }, [meta.id, meta.size, meta.mime, conversationId]);
+  return url !== null ? (
+    <img className="attach-thumb" src={url} alt={meta.name} />
+  ) : null;
+}
+
+interface FileChipProps {
+  meta: AttachmentMeta;
+  conversationId: string | null;
+  removable?: boolean;
+  onRemove?: (meta: AttachmentMeta) => void;
+  onPreview?: (meta: AttachmentMeta) => void;
+}
+
+function FileChip({ meta, conversationId, removable, onRemove, onPreview }: FileChipProps) {
+  const previewable = isPreviewable(meta.mime);
+  return (
+    <span className="attach-chip" role="listitem">
+      {isImage(meta.mime) ? (
+        <AttachmentThumb meta={meta} conversationId={conversationId} />
+      ) : null}
+      <span className="attach-chip-name" title={meta.name}>
+        {meta.name}
+      </span>
+      <span className="attach-chip-meta">{formatBytes(meta.size)}</span>
+      {previewable && onPreview ? (
+        <button
+          type="button"
+          className="btn-link attach-chip-preview"
+          onClick={() => onPreview(meta)}
+        >
+          Preview
+        </button>
+      ) : null}
+      {removable && onRemove ? (
+        <button
+          type="button"
+          className="btn-link attach-chip-remove"
+          aria-label={`Remove ${meta.name}`}
+          onClick={() => onRemove(meta)}
+        >
+          ×
+        </button>
+      ) : null}
+    </span>
   );
 }

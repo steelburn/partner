@@ -72,8 +72,19 @@ import type {
   PlanRow,
   PlanRowPatch,
   PlanStore,
+  AssetRow,
+  AssetStore,
+  AttachmentRow,
+  AttachmentStore,
+  ChatBlobRow,
+  ChatBlobStore,
   DeployProfileRow,
   DeployProfileStore,
+  FolderRow,
+  FolderRowPatch,
+  FolderStore,
+  McpServerRow,
+  McpServerStore,
   PlaybookRunPatch,
   PlaybookRunRow,
   PlaybookRunStore,
@@ -420,6 +431,77 @@ CREATE TABLE IF NOT EXISTS spend_ledger (
   cents INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
+
+-- M11 F11 folders (PLAN-M11.md, additive schema v12): the conversation
+-- organizing tree. Conversations point here via conversations.folder_id
+-- (guarded column, C1); NULL = Inbox. Names/edges only — chat content
+-- never crosses this table.
+CREATE TABLE IF NOT EXISTS folders (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  parent_id TEXT,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- M11 F1 chat attachments + blobs (PLAN-M11.md, additive schema v12).
+-- Payload bytes sit in chat_blobs (deduped by sha256); attachment rows are
+-- the per-message edges (NULL message_id = staged pre-turn upload). Owner
+-- content never crosses audit.
+CREATE TABLE IF NOT EXISTS chat_blobs (
+  sha256 TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  message_id TEXT,
+  kind TEXT NOT NULL DEFAULT 'upload',
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT,
+  ref_root_id TEXT,
+  ref_path TEXT,
+  extract_text TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_conversation
+  ON attachments(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attachments_message
+  ON attachments(message_id, created_at);
+
+-- M11 F10 assets (PLAN-M11.md, additive schema v12): typed saved artifacts
+-- per conversation (bodies are owner content).
+CREATE TABLE IF NOT EXISTS assets (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  message_id TEXT,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  tags TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assets_conversation
+  ON assets(conversation_id, created_at);
+
+-- M11 F2 MCP servers (PLAN-M11.md, additive schema v12): configured stdio
+-- MCP clients. Command/args only; OFF by default. No secrets in this slice.
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  transport TEXT NOT NULL DEFAULT 'stdio',
+  command TEXT NOT NULL,
+  args TEXT,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -435,7 +517,7 @@ const AUDIT_COLUMNS = `
   id, actor, action, target, details, created_at AS createdAt`;
 
 const PROVIDER_COLUMNS = `
-  id, name, kind, source, endpoint, default_models AS defaultModels,
+  id, name, kind, source, purpose, endpoint, default_models AS defaultModels,
   enabled, budget_cents AS budgetCents, key_ref AS keyRef,
   last_health AS lastHealth, created_at AS createdAt, updated_at AS updatedAt`;
 
@@ -462,16 +544,17 @@ const PERSONA_COLUMNS = `
   task_classes AS taskClasses, fallback_model AS fallbackModel,
   provider_id AS providerId, independence_level AS independenceLevel,
   require_human AS requireHuman, auto_scopes AS autoScopes,
-  memory_flags AS memoryFlags, is_default AS isDefault, paused,
+  memory_flags AS memoryFlags, policy, is_default AS isDefault, paused,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 const CONVERSATION_COLUMNS = `
-  id, persona_id AS personaId, title,
+  id, persona_id AS personaId, title, folder_id AS folderId,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 const MESSAGE_COLUMNS = `
   id, conversation_id AS conversationId, role, persona_id AS personaId,
-  content, model, latency_ms AS latencyMs, created_at AS createdAt`;
+  content_type AS contentType, content, model, latency_ms AS latencyMs,
+  created_at AS createdAt`;
 
 const PROFILE_COLUMNS = `
   id, kind, key, value, evidence, source, status,
@@ -486,6 +569,7 @@ type ProviderPatchKey =
   | 'name'
   | 'kind'
   | 'source'
+  | 'purpose'
   | 'endpoint'
   | 'defaultModels'
   | 'enabled'
@@ -497,6 +581,7 @@ const PROVIDER_UPDATE_COLUMNS: Readonly<Record<string, ProviderPatchKey>> = {
   name: 'name',
   kind: 'kind',
   source: 'source',
+  purpose: 'purpose',
   endpoint: 'endpoint',
   default_models: 'defaultModels',
   enabled: 'enabled',
@@ -539,13 +624,56 @@ export function assertFts5(db: Database.Database): void {
   }
 }
 
+const FOLDER_COLUMNS = `
+  id, name, parent_id AS parentId, position,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+/**
+ * M11 (PLAN-M11 C1) guarded additive columns on v1-era tables. Schema is
+ * otherwise additive-only (CREATE TABLE IF NOT EXISTS), so existing file DBs
+ * never gained a column — these four are added idempotently on every open
+ * via ensureColumn. Kept in one place so the migration surface is auditable.
+ */
+const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, ddl: string]> = [
+  // Persona capability policy (F3): {skills:{default,banned},tools:{allowed,banned}}.
+  ['personas', 'policy', 'policy TEXT'],
+  // Provider purpose tag (F4). Legacy rows read as 'general'.
+  ['providers', 'purpose', "purpose TEXT NOT NULL DEFAULT 'general'"],
+  // Chat folder binding (F11); NULL = Inbox.
+  ['conversations', 'folder_id', 'folder_id TEXT'],
+  // Message payload kind (C2): 'text' | 'parts'. Legacy rows read as 'text'.
+  ['messages', 'content_type', "content_type TEXT NOT NULL DEFAULT 'text'"],
+];
+
+/**
+ * Idempotently add one column to an existing table. Safe on every open:
+ * PRAGMA table_info guards, ALTER runs only when the column is missing.
+ * Table/column/ddl come from this module's own constants (never user input).
+ */
+export function ensureColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  ddl: string,
+): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
 function applySchema(db: Database.Database): void {
   assertFts5(db);
   db.exec(SCHEMA_SQL);
+  for (const [table, column, ddl] of M11_GUARDED_COLUMNS) {
+    ensureColumn(db, table, column, ddl);
+  }
   db.prepare(
     'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(META_SCHEMA_VERSION_KEY, String(SCHEMA_VERSION));
 }
+
+export { applySchema };
 
 /**
  * Open (creating parent directories as needed) and migrate a database.
@@ -772,9 +900,9 @@ export function createSettingsStore(db: Database.Database): SettingsStore {
  */
 export function createProviderStore(db: Database.Database): ProviderStore {
   const insert = db.prepare(
-    `INSERT INTO providers (id, name, kind, source, endpoint, default_models, enabled,
+    `INSERT INTO providers (id, name, kind, source, purpose, endpoint, default_models, enabled,
                             budget_cents, key_ref, last_health, created_at, updated_at)
-     VALUES (@id, @name, @kind, @source, @endpoint, @defaultModels, @enabled,
+     VALUES (@id, @name, @kind, @source, @purpose, @endpoint, @defaultModels, @enabled,
              @budgetCents, @keyRef, @lastHealth, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`);
@@ -980,6 +1108,7 @@ const PERSONA_UPDATE_COLUMNS: Readonly<Record<string, keyof PersonaRowPatch>> = 
   require_human: 'requireHuman',
   auto_scopes: 'autoScopes',
   memory_flags: 'memoryFlags',
+  policy: 'policy',
   is_default: 'isDefault',
   paused: 'paused',
 };
@@ -989,11 +1118,11 @@ export function createPersonaStore(db: Database.Database): PersonaStore {
     `INSERT INTO personas (id, name, tagline, avatar, color_theme, voice, language,
                            system_prompt, temperature, task_classes, fallback_model,
                            provider_id, independence_level, require_human, auto_scopes,
-                           memory_flags, is_default, paused, created_at, updated_at)
+                           memory_flags, policy, is_default, paused, created_at, updated_at)
      VALUES (@id, @name, @tagline, @avatar, @colorTheme, @voice, @language,
              @systemPrompt, @temperature, @taskClasses, @fallbackModel,
              @providerId, @independenceLevel, @requireHuman, @autoScopes,
-             @memoryFlags, @isDefault, @paused, @createdAt, @updatedAt)`,
+             @memoryFlags, @policy, @isDefault, @paused, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${PERSONA_COLUMNS} FROM personas WHERE id = ?`);
   const listAll = db.prepare(
@@ -1042,8 +1171,8 @@ export function createPersonaStore(db: Database.Database): PersonaStore {
 
 export function createConversationStore(db: Database.Database): ConversationStore {
   const insert = db.prepare(
-    `INSERT INTO conversations (id, persona_id, title, created_at, updated_at)
-     VALUES (@id, @personaId, @title, @createdAt, @updatedAt)`,
+    `INSERT INTO conversations (id, persona_id, title, folder_id, created_at, updated_at)
+     VALUES (@id, @personaId, @title, @folderId, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${CONVERSATION_COLUMNS} FROM conversations WHERE id = ?`);
   const listAll = db.prepare(
@@ -1073,6 +1202,10 @@ export function createConversationStore(db: Database.Database): ConversationStor
         sets.push('persona_id = @personaId');
         params.personaId = patch.personaId;
       }
+      if (patch.folderId !== undefined) {
+        sets.push('folder_id = @folderId');
+        params.folderId = patch.folderId;
+      }
       if (sets.length === 0) {
         db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
         return;
@@ -1090,9 +1223,9 @@ export function createConversationStore(db: Database.Database): ConversationStor
 
 export function createMessageStore(db: Database.Database): MessageStore {
   const insert = db.prepare(
-    `INSERT INTO messages (id, conversation_id, role, persona_id, content, model,
-                           latency_ms, created_at)
-     VALUES (@id, @conversationId, @role, @personaId, @content, @model,
+    `INSERT INTO messages (id, conversation_id, role, persona_id, content_type, content,
+                           model, latency_ms, created_at)
+     VALUES (@id, @conversationId, @role, @personaId, @contentType, @content, @model,
              @latencyMs, @createdAt)`,
   );
   const findById = db.prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`);
@@ -1825,6 +1958,219 @@ export function createSpendLedgerStore(db: Database.Database): SpendLedgerStore 
     },
     remove(providerId: string): void {
       remove.run(providerId);
+    },
+  };
+}
+
+/**
+ * M11 F11 folder row store (PLAN-M11.md). Plain typed CRUD with sibling
+ * ordering; tree semantics (cycles, reparenting, Inbox) belong to the folder
+ * manager. Stores never read the clock.
+ */
+export function createFolderStore(db: Database.Database): FolderStore {
+  const insert = db.prepare(
+    `INSERT INTO folders (id, name, parent_id, position, created_at, updated_at)
+     VALUES (@id, @name, @parentId, @position, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${FOLDER_COLUMNS} FROM folders WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${FOLDER_COLUMNS} FROM folders ORDER BY parent_id IS NOT NULL, position ASC, name ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM folders WHERE id = ?');
+
+  return {
+    insert(row: FolderRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): FolderRow | undefined {
+      return findById.get(id) as FolderRow | undefined;
+    },
+    list(): FolderRow[] {
+      return listAll.all() as FolderRow[];
+    },
+    update(id: string, patch: FolderRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      if (patch.name !== undefined) {
+        sets.push('name = @name');
+        params.name = patch.name;
+      }
+      if (patch.parentId !== undefined) {
+        sets.push('parent_id = @parentId');
+        params.parentId = patch.parentId;
+      }
+      if (patch.position !== undefined) {
+        sets.push('position = @position');
+        params.position = patch.position;
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE folders SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE folders SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+/** Column projection for chat_blobs + attachments rows (snake -> camel). */
+const ATTACHMENT_COLUMNS = `
+  id, conversation_id AS conversationId, message_id AS messageId, kind,
+  name, mime, size, sha256, ref_root_id AS refRootId, ref_path AS refPath,
+  extract_text AS extractText, created_at AS createdAt`;
+
+export function createChatBlobStore(db: Database.Database): ChatBlobStore {
+  const find = db.prepare('SELECT sha256, mime, size, data, created_at AS createdAt FROM chat_blobs WHERE sha256 = ?');
+  const insert = db.prepare(
+    `INSERT INTO chat_blobs (sha256, mime, size, data, created_at)
+     VALUES (@sha256, @mime, @size, @data, @createdAt)`,
+  );
+  const remove = db.prepare('DELETE FROM chat_blobs WHERE sha256 = ?');
+  const referencing = db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE sha256 = ?');
+
+  return {
+    find(sha256: string): ChatBlobRow | undefined {
+      const row = find.get(sha256) as
+        | { sha256: string; mime: string; size: number; data: Buffer; createdAt: number }
+        | undefined;
+      return row === undefined ? undefined : { ...row, data: row.data };
+    },
+    insert(row: ChatBlobRow): void {
+      insert.run({ ...row });
+    },
+    remove(sha256: string): void {
+      remove.run(sha256);
+    },
+    referencing(sha256: string): number {
+      const row = referencing.get(sha256) as { n: number };
+      return row.n;
+    },
+  };
+}
+
+export function createAttachmentStore(db: Database.Database): AttachmentStore {
+  const insert = db.prepare(
+    `INSERT INTO attachments (id, conversation_id, message_id, kind, name, mime, size,
+                              sha256, ref_root_id, ref_path, extract_text, created_at)
+     VALUES (@id, @conversationId, @messageId, @kind, @name, @mime, @size,
+             @sha256, @refRootId, @refPath, @extractText, @createdAt)`,
+  );
+  const findById = db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM attachments WHERE id = ?`);
+  const listByConversation = db.prepare(
+    `SELECT ${ATTACHMENT_COLUMNS} FROM attachments WHERE conversation_id = ?
+     ORDER BY (message_id IS NULL) DESC, created_at ASC, rowid ASC`,
+  );
+  const listByMessage = db.prepare(
+    `SELECT ${ATTACHMENT_COLUMNS} FROM attachments WHERE message_id = ?
+     ORDER BY created_at ASC, rowid ASC`,
+  );
+  const bind = db.prepare('UPDATE attachments SET message_id = ? WHERE id = ?');
+  const remove = db.prepare('DELETE FROM attachments WHERE id = ?');
+
+  return {
+    insert(row: AttachmentRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): AttachmentRow | undefined {
+      return findById.get(id) as AttachmentRow | undefined;
+    },
+    listByConversation(conversationId: string): AttachmentRow[] {
+      return listByConversation.all(conversationId) as AttachmentRow[];
+    },
+    listByMessage(messageId: string): AttachmentRow[] {
+      return listByMessage.all(messageId) as AttachmentRow[];
+    },
+    bind(id: string, messageId: string): void {
+      bind.run(messageId, id);
+    },
+    remove(id: string): AttachmentRow | undefined {
+      const row = findById.get(id) as AttachmentRow | undefined;
+      if (row) remove.run(id);
+      return row;
+    },
+  };
+}
+
+/** Column projection for asset rows (snake -> camel). */
+const ASSET_COLUMNS = `
+  id, conversation_id AS conversationId, message_id AS messageId, kind,
+  title, body, tags, created_at AS createdAt`;
+
+export function createAssetStore(db: Database.Database): AssetStore {
+  const insert = db.prepare(
+    `INSERT INTO assets (id, conversation_id, message_id, kind, title, body, tags, created_at)
+     VALUES (@id, @conversationId, @messageId, @kind, @title, @body, @tags, @createdAt)`,
+  );
+  const findById = db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE id = ?`);
+  const listByConversation = db.prepare(
+    `SELECT ${ASSET_COLUMNS} FROM assets WHERE conversation_id = ?
+     ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM assets WHERE id = ?');
+
+  return {
+    insert(row: AssetRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): AssetRow | undefined {
+      return findById.get(id) as AssetRow | undefined;
+    },
+    listByConversation(conversationId: string): AssetRow[] {
+      return listByConversation.all(conversationId) as AssetRow[];
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+/** Column projection for mcp_servers rows (snake -> camel). */
+const MCP_SERVER_COLUMNS = `
+  id, name, transport, command, args, enabled,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+export function createMcpServerStore(db: Database.Database): McpServerStore {
+  const insert = db.prepare(
+    `INSERT INTO mcp_servers (id, name, transport, command, args, enabled, created_at, updated_at)
+     VALUES (@id, @name, @transport, @command, @args, @enabled, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY created_at ASC, rowid ASC`,
+  );
+  const remove = db.prepare('DELETE FROM mcp_servers WHERE id = ?');
+
+  return {
+    insert(row: McpServerRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): McpServerRow | undefined {
+      return findById.get(id) as McpServerRow | undefined;
+    },
+    list(): McpServerRow[] {
+      return listAll.all() as McpServerRow[];
+    },
+    update(id: string, patch: { name?: string; command?: string; args?: string[] | null; enabled?: boolean; updatedAt: number }): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      if (patch.name !== undefined) { sets.push('name = @name'); params.name = patch.name; }
+      if (patch.command !== undefined) { sets.push('command = @command'); params.command = patch.command; }
+      if (patch.args !== undefined) { sets.push('args = @args'); params.args = patch.args === null ? null : JSON.stringify(patch.args); }
+      if (patch.enabled !== undefined) { sets.push('enabled = @enabled'); params.enabled = patch.enabled ? 1 : 0; }
+      if (sets.length === 0) {
+        db.prepare('UPDATE mcp_servers SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(`UPDATE mcp_servers SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
     },
   };
 }

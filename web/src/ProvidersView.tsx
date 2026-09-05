@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ProviderInput, ProviderSummary } from '@partner/shared';
+import type { ProviderInput, ProviderPurpose, ProviderSummary } from '@partner/shared';
+import { PROVIDER_PURPOSES } from '@partner/shared';
 import {
   ApiRequestError,
   connectSelfService,
@@ -17,11 +18,13 @@ import {
   normalizeEndpoint,
   parseBudgetDollars,
   parseModelList,
+  purposeLabel,
   remainingBudgetLabel,
   sourceLabel,
   validateEndpoint,
 } from './lib/providers.js';
 import { readStoredToken } from './lib/token.js';
+import { McpPanel } from './McpPanel.js';
 
 export interface ProvidersViewProps {
   /** Forget the session and return to the pairing gate (auth failure). */
@@ -50,6 +53,8 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
   const [providers, setProviders] = useState<ProviderSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
+  /** M11 F4: filter the list by provider purpose ('all' = no filter). */
+  const [purposeFilter, setPurposeFilter] = useState<ProviderPurpose | 'all'>('all');
   /** Id of a freshly added provider whose Set-key step should auto-open. */
   const [keyHintId, setKeyHintId] = useState<string | null>(null);
   const [loadedOnce, setLoadedOnce] = useState(false);
@@ -142,19 +147,36 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
         ) : null}
 
         {!sessionLost && providers !== null && providers.length > 0 ? (
-          <ul className="provider-list">
-            {providers.map((provider) => (
-              <li key={provider.id} className="provider-card">
-                <ProviderRow
-                  provider={provider}
-                  openKey={provider.id === keyHintId}
-                  onUpdated={replaceProvider}
-                  onRemoved={removeProvider}
-                  onSessionLost={handleSessionLost}
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className="purpose-filter" role="group" aria-label="Filter by purpose">
+              {(['all', ...PROVIDER_PURPOSES] as Array<ProviderPurpose | 'all'>).map((purpose) => (
+                <button
+                  key={purpose}
+                  type="button"
+                  className="btn btn-secondary btn-sm view-tab"
+                  aria-pressed={purposeFilter === purpose}
+                  onClick={() => setPurposeFilter(purpose)}
+                >
+                  {purpose === 'all' ? 'All' : purposeLabel(purpose)}
+                </button>
+              ))}
+            </div>
+            <ul className="provider-list">
+              {providers
+                .filter((p) => purposeFilter === 'all' || p.purpose === purposeFilter)
+                .map((provider) => (
+                  <li key={provider.id} className="provider-card">
+                    <ProviderRow
+                      provider={provider}
+                      openKey={provider.id === keyHintId}
+                      onUpdated={replaceProvider}
+                      onRemoved={removeProvider}
+                      onSessionLost={handleSessionLost}
+                    />
+                  </li>
+                ))}
+            </ul>
+          </>
         ) : null}
 
         <AddProviderCard
@@ -167,6 +189,7 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
           onConnected={appendProvider}
           onSessionLost={handleSessionLost}
         />
+        <McpPanel onUnpair={handleSessionLost} />
       </div>
     </section>
   );
@@ -309,6 +332,7 @@ function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }:
         <div className="provider-identity">
           <h3 className="provider-name">{provider.name}</h3>
           <span className="source-badge">{sourceLabel(provider.source)}</span>
+          <span className="source-badge purpose-badge">{purposeLabel(provider.purpose)}</span>
         </div>
         <div className="row-actions">
           <button
@@ -418,6 +442,7 @@ interface AddProviderCardProps {
 function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardProps) {
   const [name, setName] = useState('');
   const [endpoint, setEndpoint] = useState('');
+  const [purpose, setPurpose] = useState<ProviderPurpose>('general');
   const [models, setModels] = useState('');
   const [budget, setBudget] = useState('');
   const [busy, setBusy] = useState(false);
@@ -453,6 +478,7 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
     const input: ProviderInput = {
       name: trimmedName,
       endpoint: normalizeEndpoint(endpoint),
+      purpose,
       ...(defaultModels.length > 0 ? { defaultModels } : {}),
       ...(parsedBudget.budgetCents !== null ? { budgetCents: parsedBudget.budgetCents } : {}),
     };
@@ -464,6 +490,7 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
       const created = await createProvider(token, input);
       setName('');
       setEndpoint('');
+      setPurpose('general');
       setModels('');
       setBudget('');
       setNote(`Provider "${created.name}" added — paste its API key to finish.`);
@@ -521,6 +548,27 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
             placeholder="https://api.ne1.dev/v1"
             aria-required="true"
           />
+        </div>
+        <div className="form-field">
+          <label className="label" htmlFor="provider-purpose">
+            Purpose
+          </label>
+          <select
+            id="provider-purpose"
+            className="field"
+            value={purpose}
+            disabled={formDisabled}
+            onChange={(event) => setPurpose(event.target.value as ProviderPurpose)}
+          >
+            {PROVIDER_PURPOSES.map((option) => (
+              <option key={option} value={option}>
+                {purposeLabel(option)}
+              </option>
+            ))}
+          </select>
+          <p className="field-hint">
+            What this endpoint is best for. Routing prefers the matching purpose, then General.
+          </p>
         </div>
         <div className="form-row">
           <div className="form-field">

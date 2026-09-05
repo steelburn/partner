@@ -286,6 +286,8 @@ export interface StreamChatOptions {
   personaId?: string;
   /** Optional explicit model override (M3). */
   model?: string;
+  /** M11 F1: staged attachment ids to bind to this turn. */
+  attachmentIds?: string[];
   /** Receives the persisted-turn ids off the trailing chat meta frame. */
   onDoneMeta?: (meta: StreamDoneMeta) => void;
   signal?: AbortSignal;
@@ -310,9 +312,12 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
     fetchImpl = fetch,
   } = options;
   const body: Record<string, unknown> = { messages: [{ role: 'user', content }] };
-  if (conversationId) body.conversationId = conversationId;
-  if (personaId) body.personaId = personaId;
-  if (model) body.model = model;
+  if (conversationId !== undefined) body.conversationId = conversationId;
+  if (personaId !== undefined) body.personaId = personaId;
+  if (model !== undefined) body.model = model;
+  if (options.attachmentIds !== undefined && options.attachmentIds.length > 0) {
+    body.attachmentIds = options.attachmentIds;
+  }
   const response = await fetchImpl(CHAT_PATH, {
     method: 'POST',
     headers: {

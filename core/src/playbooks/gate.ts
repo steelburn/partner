@@ -45,7 +45,10 @@ export type ToolGateQueueReason =
   | 'level_requires_approval'
   | 'high_requires_approval';
 
-export type ToolGateRefuseReason = 'assist_level_no_tools' | 'tool_not_in_playbook';
+export type ToolGateRefuseReason =
+  | 'assist_level_no_tools'
+  | 'tool_not_in_playbook'
+  | 'tool_banned_by_persona';
 
 export interface AuthorizeContext {
   /** The directive's tool id (matched against declaredTools/autoScopes). */
@@ -56,6 +59,8 @@ export interface AuthorizeContext {
   autoScopes?: readonly string[];
   /** Active user grant present for (tool, project)? */
   hasGrant: boolean;
+  /** M11 F3 persona policy: tools this persona may never direct-execute. */
+  bannedTools?: readonly string[];
 }
 
 function isRisk(risk: string, wanted: 'low' | 'medium' | 'high'): boolean {
@@ -68,6 +73,12 @@ export function authorizeTool(
   ctx: AuthorizeContext,
 ): ToolGateDecision {
   const toolId = typeof ctx.toolId === 'string' ? ctx.toolId : '';
+
+  // M11 F3: a persona policy ban beats every level and the envelope — the
+  // persona may never direct-execute this tool, even with a grant.
+  if ((ctx.bannedTools ?? []).includes(toolId)) {
+    return { decision: 'refused', reason: 'tool_banned_by_persona' };
+  }
 
   // Assist never executes a tool — even declared, even granted. It answers
   // and proposes only (PLAN.md §5.1).

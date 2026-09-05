@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ConversationSummary, Persona, ThemeMode } from '@partner/shared';
+import type { ConversationSummary, Folder, Persona, ThemeMode } from '@partner/shared';
 import type { ActiveTheme, ThemeProfile } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import type { StreamDoneMeta } from './lib/api.js';
 import type { ThemeTokenPair } from './lib/theme-helpers.js';
 import ChatStrip from './ChatStrip.js';
+import { NotesMini } from './NotesMini.js';
 import AuditView from './AuditView.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
@@ -19,6 +20,13 @@ import SkillsView from './SkillsView.js';
 import ThemeStudio from './ThemeStudio.js';
 import { revokeSession } from './lib/api.js';
 import { createConversation, deleteConversation, listConversations } from './lib/conversations.js';
+import {
+  createFolder,
+  deleteFolder,
+  listFolders,
+  updateConversation,
+  updateFolder,
+} from './lib/folders.js';
 import { isSessionLost, listPersonas } from './lib/personas.js';
 import { getActiveTheme, listThemes } from './lib/themes.js';
 import { listPending } from './lib/tools.js';
@@ -68,6 +76,10 @@ export default function App() {
   const [personasError, setPersonasError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
+  const [folders, setFolders] = useState<Folder[] | null>(null);
+  const [foldersError, setFoldersError] = useState<string | null>(null);
+  /** M11 F6: increments open Notes quick capture (header / Ctrl+K). */
+  const [noteCaptureNonce, setNoteCaptureNonce] = useState(0);
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -153,6 +165,20 @@ export default function App() {
     }
   }, []);
 
+  // M11 F11: flat folder list (tree assembly lives in the rail).
+  const refreshFolders = useCallback(async (): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) return;
+    try {
+      setFolders(await listFolders(token));
+      setFoldersError(null);
+    } catch (cause) {
+      if (!isSessionLost(cause)) {
+        setFoldersError(cause instanceof Error ? cause.message : 'Could not load folders.');
+      }
+    }
+  }, []);
+
   const refreshQueue = useCallback((): void => {
     const token = readStoredToken();
     if (!token) {
@@ -215,6 +241,8 @@ export default function App() {
       setPersonasError(null);
       setConversations(null);
       setConversationsError(null);
+      setFolders(null);
+      setFoldersError(null);
       setActivePersonaId(null);
       setActiveConversationId(null);
       setStreaming(false);
@@ -228,6 +256,7 @@ export default function App() {
     }
     void refreshPersonas();
     void refreshConversations();
+    void refreshFolders();
     void refreshThemes();
     refreshQueue();
     const timer = window.setInterval(refreshQueue, QUEUE_POLL_MS);
@@ -237,6 +266,7 @@ export default function App() {
       // loaded so the persona picker/rail appear without a manual refresh.
       if (personas === null && personasError === null) void refreshPersonas();
       if (conversations === null && conversationsError === null) void refreshConversations();
+      if (folders === null && foldersError === null) void refreshFolders();
     };
     window.addEventListener('focus', onFocus);
     return () => {
@@ -244,7 +274,7 @@ export default function App() {
       window.removeEventListener('focus', onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paired, refreshPersonas, refreshConversations, refreshQueue]);
+  }, [paired, refreshPersonas, refreshConversations, refreshFolders, refreshQueue]);
 
   // Keep the active persona valid as the list changes (default > first).
   useEffect(() => {
@@ -334,12 +364,84 @@ export default function App() {
     }
   };
 
+  // -----------------------------------------------------------------------
+  // M11 F11 folder ops (Projects/Folders). Every mutation refreshes both
+  // the conversations list (folderId on summaries) and the folder list
+  // (chatCounts) so the rail stays truthful.
+  // -----------------------------------------------------------------------
+
+  const railOpError = (fallback: string, cause: unknown): void => {
+    if (isSessionLost(cause)) {
+      handleSessionLost();
+      return;
+    }
+    setConversationsError(cause instanceof Error ? cause.message : fallback);
+  };
+
+  const handleMoveConversation = async (
+    id: string,
+    folderId: string | null,
+  ): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    try {
+      await updateConversation(token, id, { folderId });
+      await Promise.all([refreshConversations(), refreshFolders()]);
+    } catch (cause) {
+      railOpError('Could not move the conversation.', cause);
+    }
+  };
+
+  const handleCreateFolder = async (name: string, parentId: string | null): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    try {
+      await createFolder(token, { name, ...(parentId !== null ? { parentId } : {}) });
+      await refreshFolders();
+    } catch (cause) {
+      railOpError('Could not create the folder.', cause);
+    }
+  };
+
+  const handleRenameFolder = async (id: string, name: string): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    try {
+      await updateFolder(token, id, { name });
+      await refreshFolders();
+    } catch (cause) {
+      railOpError('Could not rename the folder.', cause);
+    }
+  };
+
+  const handleDeleteFolder = async (id: string): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    try {
+      await deleteFolder(token, id);
+      await Promise.all([refreshConversations(), refreshFolders()]);
+    } catch (cause) {
+      railOpError('Could not delete the folder.', cause);
+    }
+  };
+
   /** After a persisted turn: adopt an auto-created conversation + refresh. */
   const handleDone = (meta: StreamDoneMeta): void => {
     if (activeConversationId === null) setActiveConversationId(meta.conversationId);
     void refreshConversations();
   };
-
   const handleToggleMode = (): void => {
     const next: ThemeMode = mode === 'light' ? 'dark' : 'light';
     setMode(next);
@@ -349,6 +451,27 @@ export default function App() {
   const nextModeLabel = mode === 'light' ? 'Dark' : 'Light';
   const personasLoaded = personas !== null;
   const railLocked = streaming || creatingChat;
+
+  /** M11 F6: Notes are one click/hotkey away — open the composer anywhere. */
+  const requestCapture = useCallback((): void => {
+    setView('notes');
+    setNoteCaptureNonce((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!paired) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        const target = event.target as HTMLElement | null;
+        const tag = target?.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea') return; // never hijack typing
+        event.preventDefault();
+        requestCapture();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paired, requestCapture]);
 
   return (
     <div className="app">
@@ -366,6 +489,22 @@ export default function App() {
                     aria-pressed={view === 'chat'}
                   >
                     Chat
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary view-tab"
+                    onClick={() => setView('notes')}
+                    aria-pressed={view === 'notes'}
+                  >
+                    Notes
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={requestCapture}
+                    title="Quick note (Ctrl+K)"
+                  >
+                    ＋ Note
                   </button>
                   <button
                     type="button"
@@ -416,14 +555,6 @@ export default function App() {
                     aria-pressed={view === 'themes'}
                   >
                     Themes
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('notes')}
-                    aria-pressed={view === 'notes'}
-                  >
-                    Notes
                   </button>
                   <button
                     type="button"
@@ -479,14 +610,22 @@ export default function App() {
               <div className="chat-workspace">
                 <ConversationRail
                   conversations={conversations}
-                  loadError={conversationsError}
+                  folders={folders}
+                  loadError={conversationsError ?? foldersError}
                   disabled={railLocked}
                   creating={creatingChat}
                   activeConversationId={activeConversationId}
                   onNewChat={() => void handleNewChat()}
                   onOpen={handleOpenConversation}
                   onDelete={handleDeleteConversation}
-                  onRetry={() => void refreshConversations()}
+                  onRetry={() => {
+                    void refreshConversations();
+                    void refreshFolders();
+                  }}
+                  onCreateFolder={(name, parentId) => void handleCreateFolder(name, parentId)}
+                  onRenameFolder={(id, name) => void handleRenameFolder(id, name)}
+                  onDeleteFolder={(id) => void handleDeleteFolder(id)}
+                  onMoveConversation={(id, folderId) => void handleMoveConversation(id, folderId)}
                 />
                 <ChatStrip
                   onUnpair={handleSessionLost}
@@ -496,6 +635,12 @@ export default function App() {
                   personaPaused={Boolean(activePersona?.paused)}
                   onStreamingChange={setStreaming}
                   onDone={handleDone}
+                />
+                <NotesMini
+                  active={paired}
+                  onCapture={requestCapture}
+                  onOpen={() => setView('notes')}
+                  onUnpair={handleSessionLost}
                 />
               </div>
               {chatError ? (
@@ -553,6 +698,7 @@ export default function App() {
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'notes'}
+                captureSignal={noteCaptureNonce}
               />
             </div>
             <div className={view === 'skills' ? 'app-view app-view-active' : 'app-view'}>

@@ -186,6 +186,7 @@ describe('summary hygiene', () => {
         'name',
         'kind',
         'source',
+        'purpose',
         'endpoint',
         'defaultModels',
         'enabled',
@@ -195,5 +196,19 @@ describe('summary hygiene', () => {
         'health',
       ].sort(),
     );
+  });
+
+  it('defaults purpose to general and validates unknown purposes', async () => {
+    const { manager } = makeManager();
+    const plain = await manager.create(input({}));
+    expect(plain.purpose).toBe('general');
+
+    const coding = await manager.create(input({ purpose: 'coding' }));
+    expect(coding.purpose).toBe('coding');
+    expect(manager.list().some((p) => p.id === coding.id && p.purpose === 'coding')).toBe(true);
+
+    // Unknown purpose degrades to the default rather than throwing.
+    const bogus = (await manager.create(input({ purpose: 'hype' as 'coding' }))) as ProviderSummary;
+    expect(bogus.purpose).toBe('general');
   });
 });

@@ -117,6 +117,8 @@ export interface ProviderRow {
   kind: string;
   /** 'manual' | 'llm-self-service'. */
   source: string;
+  /** M11 purpose tag: 'general'|'cheap'|'deep'|'coding'|'vision'|'research' (default 'general'). */
+  purpose: string;
   /** Full OpenAI-compatible base URL, e.g. https://api.ne1.dev/v1 */
   endpoint: string;
   /** JSON array of model ids reported by the last probe (null = none). */
@@ -140,6 +142,7 @@ export type ProviderRowPatch = Partial<
     | 'name'
     | 'kind'
     | 'source'
+    | 'purpose'
     | 'endpoint'
     | 'defaultModels'
     | 'enabled'
@@ -294,6 +297,8 @@ export interface PersonaRow {
   autoScopes: string | null;
   /** memory flags as JSON {userProfile, episodes}. */
   memoryFlags: string | null;
+  /** M11 persona policy JSON {skills:{default,banned},tools:{allowed,banned}} (null = none). */
+  policy: string | null;
   /** 0 | 1. At most one row has 1 (single-default invariant, manager-owned). */
   isDefault: number;
   /** 0 | 1. Pause = kill switch: chat/tools refuse a paused persona (423). */
@@ -321,6 +326,7 @@ export type PersonaRowPatch = Partial<
     | 'requireHuman'
     | 'autoScopes'
     | 'memoryFlags'
+    | 'policy'
     | 'isDefault'
     | 'paused'
   >
@@ -345,13 +351,17 @@ export interface ConversationRow {
   personaId: string | null;
   /** First-user-message title (route-side, truncated), or null. */
   title: string | null;
+  /** M11 folder (Projects/Folders) this conversation belongs to; null = Inbox. */
+  folderId: string | null;
   createdAt: number;
   /** Bumped on every message append (list = recent activity first). */
   updatedAt: number;
 }
 
 /** Writable fields for a conversation (append bumps updated_at). */
-export type ConversationRowPatch = Partial<Pick<ConversationRow, 'title' | 'personaId'>> & {
+export type ConversationRowPatch = Partial<
+  Pick<ConversationRow, 'title' | 'personaId' | 'folderId'>
+> & {
   updatedAt: number;
 };
 
@@ -371,6 +381,8 @@ export interface MessageRow {
   role: string;
   /** Denormalized persona id at append time (may be null). */
   personaId: string | null;
+  /** M11: 'text' (canonical markdown) | 'parts' (multipart JSON, C2). Default 'text'. */
+  contentType: string;
   content: string;
   model: string | null;
   latencyMs: number | null;
@@ -848,4 +860,148 @@ export interface SpendLedgerStore {
   upsert(row: SpendLedgerRow): void;
   /** Remove a provider's ledger row (profile delete/cleanup). */
   remove(providerId: string): void;
+}
+
+// ---------------------------------------------------------------------------
+// M11 F11 folders store (PLAN-M11.md — additive schema v12). A folder is a
+// node in the conversation-organizing tree; conversations.folder_id (M11 C1
+// guarded column) is the edge. Tree semantics (cycle guard, reparenting,
+// chat counts, Inbox for folder_id NULL) live in the folder manager — this
+// store is plain typed CRUD with sibling ordering.
+// ---------------------------------------------------------------------------
+
+/** `folders` row — one node of the chat tree. */
+export interface FolderRow {
+  id: string;
+  name: string;
+  /** Parent folder id; null = root level (rail top). */
+  parentId: string | null;
+  /** Sibling order within the parent (append = max+1). */
+  position: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type FolderRowPatch = Partial<Pick<FolderRow, 'name' | 'parentId' | 'position'>> & {
+  updatedAt: number;
+};
+
+export interface FolderStore {
+  insert(row: FolderRow): void;
+  findById(id: string): FolderRow | undefined;
+  /** Flat list, parent-major then position (tree assembly is the manager's). */
+  list(): FolderRow[];
+  update(id: string, patch: FolderRowPatch): void;
+  remove(id: string): void;
+}
+
+// ---------------------------------------------------------------------------
+// M11 F1 chat attachments + blobs stores (PLAN-M11.md — additive schema
+// v12). A conversation owns staged uploads (`message_id NULL`) until the
+// next turn binds them to the persisted user message. Payload bytes live in
+// chat_blobs, deduped by sha256 (an attachment row references one blob). The
+// `ref` kind is a mention of a root-granted file: no bytes, just provenance.
+// Content is owner data — never audit (rows/ids/lengths only).
+// ---------------------------------------------------------------------------
+
+/** `chat_blobs` row — deduped attachment payload bytes. */
+export interface ChatBlobRow {
+  sha256: string;
+  mime: string;
+  size: number;
+  data: Buffer;
+  createdAt: number;
+}
+
+/** `attachments` row — one staged or bound file on a conversation message. */
+export interface AttachmentRow {
+  id: string;
+  conversationId: string;
+  /** Null while staged (uploaded but the next turn has not been sent). */
+  messageId: string | null;
+  kind: 'upload' | 'ref';
+  name: string;
+  mime: string;
+  size: number;
+  /** sha256 of the payload when kind=upload; null for refs. */
+  sha256: string | null;
+  /** Ref provenance: granted root id + path inside it (kind=ref). */
+  refRootId: string | null;
+  refPath: string | null;
+  /** Extracted UTF-8 text for text-ish uploads (cap: manager-owned). */
+  extractText: string | null;
+  createdAt: number;
+}
+
+export interface ChatBlobStore {
+  find(sha256: string): ChatBlobRow | undefined;
+  insert(row: ChatBlobRow): void;
+  /** Remove a blob when no attachment row references it (manager-owned). */
+  remove(sha256: string): void;
+  /** Attachment rows referencing a blob (for refcount checks). */
+  referencing(sha256: string): number;
+}
+
+export interface AttachmentStore {
+  insert(row: AttachmentRow): void;
+  findById(id: string): AttachmentRow | undefined;
+  /** Conversation rows, oldest first (staged rows message_id NULL first). */
+  listByConversation(conversationId: string): AttachmentRow[];
+  /** Bound rows for one message (turn). */
+  listByMessage(messageId: string): AttachmentRow[];
+  /** Bind a staged row to a persisted message (turn send). */
+  bind(id: string, messageId: string): void;
+  /** Delete one row; returns its blob sha for refcount cleanup. */
+  remove(id: string): AttachmentRow | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// M11 F10 assets store (PLAN-M11.md — additive schema v12). Typed saved
+// artifacts extracted from conversation messages. Owner content (bodies) —
+// audit rows carry ids/kinds/titles only.
+// ---------------------------------------------------------------------------
+
+/** `assets` row — one typed saved artifact. */
+export interface AssetRow {
+  id: string;
+  conversationId: string;
+  messageId: string | null;
+  kind: string;
+  title: string;
+  body: string;
+  tags: string | null;
+  createdAt: number;
+}
+
+export interface AssetStore {
+  insert(row: AssetRow): void;
+  findById(id: string): AssetRow | undefined;
+  listByConversation(conversationId: string): AssetRow[];
+  remove(id: string): void;
+}
+
+// ---------------------------------------------------------------------------
+// M11 F2 MCP servers store (PLAN-M11.md — additive schema v12). One row per
+// configured MCP stdio server (command/args only — no secrets in this slice;
+// headers/env are reserved for the http transport). Off by default.
+// ---------------------------------------------------------------------------
+
+/** `mcp_servers` row — a configured stdio MCP server. */
+export interface McpServerRow {
+  id: string;
+  name: string;
+  transport: string;
+  command: string;
+  args: string | null;
+  enabled: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface McpServerStore {
+  insert(row: McpServerRow): void;
+  findById(id: string): McpServerRow | undefined;
+  list(): McpServerRow[];
+  update(id: string, patch: { name?: string; command?: string; args?: string[] | null; enabled?: boolean; updatedAt: number }): void;
+  remove(id: string): void;
 }

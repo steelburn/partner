@@ -11,6 +11,32 @@ export type ProviderKind = 'openai-compatible';
 
 export type ProviderSource = 'manual' | 'llm-self-service';
 
+/**
+ * M11 F4 purpose tags (PLAN-M11.md). Providers advertise what they are for;
+ * the resolver prefers the provider whose purpose matches the task class,
+ * falling back to 'general'. 'general' remains the default + last resort.
+ */
+export type ProviderPurpose =
+  | 'general'
+  | 'cheap'
+  | 'deep'
+  | 'coding'
+  | 'vision'
+  | 'research';
+
+export const PROVIDER_PURPOSES: readonly ProviderPurpose[] = [
+  'general',
+  'cheap',
+  'deep',
+  'coding',
+  'vision',
+  'research',
+] as const;
+
+export function isProviderPurpose(value: unknown): value is ProviderPurpose {
+  return typeof value === 'string' && (PROVIDER_PURPOSES as readonly string[]).includes(value);
+}
+
 export interface ProviderHealth {
   ok: boolean;
   /** Latency of the last live probe (listModels), ms. */
@@ -27,6 +53,8 @@ export interface ProviderSummary {
   name: string;
   kind: ProviderKind;
   source: ProviderSource;
+  /** Purpose tag — what this provider is best for (default 'general'). */
+  purpose: ProviderPurpose;
   /** Full OpenAI-compatible base URL, e.g. https://api.ne1.dev/v1 */
   endpoint: string;
   defaultModels: string[];
@@ -42,6 +70,8 @@ export interface ProviderSummary {
 export interface ProviderInput {
   name: string;
   kind?: ProviderKind;
+  /** Optional purpose tag (default 'general'). */
+  purpose?: ProviderPurpose;
   endpoint: string;
   defaultModels?: string[];
   enabled?: boolean;

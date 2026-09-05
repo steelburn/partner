@@ -46,6 +46,18 @@ export interface PersonaMemoryFlags {
   episodes: 'read+write' | 'none';
 }
 
+/**
+ * M11 F3 persona capability policy (PLAN-M11.md). Skills a persona has by
+ * default / may never use; tools it may never direct-execute. Bans beat the
+ * independence envelope; explicit user (web) actions are not persona actions.
+ */
+export interface PersonaPolicy {
+  /** Default skills load into new conversations; banned skills refuse invoke. */
+  skills?: { default?: string[]; banned?: string[] };
+  /** Banned tools are refused at the gate; allowed = strict allowlist when set. */
+  tools?: { allowed?: string[]; banned?: string[] };
+}
+
 export interface Persona {
   id: string;
   name: string;
@@ -56,6 +68,8 @@ export interface Persona {
   model: PersonaModelRouting;
   independence: PersonaIndependence;
   memory: PersonaMemoryFlags;
+  /** M11 F3 capability policy (skills/tools defaults + bans). */
+  policy?: PersonaPolicy;
   isDefault: boolean;
   paused: boolean;
   createdAt: number;
@@ -71,6 +85,8 @@ export interface PersonaInput {
   model: PersonaModelRouting;
   independence: PersonaIndependence;
   memory: PersonaMemoryFlags;
+  /** M11 F3 capability policy (skills/tools defaults + bans). */
+  policy?: PersonaPolicy;
   isDefault?: boolean;
 }
 
@@ -78,6 +94,8 @@ export interface ConversationSummary {
   id: string;
   personaId: string | null;
   title: string | null;
+  /** M11 F11 folder (Projects/Folders) this chat lives in; null = Inbox. */
+  folderId: string | null;
   messageCount: number;
   createdAt: number;
   updatedAt: number;
@@ -97,4 +115,6 @@ export interface ConversationMessage {
 export interface CreateConversationInput {
   personaId?: string;
   title?: string;
+  /** M11 F11: folder to create the chat in (null/absent = Inbox). */
+  folderId?: string;
 }

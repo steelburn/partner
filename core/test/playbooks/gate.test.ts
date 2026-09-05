@@ -117,3 +117,18 @@ describe('authorizeTool — level x risk x grant matrix', () => {
     expect(decision).toEqual({ decision: 'executed', reason: 'level_allows' });
   });
 });
+
+describe('M11 F3 persona tool bans', () => {
+  it('a banned tool is refused even at autonomous level with a grant', () => {
+    const decision = authorizeTool('autonomous', manifest('low'), ctx({
+      hasGrant: true,
+      bannedTools: ['files.read'],
+    }));
+    expect(decision).toEqual({ decision: 'refused', reason: 'tool_banned_by_persona' });
+  });
+
+  it('no ban list behaves exactly like before', () => {
+    const decision = authorizeTool('auto', manifest('low'), ctx({ hasGrant: true }));
+    expect(decision).toEqual({ decision: 'executed', reason: 'level_allows' });
+  });
+});

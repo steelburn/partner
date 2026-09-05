@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ConversationSummary } from '@partner/shared';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
+import type { ConversationSummary, Folder } from '@partner/shared';
 import { conversationTitle, sortConversations, timeAgo } from './lib/persona-helpers.js';
 
 export interface ConversationRailProps {
   /** Sorted list (most recent first); null while loading. */
   conversations: ConversationSummary[] | null;
-  /** Load failure text; shown with a retry action. */
+  /** Flat folder list (M11 F11); null while loading. */
+  folders: Folder[] | null;
   loadError: string | null;
   /** Disabled while a turn is streaming (rows must not switch mid-turn). */
   disabled: boolean;
@@ -18,16 +19,29 @@ export interface ConversationRailProps {
   /** Delete + refresh; resolves when done. */
   onDelete: (id: string) => Promise<void> | void;
   onRetry: () => void;
+  /** Folder tree ops (M11 F11). parentId null = root. */
+  onCreateFolder: (name: string, parentId: string | null) => Promise<void> | void;
+  onRenameFolder: (id: string, name: string) => Promise<void> | void;
+  onDeleteFolder: (id: string) => Promise<void> | void;
+  onMoveConversation: (id: string, folderId: string | null) => Promise<void> | void;
 }
 
+interface TreeFolder extends Folder {
+  children: TreeFolder[];
+  chats: ConversationSummary[];
+}
+
+const EMPTY_FOLDER_NAME = 'New folder';
+
 /**
- * M3 conversation rail: New chat + the recent conversations (title +
- * updatedAt), each with a delete action revealed on hover/focus (two-step
- * confirm). Selecting a conversation loads its history into the chat strip;
- * while a turn streams the rail locks so an in-flight turn is never orphaned.
+ * M11 conversation rail: folder tree (F11) + conversations. Chats without a
+ * folder live under Inbox; each folder row can create a child, rename
+ * (inline), delete (two-step), and each chat row has a move control. While a
+ * turn streams the rail locks so an in-flight turn is never orphaned.
  */
 export default function ConversationRail({
   conversations,
+  folders,
   loadError,
   disabled,
   creating,
@@ -36,9 +50,21 @@ export default function ConversationRail({
   onOpen,
   onDelete,
   onRetry,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onMoveConversation,
 }: ConversationRailProps) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmingFolderId, setConfirmingFolderId] = useState<string | null>(null);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  /** Folder id the "new folder" input is creating under (null = root). */
+  const [creatingFor, setCreatingFor] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
   const disarmTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -47,14 +73,17 @@ export default function ConversationRail({
     };
   }, []);
 
-  const armDelete = (id: string): void => {
-    setConfirmingId((current) => {
-      if (current === id) return current;
-      return id;
-    });
+  const armConfirm = (kind: 'chat' | 'folder', id: string): void => {
+    if (kind === 'chat') setConfirmingFolderId(null);
+    else setConfirmingId(null);
+    setRenamingId(null);
+    if (kind === 'chat') setConfirmingId(id);
+    else setConfirmingFolderId(id);
     if (disarmTimer.current !== null) window.clearTimeout(disarmTimer.current);
-    // A row left alone for a moment stops asking; no surprise deletes.
-    disarmTimer.current = window.setTimeout(() => setConfirmingId(null), 4000);
+    disarmTimer.current = window.setTimeout(() => {
+      setConfirmingId(null);
+      setConfirmingFolderId(null);
+    }, 4000);
   };
 
   const confirmDelete = async (id: string): Promise<void> => {
@@ -68,6 +97,265 @@ export default function ConversationRail({
     }
   };
 
+  const confirmFolderDelete = async (id: string): Promise<void> => {
+    if (deletingFolderId !== null) return;
+    setDeletingFolderId(id);
+    setConfirmingFolderId(null);
+    try {
+      await onDeleteFolder(id);
+    } finally {
+      setDeletingFolderId(null);
+    }
+  };
+
+  const beginRename = (folder: Folder): void => {
+    setRenamingId(folder.id);
+    setRenameDraft(folder.name);
+    setConfirmingId(null);
+    setConfirmingFolderId(null);
+  };
+
+  const commitRename = async (id: string): Promise<void> => {
+    const name = renameDraft.trim();
+    setRenamingId(null);
+    if (name.length === 0) return;
+    await onRenameFolder(id, name);
+  };
+
+  const submitNewFolder = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const name = newName.trim();
+    if (name.length === 0) return;
+    const parentId = creatingFor;
+    setCreatingFor(null);
+    setNewName('');
+    await onCreateFolder(name, parentId);
+  };
+
+  const toggleCollapsed = (id: string): void => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const flat = conversations === null ? [] : sortConversations(conversations);
+
+  // Build the folder tree once per render from the flat lists.
+  const allFolders = folders === null ? [] : folders;
+  const byParent = new Map<string | null, TreeFolder[]>();
+  const lookup = new Map<string, TreeFolder>();
+  for (const folder of allFolders) {
+    const node: TreeFolder = { ...folder, children: [], chats: [] };
+    lookup.set(folder.id, node);
+    const parent = folder.parentId ?? null;
+    if (!byParent.has(parent)) byParent.set(parent, []);
+    byParent.get(parent)?.push(node);
+  }
+  for (const [, nodes] of byParent) nodes.sort((a, b) => a.position - b.position);
+  const roots = byParent.get(null) ?? [];
+  const chatByFolder = new Map<string | null, ConversationSummary[]>();
+  for (const chat of flat) {
+    const key = chat.folderId ?? null;
+    if (!chatByFolder.has(key)) chatByFolder.set(key, []);
+    chatByFolder.get(key)?.push(chat);
+  }
+  const assign = (node: TreeFolder): void => {
+    node.chats = chatByFolder.get(node.id) ?? [];
+    node.children = byParent.get(node.id) ?? [];
+    for (const child of node.children) assign(child);
+  };
+  for (const root of roots) assign(root);
+  const inboxChats = chatByFolder.get(null) ?? [];
+  const totalFolderChats = flat.length - inboxChats.length;
+
+  const renderChat = (chat: ConversationSummary): ReactNode => {
+    const isActive = chat.id === activeConversationId;
+    const isConfirming = confirmingId === chat.id;
+    const isDeleting = deletingId === chat.id;
+    return (
+      <li key={chat.id} className={isActive ? 'rail-item rail-item-active' : 'rail-item'}>
+        <button
+          type="button"
+          className="rail-item-open"
+          onClick={() => onOpen(chat.id)}
+          disabled={disabled || isDeleting}
+          aria-current={isActive ? 'true' : undefined}
+        >
+          <span className="rail-item-title">{conversationTitle(chat)}</span>
+          <span className="rail-item-meta">
+            {chat.messageCount > 0
+              ? `${chat.messageCount} msg${chat.messageCount === 1 ? '' : 's'} · `
+              : ''}
+            {timeAgo(chat.updatedAt)}
+          </span>
+        </button>
+        <select
+          className="rail-item-move"
+          aria-label={`Move ${conversationTitle(chat)} to folder`}
+          value={chat.folderId ?? ''}
+          disabled={disabled || isDeleting}
+          onChange={(event) => {
+            const target = event.target.value;
+            void onMoveConversation(chat.id, target === '' ? null : target);
+          }}
+        >
+          <option value="">Inbox</option>
+          {allFolders.map((folder) => (
+            <option key={folder.id} value={folder.id}>
+              {folder.name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className={
+            isConfirming || isDeleting
+              ? 'btn btn-secondary btn-sm rail-item-del rail-item-del-visible'
+              : 'btn btn-secondary btn-sm rail-item-del'
+          }
+          onClick={() =>
+            void (isConfirming ? confirmDelete(chat.id) : armConfirm('chat', chat.id))
+          }
+          disabled={disabled || isDeleting}
+          aria-busy={isDeleting}
+          aria-label={
+            isConfirming
+              ? `Confirm deleting conversation ${conversationTitle(chat)}`
+              : `Delete conversation ${conversationTitle(chat)}`
+          }
+        >
+          {isDeleting ? '…' : isConfirming ? 'Confirm' : 'Delete'}
+        </button>
+      </li>
+    );
+  };
+
+  const renderFolder = (folder: TreeFolder, depth: number): ReactNode => {
+    const isCollapsed = collapsed.has(folder.id);
+    const isConfirming = confirmingFolderId === folder.id;
+    const isDeleting = deletingFolderId === folder.id;
+    const isRenaming = renamingId === folder.id;
+    const hasChildren = folder.children.length > 0 || folder.chats.length > 0;
+    return (
+      <li
+        key={folder.id}
+        className="folder-node"
+        style={{ '--folder-depth': depth } as CSSProperties}
+      >
+        <div className="folder-row">
+          <button
+            type="button"
+            className="folder-toggle"
+            aria-expanded={!isCollapsed}
+            disabled={!hasChildren || disabled}
+            onClick={() => toggleCollapsed(folder.id)}
+            aria-label={
+              isCollapsed ? `Expand folder ${folder.name}` : `Collapse folder ${folder.name}`
+            }
+          >
+            {hasChildren ? (isCollapsed ? '▸' : '▾') : ''}
+          </button>
+          {isRenaming ? (
+            <form
+              className="folder-rename"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void commitRename(folder.id);
+              }}
+            >
+              <input
+                className="field"
+                value={renameDraft}
+                autoFocus
+                aria-label={`Rename folder ${folder.name}`}
+                onChange={(event) => setRenameDraft(event.target.value)}
+                onBlur={() => void commitRename(folder.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') setRenamingId(null);
+                }}
+              />
+            </form>
+          ) : (
+            <span className="folder-name" title={`${folder.chatCount} chat${folder.chatCount === 1 ? '' : 's'}`}>
+              {folder.name}
+              <span className="folder-count">
+                {folder.chatCount > 0 ? folder.chatCount : ''}
+              </span>
+            </span>
+          )}
+          <span className="folder-actions">
+            <button
+              type="button"
+              className="folder-action"
+              aria-label={`Add subfolder under ${folder.name}`}
+              title="Add subfolder"
+              disabled={disabled || isDeleting}
+              onClick={() => {
+                setCreatingFor((current) => (current === folder.id ? null : folder.id));
+                setNewName('');
+              }}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              className="folder-action"
+              aria-label={`Rename folder ${folder.name}`}
+              title="Rename"
+              disabled={disabled || isDeleting}
+              onClick={() => beginRename(folder)}
+            >
+              ✎
+            </button>
+            <button
+              type="button"
+              className={
+                isConfirming
+                  ? 'folder-action folder-action-danger folder-action-confirm'
+                  : 'folder-action folder-action-danger'
+              }
+              aria-label={
+                isConfirming
+                  ? `Confirm deleting folder ${folder.name}`
+                  : `Delete folder ${folder.name}`
+              }
+              title={isConfirming ? 'Confirm delete' : 'Delete'}
+              disabled={disabled || isDeleting}
+              onClick={() =>
+                void (isConfirming ? confirmFolderDelete(folder.id) : armConfirm('folder', folder.id))
+              }
+            >
+              {isDeleting ? '…' : isConfirming ? 'OK' : '×'}
+            </button>
+          </span>
+        </div>
+        {creatingFor === folder.id ? (
+          <form className="folder-new-row" onSubmit={(event) => void submitNewFolder(event)}>
+            <input
+              className="field"
+              placeholder={EMPTY_FOLDER_NAME}
+              aria-label={`Name for the new subfolder under ${folder.name}`}
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+              onBlur={() => setCreatingFor(null)}
+              autoFocus
+            />
+          </form>
+        ) : null}
+        {!isCollapsed ? (
+          <ul className="folder-group">
+            {folder.children.map((child) => renderFolder(child, depth + 1))}
+            {folder.chats.map(renderChat)}
+          </ul>
+        ) : null}
+      </li>
+    );
+  };
+
+  const anyFolders = allFolders.length > 0;
   const list = conversations === null ? [] : sortConversations(conversations);
 
   return (
@@ -97,56 +385,53 @@ export default function ConversationRail({
         ) : list.length === 0 ? (
           <p className="rail-note">Your conversations appear here — start with New chat.</p>
         ) : (
-          <ul className="rail-list">
-            {list.map((conversation) => {
-              const isActive = conversation.id === activeConversationId;
-              const isConfirming = confirmingId === conversation.id;
-              const isDeleting = deletingId === conversation.id;
-              return (
-                <li
-                  key={conversation.id}
-                  className={isActive ? 'rail-item rail-item-active' : 'rail-item'}
-                >
-                  <button
-                    type="button"
-                    className="rail-item-open"
-                    onClick={() => onOpen(conversation.id)}
-                    disabled={disabled || isDeleting}
-                    aria-current={isActive ? 'true' : undefined}
-                  >
-                    <span className="rail-item-title">{conversationTitle(conversation)}</span>
-                    <span className="rail-item-meta">
-                      {conversation.messageCount > 0
-                        ? `${conversation.messageCount} msg${conversation.messageCount === 1 ? '' : 's'} · `
-                        : ''}
-                      {timeAgo(conversation.updatedAt)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      isConfirming || isDeleting
-                        ? 'btn btn-secondary btn-sm rail-item-del rail-item-del-visible'
-                        : 'btn btn-secondary btn-sm rail-item-del'
-                    }
-                    onClick={() =>
-                      void (isConfirming ? confirmDelete(conversation.id) : armDelete(conversation.id))
-                    }
-                    disabled={disabled || isDeleting}
-                    aria-busy={isDeleting}
-                    aria-label={
-                      isConfirming
-                        ? `Confirm deleting conversation ${conversationTitle(conversation)}`
-                        : `Delete conversation ${conversationTitle(conversation)}`
-                    }
-                  >
-                    {isDeleting ? '…' : isConfirming ? 'Confirm' : 'Delete'}
-                  </button>
-                </li>
-              );
-            })}
+          <ul className="rail-list rail-tree">
+            {/* Inbox: chats with no folder — always shown when non-empty. */}
+            {inboxChats.length > 0 || !anyFolders ? (
+              <li className="folder-node" style={{ '--folder-depth': 0 } as CSSProperties}>
+                <div className="folder-row folder-row-inbox">
+                  <span className="folder-name folder-name-inbox">Inbox</span>
+                  <span className="folder-count">{inboxChats.length}</span>
+                </div>
+                <ul className="folder-group">{inboxChats.map(renderChat)}</ul>
+              </li>
+            ) : null}
+            {roots.map((root) => renderFolder(root, 0))}
           </ul>
         )}
+        {folders !== null ? (
+          <div className="rail-foot">
+            {creatingFor === null ? (
+              <button
+                type="button"
+                className="btn btn-secondary btn-block btn-sm"
+                disabled={disabled}
+                onClick={() => {
+                  setCreatingFor('');
+                  setNewName('');
+                }}
+              >
+                + New folder
+              </button>
+            ) : (
+              <form className="folder-new-row" onSubmit={(event) => void submitNewFolder(event)}>
+                <input
+                  className="field"
+                  placeholder={EMPTY_FOLDER_NAME}
+                  aria-label="Name for the new folder"
+                  value={newName}
+                  autoFocus
+                  onChange={(event) => setNewName(event.target.value)}
+                  onBlur={() => setCreatingFor(null)}
+                />
+              </form>
+            )}
+          </div>
+        ) : null}
+        <span className="rail-total">
+          {flat.length} chat{flat.length === 1 ? '' : 's'}
+          {totalFolderChats > 0 ? ` · ${totalFolderChats} in folders` : ''}
+        </span>
       </div>
     </aside>
   );

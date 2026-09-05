@@ -481,6 +481,14 @@ interface PersonaEditorProps {
 
 const DEFAULT_MEMORY: PersonaInput['memory'] = { userProfile: 'none', episodes: 'none' };
 
+/** Comma-separated editor input -> trimmed string list. */
+function list(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+}
+
 function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }: PersonaEditorProps) {
   const editing = persona !== null;
   const [name, setName] = useState(persona?.name ?? '');
@@ -497,6 +505,10 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
     cheap: persona?.model.taskClasses.cheap ?? '',
   });
   const [isDefault, setIsDefault] = useState(persona?.isDefault ?? false);
+  // M11 F3 capability policy (comma-separated editor fields).
+  const [defaultSkills, setDefaultSkills] = useState(persona?.policy?.skills?.default?.join(', ') ?? '');
+  const [bannedSkills, setBannedSkills] = useState(persona?.policy?.skills?.banned?.join(', ') ?? '');
+  const [bannedTools, setBannedTools] = useState(persona?.policy?.tools?.banned?.join(', ') ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -551,6 +563,21 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
         autoScopes: persona?.independence.autoScopes ?? [],
       },
       memory: persona?.memory ?? DEFAULT_MEMORY,
+      ...(defaultSkills.trim() !== '' || bannedSkills.trim() !== '' || bannedTools.trim() !== ''
+        ? {
+            policy: {
+              ...(defaultSkills.trim() !== '' || bannedSkills.trim() !== ''
+                ? {
+                    skills: {
+                      ...(defaultSkills.trim() !== '' ? { default: list(defaultSkills) } : {}),
+                      ...(bannedSkills.trim() !== '' ? { banned: list(bannedSkills) } : {}),
+                    },
+                  }
+                : {}),
+              ...(bannedTools.trim() !== '' ? { tools: { banned: list(bannedTools) } } : {}),
+            },
+          }
+        : {}),
       isDefault,
     };
 
@@ -705,6 +732,59 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
               />
             </div>
           ))}
+        </fieldset>
+
+        <fieldset className="persona-policy">
+          <legend className="label persona-policy-legend">Capability policy (optional)</legend>
+          <div className="form-field">
+            <label className="label" htmlFor={`${idPrefix}-policy-default-skills`}>
+              Default skills (comma-separated)
+            </label>
+            <input
+              id={`${idPrefix}-policy-default-skills`}
+              className="field"
+              type="text"
+              value={defaultSkills}
+              disabled={formDisabled}
+              onChange={(event) => setDefaultSkills(event.target.value)}
+              placeholder="web-research, docgen"
+            />
+            <p className="form-hint">Loaded into new chats with this persona.</p>
+          </div>
+          <div className="form-field">
+            <label className="label" htmlFor={`${idPrefix}-policy-banned-skills`}>
+              Banned skills (comma-separated)
+            </label>
+            <input
+              id={`${idPrefix}-policy-banned-skills`}
+              className="field"
+              type="text"
+              value={bannedSkills}
+              disabled={formDisabled}
+              onChange={(event) => setBannedSkills(event.target.value)}
+              placeholder="ship, email"
+            />
+            <p className="form-hint">
+              Invoking a banned skill is refused server-side — not negotiable by the model.
+            </p>
+          </div>
+          <div className="form-field">
+            <label className="label" htmlFor={`${idPrefix}-policy-banned-tools`}>
+              Banned tools (comma-separated)
+            </label>
+            <input
+              id={`${idPrefix}-policy-banned-tools`}
+              className="field"
+              type="text"
+              value={bannedTools}
+              disabled={formDisabled}
+              onChange={(event) => setBannedTools(event.target.value)}
+              placeholder="deploy, files.delete"
+            />
+            <p className="form-hint">
+              The persona may never direct-execute these — bans beat its autonomy envelope.
+            </p>
+          </div>
         </fieldset>
 
         <label className="check-label" htmlFor={`${idPrefix}-default`}>

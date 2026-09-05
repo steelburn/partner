@@ -27,6 +27,8 @@ export interface NotesSegmentProps {
   active: boolean;
   /** Forget the session and return to the pairing gate (auth failure). */
   onUnpair: () => void;
+  /** M11 F6: increments request opening the quick-capture composer. */
+  captureSignal?: number;
 }
 
 /** Editor target: brand-new note (create) or an existing note. */
@@ -41,7 +43,7 @@ type EditingState = { kind: 'new' } | { kind: 'edit'; note: Note } | null;
  * errors and feedback in this view carry titles, counts and statuses, never
  * note bodies.
  */
-export default function NotesSegment({ active, onUnpair }: NotesSegmentProps) {
+export default function NotesSegment({ active, onUnpair, captureSignal }: NotesSegmentProps) {
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
@@ -51,6 +53,14 @@ export default function NotesSegment({ active, onUnpair }: NotesSegmentProps) {
   const [captureText, setCaptureText] = useState('');
   const [captureBusy, setCaptureBusy] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
+
+  // M11 F6: a global "Quick capture" action (header / Ctrl+K) opens the
+  // composer whenever the increment changes.
+  useEffect(() => {
+    if (captureSignal !== undefined && captureSignal > 0) {
+      setCaptureOpen(true);
+    }
+  }, [captureSignal]);
   const [dailyBusy, setDailyBusy] = useState(false);
   const [summarizeBusy, setSummarizeBusy] = useState(false);
   const [exporting, setExporting] = useState(false);

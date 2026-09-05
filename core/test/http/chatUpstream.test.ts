@@ -165,10 +165,15 @@ describe('chat upstream context (multi-turn + persona identity)', () => {
       const convId = doneMeta(first.text).conversationId;
       expect(upstream.calls).toHaveLength(1);
       const body1 = upstream.calls[0]?.body;
-      expect(body1?.messages).toEqual([
-        { role: 'system', content: analyst?.character.systemPrompt },
-        { role: 'user', content: 'first turn' },
-      ]);
+      const system1 = body1?.messages[0];
+      expect(system1?.role).toBe('system');
+      expect(typeof system1?.content).toBe('string');
+      const content1 = String(system1?.content);
+      // M11 C3: the persona identity prompt plus the structured-interaction
+      // guidance (deterministic containers) ride the same system message.
+      expect(content1).toContain(analyst?.character.systemPrompt ?? '');
+      expect(content1).toContain(':::partner.choice');
+      expect(body1?.messages.slice(1)).toEqual([{ role: 'user', content: 'first turn' }]);
       expect(body1?.temperature).toBe(0.2);
 
       // Turn 2 — same conversation, client sends ONLY the newest message.
@@ -179,8 +184,11 @@ describe('chat upstream context (multi-turn + persona identity)', () => {
       expect(second.status).toBe(200);
       expect(upstream.calls).toHaveLength(2);
       const body2 = upstream.calls[1]?.body;
-      expect(body2?.messages).toEqual([
-        { role: 'system', content: analyst?.character.systemPrompt },
+      const system2 = body2?.messages[0];
+      expect(system2?.role).toBe('system');
+      expect(String(system2?.content)).toContain(analyst?.character.systemPrompt ?? '');
+      expect(String(system2?.content)).toContain(':::partner.choice');
+      expect(body2?.messages.slice(1)).toEqual([
         { role: 'user', content: 'first turn' },
         { role: 'assistant', content: 'ok ' }, // the capture upstream echo, persisted
         { role: 'user', content: 'second turn' },
@@ -225,11 +233,13 @@ describe('chat upstream context (multi-turn + persona identity)', () => {
       expect(turn.status).toBe(200);
       const body = upstream.calls[1]?.body;
       const scribe = h.personas.get('p-scribe');
-      // Verbatim transcript + persona system prompt, NOT seeded from history.
-      expect(body?.messages).toEqual([
-        { role: 'system', content: scribe?.character.systemPrompt },
-        ...transcript,
-      ]);
+      // Verbatim transcript + persona system prompt (with the M11 C3
+      // structured guidance suffix), NOT seeded from history.
+      const system = body?.messages[0];
+      expect(system?.role).toBe('system');
+      expect(String(system?.content)).toContain(scribe?.character.systemPrompt ?? '');
+      expect(String(system?.content)).toContain(':::partner.choice');
+      expect(body?.messages.slice(1)).toEqual([...transcript]);
     } finally {
       h.close();
     }

@@ -353,6 +353,8 @@ export function createToolLoop(deps: ToolLoopDeps): ToolLoop {
       declaredTools: state.allowedTools,
       autoScopes: state.persona.independence.autoScopes,
       hasGrant,
+      // M11 F3: persona policy tool bans refuse at the gate.
+      bannedTools: state.persona.policy?.tools?.banned,
     });
 
     if (gate.decision === 'refused') {

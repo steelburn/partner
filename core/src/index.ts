@@ -389,6 +389,11 @@ import {
   createSessionStore,
   createAuditStore,
   createProviderStore,
+  createFolderStore,
+  createChatBlobStore,
+  createAttachmentStore,
+  createAssetStore,
+  createMcpServerStore,
   createProjectRootStore,
   createGrantStore,
   createPendingToolStore,
@@ -412,6 +417,7 @@ import {
 import type {
   ConversationStore,
   EpisodeStore,
+  FolderStore,
   MemoryFtsStore,
   MessageStore,
   NoteLinkStore,
@@ -477,6 +483,14 @@ import { createSkillManager } from './skills/manager.js';
 import type { SkillManager } from './skills/manager.js';
 import { createSkillRunner } from './skills/runner.js';
 import type { SkillRunner } from './skills/runner.js';
+import { createFolderManager } from './folders/index.js';
+import type { FolderManager } from './folders/index.js';
+import { createAttachmentManager } from './attachments/index.js';
+import type { AttachmentManager } from './attachments/index.js';
+import { createAssetManager } from './assets/index.js';
+import type { AssetManager } from './assets/index.js';
+import { createMcpManager } from './mcp/index.js';
+import type { McpManager } from './mcp/index.js';
 import {
   createDeployManager,
   createPlaybookManager,
@@ -512,6 +526,15 @@ export interface CoreBundle {
   conversationManager: ConversationManager;
   conversationStore: ConversationStore;
   messageStore: MessageStore;
+  /** M11 F11 folder manager + store (chats organized into folders). */
+  folders: FolderManager;
+  folderStore: FolderStore;
+  /** M11 F1 chat-attachment manager (uploads + blob content). */
+  attachments: AttachmentManager;
+  /** M11 F10 asset manager (saved response artifacts + note promotion). */
+  assets: AssetManager;
+  /** M11 F2 MCP manager (stdio client config + user tool calls). */
+  mcp: McpManager;
   /** M4 memory managers + stores (wired on every core over the same db). */
   memory: MemoryBundle;
   profileStore: ProfileEntryStore;
@@ -631,6 +654,24 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     audit,
   });
 
+  // M11 F11: folders over the SAME db (schema v12). Conversations are the
+  // edge owner; the folder manager uses the conversation manager for chat
+  // counts and folder-delete reassignment. No seed — Inbox is folder NULL.
+  const folderStore = createFolderStore(db);
+  const folders = createFolderManager({
+    store: folderStore,
+    conversations: conversationManager,
+    audit,
+  });
+
+  // M11 F1: chat attachments over the SAME db (schema v12). Payload bytes
+  // live in chat_blobs inside the encrypted DB; staged rows bind to turns.
+  const attachments = createAttachmentManager({
+    blobs: createChatBlobStore(db),
+    attachments: createAttachmentStore(db),
+    audit,
+  });
+
   // M4: memory over the SAME db (schema v5). Summaries route through the
   // persona's resolved chat provider when a conversation has one and a
   // provider+model is usable; demo mode always writes placeholder summaries.
@@ -665,6 +706,21 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   });
   const plans = createPlanManager({
     stores: { plans: planStore, fts: notesFtsStore },
+    audit,
+  });
+
+  // M11 F10: assets over the SAME db (schema v12). Promotion bridges into
+  // notes (F6): chat artifacts become notes with provenance headers.
+  const assets = createAssetManager({
+    store: createAssetStore(db),
+    notes,
+    audit,
+  });
+
+  // M11 F2 (slice 2): MCP stdio servers over the SAME db (schema v12).
+  // Created OFF (default-deny); enable + user-initiated calls via /v1/mcp.
+  const mcp = createMcpManager({
+    store: createMcpServerStore(db),
     audit,
   });
 
@@ -757,6 +813,10 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     broker,
     personaManager,
     conversationManager,
+    folders,
+    attachments,
+    assets,
+    mcp,
     memory,
     notes,
     plans,
@@ -787,6 +847,11 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     conversationManager,
     conversationStore,
     messageStore,
+    folders,
+    folderStore,
+    attachments,
+    assets,
+    mcp,
     memory,
     profileStore,
     episodeStore,

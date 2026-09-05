@@ -42,6 +42,7 @@ const basePersona: PersonaRow = {
   requireHuman: JSON.stringify(['high']),
   autoScopes: JSON.stringify(['search:read']),
   memoryFlags: JSON.stringify({ userProfile: 'read', episodes: 'none' }),
+  policy: null,
   isDefault: 0,
   paused: 0,
   createdAt: 10,
@@ -126,14 +127,14 @@ describe('createConversationStore + createMessageStore', () => {
     try {
       const conversations = createConversationStore(db);
       const messages = createMessageStore(db);
-      const c1: ConversationRow = { id: 'c-1', personaId: 'p-1', title: 'Hello', createdAt: 1, updatedAt: 1 };
-      const c2: ConversationRow = { id: 'c-2', personaId: null, title: null, createdAt: 2, updatedAt: 2 };
+      const c1: ConversationRow = { id: 'c-1', personaId: 'p-1', title: 'Hello', folderId: null, createdAt: 1, updatedAt: 1 };
+      const c2: ConversationRow = { id: 'c-2', personaId: null, title: null, folderId: null, createdAt: 2, updatedAt: 2 };
       conversations.insert(c1);
       conversations.insert(c2);
       expect(conversations.list().map((c) => c.id)).toEqual(['c-2', 'c-1']);
 
-      const m1: MessageRow = { id: 'm-1', conversationId: 'c-1', role: 'user', personaId: 'p-1', content: 'hi', model: null, latencyMs: null, createdAt: 10 };
-      const m2: MessageRow = { id: 'm-2', conversationId: 'c-1', role: 'assistant', personaId: 'p-1', content: 'hello', model: 'demo', latencyMs: 3, createdAt: 20 };
+      const m1: MessageRow = { id: 'm-1', conversationId: 'c-1', role: 'user', personaId: 'p-1', contentType: 'text', content: 'hi', model: null, latencyMs: null, createdAt: 10 };
+      const m2: MessageRow = { id: 'm-2', conversationId: 'c-1', role: 'assistant', personaId: 'p-1', contentType: 'text', content: 'hello', model: 'demo', latencyMs: 3, createdAt: 20 };
       messages.insert(m1);
       messages.insert(m2);
       messages.insert({ ...m1, id: 'm-3', conversationId: 'c-2', content: 'other', createdAt: 5 });
