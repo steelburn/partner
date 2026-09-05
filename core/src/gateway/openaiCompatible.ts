@@ -24,6 +24,7 @@ import type {
   ChatRequest,
   HealthReport,
   ProviderClient,
+  ToolCall,
 } from '@partner/shared';
 
 export const USER_AGENT = 'partner-core/0.1';
@@ -179,6 +180,80 @@ function usageEvent(raw: unknown): ChatEvent | null {
   return { type: 'usage', promptTokens, completionTokens, totalTokens };
 }
 
+/** Merge ONE delta tool_call fragment into the per-turn accumulator. */
+function collectToolCallDelta(raw: unknown, acc: Map<number, ToolCall>): void {
+  if (raw === null || typeof raw !== 'object') return;
+  const rawChoice = (raw as Record<string, unknown>).choices;
+  const choice = Array.isArray(rawChoice) ? (rawChoice[0] as Record<string, unknown> | undefined) : undefined;
+  const delta =
+    choice !== undefined && choice !== null && typeof choice.delta === 'object'
+      ? (choice.delta as Record<string, unknown>)
+      : null;
+  const rawCalls =
+    delta !== null && Array.isArray(delta.tool_calls) ? (delta.tool_calls as unknown[]) : [];
+  for (const entry of rawCalls) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const item = entry as Record<string, unknown>;
+    const index = typeof item.index === 'number' ? item.index : 0;
+    const current = acc.get(index) ?? {};
+    if (typeof item.id === 'string') current.id = item.id;
+    const fn = item.function;
+    if (fn !== null && typeof fn === 'object') {
+      const func = fn as Record<string, unknown>;
+      if (typeof func.name === 'string' && func.name !== '') current.name = func.name;
+      if (typeof func.arguments === 'string' && func.arguments !== '') {
+        // Streaming deltas append fragments; a full final string replaces.
+        current.arguments = `${current.arguments ?? ''}${func.arguments}`;
+      }
+    }
+    acc.set(index, current);
+  }
+}
+
+/** Final aggregated tool-calls event from an accumulator (or null). */
+function toolCallsEventFrom(acc: Map<number, ToolCall>): ChatEvent | null {
+  if (acc.size === 0) return null;
+  const calls: ToolCall[] = [...acc.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, call]) => call);
+  return { type: 'tool_calls', calls };
+}
+
+/** Detect FULL non-streaming tool_calls on the assistant message. */
+function fullToolCallsEvent(raw: unknown): ChatEvent | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const rawChoice = (raw as Record<string, unknown>).choices;
+  const choice = Array.isArray(rawChoice) ? (rawChoice[0] as Record<string, unknown> | undefined) : undefined;
+  const message =
+    choice !== undefined && choice !== null && typeof choice.message === 'object'
+      ? (choice.message as Record<string, unknown>)
+      : null;
+  const rawCalls =
+    message !== null && Array.isArray(message.tool_calls) ? (message.tool_calls as unknown[]) : [];
+  if (rawCalls.length === 0) return null;
+  const calls: ToolCall[] = rawCalls
+    .map((entry): ToolCall | null => {
+      if (entry === null || typeof entry !== 'object') return null;
+      const item = entry as Record<string, unknown>;
+      const fn = item.function;
+      return {
+        id: typeof item.id === 'string' ? item.id : undefined,
+        name:
+          fn !== null && typeof fn === 'object' && typeof (fn as Record<string, unknown>).name === 'string'
+            ? ((fn as Record<string, unknown>).name as string)
+            : undefined,
+        arguments:
+          fn !== null &&
+          typeof fn === 'object' &&
+          typeof (fn as Record<string, unknown>).arguments === 'string'
+            ? ((fn as Record<string, unknown>).arguments as string)
+            : undefined,
+      };
+    })
+    .filter((call): call is ToolCall => call !== null);
+  return calls.length === 0 ? null : { type: 'tool_calls', calls };
+}
+
 /** Turn one decoded chunk/line payload into safe ChatEvents. */
 function eventsFromPayload(raw: unknown): ChatEvent[] {
   if (raw === null || typeof raw !== 'object') return [];
@@ -191,20 +266,30 @@ function eventsFromPayload(raw: unknown): ChatEvent[] {
   const choices = Array.isArray(obj.choices) ? obj.choices : [];
   const text = textOfChoice(choices[0]);
   if (text !== null) events.push({ type: 'delta', text });
+  // Non-streaming responses may carry the FULL tool_calls array on the
+  // assistant message — surface it as the aggregated event.
+  const fullToolCalls = fullToolCallsEvent(raw);
+  if (fullToolCalls !== null) events.push(fullToolCalls);
   const usage = usageEvent(obj);
   if (usage !== null) events.push(usage);
   return events;
 }
 
-/** One SSE data line -> events + whether the stream is done. */
-function handleSseLine(line: string): { events: ChatEvent[]; end: boolean } {
+/** One SSE data line -> events + whether the stream is done. When an
+ *  accumulator is given, delta tool_call fragments are merged into it. */
+function handleSseLine(
+  line: string,
+  toolAcc?: Map<number, ToolCall>,
+): { events: ChatEvent[]; end: boolean } {
   const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line;
   if (!trimmed.startsWith('data:')) return { events: [], end: false };
   let payload = trimmed.slice('data:'.length);
   if (payload.startsWith(' ')) payload = payload.slice(1);
   if (payload.trim() === '[DONE]') return { events: [], end: true };
   try {
-    return { events: eventsFromPayload(JSON.parse(payload) as unknown), end: false };
+    const parsed = JSON.parse(payload) as unknown;
+    if (toolAcc !== undefined) collectToolCallDelta(parsed, toolAcc);
+    return { events: eventsFromPayload(parsed), end: false };
   } catch {
     return { events: [], end: false };
   }
@@ -240,6 +325,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
             messages: req.messages,
             stream: true,
             stream_options: { include_usage: true },
+            ...(req.tools !== undefined && req.tools.length > 0 ? { tools: req.tools } : {}),
             ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
           }),
           signal: controller.signal,
@@ -297,9 +383,11 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
         }
 
         // SSE parse: process complete lines as they arrive; keep a partial
-        // line in the buffer across chunk boundaries.
+        // line in the buffer across chunk boundaries. toolCallAcc merges
+        // native function-call deltas for the single end-of-turn event.
         let buffer = '';
         let sawDone = false;
+        const toolCallAcc = new Map<number, ToolCall>();
         try {
           for (;;) {
             armIdle();
@@ -310,7 +398,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
             while (nl !== -1) {
               const line = buffer.slice(0, nl);
               buffer = buffer.slice(nl + 1);
-              const { events, end } = handleSseLine(line);
+              const { events, end } = handleSseLine(line, toolCallAcc);
               for (const event of events) yield event;
               if (end) {
                 sawDone = true;
@@ -321,12 +409,15 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleOptions): 
             if (sawDone) break;
           }
           if (!sawDone && buffer.trim() !== '') {
-            const { events } = handleSseLine(buffer);
+            const { events } = handleSseLine(buffer, toolCallAcc);
             for (const event of events) yield event;
           }
         } finally {
           clearTimeout(idleTimer);
         }
+
+        const aggregatedToolCalls = toolCallsEventFrom(toolCallAcc);
+        if (aggregatedToolCalls !== null) yield aggregatedToolCalls;
 
         yield { type: 'done', model: req.model, latencyMs: Date.now() - started };
       } catch (err) {

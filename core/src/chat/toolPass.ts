@@ -69,13 +69,62 @@ export interface ChatToolPassResult {
 
 /** Run every directive in the assistant reply text through gate + broker. */
 export function runChatToolPass(text: string, deps: ChatToolPassDeps): ChatToolPassResult {
-  const { persona, broker, audit, appendSystemNote } = deps;
+  return runToolDirectives(
+    parseReplyTools(text).map((directive) => ({
+      toolId: directive.toolId,
+      args: directive.args,
+    })),
+    deps,
+  );
+}
+
+/**
+ * M11 F2 native function calls: authorize + broker each aggregated tool call
+ * the model made. Same gate/broker semantics as the directive pass — the
+ * outcome notes persist for the NEXT turn's history (no hidden replay).
+ *
+ * @param calls native calls (name + raw JSON-string arguments)
+ */
+export function runNativeToolCalls(
+  calls: Array<{ id?: string | null; name?: string | null; arguments?: string | null }>,
+  deps: ChatToolPassDeps,
+): ChatToolPassResult {
+  const directives: Array<{ toolId: string; args: Record<string, unknown> }> = [];
+  for (const call of calls) {
+    const toolId = typeof call.name === 'string' && call.name.trim() !== '' ? call.name.trim() : '';
+    if (toolId === '') continue;
+    let args: Record<string, unknown> = {};
+    if (typeof call.arguments === 'string' && call.arguments.trim() !== '') {
+      try {
+        const parsed = JSON.parse(call.arguments) as unknown;
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        }
+      } catch {
+        args = { _parseError: call.arguments.slice(0, 200) };
+      }
+    }
+    directives.push({ toolId, args });
+  }
+  return runToolDirectives(directives, deps);
+}
+
+function runToolDirectives(
+  directives: Array<{ toolId: string; args: Record<string, unknown> }>,
+  deps: ChatToolPassDeps,
+): ChatToolPassResult {
+  const { persona, broker, audit } = deps;
   const now = deps.now ?? Date.now;
   const manifestById = new Map<string, ToolManifest>(broker.manifests.map((m) => [m.id, m]));
   const decisions: ChatToolDecision[] = [];
 
-  for (const directive of parseReplyTools(text)) {
-    const outcome = handleDirective(directive, manifestById, deps, now());
+  for (const directive of directives) {
+    const outcome = handleDirective(
+      { toolId: directive.toolId, args: directive.args },
+      manifestById,
+      deps,
+      now(),
+    );
     if (outcome !== null) decisions.push(outcome);
   }
 
@@ -91,7 +140,6 @@ export function runChatToolPass(text: string, deps: ChatToolPassDeps): ChatToolP
           : {}),
     });
   }
-  void appendSystemNote;
   return { decisions };
 }
 

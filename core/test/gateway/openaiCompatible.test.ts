@@ -204,3 +204,101 @@ describe('listModels + health', () => {
     expect(typeof health.latencyMs).toBe('number');
   });
 });
+
+describe('M11 F2 native tool calls', () => {
+  it('advertises the tools array in the request body when provided', async () => {
+    let body: Record<string, unknown> | undefined;
+    const s = await captureServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      req.on('end', () => {
+        try {
+          body = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          body = undefined;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    await collect(
+      client.chatStream(
+        chatRequest({
+          tools: [
+            {
+              type: 'function',
+              function: { name: 'files.read', description: 'read a file', parameters: { type: 'object' } },
+            },
+          ],
+        }),
+      ),
+    );
+    expect(body?.tools).toEqual([
+      { type: 'function', function: { name: 'files.read', description: 'read a file', parameters: { type: 'object' } } },
+    ]);
+  });
+
+  it('aggregates streaming tool_calls deltas into ONE event before done', async () => {
+    const frames = [
+      { choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', function: { name: 'files.read', arguments: '' } }] } }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"projectId":"p-1",' } }] } }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"path":"a.txt"}' } }] } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+    ];
+    const s = await captureServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end(
+        frames
+          .map((f) => `data: ${JSON.stringify(f)}\n\n`)
+          .concat(['data: [DONE]\n\n'])
+          .join(''),
+      );
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    const events = await collect(client.chatStream(chatRequest()));
+    const toolEvent = events.find((e) => e.type === 'tool_calls');
+    expect(toolEvent?.type).toBe('tool_calls');
+    if (toolEvent?.type === 'tool_calls') {
+      expect(toolEvent.calls).toEqual([
+        { id: 'call_1', name: 'files.read', arguments: '{"projectId":"p-1","path":"a.txt"}' },
+      ]);
+    }
+    // Exactly one aggregated event, and it precedes done.
+    expect(events.filter((e) => e.type === 'tool_calls')).toHaveLength(1);
+    const doneIndex = events.findIndex((e) => e.type === 'done');
+    const toolIndex = events.findIndex((e) => e.type === 'tool_calls');
+    expect(toolIndex).toBeGreaterThan(-1);
+    expect(toolIndex).toBeLessThan(doneIndex);
+  });
+
+  it('surfaces FULL tool_calls on a non-streaming JSON response', async () => {
+    const s = await captureServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [{ id: 'call_x', type: 'function', function: { name: 'files.list', arguments: '{"projectId":"p"}' } }],
+              },
+            },
+          ],
+        }),
+      );
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    const events = await collect(client.chatStream(chatRequest()));
+    const toolEvent = events.find((e) => e.type === 'tool_calls');
+    if (toolEvent?.type === 'tool_calls') {
+      expect(toolEvent.calls[0]).toMatchObject({ id: 'call_x', name: 'files.list' });
+    } else {
+      throw new Error('expected a tool_calls event');
+    }
+  });
+});

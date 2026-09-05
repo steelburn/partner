@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Persona, PersonaToolDirective } from '@partner/shared';
 import type { ToolManifest } from '@partner/shared/tools.js';
-import { runChatToolPass, type ChatToolBrokerLike, type ChatToolPassDeps } from '../../src/chat/toolPass.js';
+import { runChatToolPass, runNativeToolCalls, type ChatToolBrokerLike, type ChatToolPassDeps } from '../../src/chat/toolPass.js';
 import { auditLog } from '../../src/services/redaction.js';
 import { createAuditStore } from '../../src/stores/db.js';
 import { openDatabase } from '../../src/stores/db.js';
@@ -150,3 +150,33 @@ describe('M11 F2 chat tool pass', () => {
 
 // Keep the shared directive type referenced (parse input shape).
 export type { PersonaToolDirective };
+
+describe('M11 F2 native tool calls (runNativeToolCalls)', () => {
+  it('parses JSON arguments and executes under a grant', () => {
+    const notes: string[] = [];
+    const broker = brokerLike({
+      grants: { hasGrant: () => true },
+      exec: () => ({ outcome: 'executed' as const, result: { content: 'native read ok' } }),
+    });
+    const result = runNativeToolCalls(
+      [{ id: 'call_1', name: 'files.read', arguments: '{"projectId":"proj-1","path":"a.txt"}' }],
+      makeDeps(persona('auto'), broker, notes),
+    );
+    expect(result.decisions).toEqual([{ toolId: 'files.read', decision: 'executed' }]);
+    expect(notes.join('\n')).toContain('native read ok');
+  });
+
+  it('skips empty names and treats unparsable arguments as a refusal-relevant call', () => {
+    const notes: string[] = [];
+    const result = runNativeToolCalls(
+      [
+        { id: 'x', name: '', arguments: '{}' },
+        { id: 'y', name: 'files.read', arguments: 'not-json' },
+      ],
+      makeDeps(persona('assist'), brokerLike({}), notes),
+    );
+    // '' skipped entirely; assist refuses the second.
+    expect(result.decisions).toHaveLength(1);
+    expect(result.decisions[0]).toMatchObject({ toolId: 'files.read', decision: 'refused' });
+  });
+});

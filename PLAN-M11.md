@@ -123,6 +123,18 @@ production build green):
       whether or not folders exist yet (the earlier empty-rail branch hid it;
       surfaced by the live smoke).
 
+- [x] **F2 slice 3 (native tool_calls, gated)** — `POST /v1/chat
+      {tools:true}` advertises the broker file tools; the OpenAI-compatible
+      adapter now aggregates streaming `tool_calls` deltas into one
+      end-of-turn `tool_calls` event (and reads full tool_calls from
+      non-streaming JSON); the chat route executes native calls through the
+      same gate/broker as directives (grant + persona independence + F3
+      bans) and persists outcome notes. The client stream never carries the
+      machinery event; everything stays byte-identical when tools:true is
+      absent (assist personas are never advertised tools). Multi-round
+      auto-continuation is intentionally still next-turn-history based (no
+      hidden replay).
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet

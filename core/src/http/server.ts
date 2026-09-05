@@ -31,7 +31,7 @@ import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
-import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary } from '@partner/shared';
+import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
@@ -87,7 +87,7 @@ import { AssetError, assetErrorStatus } from '../assets/errors.js';
 import type { McpManager } from '../mcp/manager.js';
 import { McpError, mcpErrorStatus } from '../mcp/errors.js';
 import { applyStructuredGuidance } from '../chat/instructions.js';
-import { runChatToolPass } from '../chat/toolPass.js';
+import { runChatToolPass, runNativeToolCalls } from '../chat/toolPass.js';
 import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
@@ -885,12 +885,16 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       personaId?: unknown;
       taskClass?: unknown;
       attachmentIds?: unknown;
+      tools?: unknown;
     };
     const messages = sanitizeMessages(body.messages);
     if (messages === null) {
       res.status(400).json({ error: 'invalid_messages' });
       return;
     }
+    // M11 F2 native function calling: the CLIENT opts a turn into tool
+    // advertisement (default off keeps every existing stream byte-identical).
+    const advertiseTools = body.tools === true;
     const rawAttachmentIds = Array.isArray(body.attachmentIds)
       ? body.attachmentIds.filter((entry): entry is string => typeof entry === 'string')
       : [];
@@ -1257,6 +1261,20 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           ? { temperature: routingPersona.character.temperature }
           : {}),
       };
+      // M11 F2: advertise the broker's file tools when the client asked and
+      // the persona can act (assist never gets tools).
+      if (advertiseTools && options.broker !== undefined && routingPersona !== null) {
+        if (routingPersona.independence.level !== 'assist') {
+          chatRequest.tools = options.broker.manifests.map((m) => ({
+            type: 'function',
+            function: {
+              name: m.id,
+              description: m.description,
+              parameters: { type: 'object', properties: {}, additionalProperties: true },
+            },
+          }));
+        }
+      }
       let events = 0;
       let ok = true;
       let over = false;
@@ -1265,6 +1283,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // reconciles the turn, otherwise the conservative estimate; null when
       // nothing was billable (external abort). Settled once per turn.
       let settledCents: number | null = null;
+      /** M11 F2: native tool calls collected from this turn's stream. */
+      let nativeCalls: ToolCall[] = [];
 
       const emitBudgetReached = (spentCents: number): void => {
         writeSse(res, {
@@ -1310,6 +1330,12 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             events += 1;
             continue;
           }
+          if (event.type === 'tool_calls') {
+            // Native function calls are turn machinery — never forwarded to
+            // the client stream; they execute through the tool pass below.
+            nativeCalls = event.calls;
+            continue;
+          }
           if (event.type === 'error') ok = false;
           writeSse(res, event);
           events += 1;
@@ -1351,6 +1377,30 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 }
               },
             });
+            // M11 F2 native function calls (same gate/broker, same notes).
+            if (nativeCalls.length > 0) {
+              runNativeToolCalls(nativeCalls, {
+                persona: routingPersona,
+                broker: options.broker,
+                audit,
+                appendSystemNote: (content: string) => {
+                  try {
+                    (conversationManager as ConversationManager).append(
+                      activeConversationId,
+                      'system',
+                      {
+                        content,
+                        personaId: null,
+                        model: doneModel,
+                        latencyMs: null,
+                      },
+                    );
+                  } catch (noteErr) {
+                    logPersistenceFailure('tool note', noteErr);
+                  }
+                },
+              });
+            }
           } catch (toolErr) {
             // A tool-pass failure must never break the turn that finished.
             logPersistenceFailure('tool pass', toolErr);

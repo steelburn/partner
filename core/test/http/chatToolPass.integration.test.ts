@@ -30,6 +30,69 @@ afterEach(async () => {
   }
 });
 
+/** Upstream whose SSE carries NATIVE tool_call deltas (files.read). */
+function startToolCallsUpstream(
+  rootId: string,
+): Promise<{ server: http.Server; base: string; close(): Promise<void> }> {
+  const frames = [
+    {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            tool_calls: [{ index: 0, id: 'call_1', function: { name: 'files.read', arguments: '' } }],
+          },
+        },
+      ],
+    },
+    {
+      choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: `{"projectId":"${rootId}",` } }] } }],
+    },
+    {
+      choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"path":"a.txt"}' } }] } }],
+    },
+    {
+      choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+    },
+  ];
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const path = (req.url ?? '').split('?')[0] ?? '';
+      if (path === '/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }] }));
+        return;
+      }
+      if (path === '/chat/completions') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(
+          frames
+            .map((f) => `data: ${JSON.stringify(f)}\n\n`)
+            .concat(['data: [DONE]\n\n'])
+            .join(''),
+        );
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        server,
+        base: `http://127.0.0.1:${port}`,
+        close: async () => {
+          server.closeAllConnections?.();
+          await new Promise<void>((done) => server.close(() => done()));
+        },
+      });
+    });
+  });
+}
+
 /** Capture upstream that streams ONE assistant text block (the directive). */
 function startDirectiveUpstream(
   reply: string,
@@ -187,6 +250,65 @@ describe('M11 F2 chat tool pass (route integration)', () => {
       expect(note?.content).toContain('assist_level_no_tools');
       // Nothing executed — no result note, no file leak into the transcript.
       expect(detail.messages.some((m) => m.content.includes('secret contents'))).toBe(false);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+
+describe('M11 F2 native tool calls (route)', () => {
+  it('tools:true streams native calls to gate+broker and persists the result note', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'partner-native-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'a.txt'), 'native file body');
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const broker = h.broker as NonNullable<Harness['broker']>;
+      const root = broker.roots.add({ label: 'RootN', path: dir });
+      broker.grants.add('files.read', root.id, {});
+      const upstream = await startToolCallsUpstream(root.id);
+      servers.push(upstream);
+      const provider = await h.providerManager.create({
+        name: 'native-upstream',
+        endpoint: upstream.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-native-key-00000001');
+      const analyst = h.personas.get('p-analyst');
+      expect(analyst).not.toBeNull();
+      await request(h.app)
+        .put(`/v1/personas/${analyst?.id}`)
+        .set(authed(token))
+        .send({
+          name: analyst?.name,
+          character: analyst?.character,
+          model: analyst?.model,
+          independence: { level: 'suggest', requireHumanFor: ['high'], autoScopes: [] },
+          memory: analyst?.memory,
+          isDefault: analyst?.isDefault,
+        });
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          personaId: 'p-analyst',
+          tools: true,
+          messages: [{ role: 'user', content: 'read a.txt natively' }],
+        });
+      expect(chat.status).toBe(200);
+      // The client stream never carries the tool_calls machinery event.
+      expect(chat.text).not.toContain('"tool_calls"');
+
+      const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(chat.text);
+      const detail = h.conversations.get(meta?.[1] ?? '');
+      const note = detail.messages.find((m) => m.content.includes('[tool files.read result]'));
+      expect(note).toBeDefined();
+      expect(note?.content).toContain('native file body');
+      const audit = h.audit.query({ limit: 20, action: 'chat.tool' });
+      expect(audit.some((r) => r.details.includes('executed'))).toBe(true);
     } finally {
       h.close();
     }
