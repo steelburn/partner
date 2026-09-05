@@ -385,8 +385,10 @@ function RunSegment({
           conversationId: conversationId.length > 0 ? conversationId : undefined,
           saveNote,
           signal,
+          // consumeRunStream already delivers every frame (incl. done_meta)
+          // to onEvent — registering onDoneMeta here too would apply each
+          // terminal meta twice and duplicate the transcript rows.
           onEvent: applyEvent,
-          onDoneMeta: (meta) => applyEvent(meta),
         }),
       { reset: true },
     );
@@ -414,8 +416,8 @@ function RunSegment({
           resumeRun(meta.runId as string, meta.pendingId, {
             token,
             signal,
+            // Same single-delivery rule as the run path above.
             onEvent: applyEvent,
-            onDoneMeta: (meta2) => applyEvent(meta2),
           }),
         { reset: false },
       );
