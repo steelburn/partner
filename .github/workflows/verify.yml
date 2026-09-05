@@ -13,9 +13,9 @@
 #     linux-x64 prebuild in the tarball and that prebuild needs GLIBC_2.33;
 #     this runner's glibc is older, so the rebuild step removes it and
 #     node-gyp-compiles against the runner's libc (gcc9: -std=c++2a patch).
-#   * Windows: Node 22 + cmd steps (the runner has no pwsh, its PowerShell
-#     execution policy blocks script steps, and custom-bash-shell paths
-#     break this runner's path handling). Natives use win32 prebuilds.
+#   * Windows: Node 22 + VS Build Tools 2022 (C++ workload) — npm ci
+#     rebuilds the aliased better-sqlite3 and the fork needs MSVC; cmd
+#     steps are used (no pwsh; PS execution policy is GPO-pinned).
 #
 # The web/extension suites must run FROM their own directories (vitest
 # resolves the config include relative to the invocation cwd).
@@ -88,26 +88,21 @@ jobs:
           node-version: 22
           cache: npm
 
-- name: Diagnostics (VS / vswhere / PS policy)
+      - name: Diagnostics (VS / vswhere / PS policy)
         run: |
-          if exist "C:Program Files (x86)Microsoft Visual StudioInstallerswhere.exe" ("C:Program Files (x86)Microsoft Visual StudioInstallerswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) else (echo NO_VSWHERE)
+          if exist "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" ("C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) else (echo NO_VSWHERE)
           where cl 2>nul || echo NO_CL_ON_PATH
           powershell -NoProfile -Command "Get-ExecutionPolicy -List"
-
-
-      - name: Allow PowerShell for node-gyp VS discovery (runner policy)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force"
 
       - name: Setup Python 3.12 (node-gyp for the aliased native)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install (npm rebuilds the aliased native — python + VS 2022)
+      - name: Install (npm rebuilds the aliased native — needs MSVC)
         env:
           npm_config_msvs_version: '2022'
         run: npm ci
-
 
       - name: Typecheck (shared, core, web, extension)
         run: npm run typecheck
