@@ -70,6 +70,8 @@ export interface Persona {
   memory: PersonaMemoryFlags;
   /** M11 F3 capability policy (skills/tools defaults + bans). */
   policy?: PersonaPolicy;
+  /** D10 home folder — new chats for this persona auto-land here. */
+  homeFolderId?: string;
   isDefault: boolean;
   paused: boolean;
   createdAt: number;
@@ -87,6 +89,8 @@ export interface PersonaInput {
   memory: PersonaMemoryFlags;
   /** M11 F3 capability policy (skills/tools defaults + bans). */
   policy?: PersonaPolicy;
+  /** D10 home folder — new chats for this persona auto-land here. */
+  homeFolderId?: string;
   isDefault?: boolean;
 }
 

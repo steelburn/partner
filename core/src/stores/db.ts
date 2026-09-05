@@ -544,7 +544,8 @@ const PERSONA_COLUMNS = `
   task_classes AS taskClasses, fallback_model AS fallbackModel,
   provider_id AS providerId, independence_level AS independenceLevel,
   require_human AS requireHuman, auto_scopes AS autoScopes,
-  memory_flags AS memoryFlags, policy, is_default AS isDefault, paused,
+  memory_flags AS memoryFlags, policy, home_folder AS homeFolderId,
+  is_default AS isDefault, paused,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 const CONVERSATION_COLUMNS = `
@@ -637,6 +638,8 @@ const FOLDER_COLUMNS = `
 const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, ddl: string]> = [
   // Persona capability policy (F3): {skills:{default,banned},tools:{allowed,banned}}.
   ['personas', 'policy', 'policy TEXT'],
+  // Persona home folder (D10): new chats for this persona auto-land here.
+  ['personas', 'home_folder', 'home_folder TEXT'],
   // Provider purpose tag (F4). Legacy rows read as 'general'.
   ['providers', 'purpose', "purpose TEXT NOT NULL DEFAULT 'general'"],
   // Chat folder binding (F11); NULL = Inbox.
@@ -1109,6 +1112,7 @@ const PERSONA_UPDATE_COLUMNS: Readonly<Record<string, keyof PersonaRowPatch>> = 
   auto_scopes: 'autoScopes',
   memory_flags: 'memoryFlags',
   policy: 'policy',
+  home_folder: 'homeFolderId',
   is_default: 'isDefault',
   paused: 'paused',
 };
@@ -1118,11 +1122,13 @@ export function createPersonaStore(db: Database.Database): PersonaStore {
     `INSERT INTO personas (id, name, tagline, avatar, color_theme, voice, language,
                            system_prompt, temperature, task_classes, fallback_model,
                            provider_id, independence_level, require_human, auto_scopes,
-                           memory_flags, policy, is_default, paused, created_at, updated_at)
+                           memory_flags, policy, home_folder, is_default, paused,
+                           created_at, updated_at)
      VALUES (@id, @name, @tagline, @avatar, @colorTheme, @voice, @language,
              @systemPrompt, @temperature, @taskClasses, @fallbackModel,
              @providerId, @independenceLevel, @requireHuman, @autoScopes,
-             @memoryFlags, @policy, @isDefault, @paused, @createdAt, @updatedAt)`,
+             @memoryFlags, @policy, @homeFolderId, @isDefault, @paused,
+             @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${PERSONA_COLUMNS} FROM personas WHERE id = ?`);
   const listAll = db.prepare(

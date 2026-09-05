@@ -299,6 +299,8 @@ export interface PersonaRow {
   memoryFlags: string | null;
   /** M11 persona policy JSON {skills:{default,banned},tools:{allowed,banned}} (null = none). */
   policy: string | null;
+  /** D10 home folder id for auto chat placement (null = Inbox). */
+  homeFolderId: string | null;
   /** 0 | 1. At most one row has 1 (single-default invariant, manager-owned). */
   isDefault: number;
   /** 0 | 1. Pause = kill switch: chat/tools refuse a paused persona (423). */
@@ -327,6 +329,7 @@ export type PersonaRowPatch = Partial<
     | 'autoScopes'
     | 'memoryFlags'
     | 'policy'
+    | 'homeFolderId'
     | 'isDefault'
     | 'paused'
   >

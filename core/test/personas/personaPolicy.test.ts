@@ -60,3 +60,23 @@ describe('M11 F3 persona policy', () => {
     }
   });
 });
+
+describe('M11 D10 persona home folder', () => {
+  it('round-trips homeFolderId through create/update', () => {
+    const db = openDatabase(':memory:');
+    try {
+      const manager = createPersonaManager({
+        store: createPersonaStore(db),
+        audit: auditLog({ store: createAuditStore(db) }),
+      });
+      const created = manager.create({ name: 'FolderBot', homeFolderId: 'f-1' });
+      expect(manager.get(created.id)?.homeFolderId).toBe('f-1');
+      manager.update(created.id, { homeFolderId: '' });
+      expect(manager.get(created.id)?.homeFolderId).toBeUndefined();
+      manager.update(created.id, { homeFolderId: '  ' });
+      expect(manager.get(created.id)?.homeFolderId).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+});

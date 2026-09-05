@@ -66,6 +66,8 @@ export interface PersonaDraft {
   memory?: Partial<PersonaMemoryFlags>;
   /** M11 F3 capability policy (skills/tools defaults + bans). */
   policy?: PersonaPolicy;
+  /** D10 home folder id (optional). */
+  homeFolderId?: string;
   isDefault?: boolean;
 }
 
@@ -244,6 +246,7 @@ function toRowPersona(row: PersonaRow): Persona {
   if (requireHumanFor.length > 0) independence.requireHumanFor = requireHumanFor;
   if (autoScopes.length > 0) independence.autoScopes = autoScopes;
   const policy = parsePolicyJson(row.policy);
+  const homeFolderId = normalizeOptionalId(row.homeFolderId);
 
   const model: PersonaModelRouting = { taskClasses: toTaskClasses(row) };
   if (row.fallbackModel !== null) model.fallback = row.fallbackModel;
@@ -262,6 +265,7 @@ function toRowPersona(row: PersonaRow): Persona {
     independence,
     memory: toMemoryFlags(row),
     ...(policy !== undefined ? { policy } : {}),
+    ...(homeFolderId !== undefined ? { homeFolderId } : {}),
     isDefault: row.isDefault === 1,
     paused: row.paused === 1,
     createdAt: row.createdAt,
@@ -403,6 +407,12 @@ function normalizePolicy(raw: unknown): PersonaPolicy | undefined {
 }
 
 /** Parse the stored policy JSON column back to a wire policy. */
+function normalizeOptionalId(raw: unknown): string | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  return trimmed === '' ? undefined : trimmed;
+}
+
 function parsePolicyJson(json: string | null): PersonaPolicy | undefined {
   if (json === null || json === '') return undefined;
   try {
@@ -450,6 +460,7 @@ function personaToRow(persona: Persona): PersonaRow {
       persona.policy !== undefined && Object.keys(persona.policy).length > 0
         ? JSON.stringify(persona.policy)
         : null,
+    homeFolderId: persona.homeFolderId ?? null,
     isDefault: persona.isDefault ? 1 : 0,
     paused: persona.paused ? 1 : 0,
     createdAt: persona.createdAt,
@@ -503,6 +514,10 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     if (body.avatar !== undefined) persona.avatar = body.avatar;
     if (body.colorTheme !== undefined) persona.colorTheme = body.colorTheme;
     if (body.policy !== undefined) persona.policy = normalizePolicy(body.policy);
+    if (body.homeFolderId !== undefined) {
+      persona.homeFolderId = normalizeOptionalId(body.homeFolderId);
+      if (persona.homeFolderId === undefined) delete persona.homeFolderId;
+    }
     store.insert(personaToRow(persona));
     auditPersona('persona.create', persona);
     return persona;
@@ -558,6 +573,10 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     if (body.policy !== undefined) {
       current.policy = normalizePolicy(body.policy);
       if (current.policy === undefined) delete current.policy;
+    }
+    if (body.homeFolderId !== undefined) {
+      current.homeFolderId = normalizeOptionalId(body.homeFolderId);
+      if (current.homeFolderId === undefined) delete current.homeFolderId;
     }
     if (body.isDefault !== undefined) {
       if (body.isDefault) {
@@ -615,6 +634,7 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
       persona.policy !== undefined && Object.keys(persona.policy).length > 0
         ? JSON.stringify(persona.policy)
         : null;
+    patch.homeFolderId = persona.homeFolderId ?? null;
     patch.isDefault = persona.isDefault ? 1 : 0;
     patch.paused = persona.paused ? 1 : 0;
     return patch;

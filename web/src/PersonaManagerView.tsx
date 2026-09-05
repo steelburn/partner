@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { IndependenceLevel, Persona, PersonaInput, TaskClass, ThemeProfile } from '@partner/shared';
+import type { Folder, IndependenceLevel, Persona, PersonaInput, TaskClass, ThemeProfile } from '@partner/shared';
 import {
   LEVEL_ORDER,
   TASK_CLASS_OPTIONS,
@@ -16,6 +16,7 @@ import {
   updatePersona,
 } from './lib/personas.js';
 import { bindPersonaTheme } from './lib/themes.js';
+import { listFolders } from './lib/folders.js';
 import { readStoredToken } from './lib/token.js';
 
 export interface PersonaManagerProps {
@@ -490,7 +491,8 @@ function list(raw: string): string[] {
 }
 
 function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }: PersonaEditorProps) {
-  const editing = persona !== null;
+  const [folders, setFolders] = useState<Folder[] | null>(null);
+  const [homeFolderId, setHomeFolderId] = useState(persona?.homeFolderId ?? '');  const editing = persona !== null;
   const [name, setName] = useState(persona?.name ?? '');
   const [tagline, setTagline] = useState(persona?.tagline ?? '');
   const [voice, setVoice] = useState(persona?.character.voice ?? '');
@@ -505,6 +507,13 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
     cheap: persona?.model.taskClasses.cheap ?? '',
   });
   const [isDefault, setIsDefault] = useState(persona?.isDefault ?? false);
+
+  // D10: load the folder tree so the editor can offer a home folder.
+  useEffect(() => {
+    const token = readStoredToken();
+    if (!token) return;
+    listFolders(token).then(setFolders).catch(() => undefined);
+  }, []);
   // M11 F3 capability policy (comma-separated editor fields).
   const [defaultSkills, setDefaultSkills] = useState(persona?.policy?.skills?.default?.join(', ') ?? '');
   const [bannedSkills, setBannedSkills] = useState(persona?.policy?.skills?.banned?.join(', ') ?? '');
@@ -578,6 +587,7 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
             },
           }
         : {}),
+      ...(homeFolderId.trim() !== '' ? { homeFolderId: homeFolderId.trim() } : {}),
       isDefault,
     };
 
@@ -786,6 +796,29 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
             </p>
           </div>
         </fieldset>
+
+        <div className="form-field">
+          <label className="label" htmlFor={`${idPrefix}-home-folder`}>
+            Home folder (optional)
+          </label>
+          <select
+            id={`${idPrefix}-home-folder`}
+            className="field"
+            value={homeFolderId}
+            disabled={formDisabled}
+            onChange={(event) => setHomeFolderId(event.target.value)}
+          >
+            <option value="">Inbox</option>
+            {(folders ?? []).map((folder) => (
+              <option key={folder.id} value={folder.id}>
+                {folder.name}
+              </option>
+            ))}
+          </select>
+          <p className="form-hint">
+            New chats with this persona start in this folder — leave Inbox for none.
+          </p>
+        </div>
 
         <label className="check-label" htmlFor={`${idPrefix}-default`}>
           <input

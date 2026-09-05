@@ -1072,9 +1072,14 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         // Auto-created conversations are bound to the routing persona; the
         // title is the first user message truncated to 60 chars (PLAN-M3).
         const title = firstUser !== undefined ? firstUser.content.slice(0, 60) : undefined;
+        // D10: a persona's home folder auto-places its auto-created chats.
+        const home = routingPersona?.homeFolderId;
+        const homeFolder =
+          home !== undefined && options.folders?.get(home) !== undefined ? home : undefined;
         const created = (conversationManager as ConversationManager).create({
           personaId: routingPersonaId ?? undefined,
           title,
+          ...(homeFolder !== undefined ? { folderId: homeFolder } : {}),
         });
         conversationId = created.id;
       } catch (err) {
@@ -1860,13 +1865,21 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const manager = requireConversationManager(options, res);
     if (!manager) return;
     const body = (req.body ?? {}) as { personaId?: unknown; title?: unknown; folderId?: unknown };
-    const folderId = optionalString(body.folderId);
+    let folderId = optionalString(body.folderId);
     if (folderId !== undefined) {
       const folders = requireFolders(options, res);
       if (!folders) return;
       if (!folders.get(folderId)) {
         res.status(400).json({ error: 'folder_not_found', message: 'folder not found' });
         return;
+      }
+    } else {
+      // D10 home folder: a persona's new chats auto-land in its home folder.
+      const personaId = optionalString(body.personaId);
+      const persona = personaId !== undefined && options.personaManager ? options.personaManager.get(personaId) : null;
+      const home = persona?.homeFolderId;
+      if (home !== undefined && options.folders?.get(home)) {
+        folderId = home;
       }
     }
     try {

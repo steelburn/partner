@@ -175,3 +175,57 @@ describe('folders routes', () => {
     }
   });
 });
+
+describe('M11 D10 persona home folder placement', () => {
+  it('auto-places new chats in the persona home folder; explicit folderId wins', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const folder = await request(h.app)
+        .post('/v1/folders')
+        .set(authed(token))
+        .send({ name: 'Home' });
+      const homeId = folder.body.id as string;
+
+      const persona = await request(h.app)
+        .post('/v1/personas')
+        .set(authed(token))
+        .send({
+          name: 'HomeBot',
+          character: { voice: 'v', language: 'en', systemPrompt: '', temperature: 0.5 },
+          model: { taskClasses: {} },
+          independence: { level: 'assist', requireHumanFor: ['high'], autoScopes: [] },
+          memory: { userProfile: 'none', episodes: 'none' },
+          homeFolderId: homeId,
+        });
+      expect(persona.status).toBe(201);
+      const personaId = persona.body.id as string;
+
+      const auto = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ personaId, title: 'auto' });
+      expect(auto.status).toBe(201);
+      expect(auto.body.folderId).toBe(homeId);
+
+      const otherFolder = await request(h.app)
+        .post('/v1/folders')
+        .set(authed(token))
+        .send({ name: 'Elsewhere' });
+      const explicit = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ personaId, title: 'manual', folderId: otherFolder.body.id });
+      expect(explicit.status).toBe(201);
+      expect(explicit.body.folderId).toBe(otherFolder.body.id);
+
+      const inbox = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ title: 'no persona' });
+      expect(inbox.body.folderId).toBeNull();
+    } finally {
+      h.close();
+    }
+  });
+});

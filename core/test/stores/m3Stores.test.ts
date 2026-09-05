@@ -43,6 +43,7 @@ const basePersona: PersonaRow = {
   autoScopes: JSON.stringify(['search:read']),
   memoryFlags: JSON.stringify({ userProfile: 'read', episodes: 'none' }),
   policy: null,
+  homeFolderId: null,
   isDefault: 0,
   paused: 0,
   createdAt: 10,

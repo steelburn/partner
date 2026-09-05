@@ -179,6 +179,13 @@ production build green):
       route-integration tests (capable model inlines; non-capable stays
       text); suites: core 676, web 440.
 
+- [x] **D10 persona home folder** — optional `homeFolderId` on personas
+      (guarded `home_folder` column): new chats for that persona — created
+      via POST /v1/conversations or auto-created by chat — land in its home
+      folder when it still exists (explicit folderId wins; Inbox otherwise);
+      folder deletion already clears chat placements. Persona editor gains a
+      home-folder select. Tests: manager round-trip + route placement.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
