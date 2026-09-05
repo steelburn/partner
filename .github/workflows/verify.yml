@@ -1,21 +1,22 @@
 # Partner — full verification matrix (self-hosted runners)
 #
-# The milestone gate for this repo is: typecheck (shared/core/web/extension)
-# + the full vitest matrix — root core suite, web suite, extension suite —
-# green on BOTH platforms, because several behaviours genuinely differ:
+# The milestone gate: typecheck (shared/core/web/extension) + the full
+# vitest matrix — root core suite, web suite, extension suite — green on
+# BOTH platforms, because several behaviours genuinely differ:
 #   * Linux runs the symlink path-escape tests (Windows without Developer
 #     Mode skips them) and asserts the strict minimal-env skill guarantee.
 #   * Windows exercises the PATH pinning, teardown/AV retry paths and the
 #     drive-letter package-root handling.
 #
 # Runs on the repo's self-hosted runners by design. Runner prerequisites:
-#   * Linux: Node 22, and python3 + make + g++ — better-sqlite3-multiple-
-#     ciphers is BUILT FROM SOURCE here because its published linux-x64
-#     prebuild requires GLIBC_2.33 (Ubuntu 22.04+); this runner's glibc is
-#     older, so the native module must link against the runner's libc.
-#   * Windows: Node 22 + Git-bash shell (the runner has no pwsh and its
-#     PowerShell execution policy blocks script steps; bash also avoids the
-#     issue). Native modules use their win32 prebuilds.
+#   * Linux: Node 22 + python3/make/g++. The SQLCipher fork SHIPS its
+#     linux-x64 prebuild in the tarball and that prebuild needs GLIBC_2.33;
+#     this runner's glibc is older, so the rebuild step removes it and
+#     node-gyp-compiles against the runner's libc (gcc9: -std=c++2a patch).
+#   * Windows: Node 22 + Git-bash at C:\Program Files\Git\bin\bash.EXE
+#     (the runner has no pwsh; its PowerShell execution policy blocks
+#     script steps; GitHub's bash auto-discovery picks the WSL shim, so the
+#     shell is pinned to Git bash). Native modules use win32 prebuilds.
 #
 # Trigger: push to master or manual (Actions -> Verify -> Run workflow).
 name: verify
@@ -31,34 +32,42 @@ jobs:
     runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - name: Native build tools present (python3, make, g++)
         run: |
           command -v python3 && command -v make && command -v g++ || {
             echo 'runner needs python3 + make + g++ for the better-sqlite3 source build'
             exit 1
           }
+
       - name: Install
         run: npm ci
+
       - name: Rebuild better-sqlite3 for this runner's glibc
         run: |
-          # The fork SHIPS its linux-x64 prebuild inside the tarball (no
+          # The fork ships its linux-x64 prebuild inside the tarball (no
           # install script), and that prebuild needs GLIBC_2.33. Remove it
-          # and compile against this runner's own libc so tests actually run.
+          # and compile against this runner's own libc so tests can run.
           rm -f node_modules/better-sqlite3/prebuilds/linux-x64.node
           # The runner's g++ predates -std=c++20; c++2a is the gcc9 spelling.
           sed -i 's/-std=c++20/-std=c++2a/g' node_modules/better-sqlite3/binding.gyp
           (cd node_modules/better-sqlite3 && npx --yes node-gyp rebuild)
+
       - name: Typecheck (shared, core, web, extension)
         run: npm run typecheck
-      - name: Root suite (core + shared + e2e incl. M9 spawned-core e2e)
+
+      - name: Root suite (core + shared + e2e incl. spawned-core e2e)
         run: npm test
+
       - name: Web suite
         run: npx vitest run --config web/vitest.config.ts
+
       - name: Extension suite
         run: npx vitest run --config extension/vitest.config.ts
 
@@ -67,21 +76,27 @@ jobs:
     runs-on: [self-hosted, Windows]
     defaults:
       run:
-        shell: "C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}"
+        shell: 'C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}'
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - name: Install
         run: npm ci
+
       - name: Typecheck (shared, core, web, extension)
         run: npm run typecheck
-      - name: Root suite (core + shared + e2e incl. M9 spawned-core e2e)
+
+      - name: Root suite (core + shared + e2e incl. spawned-core e2e)
         run: npm test
+
       - name: Web suite
         run: npx vitest run --config web/vitest.config.ts
+
       - name: Extension suite
         run: npx vitest run --config extension/vitest.config.ts
