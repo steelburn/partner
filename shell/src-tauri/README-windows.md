@@ -1,5 +1,8 @@
 # Partner on Windows — build & run the .exe
 
+> Handoff & full project state: `HANDOFF-WINDOWS.md` at the repo root
+> (Windows CI status, the RC.EXE icon blocker, and verified baseline = tag `v0.1.0`).
+
 Status: **runbook (toolchain is Windows-only; verified-equivalent on Linux via
 `shell/docker/gate`)**. The desktop shell (`partner-shell`) is plain Tauri v2
 Rust and the core is pure Node ≥ 18, so Windows is fully supported. Nothing

@@ -8,6 +8,8 @@ extension. See the plans:
   security, milestones).
 - `PLAN-M0.md` — M0 spec: scaffold, Tauri shell + sidecar spike, security
   spine.
+- `HANDOFF-WINDOWS.md` — Windows CI handoff + full project state (read this
+  first if picking up from GitHub on a Windows machine).
 - `PLAN-M1.md` — M1 spec: providers, model gateway, integrated key import.
 - `DESIGN.md` — default design system (tokens live in `shared/src/theme.ts`).
 
