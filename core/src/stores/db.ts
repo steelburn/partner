@@ -76,6 +76,8 @@ import type {
   PlaybookRunPatch,
   PlaybookRunRow,
   PlaybookRunStore,
+  SpendLedgerRow,
+  SpendLedgerStore,
 } from './types.js';
 
 const SCHEMA_SQL = `
@@ -406,6 +408,17 @@ CREATE TABLE IF NOT EXISTS playbook_runs (
 
 CREATE INDEX IF NOT EXISTS idx_playbook_runs_persona
   ON playbook_runs(persona_id, started_at);
+
+-- M10 spend ledger (PLAN-M10 W3, additive schema v11): cumulative spend per
+-- provider for the CURRENT budget window (rolling, default 30 days). One row
+-- per provider; the manager rolls the window by resetting cents when the row
+-- is older than the window. No secrets — provider ids + cents only.
+CREATE TABLE IF NOT EXISTS spend_ledger (
+  provider_id TEXT PRIMARY KEY,
+  window_start INTEGER NOT NULL,
+  cents INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -1676,6 +1689,35 @@ export function createPlaybookRunStore(db: Database.Database): PlaybookRunStore 
         finishedAt: patch.finishedAt ?? null,
         error: patch.error ?? null,
       });
+    },
+  };
+}
+
+export function createSpendLedgerStore(db: Database.Database): SpendLedgerStore {
+  const find = db.prepare(
+    `SELECT provider_id AS providerId, window_start AS windowStart,
+            cents, updated_at AS updatedAt
+     FROM spend_ledger WHERE provider_id = ?`,
+  );
+  const upsert = db.prepare(
+    `INSERT INTO spend_ledger (provider_id, window_start, cents, updated_at)
+     VALUES (@providerId, @windowStart, @cents, @updatedAt)
+     ON CONFLICT(provider_id) DO UPDATE SET
+       window_start = excluded.window_start,
+       cents = excluded.cents,
+       updated_at = excluded.updated_at`,
+  );
+  const remove = db.prepare('DELETE FROM spend_ledger WHERE provider_id = ?');
+
+  return {
+    find(providerId: string): SpendLedgerRow | undefined {
+      return find.get(providerId) as SpendLedgerRow | undefined;
+    },
+    upsert(row: SpendLedgerRow): void {
+      upsert.run({ ...row });
+    },
+    remove(providerId: string): void {
+      remove.run(providerId);
     },
   };
 }

@@ -60,7 +60,8 @@ describe('schema v10 (additive M9 tables)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(10);
+      // v11 added spend_ledger (M10 W3).
+      expect(SCHEMA_VERSION).toBe(11);
     } finally {
       db.close();
     }

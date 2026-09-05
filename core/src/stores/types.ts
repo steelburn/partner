@@ -817,3 +817,21 @@ export interface PlaybookRunStore {
   findById(id: string): PlaybookRunRow | undefined;
   update(id: string, patch: PlaybookRunPatch): void;
 }
+
+/** `spend_ledger` row — cumulative cents for the current budget window. */
+export interface SpendLedgerRow {
+  providerId: string;
+  /** Epoch ms when the current rolling window started. */
+  windowStart: number;
+  /** Cents charged in the current window. */
+  cents: number;
+  updatedAt: number;
+}
+
+export interface SpendLedgerStore {
+  find(providerId: string): SpendLedgerRow | undefined;
+  /** Insert-or-overwrite one provider's window row. */
+  upsert(row: SpendLedgerRow): void;
+  /** Remove a provider's ledger row (profile delete/cleanup). */
+  remove(providerId: string): void;
+}

@@ -15,12 +15,12 @@ import { makeTempRoot, removeTempRoot } from '../helpers.js';
 import { join } from 'node:path';
 
 describe('M8 skills stores (schema v9 tables)', () => {
-  it('keeps SCHEMA_VERSION at 10 and stamps the meta row', () => {
+  it('keeps SCHEMA_VERSION at 11 (v11 = spend_ledger) and stamps the meta row', () => {
     const db = openDatabase(':memory:');
     const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as {
       value: string;
     };
-    expect(SCHEMA_VERSION).toBe(10);
+    expect(SCHEMA_VERSION).toBe(11);
     expect(meta.value).toBe(String(SCHEMA_VERSION));
     db.close();
   });
