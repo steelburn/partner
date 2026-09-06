@@ -2653,10 +2653,12 @@ select {
   padding: var(--space-2);
 }
 
-/* M12.5: inline task-title rename replaces the head row while editing. */
+/* M12.5: inline task edit replaces the head row while editing — rename the
+ * title and reassign the owner persona together. Fields wrap on narrow rows. */
 .p-task-edit {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-1);
   flex: 1;
   min-width: 0;
@@ -2665,6 +2667,10 @@ select {
 .p-task-edit .field {
   flex: 1;
   min-width: 120px;
+}
+
+.p-task-edit .p-owner-select {
+  flex: 0 1 auto;
 }
 
 .p-owner-select,

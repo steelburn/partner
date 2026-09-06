@@ -504,15 +504,26 @@ function PlannerPanel({
   };
 
   const milestoneOps: MilestoneOps = {
-    renameTask: (milestoneId, taskId, title) => {
+    updateTask: (milestoneId, taskId, next) => {
       const document: Plan['document'] = {
         milestones: plan.document.milestones.map((milestone) =>
           milestone.id === milestoneId
             ? {
                 ...milestone,
-                tasks: milestone.tasks.map((task) =>
-                  task.id === taskId ? { ...task, title } : task,
-                ),
+                tasks: milestone.tasks.map((task) => {
+                  if (task.id !== taskId) return task;
+                  // Clear the owner by omitting the key (matches add-task
+                  // semantics — ownerPersonaId is optional on the wire).
+                  const cleared: Plan['document']['milestones'][number]['tasks'][number] = {
+                    ...task,
+                    title: next.title,
+                  };
+                  delete (cleared as { ownerPersonaId?: string }).ownerPersonaId;
+                  if (next.ownerPersonaId !== null) {
+                    cleared.ownerPersonaId = next.ownerPersonaId;
+                  }
+                  return cleared;
+                }),
               }
             : milestone,
         ),
@@ -723,10 +734,11 @@ function PlannerPanel({
 
 /** Document-shape ops the task/milestone rows can trigger. */
 interface MilestoneOps {
-  renameTask: (
+  /** Rename a task and/or reassign its owner persona (null clears it). */
+  updateTask: (
     milestoneId: string,
     taskId: string,
-    title: string,
+    next: { title: string; ownerPersonaId: string | null },
   ) => Promise<boolean>;
   addTask: (
     milestoneId: string,
@@ -935,6 +947,7 @@ function TaskRow({
   const [rowError, setRowError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
+  const [ownerDraft, setOwnerDraft] = useState(task.ownerPersonaId ?? '');
 
   const disabled = busy || localBusy;
   const ownerName = personaNameById(personas, task.ownerPersonaId ?? null);
@@ -943,6 +956,7 @@ function TaskRow({
   const startEdit = (): void => {
     setEditing(true);
     setTitleDraft(task.title);
+    setOwnerDraft(task.ownerPersonaId ?? '');
     setDeleteArmed(false);
     setRowError(null);
   };
@@ -958,7 +972,8 @@ function TaskRow({
     setLocalBusy(true);
     setRowError(null);
     try {
-      const ok = await ops.renameTask(milestoneId, task.id, title);
+      const ownerPersonaId = ownerDraft.trim().length > 0 ? ownerDraft.trim() : null;
+      const ok = await ops.updateTask(milestoneId, task.id, { title, ownerPersonaId });
       if (ok) {
         setEditing(false);
         setTitleDraft(title);
@@ -968,7 +983,7 @@ function TaskRow({
         onSessionLost();
         return;
       }
-      setRowError(cause instanceof Error ? cause.message : 'Could not rename the task.');
+      setRowError(cause instanceof Error ? cause.message : 'Could not update the task.');
     } finally {
       setLocalBusy(false);
     }
@@ -1053,6 +1068,20 @@ function TaskRow({
                 setRowError(null);
               }}
             />
+            <select
+              className="field p-owner-select"
+              value={ownerDraft}
+              disabled={disabled}
+              aria-label={`Owner of ${titleDraft || task.title}`}
+              onChange={(event) => setOwnerDraft(event.target.value)}
+            >
+              <option value="">No owner</option>
+              {personas.map((persona) => (
+                <option key={persona.id} value={persona.id}>
+                  {persona.name}
+                </option>
+              ))}
+            </select>
             <button
               type="submit"
               className="btn btn-primary btn-sm"
