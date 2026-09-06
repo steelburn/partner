@@ -28,7 +28,7 @@ import {
   updateFolder,
 } from './lib/folders.js';
 import { isSessionLost, listPersonas } from './lib/personas.js';
-import { getActiveTheme, listThemes } from './lib/themes.js';
+import { bindConversationTheme, getActiveTheme, listThemes } from './lib/themes.js';
 import { listPending } from './lib/tools.js';
 import { clearStoredToken, readStoredToken } from './lib/token.js';
 import {
@@ -213,7 +213,9 @@ export default function App() {
     const token = readStoredToken();
     if (!token) return;
     try {
-      setActiveTheme(await getActiveTheme(token, activePersonaId));
+      // D6: the ACTIVE CONVERSATION participates in resolution (override -
+      // persona - global - preset), so refetch whenever either changes.
+      setActiveTheme(await getActiveTheme(token, activePersonaId, activeConversationId));
     } catch (cause) {
       if (!isSessionLost(cause)) {
         // The canonical default keeps rendering; the list/studio surface
@@ -221,7 +223,7 @@ export default function App() {
         setActiveTheme(null);
       }
     }
-  }, [activePersonaId]);
+  }, [activePersonaId, activeConversationId]);
 
   /** Themes mutated inside the studio (create/update/delete/activate/import). */
   const handleThemesChanged = useCallback((): void => {
@@ -233,6 +235,29 @@ export default function App() {
   const handlePersonaThemeBound = useCallback((): void => {
     void refreshActiveTheme();
   }, [refreshActiveTheme]);
+
+  /** D6: bind a theme to the active conversation (null clears to Auto). */
+  const handleBindConversationTheme = async (
+    conversationId: string | null,
+    themeId: string | null,
+  ): Promise<void> => {
+    if (conversationId === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    try {
+      await bindConversationTheme(token, conversationId, themeId);
+      await refreshActiveTheme();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        handleSessionLost();
+        return;
+      }
+      setConversationsError(cause instanceof Error ? cause.message : 'Could not bind the theme.');
+    }
+  };
 
   useEffect(() => {
     if (!paired) {
@@ -289,12 +314,12 @@ export default function App() {
     });
   }, [personas]);
 
-  // Resolve the applied theme for the current persona (persona binding ->
-  // global active -> preset-default) whenever pairing or the persona changes.
+  // Resolve the applied theme for the current persona + conversation
+  // (conversation binding -> persona binding -> global active -> preset).
   useEffect(() => {
     if (!paired) return;
     void refreshActiveTheme();
-  }, [paired, activePersonaId, refreshActiveTheme]);
+  }, [paired, activePersonaId, activeConversationId, refreshActiveTheme]);
 
   const activePersona = personas?.find((p) => p.id === activePersonaId) ?? null;
 
@@ -635,6 +660,9 @@ export default function App() {
                   personaPaused={Boolean(activePersona?.paused)}
                   onStreamingChange={setStreaming}
                   onDone={handleDone}
+                  themes={themes}
+                  activeThemeId={activeTheme?.themeId ?? null}
+                  onBindTheme={(themeId) => void handleBindConversationTheme(activeConversationId, themeId)}
                 />
                 <NotesMini
                   active={paired}

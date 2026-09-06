@@ -2808,7 +2808,38 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       typeof req.query.personaId === 'string' && req.query.personaId.trim() !== ''
         ? req.query.personaId.trim()
         : undefined;
-    res.json(themes.active(personaId));
+    // D6: a conversation context (when given) resolves its override first.
+    const conversationId =
+      typeof req.query.conversationId === 'string' && req.query.conversationId.trim() !== ''
+        ? req.query.conversationId.trim()
+        : undefined;
+    res.json(themes.active(personaId, conversationId));
+  });
+
+  api.post('/v1/conversations/:id/theme', requireSession(sessions), (req: Request, res: Response) => {
+    const themes = requireThemes(options, res);
+    if (!themes) return;
+    const conversationId = String(req.params.id ?? '');
+    if (conversationId === '') {
+      res.status(400).json({ error: 'invalid_input', message: 'conversation id is required' });
+      return;
+    }
+    const conversationManager = requireConversationManager(options, res);
+    if (!conversationManager) return;
+    const body = (req.body ?? {}) as { themeId?: unknown };
+    const themeId =
+      body.themeId === null || body.themeId === undefined || body.themeId === ''
+        ? null
+        : String(body.themeId);
+    try {
+      conversationManager.get(conversationId); // 404 when the conversation is unknown
+      themes.bindConversationTheme(conversationId, themeId);
+      res.status(200).json(themes.active(undefined, conversationId));
+    } catch (err) {
+      if (sendConversationError(res, err)) return;
+      if (sendThemeError(res, err)) return;
+      throw err;
+    }
   });
 
   api.post('/v1/personas/:id/theme', requireSession(sessions), (req: Request, res: Response) => {

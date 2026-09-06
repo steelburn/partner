@@ -330,3 +330,48 @@ describe('activation + active resolution routes', () => {
     }
   });
 });
+
+describe('D6 conversation theme binding', () => {
+  it('binds, resolves via GET /v1/theme/active?conversationId=, and clears', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const conv = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ title: 'themed' });
+      const conversationId = conv.body.id as string;
+
+      const bind = await request(h.app)
+        .post(`/v1/conversations/${conversationId}/theme`)
+        .set(authed(token))
+        .send({ themeId: 'preset-midnight' });
+      expect(bind.status).toBe(200);
+      expect(bind.body.themeId).toBe('preset-midnight');
+
+      const active = await request(h.app)
+        .get(`/v1/theme/active?conversationId=${conversationId}`)
+        .set(authed(token));
+      expect(active.status).toBe(200);
+      expect(active.body.themeId).toBe('preset-midnight');
+
+      const missing = await request(h.app)
+        .post('/v1/conversations/ghost/theme')
+        .set(authed(token))
+        .send({ themeId: 'preset-midnight' });
+      expect(missing.status).toBe(404);
+
+      const clear = await request(h.app)
+        .post(`/v1/conversations/${conversationId}/theme`)
+        .set(authed(token))
+        .send({ themeId: null });
+      expect(clear.status).toBe(200);
+      const after = await request(h.app)
+        .get(`/v1/theme/active?conversationId=${conversationId}`)
+        .set(authed(token));
+      expect(after.body.themeId).not.toBe('preset-midnight');
+    } finally {
+      h.close();
+    }
+  });
+});

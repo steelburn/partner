@@ -5416,3 +5416,19 @@ select {
   color: var(--text-muted);
   line-height: 1.45;
 }
+
+/* --- M11 D6 per-conversation theme select --------------------------------- */
+
+.chat-theme-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.chat-theme-select {
+  max-width: 220px;
+  font-size: var(--fs-sm);
+  padding: 2px var(--space-1);
+}

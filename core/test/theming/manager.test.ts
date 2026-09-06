@@ -292,3 +292,30 @@ describe('theme manager — audit discipline', () => {
     }
   });
 });
+
+describe('theme manager — D6 conversation binding', () => {
+  it('conversation override wins over persona + global; clearing falls back', () => {
+    const env = makeThemingEnv();
+    try {
+      env.themes.activate('preset-midnight');
+      env.themes.bindPersonaTheme('p-researcher', 'preset-default');
+      // Conversation override beats the persona binding.
+      env.themes.bindConversationTheme('c-1', 'preset-midnight');
+      expect(env.themes.active('p-researcher', 'c-1').themeId).toBe('preset-midnight');
+      // Other conversations keep the persona resolution.
+      expect(env.themes.active('p-researcher', 'c-2').themeId).toBe('preset-default');
+      // Clearing the conversation override falls back to the persona binding.
+      env.themes.bindConversationTheme('c-1', null);
+      expect(env.themes.active('p-researcher', 'c-1').themeId).toBe('preset-default');
+      // Unknown theme to bind -> not_found.
+      try {
+        env.themes.bindConversationTheme('c-1', 'custom-nope');
+        expect.unreachable('unknown theme should 404');
+      } catch (err) {
+        expect((err as ThemeError).code).toBe('not_found');
+      }
+    } finally {
+      env.close();
+    }
+  });
+});

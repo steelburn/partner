@@ -241,15 +241,15 @@ describe('active theme resolution', () => {
       dark: TOKENS.dark,
     };
     const { fetchImpl, calls } = recordFetch(() => jsonResponse(body));
-    const result = await getActiveTheme(TOKEN, 'p1', { fetchImpl });
+    const result = await getActiveTheme(TOKEN, 'p1', undefined, { fetchImpl });
     expect(result.themeId).toBe('preset-default');
     expect(calls[0].input).toBe('/v1/theme/active?personaId=p1');
     expect(calls[0].init?.headers).toMatchObject(AUTH);
 
     const { fetchImpl: f2, calls: calls2 } = recordFetch(() => jsonResponse({ active: body }));
-    await getActiveTheme(TOKEN, null, { fetchImpl: f2 });
+    await getActiveTheme(TOKEN, null, undefined, { fetchImpl: f2 });
     expect(calls2[0].input).toBe('/v1/theme/active');
-    await getActiveTheme(TOKEN, undefined, { fetchImpl: f2 });
+    await getActiveTheme(TOKEN, undefined, undefined, { fetchImpl: f2 });
     expect(calls2[1].input).toBe('/v1/theme/active');
   });
 
@@ -264,7 +264,7 @@ describe('active theme resolution', () => {
 
   it('throws ApiRequestError when the core session is gone', async () => {
     const { fetchImpl } = recordFetch(() => jsonResponse({ error: 'unauthorized' }, 401));
-    await expect(getActiveTheme(TOKEN, undefined, { fetchImpl })).rejects.toThrow(ApiRequestError);
+    await expect(getActiveTheme(TOKEN, undefined, undefined, { fetchImpl })).rejects.toThrow(ApiRequestError);
   });
 });
 

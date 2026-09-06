@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import type { AttachmentMeta, ChatEvent, ConversationMessage } from '@partner/shared';
+import type { AttachmentMeta, ChatEvent, ConversationMessage, ThemeProfile } from '@partner/shared';
 import { ApiRequestError, streamChat, type StreamDoneMeta } from './lib/api.js';
 import { getConversation } from './lib/conversations.js';
 import {
@@ -31,6 +31,12 @@ export interface ChatStripProps {
   onStreamingChange?: (streaming: boolean) => void;
   /** Server-confirmed ids after a turn (App refreshes + adopts the conversation). */
   onDone?: (meta: StreamDoneMeta) => void;
+  /** D6: theme list for the per-conversation theme select (null = loading). */
+  themes?: ThemeProfile[] | null;
+  /** D6: currently resolved theme id ('' = auto/persona/global). */
+  activeThemeId?: string | null;
+  /** D6: bind the active conversation to a theme (null = Auto/clear). */
+  onBindTheme?: (themeId: string | null) => void;
 }
 
 interface ChatRow {
@@ -79,6 +85,9 @@ export default function ChatStrip({
   personaPaused,
   onStreamingChange,
   onDone,
+  themes,
+  activeThemeId,
+  onBindTheme,
 }: ChatStripProps) {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [draft, setDraft] = useState('');
@@ -709,6 +718,24 @@ export default function ChatStrip({
         >
           {drawerOpen ? 'Hide Assets' : 'Assets'}
         </button>
+        {conversationId !== null && themes !== null && themes !== undefined && onBindTheme !== undefined ? (
+          <label className="chat-theme-label">
+            Theme
+            <select
+              className="field chat-theme-select"
+              value={activeThemeId ?? ''}
+              onChange={(event) => onBindTheme(event.target.value === '' ? null : event.target.value)}
+              aria-label="Theme for this conversation"
+            >
+              <option value="">Auto (persona/global)</option>
+              {themes.map((theme) => (
+                <option key={theme.id} value={theme.id}>
+                  {theme.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {assetsFlash !== null ? (
           <span className="chat-assets-flash" role="status">
             {assetsFlash}

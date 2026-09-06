@@ -343,11 +343,17 @@ export async function activateTheme(
 export async function getActiveTheme(
   token: string,
   personaId?: string | null,
+  conversationId?: string | null,
   options: { fetchImpl?: FetchLike } = {},
 ): Promise<ActiveTheme> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const query = personaId && personaId.length > 0 ? `?personaId=${encodeURIComponent(personaId)}` : '';
-  const response = await fetchImpl(`${ACTIVE_THEME_PATH}${query}`, {
+  const parts: string[] = [];
+  if (personaId && personaId.length > 0) parts.push(`personaId=${encodeURIComponent(personaId)}`);
+  if (conversationId && conversationId.length > 0) {
+    parts.push(`conversationId=${encodeURIComponent(conversationId)}`);
+  }
+  const suffix = parts.length > 0 ? `?${parts.join('&')}` : '';
+  const response = await fetchImpl(`${ACTIVE_THEME_PATH}${suffix}`, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
@@ -387,4 +393,34 @@ export async function bindPersonaTheme(
   if (!response.ok) {
     throw new ApiRequestError(response.status, await readErrorMessage(response));
   }
+}
+
+/**
+ * D6: POST /v1/conversations/:id/theme {themeId|null} — bind a theme to a
+ * conversation (null/'' clears to the persona/global resolution). Returns
+ * the ActiveTheme that now applies to that conversation.
+ */
+export async function bindConversationTheme(
+  token: string,
+  conversationId: string,
+  themeId: string | null,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<ActiveTheme> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `/v1/conversations/${encodeURIComponent(conversationId)}/theme`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({ themeId: themeId ?? null }),
+    },
+  );
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorMessage(response));
+  }
+  return parseActiveTheme(await expectJson<unknown>(response), response.status);
 }

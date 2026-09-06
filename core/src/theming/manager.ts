@@ -31,6 +31,11 @@ import { PRESET_DEFAULT, THEME_PRESETS, presetProfile } from './presets.js';
 /** Settings key holding the globally active theme id (default preset-default). */
 export const ACTIVE_THEME_KEY = 'active_theme';
 
+/** Settings key prefix for per-conversation theme overrides (D6). */
+export const CONVERSATION_THEME_PREFIX = 'theme:conversation:';
+export const conversationThemeKey = (conversationId: string): string =>
+  `${CONVERSATION_THEME_PREFIX}${conversationId}`;
+
 export interface ThemeManagerOptions {
   store: ThemeStore;
   /** M3 persona store — binding writes its existing `colorTheme` column. */
@@ -74,12 +79,18 @@ export interface ThemeManager {
    */
   bindPersonaTheme(personaId: string, themeId: string | null): void;
   /**
-   * Resolve the active theme for a request: persona.colorTheme (when the id
-   * resolves) -> global active_theme -> preset-default. An unknown bound id
-   * or persona silently falls back (the bound theme was deleted; resolution
-   * never errors).
+   * D6: bind/clear a CONVERSATION theme override (settings key). themeId null
+   * clears. Theme must exist (404 when not); conversation id is opaque (the
+   * route validates the conversation when a conversation manager is wired).
    */
-  active(personaId?: string): ActiveTheme;
+  bindConversationTheme(conversationId: string, themeId: string | null): void;
+  /**
+   * Resolve the active theme for a request: conversation override (D6) ->
+   * persona.colorTheme (when the id resolves) -> global active_theme ->
+   * preset-default. An unknown bound id or persona silently falls back (the
+   * bound theme was deleted; resolution never errors).
+   */
+  active(personaId?: string, conversationId?: string): ActiveTheme;
   /** Insert the preset rows ONLY when the themes table is empty (returns
    *  how many were inserted). Presets are static boot content, so seeding is
    *  NOT audited. */
@@ -266,8 +277,31 @@ export function createThemeManager(options: ThemeManagerOptions): ThemeManager {
     });
   }
 
-  function active(personaId?: string): ActiveTheme {
+  function bindConversationTheme(conversationId: string, themeId: string | null): void {
+    let name: string | null = null;
+    if (themeId !== null) {
+      const profile = get(themeId);
+      if (!profile) throw themeError('not_found', 'theme not found');
+      name = profile.name;
+    }
+    settings.set(conversationThemeKey(conversationId), themeId ?? '', now());
+    audit.log('web', 'theme.bind-conversation', conversationId, {
+      themeId,
+      themeName: name,
+    });
+  }
+
+  function active(personaId?: string, conversationId?: string): ActiveTheme {
     const known = knownProfiles(store);
+    // D6: per-conversation override wins over persona/global.
+    if (conversationId !== undefined && conversationId !== '') {
+      const boundId = settings.get(conversationThemeKey(conversationId));
+      if (boundId !== null && boundId !== '') {
+        const bound = known.find((p) => p.id === boundId);
+        if (bound) return toActive(bound);
+        // Bound theme was deleted — fall back.
+      }
+    }
     // 1. Per-persona override (persona.colorTheme). An unknown bound id or an
     //    unknown persona falls through to the global/global default.
     if (personaId !== undefined && personaId !== '') {
@@ -307,7 +341,7 @@ export function createThemeManager(options: ThemeManagerOptions): ThemeManager {
     return THEME_PRESETS.length;
   }
 
-  return { list, get, save, update, remove, activate, bindPersonaTheme, active, seedIfEmpty };
+  return { list, get, save, update, remove, activate, bindPersonaTheme, bindConversationTheme, active, seedIfEmpty };
 }
 
 function toActive(profile: ThemeProfile): ActiveTheme {

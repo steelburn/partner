@@ -186,6 +186,14 @@ production build green):
       folder deletion already clears chat placements. Persona editor gains a
       home-folder select. Tests: manager round-trip + route placement.
 
+- [x] **D6 conversation-level themes** — per-conversation theme override
+      (settings key `theme:conversation:<id>`); resolution order is now
+      conversation -> persona -> global -> preset (`/v1/theme/active?personaId=&conversationId=`);
+      `POST /v1/conversations/:id/theme {themeId|null}` binds/clears (validates
+      conversation + theme). ChatStrip gains a per-conversation Theme select
+      (Auto = persona/global); App refetches on persona/conversation change.
+      Manager + route tests; suites: core 680, web 440.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
