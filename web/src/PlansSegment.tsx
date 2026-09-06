@@ -504,6 +504,21 @@ function PlannerPanel({
   };
 
   const milestoneOps: MilestoneOps = {
+    renameTask: (milestoneId, taskId, title) => {
+      const document: Plan['document'] = {
+        milestones: plan.document.milestones.map((milestone) =>
+          milestone.id === milestoneId
+            ? {
+                ...milestone,
+                tasks: milestone.tasks.map((task) =>
+                  task.id === taskId ? { ...task, title } : task,
+                ),
+              }
+            : milestone,
+        ),
+      };
+      return commit(titleDraft, descDraft, document);
+    },
     addTask: (milestoneId, title, ownerPersonaId) => {
       const document: Plan['document'] = {
         milestones: plan.document.milestones.map((milestone) =>
@@ -708,6 +723,11 @@ function PlannerPanel({
 
 /** Document-shape ops the task/milestone rows can trigger. */
 interface MilestoneOps {
+  renameTask: (
+    milestoneId: string,
+    taskId: string,
+    title: string,
+  ) => Promise<boolean>;
   addTask: (
     milestoneId: string,
     title: string,
@@ -913,10 +933,47 @@ function TaskRow({
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(task.title);
 
   const disabled = busy || localBusy;
   const ownerName = personaNameById(personas, task.ownerPersonaId ?? null);
   const hasNote = task.note !== undefined && task.note.length > 0;
+
+  const startEdit = (): void => {
+    setEditing(true);
+    setTitleDraft(task.title);
+    setDeleteArmed(false);
+    setRowError(null);
+  };
+
+  const saveTitle = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (disabled) return;
+    const title = titleDraft.trim();
+    if (title.length === 0) {
+      setRowError('Task title cannot be empty.');
+      return;
+    }
+    setLocalBusy(true);
+    setRowError(null);
+    try {
+      const ok = await ops.renameTask(milestoneId, task.id, title);
+      if (ok) {
+        setEditing(false);
+        setTitleDraft(title);
+      }
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setRowError(cause instanceof Error ? cause.message : 'Could not rename the task.');
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
 
   const setStatus = async (
     status: TaskStatus,
@@ -980,40 +1037,91 @@ function TaskRow({
   return (
     <div className="p-task">
       <div className="p-task-head">
-        <label className="p-task-check">
-          <input
-            type="checkbox"
-            checked={task.status === 'done'}
-            disabled={disabled}
-            onChange={(event) => toggle(event.target.checked)}
-            aria-label={`Mark ${task.title} done`}
-          />
-          <span className="p-task-title">{task.title}</span>
-        </label>
-        <select
-          id={statusId}
-          className="field p-task-status"
-          value={task.status}
-          disabled={disabled}
-          aria-label={`Status of ${task.title}`}
-          onChange={(event) => void setStatus(event.target.value as TaskStatus)}
-        >
-          {TASK_STATUSES.map((status) => (
-            <option key={status} value={status}>
-              {TASK_STATUS_LABELS[status]}
-            </option>
-          ))}
-        </select>
-        {ownerName !== null ? (
-          <span className="mem-chip mem-chip-accent" title="Owning persona">
-            {ownerName}
-          </span>
-        ) : null}
+        {editing ? (
+          <form className="p-task-edit" onSubmit={(event) => void saveTitle(event)}>
+            <input
+              className="field"
+              type="text"
+              value={titleDraft}
+              placeholder="Task title"
+              aria-label={`Rename task ${task.title}`}
+              disabled={disabled}
+              autoFocus
+              spellCheck={false}
+              onChange={(event) => {
+                setTitleDraft(event.target.value);
+                setRowError(null);
+              }}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary btn-sm"
+              disabled={disabled || titleDraft.trim().length === 0}
+              aria-busy={localBusy}
+            >
+              {localBusy ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={localBusy}
+              onClick={() => {
+                setEditing(false);
+                setRowError(null);
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <>
+            <label className="p-task-check">
+              <input
+                type="checkbox"
+                checked={task.status === 'done'}
+                disabled={disabled}
+                onChange={(event) => toggle(event.target.checked)}
+                aria-label={`Mark ${task.title} done`}
+              />
+              <span className="p-task-title">{task.title}</span>
+            </label>
+            <select
+              id={statusId}
+              className="field p-task-status"
+              value={task.status}
+              disabled={disabled}
+              aria-label={`Status of ${task.title}`}
+              onChange={(event) => void setStatus(event.target.value as TaskStatus)}
+            >
+              {TASK_STATUSES.map((status) => (
+                <option key={status} value={status}>
+                  {TASK_STATUS_LABELS[status]}
+                </option>
+              ))}
+            </select>
+            {ownerName !== null ? (
+              <span className="mem-chip mem-chip-accent" title="Owning persona">
+                {ownerName}
+              </span>
+            ) : null}
+          </>
+        )}
         <span className="mem-actions">
+          {!editing ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={disabled}
+              onClick={startEdit}
+              aria-label={`Edit task ${task.title}`}
+            >
+              Edit
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            disabled={disabled}
+            disabled={disabled || editing}
             aria-expanded={noteOpen}
             onClick={() => {
               setNoteOpen((open) => !open);
@@ -1026,7 +1134,7 @@ function TaskRow({
           <button
             type="button"
             className="btn btn-secondary btn-sm btn-danger"
-            disabled={disabled}
+            disabled={disabled || editing}
             onClick={() => void removeTask()}
             aria-label={
               deleteArmed ? `Confirm deleting task ${task.title}` : `Delete task ${task.title}`

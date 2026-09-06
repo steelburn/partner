@@ -16,7 +16,6 @@ import {
   IconChat,
   IconFiles,
   IconMemory,
-  IconNoteAdd,
   IconNotes,
   IconPanelLeft,
   IconPanelRight,
@@ -98,11 +97,8 @@ export default function App() {
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [foldersError, setFoldersError] = useState<string | null>(null);
-  /** M11 F6: increments open Notes quick capture (header / Ctrl+K). */
-  const [noteCaptureNonce, setNoteCaptureNonce] = useState(0);
-  /** M12: increments the in-lane quick capture on the Chat view — capture
-   * stays side-by-side with the transcript (never navigates away). */
-  const [notesLaneCaptureNonce, setNotesLaneCaptureNonce] = useState(0);
+  /** M12.5: quick-capture happens in context (NotesMini lane ＋Capture or the
+   * Notes page Quick capture) — no global nonce plumbing. */
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -622,14 +618,6 @@ function ColumnDivider({
     return () => mq.removeEventListener('change', onChange);
   }, []);
   const notesLaneOpen = notesLaneOverride !== null ? notesLaneOverride === '1' : notesLaneWide;
-  const openNotesLane = useCallback((): void => {
-    setNotesLaneOverride('1');
-    try {
-      sessionStorage.setItem(NOTES_LANE_KEY, '1');
-    } catch {
-      /* private mode */
-    }
-  }, []);
   const toggleNotesLane = useCallback((): void => {
     const next = !notesLaneOpen;
     setNotesLaneOverride(next ? '1' : '0');
@@ -658,34 +646,9 @@ function ColumnDivider({
   const notesDefaultW = 232;
 
 
-  /** M11 F6 / M12: Notes are one click/hotkey away — open the composer
-   * anywhere. On the Chat view the composer opens IN the notes lane beside
-   * the transcript (reopening the lane if it was collapsed); everywhere
-   * else it opens on the Notes page. */
-  const requestCapture = useCallback((): void => {
-    if (view === 'chat') {
-      openNotesLane();
-      setNotesLaneCaptureNonce((n) => n + 1);
-      return;
-    }
-    setView('notes');
-    setNoteCaptureNonce((n) => n + 1);
-  }, [view, openNotesLane]);
-
-  useEffect(() => {
-    if (!paired) return;
-    const onKey = (event: KeyboardEvent): void => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        const target = event.target as HTMLElement | null;
-        const tag = target?.tagName?.toLowerCase();
-        if (tag === 'input' || tag === 'textarea') return; // never hijack typing
-        event.preventDefault();
-        requestCapture();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [paired, requestCapture]);
+  /** M12.5: the global “Quick note” capture action and its Ctrl+K shortcut
+   * were removed — capture happens in context (the lane ＋Capture beside
+   * the transcript, or the Notes page Quick capture). */
 
   return (
     <div className="app">
@@ -714,16 +677,6 @@ function ColumnDivider({
                     >
                       <IconNotes />
                       Notes
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-action"
-                      onClick={requestCapture}
-                      title="Quick note (Ctrl+K)"
-                      aria-label="Quick note (Ctrl+K)"
-                    >
-                      <IconNoteAdd />
-                      Quick note
                     </button>
                   </div>
                   <div className="view-group" role="group" aria-label="Studio">
@@ -931,7 +884,6 @@ function ColumnDivider({
                   active={paired}
                   open={notesLaneOpen}
                   collapsed={!notesLaneOpen}
-                  captureSignal={notesLaneCaptureNonce}
                   onToggleCollapsed={toggleNotesLane}
                   onOpen={() => setView('notes')}
                   onUnpair={handleSessionLost}
@@ -992,7 +944,6 @@ function ColumnDivider({
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'notes'}
-                captureSignal={noteCaptureNonce}
               />
             </div>
             <div className={view === 'skills' ? 'app-view app-view-active' : 'app-view'}>

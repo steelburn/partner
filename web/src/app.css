@@ -2653,6 +2653,20 @@ select {
   padding: var(--space-2);
 }
 
+/* M12.5: inline task-title rename replaces the head row while editing. */
+.p-task-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.p-task-edit .field {
+  flex: 1;
+  min-width: 120px;
+}
+
 .p-owner-select,
 .p-task-status {
   width: auto;
