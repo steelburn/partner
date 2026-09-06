@@ -88,6 +88,10 @@ import type {
   PlaybookRunPatch,
   PlaybookRunRow,
   PlaybookRunStore,
+  ScheduleRunFilter,
+  ScheduleRunPatch,
+  ScheduleRunRow,
+  ScheduleRunStore,
   SpendLedgerRow,
   SpendLedgerStore,
 } from './types.js';
@@ -423,6 +427,28 @@ CREATE TABLE IF NOT EXISTS playbook_runs (
 CREATE INDEX IF NOT EXISTS idx_playbook_runs_persona
   ON playbook_runs(persona_id, started_at);
 
+-- M14 scheduled runs (PLAN-M14.md, additive schema v13): one row per
+-- autonomous schedule run attempt. Content discipline mirrors playbook runs
+-- (label snapshot + ids/counts only; transcripts live in conversations).
+CREATE TABLE IF NOT EXISTS scheduled_runs (
+  id TEXT PRIMARY KEY,
+  persona_id TEXT NOT NULL,
+  schedule_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  conversation_id TEXT,
+  pending_id TEXT,
+  tool_calls INTEGER NOT NULL DEFAULT 0,
+  rounds INTEGER NOT NULL DEFAULT 0,
+  model TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_runs_persona
+  ON scheduled_runs(persona_id, schedule_id, started_at DESC);
+
 -- M10 spend ledger (PLAN-M10 W3, additive schema v11): cumulative spend per
 -- provider for the CURRENT budget window (rolling, default 30 days). One row
 -- per provider; the manager rolls the window by resetting cents when the row
@@ -547,7 +573,7 @@ const PERSONA_COLUMNS = `
   task_classes AS taskClasses, fallback_model AS fallbackModel,
   provider_id AS providerId, independence_level AS independenceLevel,
   require_human AS requireHuman, auto_scopes AS autoScopes,
-  memory_flags AS memoryFlags, policy, home_folder AS homeFolderId,
+  memory_flags AS memoryFlags, policy, home_folder AS homeFolderId, schedules,
   is_default AS isDefault, paused,
   created_at AS createdAt, updated_at AS updatedAt`;
 
@@ -643,6 +669,8 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   ['personas', 'policy', 'policy TEXT'],
   // Persona home folder (D10): new chats for this persona auto-land here.
   ['personas', 'home_folder', 'home_folder TEXT'],
+  // M14 schedules (PLAN-M14.md): independence.schedules[] JSON array.
+  ['personas', 'schedules', 'schedules TEXT'],
   // Provider purpose tag (F4). Legacy rows read as 'general'.
   ['providers', 'purpose', "purpose TEXT NOT NULL DEFAULT 'general'"],
   // Chat folder binding (F11); NULL = Inbox.
@@ -1117,6 +1145,7 @@ const PERSONA_UPDATE_COLUMNS: Readonly<Record<string, keyof PersonaRowPatch>> = 
   independence_level: 'independenceLevel',
   require_human: 'requireHuman',
   auto_scopes: 'autoScopes',
+  schedules: 'schedules',
   memory_flags: 'memoryFlags',
   policy: 'policy',
   home_folder: 'homeFolderId',
@@ -1129,12 +1158,12 @@ export function createPersonaStore(db: Database.Database): PersonaStore {
     `INSERT INTO personas (id, name, tagline, avatar, color_theme, voice, language,
                            system_prompt, temperature, task_classes, fallback_model,
                            provider_id, independence_level, require_human, auto_scopes,
-                           memory_flags, policy, home_folder, is_default, paused,
+                           memory_flags, policy, home_folder, schedules, is_default, paused,
                            created_at, updated_at)
      VALUES (@id, @name, @tagline, @avatar, @colorTheme, @voice, @language,
              @systemPrompt, @temperature, @taskClasses, @fallbackModel,
              @providerId, @independenceLevel, @requireHuman, @autoScopes,
-             @memoryFlags, @policy, @homeFolderId, @isDefault, @paused,
+             @memoryFlags, @policy, @homeFolderId, @schedules, @isDefault, @paused,
              @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${PERSONA_COLUMNS} FROM personas WHERE id = ?`);
@@ -1877,6 +1906,12 @@ const PLAYBOOK_RUN_COLUMNS = `
   tool_calls AS toolCalls, started_at AS startedAt,
   finished_at AS finishedAt, error`;
 
+const SCHEDULE_RUN_COLUMNS = `
+  id, persona_id AS personaId, schedule_id AS scheduleId, label, status,
+  conversation_id AS conversationId, pending_id AS pendingId,
+  tool_calls AS toolCalls, rounds, model, started_at AS startedAt,
+  finished_at AS finishedAt, error`;
+
 export function createDeployProfileStore(db: Database.Database): DeployProfileStore {
   const insert = db.prepare(
     `INSERT INTO deploy_profiles (id, name, kind, host, username, port,
@@ -1941,6 +1976,77 @@ export function createPlaybookRunStore(db: Database.Database): PlaybookRunStore 
         toolCalls: patch.toolCalls ?? null,
         finishedAt: patch.finishedAt ?? null,
         error: patch.error ?? null,
+      });
+    },
+  };
+}
+
+export function createScheduleRunStore(db: Database.Database): ScheduleRunStore {
+  const insert = db.prepare(
+    `INSERT INTO scheduled_runs (id, persona_id, schedule_id, label, status,
+                                 conversation_id, pending_id, tool_calls, rounds,
+                                 model, started_at, finished_at, error)
+     VALUES (@id, @personaId, @scheduleId, @label, @status,
+             @conversationId, @pendingId, @toolCalls, @rounds,
+             @model, @startedAt, @finishedAt, @error)`,
+  );
+  const findById = db.prepare(
+    `SELECT ${SCHEDULE_RUN_COLUMNS} FROM scheduled_runs WHERE id = ?`,
+  );
+  const listSql = db.prepare(
+    `SELECT ${SCHEDULE_RUN_COLUMNS} FROM scheduled_runs
+     WHERE (@personaId IS NULL OR persona_id = @personaId)
+       AND (@scheduleId IS NULL OR schedule_id = @scheduleId)
+       AND (@status IS NULL OR status = @status)
+     ORDER BY started_at DESC, rowid DESC LIMIT @limit`,
+  );
+  const waitingSql = db.prepare(
+    `SELECT ${SCHEDULE_RUN_COLUMNS} FROM scheduled_runs
+     WHERE pending_id = ? AND status = 'queued' ORDER BY started_at DESC LIMIT 1`,
+  );
+  const update = db.prepare(
+    `UPDATE scheduled_runs SET
+       status = @status,
+       pending_id = @pendingId,
+       tool_calls = COALESCE(@toolCalls, tool_calls),
+       rounds = COALESCE(@rounds, rounds),
+       model = @model,
+       finished_at = @finishedAt,
+       error = @error,
+       conversation_id = COALESCE(@conversationId, conversation_id)
+     WHERE id = @id`,
+  );
+
+  return {
+    insert(row: ScheduleRunRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ScheduleRunRow | undefined {
+      return findById.get(id) as ScheduleRunRow | undefined;
+    },
+    list(filter?: ScheduleRunFilter): ScheduleRunRow[] {
+      const limit = Math.min(100, Math.max(1, filter?.limit ?? 50));
+      return listSql.all({
+        personaId: filter?.personaId ?? null,
+        scheduleId: filter?.scheduleId ?? null,
+        status: filter?.status ?? null,
+        limit,
+      }) as ScheduleRunRow[];
+    },
+    findWaitingByPending(pendingId: string): ScheduleRunRow | undefined {
+      return waitingSql.get(pendingId) as ScheduleRunRow | undefined;
+    },
+    update(id: string, patch: ScheduleRunPatch): void {
+      update.run({
+        id,
+        status: patch.status ?? null,
+        pendingId: patch.pendingId ?? null,
+        toolCalls: patch.toolCalls ?? null,
+        rounds: patch.rounds ?? null,
+        model: patch.model ?? null,
+        finishedAt: patch.finishedAt ?? null,
+        error: patch.error ?? null,
+        conversationId: patch.conversationId ?? null,
       });
     },
   };

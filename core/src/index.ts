@@ -377,6 +377,22 @@ export type {
   ToolLoopResult,
   ToolLoopRunRequest,
 } from './playbooks/index.js';
+
+// ---- scheduled & autonomous work (M14, PLAN-M14.md) ------------------------
+export {
+  createScheduleManager,
+  scheduleError,
+  scheduleErrorStatus,
+  ScheduleError,
+} from './schedules/index.js';
+export type {
+  ScheduleManager,
+  ScheduleManagerOptions,
+  ScheduleRunReason,
+  ScheduleRunView,
+} from './schedules/index.js';
+export { nextFire, partsAt, epochOfCivil } from './schedules/index.js';
+export type { CivilParts } from './schedules/index.js';
 export { createCoreApp } from './http/server.js';
 export type { CoreAppOptions } from './http/server.js';
 export type { ChatDoneMetaEvent, ServerChatEvent } from './http/server.js';
@@ -411,6 +427,7 @@ import {
   createThemeStore,
   createDeployProfileStore,
   createPlaybookRunStore,
+  createScheduleRunStore,
   createSpendLedgerStore,
   openEncryptedDatabase,
 } from './stores/db.js';
@@ -500,6 +517,9 @@ import {
   createToolLoop,
 } from './playbooks/index.js';
 import type { DeployManager, PlaybookManager } from './playbooks/index.js';
+import { createScheduleManager } from './schedules/index.js';
+import type { ScheduleManager } from './schedules/index.js';
+import type { ScheduleRunStore } from './stores/types.js';
 import {
   createNoteLinkStore,
   createNoteStore,
@@ -568,6 +588,16 @@ export interface CoreBundle {
   playbookRunStore: PlaybookRunStore;
   deployProfiles: DeployManager;
   deployProfileStore: DeployProfileStore;
+  /** M14 scheduled & autonomous work (PLAN-M14.md, schema v13). */
+  schedules: ScheduleManager;
+  scheduleRunStore: ScheduleRunStore;
+  /** Scheduler driver handle (start/stop/tick; tests drive tick()). */
+  scheduler: {
+    start(): void;
+    stop(): void;
+    /** Fire due schedules now (used by the interval and tests). */
+    tick(): Promise<string[]>;
+  };
   app: Express;
   /** Close the SQLite handle (no-op safe after shutdown). */
   close(): void;
@@ -808,6 +838,51 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     audit,
   });
 
+  // M14: schedules + scheduler driver over the SAME db (schema v13). Runs are
+  // autonomous persona tool loops (the shared loop above) driven headlessly;
+  // approvals decide into queued runs via tryResumeAfterDecision (wired as a
+  // hook on the pending-decide route). Demo mode defaults to UTC so schedule
+  // windows are deterministic; live mode uses the machine's local zone.
+  const scheduleRunStore = createScheduleRunStore(db);
+  const schedulerTz =
+    config.schedulerTz ??
+    (config.demo ? 'UTC' : Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const schedules = createScheduleManager({
+    personas: personaManager,
+    conversations: conversationManager,
+    notes,
+    runs: scheduleRunStore,
+    loop: toolLoop,
+    resolver: playbookProviderResolver,
+    folders,
+    audit,
+    defaultTz: schedulerTz,
+  });
+  let schedulerTimer: ReturnType<typeof setInterval> | null = null;
+  const scheduler = {
+    start(): void {
+      if (config.schedulerTickMs <= 0 || schedulerTimer !== null) return;
+      schedulerTimer = setInterval(() => {
+        void schedules.tick().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          // eslint-disable-next-line no-console
+          console.error(`[partner-core] scheduler tick failed: ${message}`);
+        });
+      }, config.schedulerTickMs);
+      // Unref so a tick never keeps the process alive on its own.
+      schedulerTimer.unref();
+    },
+    stop(): void {
+      if (schedulerTimer !== null) {
+        clearInterval(schedulerTimer);
+        schedulerTimer = null;
+      }
+    },
+    tick(): Promise<string[]> {
+      return schedules.tick();
+    },
+  };
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -838,6 +913,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     skillRunner,
     playbooks,
     deployProfiles,
+    schedules,
   });
 
   return {
@@ -888,6 +964,9 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     playbookRunStore,
     deployProfiles,
     deployProfileStore,
+    schedules,
+    scheduleRunStore,
+    scheduler,
     app,
     close(): void {
       try {
@@ -913,6 +992,12 @@ export async function startServer(config: CoreConfig = loadConfig()): Promise<{ 
   const db = await openCoreDatabase(config);
   const bundle = createCore(config, db);
   const server = await listen(bundle.app, config.port, config.host);
+  // M14: the scheduler heartbeat runs while the core listens (auto-stopped
+  // on close so a shutdown never ticks a closed DB).
+  bundle.scheduler.start();
+  server.on('close', () => {
+    bundle.scheduler.stop();
+  });
   return { bundle, server };
 }
 

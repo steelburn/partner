@@ -49,6 +49,47 @@ browser-actuator research capture (real Chrome + installed native host), and
 the S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
 
+### M14 — scheduled & autonomous work (2026-09-06, core engine green)
+
+Personas carry **schedule definitions** inside their independence bundle
+(`independence.schedules[]` — daily/weekly wall-clock or a rolling interval,
+prompt, optional IANA tz, per-run round bound, save-note flag). The core's
+scheduler wakes on a heartbeat (`SCHEDULER_TICK_MS`, default 30 s;
+`SCHEDULER_TZ` overrides the machine-local default; UTC in demo) and fires
+due schedules for **unpaused auto/autonomous personas only**. Each fire is a
+**headless bounded persona tool-loop run** on the same engine playbooks use:
+the brief lands as a user turn in the schedule's own conversation thread
+(auto-created, persona-bound, home-folder aware, reused across runs); tool
+use keeps every existing gate (independence × risk matrix, persona bans,
+default-deny broker grants); a queued tool pauses the run (row status
+`queued` + `pendingId`); deciding that approval from the Files queue or the
+in-chat card **auto-resumes the run in-process** — no UI click needed to
+continue; the final answer appends to the thread on done (+ optional
+save-note); every attempt writes a `scheduled_runs` row and audit
+`schedule.run`/`schedule.resume`/`schedule.skip` rows (ids/counts only —
+prompts and transcript text never cross audit). Pausing the persona is an
+instant kill switch for its schedules (new runs AND resume). Missed windows
+fire at most one catch-up run; windows never storm. Schedules are edited
+through the existing persona surface; new routes: `POST
+/v1/personas/:id/schedules/:scheduleId/run-now` (headless), `GET
+/v1/schedules/runs` + `/v1/schedules/runs/:runId`. Schema v13 (additive:
+`personas.schedules`, `scheduled_runs`). Spec: `PLAN-M14.md`. Web slice
+(schedule editor + runs panel) is done: web/src/SchedulesSection.tsx renders in the persona
+editor — list with enabled toggles, add/edit/remove, daily/weekly/interval fields,
+timezone + round-cap, Run now for persisted schedules with inline errors, and a
+Recent runs mini-panel (status dots, model, queued-approval hint, auto-refresh
+after run-now). Token-only, ux_audit green, web build + typechecks 0.
+live manual walk (env-gated) only; the decide-hook is now proven end-to-end
+(core/test/http/schedulesApproval.test.ts — real broker loop, approve + deny, headless
+auto-resume, transcript + audit assertions).
+Live walk executed 2026-09-07 against https://api.ne1.dev/v1 (deepseek-v4-flash) +
+Brave search: purpose provider healthy (1063 ms, 4 models), real Brave results returned,
+scheduled run paused on a queued approval and auto-resumed headlessly to done, final
+brief persisted in the conversation thread and as a note, audit rows content-free,
+core log clean of key material. Walk bug found + fixed: resume-completed runs now
+save-note (the resume path carried schedule=null) — covered by a manager unit test.
+Remaining: packaged-app walk (shell/NSIS) only.
+
 ### M13 — purpose providers & in-session model switch (2026-09-06)
 
 Providers can be set up **by purpose** (General · Cheap · Deep · Coding ·

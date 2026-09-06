@@ -299,6 +299,8 @@ export interface PersonaRow {
   requireHuman: string | null;
   /** independence.autoScopes as JSON string array (stored now, enforced later). */
   autoScopes: string | null;
+  /** M14 schedules JSON array (PLAN-M14.md) — independence.schedules[]. */
+  schedules: string | null;
   /** memory flags as JSON {userProfile, episodes}. */
   memoryFlags: string | null;
   /** M11 persona policy JSON {skills:{default,banned},tools:{allowed,banned}} (null = none). */
@@ -331,6 +333,7 @@ export type PersonaRowPatch = Partial<
     | 'independenceLevel'
     | 'requireHuman'
     | 'autoScopes'
+    | 'schedules'
     | 'memoryFlags'
     | 'policy'
     | 'homeFolderId'
@@ -849,6 +852,66 @@ export interface PlaybookRunStore {
   insert(row: PlaybookRunRow): void;
   findById(id: string): PlaybookRunRow | undefined;
   update(id: string, patch: PlaybookRunPatch): void;
+}
+
+// ---------------------------------------------------------------------------
+// M14 scheduled runs store (PLAN-M14.md — additive schema v13). One row per
+// autonomous schedule run attempt. Content discipline mirrors playbook runs:
+// label snapshot + ids/counts/status only — schedule prompts and transcript
+// content never touch the row (conversations own the text).
+// ---------------------------------------------------------------------------
+
+export interface ScheduleRunRow {
+  id: string;
+  personaId: string;
+  scheduleId: string;
+  /** Snapshot label at run time (thread title / UI / audit label). */
+  label: string;
+  /** running|done|queued|error|loop_exhausted (queued waits on pendingId). */
+  status: string;
+  conversationId: string | null;
+  /** Non-null while a queued run waits on this approval row. */
+  pendingId: string | null;
+  /** Broker tools executed (direct + approval-executed on resume). */
+  toolCalls: number;
+  /** Model rounds consumed. */
+  rounds: number;
+  model: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+  /** Coded error only — never content. */
+  error: string | null;
+}
+
+export type ScheduleRunPatch = Partial<
+  Pick<
+    ScheduleRunRow,
+    | 'status'
+    | 'conversationId'
+    | 'pendingId'
+    | 'toolCalls'
+    | 'rounds'
+    | 'model'
+    | 'finishedAt'
+    | 'error'
+  >
+>;
+
+export interface ScheduleRunFilter {
+  personaId?: string;
+  scheduleId?: string;
+  status?: string;
+  limit?: number;
+}
+
+export interface ScheduleRunStore {
+  insert(row: ScheduleRunRow): void;
+  findById(id: string): ScheduleRunRow | undefined;
+  /** Newest started first, filtered. Default limit 50, cap 100. */
+  list(filter?: ScheduleRunFilter): ScheduleRunRow[];
+  /** The queued run waiting on a given approval row, if any. */
+  findWaitingByPending(pendingId: string): ScheduleRunRow | undefined;
+  update(id: string, patch: ScheduleRunPatch): void;
 }
 
 /** `spend_ledger` row — cumulative cents for the current budget window. */

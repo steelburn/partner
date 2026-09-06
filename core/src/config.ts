@@ -49,6 +49,10 @@ export interface CoreConfig {
   skillsDir: string;
   /** M8 local catalog: env SKILLS_CATALOG_DIR (default repo skills-catalog/). */
   skillsCatalogDir: string;
+  /** M14 scheduler heartbeat interval (ms). 0 disables the driver. */
+  schedulerTickMs: number;
+  /** M14 default timezone for schedules without an explicit tz (IANA). */
+  schedulerTz?: string;
   schemaVersion: number;
   version: string;
 }
@@ -137,6 +141,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       (metaUrlOfBundle()
         ? fileURLToPath(new URL('../../skills-catalog/', (import.meta as { url?: string }).url as string))
         : join(process.cwd(), 'skills-catalog')),
+    // M14: the scheduler wakes on this cadence to fire due schedules.
+    schedulerTickMs: readInt(env.SCHEDULER_TICK_MS, 30_000, 0, 3_600_000),
+    schedulerTz: env.SCHEDULER_TZ?.trim() || undefined,
     schemaVersion: SCHEMA_VERSION,
     version: CORE_VERSION,
   };

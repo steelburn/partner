@@ -2,13 +2,13 @@
  * M11 F10 assets UI (PLAN-M11.md).
  *
  * SaveAssetsDialog: pick/retitle/rekind candidates extracted from an
- * assistant message, then save. AssetsDrawer: list the conversation's saved
- * assets with copy / promote-to-note / delete. Token-driven styling.
+ * assistant message, then save. (The conversation-asset LIST moved to the
+ * M14 AssetsLane — a resizable pane beside the transcript.)
  */
-import { useEffect, useState } from 'react';
-import type { Asset, AssetInput, AssetKind } from '@partner/shared';
+import { useState } from 'react';
+import type { AssetInput, AssetKind } from '@partner/shared';
 import { ASSET_KINDS } from '@partner/shared';
-import { createAssets, deleteAsset, listAssets, promoteAsset } from './lib/assets.js';
+import { createAssets } from './lib/assets.js';
 import type { AssetCandidate } from './lib/assets-extract.js';
 
 export interface SaveAssetsDialogProps {
@@ -173,142 +173,3 @@ export function SaveAssetsDialog({
   );
 }
 
-export interface AssetsDrawerProps {
-  token: string;
-  conversationId: string;
-  onClose: () => void;
-  onSessionLost: () => void;
-  /** Notify when promotion happened (Notes first-class). */
-  onPromoted?: () => void;
-}
-
-export function AssetsDrawer({
-  token,
-  conversationId,
-  onClose,
-  onSessionLost,
-  onPromoted,
-}: AssetsDrawerProps) {
-  const [assets, setAssets] = useState<Asset[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-
-  const load = async (): Promise<void> => {
-    try {
-      setAssets(await listAssets(token, conversationId));
-      setError(null);
-    } catch (cause) {
-      if (isAuthLost(cause)) {
-        onSessionLost();
-        return;
-      }
-      setError(cause instanceof Error ? cause.message : 'Could not load assets.');
-    }
-  };
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, token]);
-
-  const copyBody = async (asset: Asset): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(asset.body);
-      setCopiedId(asset.id);
-      window.setTimeout(() => setCopiedId((current) => (current === asset.id ? null : current)), 1200);
-    } catch {
-      setError('Clipboard unavailable — copy the text from the note instead.');
-    }
-  };
-
-  const promote = async (asset: Asset): Promise<void> => {
-    if (busyId !== null) return;
-    setBusyId(asset.id);
-    setError(null);
-    try {
-      await promoteAsset(token, conversationId, asset.id);
-      onPromoted?.();
-    } catch (cause) {
-      if (isAuthLost(cause)) {
-        onSessionLost();
-        return;
-      }
-      setError(cause instanceof Error ? cause.message : 'Could not promote to a note.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const remove = async (asset: Asset): Promise<void> => {
-    if (busyId !== null) return;
-    setBusyId(asset.id);
-    try {
-      await deleteAsset(token, conversationId, asset.id);
-      await load();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not delete the asset.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  return (
-    <section className="assets-drawer" aria-label="Saved assets">
-      <div className="assets-drawer-head">
-        <h2 className="assets-drawer-title">
-          Assets{assets !== null ? ` (${assets.length})` : ''}
-        </h2>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
-          Close
-        </button>
-      </div>
-      {error ? (
-        <p className="chat-attach-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {assets === null ? (
-        <p className="rail-note">Loading assets…</p>
-      ) : assets.length === 0 ? (
-        <p className="rail-note">Nothing saved yet — use Save on a response to keep it here.</p>
-      ) : (
-        <ul className="asset-list" role="list">
-          {assets.map((asset) => (
-            <li key={asset.id} className="asset-row">
-              <div className="asset-row-head">
-                <span className="asset-row-kind">{asset.kind}</span>
-                <span className="asset-row-title">{asset.title}</span>
-                <button
-                  type="button"
-                  className="btn-link asset-row-copy"
-                  onClick={() => void copyBody(asset)}
-                  disabled={busyId !== null}
-                >
-                  {copiedId === asset.id ? 'Copied' : 'Copy'}
-                </button>
-                <button
-                  type="button"
-                  className="btn-link asset-row-promote"
-                  onClick={() => void promote(asset)}
-                  disabled={busyId !== null}
-                >
-                  {busyId === asset.id ? '…' : 'To note'}
-                </button>
-                <button
-                  type="button"
-                  className="btn-link asset-row-remove"
-                  onClick={() => void remove(asset)}
-                  disabled={busyId !== null}
-                  aria-label={`Delete asset ${asset.title}`}
-                >
-                  ×
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}

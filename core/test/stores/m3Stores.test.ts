@@ -41,6 +41,7 @@ const basePersona: PersonaRow = {
   independenceLevel: 'suggest',
   requireHuman: JSON.stringify(['high']),
   autoScopes: JSON.stringify(['search:read']),
+  schedules: null,
   memoryFlags: JSON.stringify({ userProfile: 'read', episodes: 'none' }),
   policy: null,
   homeFolderId: null,

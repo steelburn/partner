@@ -5074,32 +5074,55 @@ select {
   color: var(--text-muted);
 }
 
-.assets-drawer {
-  margin-top: var(--space-2);
-  padding: var(--space-3);
-  background: var(--surface);
-  border-radius: var(--radius-lg);
+/* ==========================================================================
+ * M14 — Assets pane (a right-hand lane beside the transcript; the old
+ * inline AssetsDrawer under the composer is superseded by this surface).
+ * List of the open conversation's saved assets; selecting one shows a read
+ * view of its body with Copy / Export .md / promote / delete. Token-only,
+ * mirrors the NotesMini lane (surface bg, same type rhythm, zero elevation
+ * inside; a divider handle resizes the column).
+ * ========================================================================== */
+
+.assets-lane {
+  width: 300px;
+  flex: none;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  max-height: 260px;
+  padding: var(--space-3);
   overflow-y: auto;
+  background: var(--surface);
 }
 
-.assets-drawer-head {
+.assets-lane-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
 }
 
-.assets-drawer-title {
+.assets-lane-title {
   margin: 0;
+  flex: 1;
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   color: var(--text);
 }
 
-.asset-list {
+.assets-lane-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.assets-lane-error {
+  color: var(--danger);
+}
+
+/* --- list view ----------------------------------------------------------- */
+
+.assets-lane-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -5108,46 +5131,141 @@ select {
   gap: var(--space-1);
 }
 
-.asset-row-head {
+.assets-lane-row {
+  margin: 0;
+}
+
+.assets-lane-open {
+  width: 100%;
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  background: var(--surface-2);
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 0;
   border-radius: var(--radius-md);
+  background: var(--surface-2);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--motion-fast) var(--motion-ease);
 }
 
-.asset-row-kind {
-  flex: none;
+.assets-lane-open:hover:not(:disabled),
+.assets-lane-open:active:not(:disabled) {
+  /* Surface the row on hover (btn-secondary convention): the accent title
+   * then sits on --surface for a readable emphasis. */
+  background: var(--surface);
+}
+
+.assets-lane-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.assets-lane-open:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.assets-lane-open:hover:not(:disabled) .assets-lane-row-title,
+.assets-lane-open:focus-visible .assets-lane-row-title {
+  color: var(--accent-hover);
+}
+
+.assets-lane-row-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  /* Long titles clamp at two lines instead of breaking mid-word across the
+   * pane — the read view shows the full text. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.assets-lane-row-meta {
   font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--accent-contrast);
-  background: var(--accent-emphasis);
-  border-radius: var(--radius-sm);
-  padding: 1px var(--space-1);
+  color: var(--text-muted);
 }
 
-.asset-row-title {
+/* --- read view ------------------------------------------------------------ */
+
+.assets-lane-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.assets-lane-back {
+  align-self: flex-start;
+  /* M12 P0.3: small accent text on --surface uses the darker hover green
+   * (Lc 80.5 light / 87 dark) — the plain light accent misses Lc 75 at
+   * 12px. The underline keeps the link affordance. */
+  color: var(--accent-hover, var(--accent));
+  font-size: var(--fs-xs);
+}
+
+.assets-lane-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.assets-lane-detail-top {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.assets-lane-detail-title {
+  margin: 0;
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
-.btn-link.asset-row-copy,
-.btn-link.asset-row-promote,
-.btn-link.asset-row-remove {
+/* Destructive action in the detail head — danger text link, small but at
+ * fs-sm/500 so the danger token keeps Lc >= 75 on --surface. */
+.assets-lane-del {
   flex: none;
-  font-size: var(--fs-xs);
-  padding: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  padding-top: 2px;
 }
 
-.asset-row-remove {
+.assets-lane-del:hover:not(:disabled),
+.assets-lane-del:active:not(:disabled) {
   color: var(--danger);
+  text-decoration: underline;
+}
+
+.assets-lane-detail-meta {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.assets-lane-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.assets-lane-status {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.assets-lane-body {
+  min-height: 0;
+  overflow-wrap: anywhere;
 }
 
 .asset-candidates {
@@ -5839,7 +5957,8 @@ select {
 
 /* Notes lane collapse (P1.2 / D2): collapsed = slim strip + expand toggle. */
 
-.notes-mini-toggle {
+.notes-mini-toggle,
+.assets-lane-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5854,17 +5973,20 @@ select {
   transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
 }
 
-.notes-mini-toggle:hover:not(:disabled) {
+.notes-mini-toggle:hover:not(:disabled),
+.assets-lane-close:hover:not(:disabled) {
   background: var(--surface-2);
   color: var(--text);
 }
 
-.notes-mini-toggle:focus-visible {
+.notes-mini-toggle:focus-visible,
+.assets-lane-close:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-.notes-mini-toggle:disabled {
+.notes-mini-toggle:disabled,
+.assets-lane-close:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -5981,6 +6103,7 @@ select {
 .chat-workspace {
   --rail-w: 288px;
   --notes-w: 232px;
+  --assets-w: 300px;
 }
 
 .chat-workspace .rail {
@@ -5989,6 +6112,10 @@ select {
 
 .chat-workspace .notes-mini {
   width: var(--notes-w);
+}
+
+.chat-workspace .assets-lane {
+  width: var(--assets-w);
 }
 
 /* User collapse beats everything (including any drag width). */
@@ -6042,6 +6169,21 @@ select {
 @media (max-width: 760px) {
   .chat-workspace.notes-lane-open .notes-mini {
     width: 272px;
+  }
+}
+
+/* M14: same overlay treatment for the assets pane — on phone widths the
+ * right-hand panes float over the transcript (the shell keeps Assets and
+ * Notes mutually exclusive there, so they never stack). */
+@media (max-width: 760px) {
+  .chat-workspace.assets-pane-open .assets-lane {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 300px;
+    z-index: 30;
+    box-shadow: var(--elevation-lg);
   }
 }
 
@@ -6235,4 +6377,243 @@ select {
 .bundle-purposes-actions .btn-link {
   font-size: var(--fs-xs);
   padding: 0;
+}
+
+/* --- M14 schedules + runs (PLAN-M14.md S6) --------------------------------
+ * Schedules live inside the persona editor (drafts of
+ * independence.schedules[]). Structure only — every colour/spacing/type
+ * value comes from tokens; separation uses space and background shift, not
+ * invented borders; interactive elements reuse .field/.btn/.check so the
+ * global focus-visible + disabled state contracts apply unchanged.
+ * ------------------------------------------------------------------------ */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.form-success {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--success);
+}
+
+.schedules-fieldset {
+  border: 0;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.schedules-legend {
+  margin-bottom: var(--space-0);
+}
+
+.schedules-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.schedules-list {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.schedule-item-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+}
+
+.schedule-enabled {
+  margin: 0;
+}
+
+.schedule-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.schedule-label-text {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-disabled {
+  color: var(--text-faint);
+  font-weight: var(--fw-regular);
+}
+
+.schedule-when-text {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.schedule-item-actions,
+.schedule-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.schedule-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-1);
+}
+
+.schedule-run-error {
+  margin: 0;
+}
+
+.schedule-editor-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+}
+
+.schedule-editor-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.schedule-prompt-input {
+  resize: vertical;
+}
+
+/* --- Runs mini-panel ----------------------------------------------------- */
+
+.schedule-runs {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.schedule-runs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.schedule-runs-title {
+  margin-bottom: 0;
+}
+
+.schedule-runs-state {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.schedule-runs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.schedule-run-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'status label'
+    'status meta';
+  column-gap: var(--space-2);
+  row-gap: var(--space-0);
+  padding: var(--space-2) 0;
+}
+
+.run-status {
+  grid-area: status;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.run-status::before {
+  content: '';
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.run-status-running::before {
+  color: var(--accent);
+  background: var(--accent);
+}
+
+.run-status-queued::before {
+  color: var(--warning);
+  background: var(--warning);
+}
+
+.run-status-done::before {
+  color: var(--success);
+  background: var(--success);
+}
+
+.run-status-error::before {
+  color: var(--danger);
+  background: var(--danger);
+}
+
+.run-status-loop_exhausted::before {
+  color: var(--text-muted);
+  background: var(--text-muted);
+}
+
+.schedule-run-label {
+  grid-area: label;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-run-meta {
+  grid-area: meta;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }

@@ -10,6 +10,7 @@ import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import type { StreamDoneMeta } from './lib/api.js';
 import type { ThemeTokenPair } from './lib/theme-helpers.js';
 import ChatStrip from './ChatStrip.js';
+import { AssetsLane } from './AssetsLane.js';
 import { NotesMini } from './NotesMini.js';
 import {
   IconAudit,
@@ -22,6 +23,7 @@ import {
   IconPersonas,
   IconPlaybooks,
   IconProviders,
+  IconSave,
   IconSkills,
   IconThemes,
 } from './icons.js';
@@ -502,6 +504,8 @@ export default function App() {
 const RAIL_OPEN_KEY = 'partner.railOpen';
 const RAIL_W_KEY = 'partner.railWidth';
 const NOTES_W_KEY = 'partner.notesWidth';
+const ASSETS_LANE_KEY = 'partner.assetsLane';
+const ASSETS_W_KEY = 'partner.assetsWidth';
 
 const readSession = (key: string): string | null => {
   try {
@@ -618,11 +622,58 @@ function ColumnDivider({
     return () => mq.removeEventListener('change', onChange);
   }, []);
   const notesLaneOpen = notesLaneOverride !== null ? notesLaneOverride === '1' : notesLaneWide;
+
+  /** M14 assets pane. Open = explicit user choice, remembered per session
+   *  (default CLOSED so the existing geometry gates stay untouched until the
+   *  user asks for the pane). The two right-hand panes (Assets + Notes) are
+   *  mutually exclusive below 1440px — stacking them at laptop widths would
+   *  crush the transcript (composer falls to ~136px @1024); at >= 1440px
+   *  both fit and may be open at once. */
+  const [panelsFit, setPanelsFit] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1440px)');
+    const onChange = (): void => setPanelsFit(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const [assetsLaneOverride, setAssetsLaneOverride] = useState<string | null>(() =>
+    readSession(ASSETS_LANE_KEY),
+  );
+  const assetsLaneOpen = assetsLaneOverride === '1';
+
+  const setAssetsLaneOpen = useCallback((open: boolean): void => {
+    setAssetsLaneOverride(open ? '1' : '0');
+    writeSession(ASSETS_LANE_KEY, open ? '1' : '0');
+  }, []);
+  const toggleAssetsLane = useCallback((): void => {
+    const next = !assetsLaneOpen;
+    if (next && !panelsFit && notesLaneOpen) {
+      setNotesLaneOverride('0');
+      writeSession(NOTES_LANE_KEY, '0');
+    }
+    setAssetsLaneOpen(next);
+  }, [assetsLaneOpen, notesLaneOpen, panelsFit, setAssetsLaneOpen]);
+
   const toggleNotesLane = useCallback((): void => {
     const next = !notesLaneOpen;
+    if (next && !panelsFit && assetsLaneOpen) {
+      setAssetsLaneOpen(false);
+    }
     setNotesLaneOverride(next ? '1' : '0');
     writeSession(NOTES_LANE_KEY, next ? '1' : '0');
-  }, [notesLaneOpen]);
+  }, [notesLaneOpen, panelsFit, assetsLaneOpen, setAssetsLaneOpen]);
+
+  // Shrinking the window below the stack threshold with both panes open:
+  // keep the pane the user just opened (Assets), release the Notes width.
+  useEffect(() => {
+    if (!panelsFit && assetsLaneOpen && notesLaneOpen) {
+      setNotesLaneOverride('0');
+      writeSession(NOTES_LANE_KEY, '0');
+    }
+  }, [panelsFit, assetsLaneOpen, notesLaneOpen]);
 
   /* M12.5: conversations rail visibility + resizable column widths. The
    * widths are per-session; defaults come from CSS (breakpoint-tuned), so a
@@ -638,12 +689,26 @@ function ColumnDivider({
   }, []);
   const commitRailW = useCallback((value: number): void => writeSession(RAIL_W_KEY, String(value)), []);
   const commitNotesW = useCallback((value: number): void => writeSession(NOTES_W_KEY, String(value)), []);
+  const [assetsW, setAssetsW] = useState<number | null>(() => readIntSession(ASSETS_W_KEY));
+  const commitAssetsW = useCallback(
+    (value: number): void => writeSession(ASSETS_W_KEY, String(value)),
+    [],
+  );
   const workspaceStyle = {
     ...(railOpen && railW !== null ? { '--rail-w': `${railW}px` } : {}),
     ...(notesLaneOpen && notesW !== null ? { '--notes-w': `${notesW}px` } : {}),
+    ...(assetsLaneOpen && assetsW !== null ? { '--assets-w': `${assetsW}px` } : {}),
   } as CSSProperties;
   const railDefaultW = typeof window !== 'undefined' && window.innerWidth <= 1024 ? 260 : 288;
   const notesDefaultW = 232;
+  const assetsDefaultW = 300;
+
+  /** M14: assets saved via the chat-bar flow while the pane is open — bump
+   *  the lane's reload version so the new row appears without reopening. */
+  const [assetsVersion, setAssetsVersion] = useState(0);
+  const handleAssetsChanged = useCallback((): void => {
+    setAssetsVersion((value) => value + 1);
+  }, []);
 
 
   /** M12.5: the global “Quick note” capture action and its Ctrl+K shortcut
@@ -803,6 +868,16 @@ function ColumnDivider({
             <button
               type="button"
               className="btn btn-secondary btn-sm"
+              onClick={toggleAssetsLane}
+              aria-pressed={assetsLaneOpen}
+              aria-label={assetsLaneOpen ? 'Hide assets panel' : 'Show assets panel'}
+              title={assetsLaneOpen ? 'Hide assets panel' : 'Show assets panel'}
+            >
+              <IconSave />
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
               onClick={handleToggleMode}
               aria-pressed={mode === 'dark'}
               aria-label={`Switch to ${nextModeLabel.toLowerCase()} theme`}
@@ -820,6 +895,7 @@ function ColumnDivider({
               className={[
                 notesLaneOpen ? 'chat-workspace notes-lane-open' : 'chat-workspace notes-lane-collapsed',
                 railOpen ? '' : 'rail-hidden',
+                assetsLaneOpen ? 'assets-pane-open' : '',
               ]
                 .filter(Boolean)
                 .join(' ')}
@@ -870,7 +946,31 @@ function ColumnDivider({
                   pending={pending}
                   onRefreshPending={refreshQueue}
                   viewActive={view === 'chat'}
+                  assetsOpen={assetsLaneOpen}
+                  onToggleAssets={toggleAssetsLane}
+                  onAssetsChanged={handleAssetsChanged}
                 />
+                {assetsLaneOpen ? (
+                  <>
+                    <ColumnDivider
+                      label="Resize assets pane"
+                      direction={-1}
+                      current={assetsW}
+                      fallback={assetsDefaultW}
+                      min={220}
+                      max={460}
+                      onSet={setAssetsW}
+                      onCommit={commitAssetsW}
+                    />
+                    <AssetsLane
+                      conversationId={activeConversationId}
+                      active={view === 'chat'}
+                      version={assetsVersion}
+                      onClose={() => setAssetsLaneOpen(false)}
+                      onUnpair={handleSessionLost}
+                    />
+                  </>
+                ) : null}
                 {notesLaneOpen ? (
                   <ColumnDivider
                     label="Resize notes lane"

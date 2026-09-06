@@ -1,3 +1,5 @@
+import type { PersonaSchedule } from './schedules.js';
+
 /**
  * M3 persona + conversation wire contracts (PLAN-M3.md).
  *
@@ -39,6 +41,9 @@ export interface PersonaIndependence {
   requireHumanFor?: Array<'high' | 'medium'>;
   /** Tool scopes auto-allowed at level auto+ (stored now, enforced later). */
   autoScopes?: string[];
+  /** M14 scheduled & autonomous work (PLAN-M14.md): the persona's schedule
+   *  definitions. Runs fire only at independence auto/autonomous. */
+  schedules?: PersonaSchedule[];
 }
 
 export interface PersonaMemoryFlags {

@@ -106,6 +106,8 @@ import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
 import { PlaybookError, playbookError, playbookErrorStatus } from '../playbooks/errors.js';
+import type { ScheduleManager } from '../schedules/index.js';
+import { ScheduleError, scheduleErrorStatus } from '../schedules/index.js';
 
 export interface CoreAppOptions {
   port: number;
@@ -231,6 +233,12 @@ export interface CoreAppOptions {
    * not_configured.
    */
   deployProfiles?: DeployManager;
+  /**
+   * M14 schedule manager (optional so M0-M13 harnesses compile unchanged).
+   * When absent the /v1/schedules surface responds 501 not_configured and
+   * the pending-decide hook never resumes schedule runs.
+   */
+  schedules?: ScheduleManager;
 }
 
 const SSE_HEADERS = {
@@ -921,6 +929,25 @@ function requireDeployProfiles(options: CoreAppOptions, res: Response): DeployMa
     return null;
   }
   return profiles;
+}
+
+/** Guard: returns the M14 schedule manager or 501s. */
+function requireSchedules(options: CoreAppOptions, res: Response): ScheduleManager | null {
+  const schedules = options.schedules;
+  if (!schedules) {
+    notConfigured(res, 'schedule manager');
+    return null;
+  }
+  return schedules;
+}
+
+/** Send a typed ScheduleError response; false when err is not a ScheduleError. */
+function sendScheduleError(res: Response, err: unknown): boolean {
+  if (err instanceof ScheduleError) {
+    res.status(scheduleErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
 }
 
 /** Send a typed PlaybookError response; false when err is not a PlaybookError. */
@@ -3594,6 +3621,57 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ pending });
   });
 
+  // -------------------------------------------------------------------------
+  // M14 scheduled work (PLAN-M14.md): run-now + run history. Schedule
+  // definitions ride the persona surface (independence.schedules via
+  // PATCH /v1/personas/:id) — no duplicate CRUD here.
+  // -------------------------------------------------------------------------
+  api.post(
+    '/v1/personas/:id/schedules/:scheduleId/run-now',
+    requireSession(sessions),
+    async (req: Request, res: Response) => {
+      const schedules = requireSchedules(options, res);
+      if (!schedules) return;
+      const personaId = String(req.params.id ?? '');
+      const scheduleId = String(req.params.scheduleId ?? '');
+      try {
+        // fire() starts the headless run and resolves once its row exists —
+        // the UI polls GET /v1/schedules/runs and the run's conversation.
+        const row = await schedules.fire(personaId, scheduleId);
+        res.status(200).json({
+          runId: row.id,
+          status: row.status,
+          conversationId: row.conversationId,
+        });
+      } catch (err) {
+        if (sendScheduleError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.get('/v1/schedules/runs/:runId', requireSession(sessions), (req: Request, res: Response) => {
+    const schedules = requireSchedules(options, res);
+    if (!schedules) return;
+    const run = schedules.getRun(String(req.params.runId ?? ''));
+    if (run === null) {
+      res.status(404).json({ error: 'not_found', message: 'run not found' });
+      return;
+    }
+    res.json(run);
+  });
+
+  api.get('/v1/schedules/runs', requireSession(sessions), (req: Request, res: Response) => {
+    const schedules = requireSchedules(options, res);
+    if (!schedules) return;
+    const q = req.query;
+    const personaId = typeof q.personaId === 'string' && q.personaId !== '' ? q.personaId : undefined;
+    const status = typeof q.status === 'string' && q.status !== '' ? q.status : undefined;
+    let limit = Number(q.limit);
+    if (!Number.isInteger(limit) || limit < 1) limit = 50;
+    res.json({ runs: schedules.listRuns({ personaId, status, limit: Math.min(limit, 100) }) });
+  });
+
   api.post('/v1/tools/pending/:id', requireSession(sessions), async (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
@@ -3637,6 +3715,12 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             },
             actor,
           );
+      // M14: a decided persona-requested row may belong to a queued SCHEDULE
+      // run — resume it headlessly in-process (approve executes the tool
+      // once via broker.decide; this continues the persona loop).
+      if (row.requestedBy === 'persona') {
+        void options.schedules?.tryResumeAfterDecision(id);
+      }
       res.status(200).json(result);
     } catch (err) {
       if (sendToolError(res, err)) return;

@@ -593,6 +593,27 @@ apps/partner/
       item). *Exit: core 681 · web 470 ·
       typechecks 0 · ux_audit green on new UI · live manual walk
       (env-gated).*
+- [ ] **M14 — Scheduled & autonomous work (detailed spec: `PLAN-M14.md`,
+      IN PROGRESS: core + web green; live manual walk pending).** Personas carry
+      schedule definitions (`independence.schedules[]`: daily / weekly /
+      interval + prompt + tz, JSON column on personas, schema v13); a
+      scheduler driver fires due schedules (auto/autonomous, unpaused,
+      enabled personas only) and drives each as a HEADLESS bounded persona
+      tool-loop run (shared playbook engine): brief lands as a user turn in
+      the schedule's own conversation thread, the answer appends on done
+      (+ optional save-note), one `scheduled_runs` row per attempt (status
+      running/done/queued/error/loop_exhausted + pendingId), audits
+      `schedule.run`/`schedule.resume`/`schedule.skip` (ids+counts only).
+      Queued tools pause the run; deciding the approval from the Files queue
+      or the in-chat card auto-resumes it in-process; a paused persona is a
+      kill switch for new runs AND resume. Routes: run-now (headless fire),
+      run history + detail; schedules edit via the persona surface.
+      *Exit: core 715 passed · typechecks 0 ·
+      ux_audit green on the schedule editor + runs panel ·
+      decide-hook e2e (real loop approve+deny auto-resume) · live walk
+      executed 2026-09-07 (api.ne1.dev + Brave; approval pause → headless
+      auto-resume → done + note; found/fixed resume save-note bug) ·
+      packaged-app walk (shell/NSIS) env-gated.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

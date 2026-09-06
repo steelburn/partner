@@ -18,7 +18,7 @@ import { readStoredToken } from './lib/token.js';
 import { PartnerMarkdown } from './Markdown.js';
 import { IconSave, IconSend } from './icons.js';
 import { CodePreview } from './CodePreview.js';
-import { AssetsDrawer, SaveAssetsDialog } from './AssetsPanel.js';
+import { SaveAssetsDialog } from './AssetsPanel.js';
 import { extractCandidates, type AssetCandidate } from './lib/assets-extract.js';
 import { partnerFileLink, searchFileRefs, type FileRefHit } from './lib/fileRefs.js';
 
@@ -54,6 +54,12 @@ export interface ChatStripProps {
   /** True while the Chat view is the visible one — returning to it reloads
    *  history so decisions made elsewhere (Files queue) show their notes. */
   viewActive?: boolean;
+  /** M14: the Assets pane (workspace lane) is open — the chat-bar button
+   *  toggles the shell-owned pane instead of the old inline drawer. */
+  assetsOpen?: boolean;
+  onToggleAssets?: () => void;
+  /** M14: an asset was saved here while the pane is open — bump its list. */
+  onAssetsChanged?: () => void;
 }
 
 interface ChatRow {
@@ -108,6 +114,9 @@ export default function ChatStrip({
   pending,
   onRefreshPending,
   viewActive = false,
+  assetsOpen = false,
+  onToggleAssets,
+  onAssetsChanged,
 }: ChatStripProps) {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [draft, setDraft] = useState('');
@@ -159,8 +168,8 @@ export default function ChatStrip({
       : `Sending with ${turnModel.model} for this turn.`;
   /** M11 F12 code preview state (attachment source fetched on demand). */
   const [preview, setPreview] = useState<{ title: string; source: string } | null>(null);
-  /** M11 F10 assets: drawer visibility + save-from-message state. */
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  /** M11 F10 assets: save-from-message state (the Assets pane itself is a
+   *  workspace lane owned by the shell — the chat-bar button drives it). */
   const [saveTarget, setSaveTarget] = useState<{ id: string; text: string } | null>(null);
   const [saveCandidates, setSaveCandidates] = useState<AssetCandidate[]>([]);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -988,11 +997,11 @@ export default function ChatStrip({
         <button
           type="button"
           className="btn btn-secondary btn-sm"
-          onClick={() => setDrawerOpen((open) => !open)}
-          disabled={conversationId === null}
-          aria-expanded={drawerOpen}
+          onClick={onToggleAssets}
+          disabled={conversationId === null || onToggleAssets === undefined}
+          aria-expanded={assetsOpen}
         >
-          {drawerOpen ? 'Hide Assets' : 'Assets'}
+          {assetsOpen ? 'Hide Assets' : 'Assets'}
         </button>
         {conversationId !== null && themes !== null && themes !== undefined && onBindTheme !== undefined ? (
           <label className="chat-theme-label">
@@ -1018,16 +1027,6 @@ export default function ChatStrip({
           </span>
         ) : null}
       </div>
-
-      {drawerOpen && conversationId !== null ? (
-        <AssetsDrawer
-          token={readStoredToken() ?? ''}
-          conversationId={conversationId}
-          onClose={() => setDrawerOpen(false)}
-          onSessionLost={onUnpair}
-          onPromoted={() => setAssetsFlash('Promoted to a note — find it under Notes.')}
-        />
-      ) : null}
 
       {staged.length > 0 ? (
         <div className="attach-staged" role="list" aria-label="Files ready to send">
@@ -1225,7 +1224,10 @@ export default function ChatStrip({
           messageId={saveTarget.id}
           candidates={saveCandidates}
           onClose={() => setSaveTarget(null)}
-          onSaved={() => setAssetsFlash('Saved to Assets ✓')}
+          onSaved={() => {
+            setAssetsFlash('Saved to Assets ✓');
+            onAssetsChanged?.();
+          }}
           onSessionLost={onUnpair}
         />
       ) : null}

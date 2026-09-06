@@ -1,6 +1,14 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { PersonaCompare } from './PersonaCompare.js';
-import type { Folder, IndependenceLevel, Persona, PersonaInput, TaskClass, ThemeProfile } from '@partner/shared';
+import type {
+  Folder,
+  IndependenceLevel,
+  Persona,
+  PersonaInput,
+  PersonaSchedule,
+  TaskClass,
+  ThemeProfile,
+} from '@partner/shared';
 import {
   LEVEL_ORDER,
   TASK_CLASS_OPTIONS,
@@ -19,6 +27,7 @@ import {
 import { bindPersonaTheme } from './lib/themes.js';
 import { listFolders } from './lib/folders.js';
 import { readStoredToken } from './lib/token.js';
+import { SchedulesSection } from './SchedulesSection.js';
 
 export interface PersonaManagerProps {
   /** Every persona (null while the shell is still loading them). */
@@ -518,6 +527,15 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
     cheap: persona?.model.taskClasses.cheap ?? '',
   });
   const [isDefault, setIsDefault] = useState(persona?.isDefault ?? false);
+  // M14 schedules (drafts of independence.schedules[] — saved with the form).
+  const [schedules, setSchedules] = useState<PersonaSchedule[]>(
+    persona?.independence.schedules ?? [],
+  );
+  // Schedule ids the persona ALREADY persisted (run-now is offered for them).
+  const knownScheduleIds = useMemo(
+    () => new Set((persona?.independence.schedules ?? []).map((schedule) => schedule.id)),
+    [persona],
+  );
 
   // D10: load the folder tree so the editor can offer a home folder.
   useEffect(() => {
@@ -581,6 +599,7 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
         level,
         requireHumanFor: persona?.independence.requireHumanFor ?? ['high'],
         autoScopes: persona?.independence.autoScopes ?? [],
+        schedules,
       },
       memory: persona?.memory ?? DEFAULT_MEMORY,
       ...(defaultSkills.trim() !== '' || bannedSkills.trim() !== '' || bannedTools.trim() !== ''
@@ -807,6 +826,16 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
             </p>
           </div>
         </fieldset>
+
+        <SchedulesSection
+          idPrefix={idPrefix}
+          personaId={persona?.id ?? null}
+          knownScheduleIds={knownScheduleIds}
+          schedules={schedules}
+          onChange={setSchedules}
+          disabled={formDisabled}
+          onSessionLost={onSessionLost}
+        />
 
         <div className="form-field">
           <label className="label" htmlFor={`${idPrefix}-home-folder`}>

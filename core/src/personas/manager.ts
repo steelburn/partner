@@ -16,6 +16,9 @@
  * row store (JSON string columns for the map/array fields).
  */
 import { randomUUID } from 'node:crypto';
+import {
+  validateSchedules,
+} from '@partner/shared';
 import type {
   IndependenceLevel,
   Persona,
@@ -24,6 +27,7 @@ import type {
   PersonaMemoryFlags,
   PersonaModelRouting,
   PersonaPolicy,
+  PersonaSchedule,
   TaskClass,
   TaskClassMap,
 } from '@partner/shared';
@@ -245,6 +249,10 @@ function toRowPersona(row: PersonaRow): Persona {
   };
   if (requireHumanFor.length > 0) independence.requireHumanFor = requireHumanFor;
   if (autoScopes.length > 0) independence.autoScopes = autoScopes;
+  // M14 schedules: lenient parse — a hand-edited/older row can never crash
+  // the surface; invalid schedule JSON reads as no schedules.
+  const schedules = parseSchedulesStored(row.schedules);
+  if (schedules.length > 0) independence.schedules = schedules;
   const policy = parsePolicyJson(row.policy);
   const homeFolderId = normalizeOptionalId(row.homeFolderId);
 
@@ -350,6 +358,10 @@ function normalizeIndependence(
     throw personaError('invalid_input', 'independence.autoScopes must be a string array');
   }
   if (autoScopes.length > 0) independence.autoScopes = autoScopes as string[];
+  // M14 schedules: replaced wholesale when provided ([] clears); absent stays
+  // untouched by the caller's merge (see update).
+  const schedules = normalizeSchedules(body.schedules);
+  if (schedules.length > 0) independence.schedules = schedules;
   return independence;
 }
 
@@ -422,6 +434,26 @@ function parsePolicyJson(json: string | null): PersonaPolicy | undefined {
   }
 }
 
+/** Stored schedules JSON -> PersonaSchedule[] (lenient; owner-content-safe). */
+function parseSchedulesStored(text: string | null): PersonaSchedule[] {
+  if (text === null || text === '') return [];
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const result = validateSchedules(parsed, 'persona');
+    return result.ok ? result.values : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Validate + normalize a schedules payload (throws typed invalid_input). */
+function normalizeSchedules(raw: unknown): PersonaSchedule[] {
+  if (raw === undefined || raw === null) return [];
+  const result = validateSchedules(raw, 'independence');
+  if (!result.ok) throw personaError('invalid_input', result.error);
+  return result.values;
+}
+
 function requireName(raw: unknown): string {
   const name = typeof raw === 'string' ? raw.trim() : '';
   if (name === '') throw personaError('invalid_input', 'name is required and must be non-empty');
@@ -455,6 +487,10 @@ function personaToRow(persona: Persona): PersonaRow {
       persona.independence.autoScopes && persona.independence.autoScopes.length > 0
         ? JSON.stringify(persona.independence.autoScopes)
         : null,
+    schedules:
+      persona.independence.schedules && persona.independence.schedules.length > 0
+        ? JSON.stringify(persona.independence.schedules)
+        : null,
     memoryFlags: JSON.stringify(persona.memory),
     policy:
       persona.policy !== undefined && Object.keys(persona.policy).length > 0
@@ -486,6 +522,8 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
       level: persona.independence.level,
       isDefault: persona.isDefault,
       paused: persona.paused,
+      // M14: counts only — schedule content never crosses audit.
+      scheduleCount: (persona.independence.schedules ?? []).length,
       ...extra,
     });
   }
@@ -564,6 +602,9 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
         ...body.independence,
         requireHumanFor: body.independence.requireHumanFor ?? current.independence.requireHumanFor,
         autoScopes: body.independence.autoScopes ?? current.independence.autoScopes,
+        // M14: schedules replace wholesale when the patch carries them; an
+        // empty array clears. Absent = keep the current set.
+        schedules: body.independence.schedules ?? current.independence.schedules,
       };
       current.independence = normalizeIndependence(merged);
     }
@@ -628,6 +669,10 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     patch.autoScopes =
       persona.independence.autoScopes && persona.independence.autoScopes.length > 0
         ? JSON.stringify(persona.independence.autoScopes)
+        : null;
+    patch.schedules =
+      persona.independence.schedules && persona.independence.schedules.length > 0
+        ? JSON.stringify(persona.independence.schedules)
         : null;
     patch.memoryFlags = JSON.stringify(persona.memory);
     patch.policy =

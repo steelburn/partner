@@ -65,6 +65,8 @@ import {
 } from '../src/playbooks/index.js';
 import type { DeployManager } from '../src/playbooks/deploy.js';
 import type { PlaybookManager } from '../src/playbooks/manager.js';
+import { createScheduleManager } from '../src/schedules/index.js';
+import type { ScheduleManager } from '../src/schedules/index.js';
 import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
@@ -106,6 +108,7 @@ import {
   createProfileStore,
   createProjectRootStore,
   createProviderStore,
+  createScheduleRunStore,
   createSessionStore,
   createSettingsStore,
   createSiteScopeStore,
@@ -136,6 +139,7 @@ import type {
   ProfileEntryStore,
   ProjectRootStore,
   ProviderStore,
+  ScheduleRunStore,
   SessionStore,
   SettingsStore,
   SiteScopeStore,
@@ -212,6 +216,12 @@ export interface HarnessOptions {
    * false for the 501 not_configured surface.
    */
   deployProfiles?: boolean;
+  /**
+   * Wire the M14 schedule manager over the same db (default true when
+   * playbooks are wired — the schedule manager drives the SAME persona tool
+   * loop). Pass false for the 501 not_configured surface.
+   */
+  schedules?: boolean;
 }
 
 export interface Harness {
@@ -287,6 +297,9 @@ export interface Harness {
   playbookRunStore: PlaybookRunStore;
   deployProfiles?: import('../src/playbooks/deploy.js').DeployManager;
   playbooks?: import('../src/playbooks/manager.js').PlaybookManager;
+  /** M14 schedules (PLAN-M14.md) — manager + run store over the SAME db. */
+  schedules?: ScheduleManager;
+  scheduleRunStore: ScheduleRunStore;
   close(): void;
 }
 
@@ -529,16 +542,25 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const playbooksEnabled =
     options.playbooks !== false && brokerEnabled && personasEnabled && notesPlansEnabled;
   let playbooks: PlaybookManager | undefined;
+  let playbookResolver:
+    | ((persona: Persona) => PlaybookChatTarget | null | Promise<PlaybookChatTarget | null>)
+    | undefined;
+  let toolLoop:
+    | import('../src/playbooks/loop.js').ToolLoop
+    | undefined;
+  const scheduleRunStore = createScheduleRunStore(db);
   if (playbooksEnabled) {
     const resolver =
       options.playbookProvider !== undefined
         ? options.playbookProvider
         : createPlaybookProviderResolver({ providers: providerManager, demo });
-    const toolLoop = createToolLoop({
+    const loop = createToolLoop({
       broker: broker as ToolBroker,
       resolver,
       audit,
     });
+    playbookResolver = resolver;
+    toolLoop = loop;
     playbooks = createPlaybookManager({
       broker: broker as ToolBroker,
       personas,
@@ -546,8 +568,26 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       notes: notes as NoteManager,
       runs: playbookRunStore,
       resolver,
-      loop: toolLoop,
+      loop,
       audit,
+    });
+  }
+
+  // M14: schedule manager over the same db, driving the SAME persona tool
+  // loop (a queued run must resume on the instance that started it). Demo
+  // defaults to UTC so schedule windows are deterministic.
+  let schedules: ScheduleManager | undefined;
+  if (options.schedules !== false && playbookResolver !== undefined && toolLoop !== undefined) {
+    schedules = createScheduleManager({
+      personas,
+      conversations,
+      notes: notes as NoteManager,
+      runs: scheduleRunStore,
+      loop: toolLoop,
+      resolver: playbookResolver,
+      folders: folders as { get(id: string): unknown },
+      audit,
+      defaultTz: 'UTC',
     });
   }
 
@@ -578,6 +618,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(skills && skillRunner ? { skills, skillRunner } : {}),
     ...(playbooks !== undefined ? { playbooks } : {}),
     ...(deployProfiles !== undefined ? { deployProfiles } : {}),
+    ...(schedules !== undefined ? { schedules } : {}),
     spendLedger,
   });
 
@@ -639,6 +680,8 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     playbookRunStore,
     deployProfiles,
     playbooks,
+    schedules,
+    scheduleRunStore,
     close(): void {
       db.close();
       if (skillsDir !== undefined) removeTempRoot(skillsDir);
