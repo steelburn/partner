@@ -133,7 +133,11 @@ stay green.
       → approve (high-risk) → apply → file changed on disk; audit shows no
       secret material.
 - [x] UX audit passes on new CSS; typechecks; root + web suites green.
-- [ ] PLAN-M0 packaged-app gate still open (Rust toolchain) — unchanged.
+- [x] Packaged-app gate CLOSED (this line superseded): M10 W6 landed a green
+      NSIS installer on the self-hosted Windows runner (env-free boot) and
+      M11 F5 swept the packaged app headlessly. Surviving caveats are
+      manual only: real-desktop interactive smoke + live-mode packaged-core
+      boot (shell/src-tauri/README.md, docs/VERIFY-M10.md §F).
 
 ## Out of scope
 

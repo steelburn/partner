@@ -2,20 +2,31 @@
 
 **Purpose:** everything an agent needs to continue from a **Windows machine,
 cloning `github.com/steelburn/partner`**, plus a full project status snapshot
-so no local-only context is lost. Refreshed 2026-09-05 (Windows CI green).
+so no local-only context is lost. Refreshed 2026-09-06 (M11 complete).
 
 ## TL;DR
 
-- Product milestones **M0–M9 are complete and verified** (fresh-context
-  reviews closed; exit checklists ticked). **M10 (Hardening & alpha) is
-  implemented: W1 encryption-at-rest, W2 redaction sweep, W3 budgets, W4
-  audit UI, W5 session-only chat, W6 packaging — all done and reviewed
-  (findings F1–F9 closed).** Remaining M10: PLAN tick + this handoff.
+- Product milestones **M0–M10 are complete and verified** (fresh-context
+  reviews closed; exit checklists ticked). **M11 (Chat as the workspace) is
+  implemented and verified**: schema v12, all work packages C1–C3 + F1–F12
+  shipped — attachments/file refs, chat tool calls + MCP stdio client +
+  wired API-key search, persona skill/tool policy, purpose-based providers,
+  HTML rendering, follow-latest, clickable choices, Assets, chat folders +
+  drag-to-move + persona home folders, per-conversation themes + extension-
+  chrome theme stream, Notes promoted, A/B persona studio, sandboxed
+  HTML/CSS preview. Suites green: core 683 · web 440 · extension 57,
+  typechecks 0; PLAN.md §15 M11 ticked; PLAN-M11 final report written.
 - **Windows desktop CI is GREEN.** `verify` runs on the self-hosted Linux +
   Windows runners (`win-intel-i5-core-ultra`, label `[self-hosted, Windows]`)
   and passes end-to-end on both. `windows-build` produces the NSIS installer;
   the **installed app boots env-free** (core on `127.0.0.1:4390`,
-  `demo=on schema=v11`).
+  `demo=on schema=v12`) and the packaged UI was swept headlessly with zero
+  console errors.
+- Remaining is **manual / env-gated only**: per-surface light/dark/custom
+  theme walkthrough on a real desktop (`docs/theme-conformance.md`),
+  live-mode packaged-core boot + real-keyring/charged-provider items
+  (`docs/VERIFY-M10.md`), Chrome click-through + native-host install
+  (extension), S0 companion API in `~/apps/llm-self-service`.
 - Repo: `github.com/steelburn/partner` (private), default branch `master`,
   pushed direct. `verify` auto-triggers on push; `windows-build` triggers on
   workflow_dispatch / `v*` tags.
@@ -46,23 +57,26 @@ shell/             Tauri v2 app (src-tauri; icons; resources gitignored, staged 
 shell/src-tauri/README-windows.md     Windows runbook (verified state + resources rationale)
 core/              Node core (loopback API, broker, personas, memory, notes,
                    theming, NM mode, skills, playbooks, encrypted DB, budgets,
-                   audit log w/ redaction)
-web/               React SPA (Vite; Audit tab, session-only chat, budget UI)
-extension/         MV3 extension (native-messaging bridge) + README runbook
-shared/src/        wire contracts (schema v11), theme tokens, redaction
+                   audit w/ redaction, chat tool pass, MCP client, search)
+web/               React SPA (Vite; attachments/assets, folders, markdown,
+                   choices, MCP + search panels, theme studio, Audit,
+                   session-only chat, budget UI)
+extension/         MV3 extension (native-messaging bridge, theme stream) + README runbook
+shared/src/        wire contracts (schema v12), theme tokens, redaction
 tests/             cross-cutting e2e (spawn real demo core; audit, playbooks)
-PLAN.md + PLAN-M0..M10.md             milestone specs (M10 = current)
+PLAN.md + PLAN-M0..M11.md             milestone specs (M11 = latest)
 skills-catalog/    local skills (hello-skill, note-echo, files-preview)
-docker/webapp-demo/  demo container (node:22-alpine; core bundle + web/dist)
-docs/              VERIFY-M10.md checklist, redaction-inventory, migrate-plaintext
+docker/webapp-demo/  demo container (node:22-slim; core bundle + web/dist)
+docs/              VERIFY-M10.md, theme-conformance.md, redaction-inventory,
+                   migrate-plaintext
 ```
 
 ## Verification commands (all green locally + on CI)
 
 ```bash
-npx vitest run                 # root suite (~582 tests)
-(cd web && npx vitest run)     # web suite (~422)
-npx vitest run --config extension/vitest.config.ts   # (~54)
+npx vitest run                 # root suite (683 passed; 5 Windows symlink skips)
+(cd web && npx vitest run)     # web suite (440)
+(cd extension && npx vitest run)  # extension suite (57)
 npm run typecheck              # workspaces
 ```
 
@@ -100,10 +114,13 @@ when the dir is full of files.
 | M10 W3 budgets | ✅ spend ledger (rolling 30-day window), chat pre-turn refusal, provider budget audit |
 | M10 W4 audit UI | ✅ Audit tab (11th), filters, JSON/Markdown export, e2e |
 | M10 W5 session-only chat | ✅ direct OpenAI-compatible streaming; key memory-only; PairGate entry |
-| M10 W6 packaging | ✅ windows-build green; NSIS installer boots env-free (demo=on, schema v11) |
-| M10 W7 verify docs | ⚠️ VERIFY-M10.md written; PLAN-M10 final tick in progress |
+| M10 W6 packaging | ✅ windows-build green; NSIS installer boots env-free (demo=on; rebuilt under M11 for schema v12) |
+| M10 W7 verify docs | ✅ VERIFY-M10.md written; PLAN-M10 tick done |
+| M11 chat-as-workspace | ✅ C1–C3 + F1–F12 implemented (schema v12); suites core 683 · web 440 · ext 57; typechecks 0; NSIS packaged app boots env-free (demo, schema v12); packaged UI swept headlessly — zero console errors; PLAN.md §15 M11 ticked; PLAN-M11 final report |
+| M11 F5 manual theme walkthrough | ⚠️ docs/theme-conformance.md "Surfaces" checklist — packaged-app light/dark/custom walk on a real desktop (manual) |
+| VERIFY-M10 manual walk | ⚠️ live-mode packaged-core boot (DEMO_MODE=0 + native keychain in-shell), real keyring, charged-provider budget, NSIS install on a desktop — env/manual |
 | CI | 🟢 verify: linux + windows legs green on self-hosted runners; windows-build green (dispatch) |
-| Env-gated by design | Chrome click-through (extension), live ship deploys, email/presentation sending, browser-driven research search, signed updater artifacts |
+| Env-gated by design | Chrome click-through (extension), browser-actuator research capture, live ship deploys, email/presentation sending, signed updater artifacts |
 
 ## Local-only artifacts (NOT on GitHub)
 

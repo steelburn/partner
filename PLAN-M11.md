@@ -1,7 +1,7 @@
 # M11 — Chat as the workspace (feature details — reviewed, decisions locked)
 
-Status: **reviewed — auto-execution in progress** · Repo: `partner`
-(this checkout) · Master plan: `PLAN.md` (§3–§15) · Gates: same as M0–M10
+Status: **complete — implemented & verified 2026-09-06** (remaining items
+are manual / env-gated only) · Repo: `partner` (this checkout) · Master plan: `PLAN.md` (§3–§15) · Gates: same as M0–M10
 (TDD red→green, token-only UI + `ux_audit` gate, redaction boundary, demo
 mode parity, CI `verify` green on Linux + Windows legs).
 
@@ -207,11 +207,10 @@ production build green):
       providers exist; light/dark toggle verified in an earlier session.)
       Remaining manual polish: per-surface light/dark/custom walkthrough on
       the packaged app (checklist in docs/theme-conformance.md).
-- [ ] **Deferred (post-review):** extension-chrome theme stream (popup is an
-      env-gated placeholder linking to the web UI — wiring the NM theme
-      command waits until the popup grows); A/B persona studio (design-level
-      UI comparing two personas on one prompt needs a review pass);
-      drag-to-move keyboard drag alternative & more M11 extras.
+- [x] **Post-review deferrals — all closed in this same pass** (see the
+      ledger entries below): extension-chrome theme stream, A/B persona
+      studio, and the drag-to-move keyboard alternative (the per-row move
+      select serves as the accessible fallback).
 
 - [x] **A/B persona studio** — Personas view gains a compare card: pick two
       personas, one prompt, side-by-side live streams with model + token meta
@@ -235,23 +234,14 @@ production build green):
       fallbacks offline). Core + extension tests; suites: core 683, web 440,
       extension 57.
 
-Remaining / deferred (see D-log + final report):
-
-- [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
-      search (catalog/open-tool registry not yet connected to chat; search
-      backends not built) — biggest outstanding package **F1 refs & multimodal** — `@`-mention autocomplete + reading granted
-      root files, and true image parts to vision models (uploads currently
-      provide capped text extracts / image descriptors to the model)
-- [ ] **F5** interactive visual sweep on a live build (light/dark/custom
-      theme walkthrough per the checklist)
-- [ ] **F2/F6** persona home-folder, drag-to-move chats (keyboard move
-      exists), extension-chrome theme stream
-- [ ] Persona studio A/B, conversation-level theme override (D6), MCP server
-      exposure (non-goal)
-
-
-Cross-cutting foundations (C1–C3) are prerequisites for most WPs and should
-land first; §Z gives an order and a suggested milestone slicing.
+Close-out (2026-09-06): the block that stood here was a mid-execution
+snapshot and is superseded — every item on it shipped later in this file's
+ledger (native `tool_calls`, MCP stdio client + persona auto-calls, wired
+API-key search in chat + UI panel, `@`-mention file refs, multimodal image
+parts, persona home folder, drag-to-move chats, extension-chrome theme
+stream, A/B persona studio, D6 conversation-level themes). MCP **server**
+exposure stays a documented non-goal (PLAN §16). §Z's ordering and release
+slices are historical — all four slices shipped.
 
 ---
 
@@ -971,15 +961,15 @@ fresh-context review like M9/M10.
 | # | Question | Decision |
 |---|---|---|
 | D1 | PDF/DOCX/XLSX content extraction in v1? | No — text + images only; office/PDF arrive as opaque refs until an extraction worker milestone |
-| D2 | MCP transport scope | `stdio` + `http` (SSE) client; no MCP server; loopback-http denied by default |
+| D2 | MCP transport scope | **stdio client shipped in M11** (default-deny, spawn/timeout/budget guardrails); `http` (SSE) transport NOT built — open, low priority; no MCP server; loopback-http denied by default |
 | D3 | Global vs persona bans | Intersectional: persona can tighten, never loosen a global ban |
 | D4 | Do persona tool bans block explicit user (web) calls? | No — bans govern persona-initiated calls; user actions keep broker rules |
 | D5 | "Make themes work" = conformance sweep (not new features)? | Yes — triage 30 min first, then fix + checklist (F5) |
-| D6 | Conversation-level theme override | Later option; per-persona + global + preset is the v1 target |
+| D6 | Conversation-level theme override | **Implemented in M11** — resolution conversation → persona → global → preset; binds via `POST /v1/conversations/:id/theme` |
 | D7 | Notes IA layout | **✓ Decided:** Candidate A — three-zone chat workspace (F6); B shelved unless folders mature |
 | D8 | Heuristic "make this clickable" fallback for plain questions | **✓ Decided:** none — only `:::partner.choice` containers render clickable (F9) |
 | D9 | Label: "Folders" vs "Projects" | **Folders** (avoids colliding with file project roots); project metadata later |
-| D10 | Persona home folder | Later option |
+| D10 | Persona home folder | **Implemented in M11** — optional `homeFolderId` on personas; new chats auto-land there (explicit folderId wins) |
 | D11 | Asset payload storage | Inside SQLite (encrypted at rest, cap sizes); no plaintext side files |
 | D12 | Structured container syntax | **✓ Decided:** `:::partner.*` fences (C3) — plain-text degradable, single parser |
 | D13 | HTML/CSS preview script policy | Scripts OFF by default; per-preview opt-in; never `allow-same-origin`; CSP blocks network (F12) |
@@ -1009,10 +999,26 @@ checklist rather than pretended green.
 - **Q5 — extra urgent attachment types:** none added; v1 stays text + image
   plus previewable `.html`/`.css` (D1 PDF/office extraction still deferred).
 
-Still open by default unless challenged: D2 MCP client scope, D3/D4 ban
-semantics, D5 theme-sweep scope, D6 no conversation-level themes yet, D9
-"Folders" naming, D10 persona home folder later, D11 payloads in SQLite,
-D13 script-off preview default, D14 single-file HTML preview v1.
+Superseded status line (written pre-execution): the locked/accepted D-rows
+shipped — D6 + D10 (implemented in M11), D9 "Folders", D11 payloads in
+SQLite, D12 `:::partner.*` syntax, D13 script-off preview default, D14
+single-file HTML v1, D1, D3/D4, D7/D8. Still open: D2's `http` MCP
+client transport (stdio shipped; http unbuilt and default-deny).
 
-Next step: on approval, fold M11 (or the §Z slices) into PLAN.md §15, then
-start C1 (schema v12 + migration helper) red→green.
+## Final report (2026-09-06)
+
+All twelve work packages (C1–C3, F1–F12) landed during the auto-execution
+pass on schema v12 (ledger above). Gates green on this checkout: typechecks
+0; core/shared/e2e **683** · web **440** · extension **57**; web prod build
+clean; NSIS packaged app boots env-free (demo, schema v12) and the packaged
+UI was swept headlessly with zero console errors. PLAN.md §15 M11 ticked;
+M11 scope folded into PLAN.md §12/§13/§16.
+
+Remaining — manual / env-gated only, no code:
+
+- `docs/theme-conformance.md` "Surfaces" — per-surface light/dark/custom
+  walkthrough of the packaged app on a real desktop (F5 final polish).
+- `docs/VERIFY-M10.md` manual walk — live-mode packaged-core boot, real
+  keyring, charged-provider budget, NSIS install on a Windows desktop.
+- Browser-actuator research capture end-to-end (real Chrome + installed
+  native host; PLAN §16 follow-up).

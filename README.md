@@ -16,10 +16,10 @@ extension. See the plans:
 ## Layout
 
 ```
-shell/      Tauri v2 app (tray, window, autostart, updater)   [M0 scaffold]
-core/       Node core = Tauri sidecar (spine, gateway, broker…) [M0 build]
-web/        SPA (Vite + React)                                  [M0 skeleton]
-extension/  MV3 placeholder                                    [M7]
+shell/      Tauri v2 app (tray, window, autostart, updater)   [M0 · packaged M10/11]
+core/       Node core = Tauri sidecar (spine → workspace)     [M0–M11]
+web/        SPA (Vite + React)                                [M0–M11]
+extension/  MV3 (native-messaging bridge, theme stream)      [M7–M11]
 shared/     types: tokens, contracts, redaction (no runtime deps)
 tests/      cross-cutting integration tests
 ```
@@ -34,9 +34,15 @@ npm run dev:core     # core on http://127.0.0.1:4390 (demo mode by default)
 npm run dev:web      # SPA dev server on :5173 (standalone dev)
 ```
 
-## Open follow-up (packaged app)
+## Status (2026-09-06)
 
-M0's packaged-Tauri-app boot is NOT yet verified: this machine has no Rust
-toolchain. When ready: install rustup + `cargo install tauri-cli`, then follow
-`shell/src-tauri/README.md` (`cargo check` / `tauri dev`) and tick the final
-PLAN-M0.md exit item.
+M0–M11 complete (PLAN.md §15): suites core 683 · web 440 · extension 57,
+typechecks 0. The packaged app is verified two ways — the container
+toolchain (`shell/docker/gate`) and a green NSIS installer on the
+self-hosted Windows runner that boots env-free (demo, schema v12); the
+packaged UI was swept headlessly with zero console errors. Remaining items
+are manual / env-gated: the per-surface light/dark/custom theme walkthrough
+(`docs/theme-conformance.md`), the `docs/VERIFY-M10.md` live-mode walk,
+browser-actuator research capture (real Chrome + installed native host), and
+the S0 companion API in `~/apps/llm-self-service`. Read
+`HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
