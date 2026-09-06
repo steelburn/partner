@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import type { AttachmentMeta, ChatEvent, ConversationMessage, ThemeProfile } from '@partner/shared';
+import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import { ApiRequestError, streamChat, type StreamDoneMeta } from './lib/api.js';
 import { getConversation } from './lib/conversations.js';
+import { RISK_LABELS, RISK_TONE_CLASS, pendingLabel, summarizeTool } from './lib/roots.js';
+import { decidePending } from './lib/tools.js';
 import {
   deleteAttachment,
   fetchAttachmentContent,
@@ -38,6 +41,17 @@ export interface ChatStripProps {
   activeThemeId?: string | null;
   /** D6: bind the active conversation to a theme (null = Auto/clear). */
   onBindTheme?: (themeId: string | null) => void;
+  /**
+   * M12.5: live pending-approval rows (the App shell polls them ~4s). Rows
+   * bound to THIS conversation render as an actionable in-chat approval
+   * card — approving/denying decides the row and continues the turn.
+   */
+  pending: PendingToolCall[];
+  /** Ask the shell to re-fetch the pending list right now (post-decide). */
+  onRefreshPending: () => void;
+  /** True while the Chat view is the visible one — returning to it reloads
+   *  history so decisions made elsewhere (Files queue) show their notes. */
+  viewActive?: boolean;
 }
 
 interface ChatRow {
@@ -89,6 +103,9 @@ export default function ChatStrip({
   themes,
   activeThemeId,
   onBindTheme,
+  pending,
+  onRefreshPending,
+  viewActive = false,
 }: ChatStripProps) {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [draft, setDraft] = useState('');
@@ -101,6 +118,12 @@ export default function ChatStrip({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  /** M12.6 in-chat approvals: decided rows hide instantly (the shell's poll
+   *  still carries them for a moment) and stay hidden until the poll drops
+   *  them for real. */
+  const [decidedIds, setDecidedIds] = useState<ReadonlySet<string>>(new Set());
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [queueErrors, setQueueErrors] = useState<Readonly<Record<string, string>>>({});
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -217,6 +240,36 @@ export default function ChatStrip({
     }
     void loadHistory();
   }, [conversationId, loadHistory, reloadToken]);
+
+  // M12.5: forget local “decided” markers as soon as the shell's poll no
+  // longer carries those rows — the row really closed, the marker can go.
+  useEffect(() => {
+    const live = new Set(pending.map((item) => item.id));
+    setDecidedIds((prev) => {
+      const stale = [...prev].filter((id) => !live.has(id));
+      return stale.length > 0 ? new Set(stale.filter((id) => live.has(id))) : prev;
+    });
+  }, [pending]);
+
+  // M12.5: re-entering the Chat view reloads history. Approvals decided from
+  // the Files queue post their outcome notes server-side while this view is
+  // hidden — without the reload the transcript would stay stale forever.
+  const wasViewActiveRef = useRef(viewActive);
+  const reloadOnIdleRef = useRef(false);
+  useEffect(() => {
+    const wasActive = wasViewActiveRef.current;
+    wasViewActiveRef.current = viewActive;
+    if (!viewActive) {
+      // Left the chat: any note posted while away must appear on return.
+      reloadOnIdleRef.current = true;
+      return;
+    }
+    if (!wasActive) reloadOnIdleRef.current = true;
+    if (reloadOnIdleRef.current && !streaming && conversationId !== null) {
+      reloadOnIdleRef.current = false;
+      setReloadToken((n) => n + 1);
+    }
+  }, [viewActive, streaming, conversationId]);
 
   // -----------------------------------------------------------------------
   // M11 F1 attachments (staged uploads + per-message chips)
@@ -370,6 +423,158 @@ export default function ChatStrip({
     });
   };
 
+  // ---------------------------------------------------------------------
+  // M12.6 in-chat approvals (active conversation → decide → continue)
+  // ---------------------------------------------------------------------
+
+  /** Shared SSE dispatcher for user turns AND approval-continuation turns. */
+  const handleStreamEvent = (event: ChatEvent): void => {
+    switch (event.type) {
+      case 'delta':
+        setRows((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || last.role !== 'assistant') return prev;
+          const index = prev.length - 1;
+          return prev.map((row, i) =>
+            i === index ? { ...row, text: row.text + event.text } : row,
+          );
+        });
+        break;
+      case 'usage':
+        setUsage({
+          promptTokens: event.promptTokens,
+          completionTokens: event.completionTokens,
+          totalTokens: event.totalTokens,
+        });
+        break;
+      case 'done':
+        setModelLatency({ model: event.model, latencyMs: event.latencyMs });
+        break;
+      case 'error':
+        setTurnError({ message: event.message, canRepair: false });
+        break;
+      case 'budget_reached':
+        setTurnError({ message: event.message, canRepair: false });
+        break;
+      case 'tool_calls':
+        // Turn machinery — never forwarded to the client stream.
+        break;
+    }
+  };
+
+  /** Pending approvals asked from THIS conversation. */
+  const chatPending =
+    conversationId !== null
+      ? pending.filter(
+          (item) => item.conversationId === conversationId && !decidedIds.has(item.id),
+        )
+      : [];
+
+  const approvalBusy = decidingId !== null || streaming;
+
+  /** After a decision: drop the row locally and continue the turn so the
+   *  assistant answers against the outcome note the core just posted. */
+  const runContinue = async (): Promise<void> => {
+    if (conversationId === null || streaming || personaPaused) return;
+    const token = readStoredToken();
+    if (!token) {
+      setTurnError({ message: 'Not paired with the Partner core.', canRepair: true });
+      return;
+    }
+    const placeholder: ChatRow = { key: `local-${++nextId.current}`, role: 'assistant', text: '' };
+    setRows((prev) => [...prev, placeholder]);
+    const dropPlaceholder = (): void => {
+      setRows((prev) => prev.filter((r) => r.key !== placeholder.key));
+    };
+    setUsage(null);
+    setModelLatency(null);
+    setTurnError(null);
+    setHistoryError(null);
+    setStreaming(true);
+    onStreamingChange?.(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let doneMeta: StreamDoneMeta | null = null;
+    try {
+      const result = await streamChat({
+        token,
+        content: '',
+        continueTurn: true,
+        conversationId,
+        personaId: personaId ?? undefined,
+        signal: controller.signal,
+        onEvent: handleStreamEvent,
+        onDoneMeta: (meta) => {
+          doneMeta = meta;
+        },
+      });
+      if (!result.ok) {
+        dropPlaceholder();
+        setTurnError({
+          message: result.unauthorized
+            ? 'Your session with the Partner core has expired. Pair again to continue.'
+            : result.message,
+          canRepair: result.unauthorized,
+        });
+      }
+    } catch (cause) {
+      if (cause instanceof Error && cause.name === 'AbortError') return;
+      dropPlaceholder();
+      setTurnError({
+        message: 'Lost connection to the Partner core. Check that it is running and try again.',
+        canRepair: false,
+      });
+    } finally {
+      finishTurn(doneMeta);
+      if (doneMeta) onDone?.(doneMeta);
+    }
+  };
+
+  /** Approve/deny one in-chat row: decide it once, then continue the turn. */
+  const decideChatApproval = async (
+    row: PendingToolCall,
+    decision: 'approve' | 'deny',
+  ): Promise<void> => {
+    if (approvalBusy) return;
+    const token = readStoredToken();
+    if (!token) {
+      onUnpair();
+      return;
+    }
+    setDecidingId(row.id);
+    setQueueErrors((prev) => ({ ...prev, [row.id]: '' }));
+    try {
+      const outcome = await decidePending(token, row.id, { decision });
+      if (decision === 'approve' && !outcome.executed && outcome.error !== undefined) {
+        setQueueErrors((prev) => ({
+          ...prev,
+          [row.id]: `${summarizeTool(row.toolId).label} could not run: ${outcome.error}`,
+        }));
+      }
+      setDecidedIds((prev) => new Set([...prev, row.id]));
+      onRefreshPending();
+      // The core closed the row and posted the outcome note; now run the
+      // persona's next round so the chat visibly continues with the result.
+      await runContinue();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      // Already decided elsewhere (double click / Files view) is a closed
+      // row — treat it as decided and let the poll reconcile.
+      setDecidedIds((prev) => new Set([...prev, row.id]));
+      onRefreshPending();
+      setQueueErrors((prev) => ({
+        ...prev,
+        [row.id]: cause instanceof Error ? cause.message : 'Could not reach the Partner core.',
+      }));
+    } finally {
+      setDecidingId(null);
+    }
+  };
+
   const runTurn = async (content: string, attachmentIds: string[] = []): Promise<void> => {
     if (content.trim().length === 0 || streaming || personaPaused) return;
 
@@ -399,37 +604,6 @@ export default function ChatStrip({
     abortRef.current = controller;
     let doneMeta: StreamDoneMeta | null = null;
 
-    const onEvent = (event: ChatEvent): void => {
-      switch (event.type) {
-        case 'delta':
-          setRows((prev) => {
-            const last = prev[prev.length - 1];
-            if (!last || last.role !== 'assistant') return prev;
-            const index = prev.length - 1;
-            return prev.map((row, i) =>
-              i === index ? { ...row, text: row.text + event.text } : row,
-            );
-          });
-          break;
-        case 'usage':
-          setUsage({
-            promptTokens: event.promptTokens,
-            completionTokens: event.completionTokens,
-            totalTokens: event.totalTokens,
-          });
-          break;
-        case 'done':
-          setModelLatency({ model: event.model, latencyMs: event.latencyMs });
-          break;
-        case 'error':
-          setTurnError({ message: event.message, canRepair: false });
-          break;
-        case 'budget_reached':
-          setTurnError({ message: event.message, canRepair: false });
-          break;
-      }
-    };
-
     try {
       const result = await streamChat({
         token,
@@ -438,7 +612,7 @@ export default function ChatStrip({
         personaId: personaId ?? undefined,
         ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
         signal: controller.signal,
-        onEvent,
+        onEvent: handleStreamEvent,
         onDoneMeta: (meta) => {
           doneMeta = meta;
         },
@@ -642,7 +816,12 @@ export default function ChatStrip({
                 {row.text === '' && showPending ? (
                   '…'
                 ) : (
-                  <PartnerMarkdown text={row.text} busy={streaming} onAnswer={handleAnswer} />
+                  <PartnerMarkdown
+                    text={row.text}
+                    busy={streaming}
+                    onAnswer={handleAnswer}
+                    onPreviewCode={({ title, source }) => setPreview({ title, source })}
+                  />
                 )}
                 {row.text !== '' ? (
                   <div className="msg-actions">
@@ -811,6 +990,37 @@ export default function ChatStrip({
         </div>
       ) : null}
 
+      {chatPending.length > 0 ? (
+        <section
+          className="card approval-in-chat"
+          aria-label={
+            chatPending.length === 1
+              ? 'Approval needed for this chat'
+              : `${chatPending.length} approvals needed for this chat`
+          }
+        >
+          <div className="approval-in-chat-head">
+            <h3 className="section-title approval-in-chat-title">Approval needed</h3>
+            <span className="chip count-chip" aria-label={`${chatPending.length} pending`}>
+              {chatPending.length}
+            </span>
+          </div>
+          <ul className="queue-list approval-in-chat-list">
+            {chatPending.map((row) => (
+              <li key={row.id} className="queue-item">
+                <InChatApprovalRow
+                  row={row}
+                  busy={approvalBusy}
+                  deciding={decidingId === row.id}
+                  error={queueErrors[row.id] ?? null}
+                  onDecide={(decision) => void decideChatApproval(row, decision)}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <form className="chat-form" onSubmit={handleSubmit}>
         <label
           className={`btn btn-secondary attach-button${
@@ -882,6 +1092,75 @@ export default function ChatStrip({
         />
       ) : null}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// M12.6 in-chat approval row (active conversation's queue): one compact
+// approve/deny row rendered on the chat screen itself — the persona asked
+// from THIS conversation, so the decision happens where the ask happened.
+// Approving runs the tool once (core) and then continues the turn; denying
+// closes the row and continues so the persona answers without the tool.
+// ---------------------------------------------------------------------------
+
+function InChatApprovalRow({
+  row,
+  busy,
+  deciding,
+  error,
+  onDecide,
+}: {
+  row: PendingToolCall;
+  busy: boolean;
+  deciding: boolean;
+  error: string | null;
+  onDecide: (decision: 'approve' | 'deny') => void;
+}) {
+  const { label, risk } = summarizeTool(row.toolId);
+  const requester =
+    row.personaName !== undefined && row.personaName !== null && row.personaName !== ''
+      ? row.personaName
+      : 'Persona';
+  const paramsText = pendingLabel(row.toolId, row.params);
+  return (
+    <div className="queue-item-inner">
+      <div className="queue-item-head">
+        <div className="queue-item-title">
+          <span className="queue-tool">{label}</span>
+          <span className={`risk-text ${RISK_TONE_CLASS[risk]}`}>
+            {RISK_LABELS[risk]} risk
+          </span>
+        </div>
+        <div className="row-actions">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={busy}
+            onClick={() => onDecide('approve')}
+            aria-busy={deciding}
+            aria-label={`Approve ${label} — runs it once and the chat continues with the result`}
+          >
+            {deciding ? 'Working…' : 'Approve'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm btn-danger"
+            disabled={busy}
+            onClick={() => onDecide('deny')}
+            aria-label={`Deny ${label} — the persona continues without it`}
+          >
+            Deny
+          </button>
+        </div>
+      </div>
+      <p className="queue-params">{paramsText}</p>
+      <p className="queue-meta">{requester} · this chat</p>
+      {error ? (
+        <p className="row-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

@@ -66,6 +66,28 @@ exact directive grammar to call it:
 - **assist** — chat/proposals only; never offered the tool and never asked
   to approve (approvals start at Suggest).
 
+### M12.6 — approvals live where the ask happened + the chat continues (2026-09-06)
+
+Suggest-level asks now surface **on the chat screen itself**: pending rows
+carry their `conversationId`, and while the active conversation has one, an
+"Approval needed" card (Approve / Deny) renders above the composer with the
+same row detail as the Files queue (tool, risk, truncated query, persona).
+
+- **Approve / Deny in the card** decides the row exactly like the Files
+  queue (search runs once / denial note) **and then continues the turn**: a
+  new `/v1/chat` mode (`continueTurn: true`, conversation only, no user
+  message) streams the persona's next round against the outcome note the
+  decision just posted — no phantom user turns, no navigating away.
+- The Files queue stays the global queue (badge count unchanged); decisions
+  made there post their notes and the chat transcript refreshes when you
+  return to the Chat view.
+- Guarded: `continueTurn` requires a conversation, refuses request messages
+  and `noPersist`, and every existing turn path is byte-identical unless the
+  flag is sent. Audit stays query-free.
+
+Suites after the pass: core 673 passed (5 env-gated skips) · web 461
+passed — typechecks 0, `ux_audit` green on the new chat-approval card.
+
 Persona tool bans are respected everywhere; disabled/assist personas are
 never even told the tool exists (default-deny). Audit rows stay query-free
 (query length + hit count only). Suites after the pass: core 657 passed

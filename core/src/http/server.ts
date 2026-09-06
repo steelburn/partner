@@ -286,6 +286,12 @@ function assembleRequestMessages(input: {
   profilePrelude?: string | null;
   /** M12 F2-capability: the search backend is enabled (default-deny OFF). */
   searchEnabled?: boolean;
+  /**
+   * M12.6 approval continuation: resume the conversation WITHOUT a new user
+   * turn — prompts + the stored history tail only, so the next assistant
+   * round answers against the outcome notes the decision just posted.
+   */
+  continueTurn?: boolean;
 }): ChatMessage[] {
   const out: ChatMessage[] = [];
   // M4 profile prelude keeps its documented position as the FIRST system
@@ -351,11 +357,16 @@ function assembleRequestMessages(input: {
   }
   const singleNewUserTurn =
     input.requestMessages.length === 1 && input.requestMessages[0]?.role === 'user';
-  if (singleNewUserTurn && input.history.length > 0) {
+  const appendHistory =
+    input.continueTurn === true || (singleNewUserTurn && input.history.length > 0);
+  if (appendHistory) {
     for (const row of input.history.slice(-MAX_CONTEXT_MESSAGES)) {
       out.push({ role: row.role, content: row.content });
     }
   }
+  // A resume round carries ONLY stored history — the request body must hold
+  // no messages (validated in the /v1/chat handler).
+  if (input.continueTurn === true) return out;
   for (const message of input.requestMessages) {
     out.push(message);
   }
@@ -1088,6 +1099,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       attachmentIds?: unknown;
       tools?: unknown;
       noPersist?: unknown;
+      continueTurn?: unknown;
     };
     const messages = sanitizeMessages(body.messages);
     if (messages === null) {
@@ -1104,6 +1116,34 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const requestedPersonaId = optionalString(body.personaId);
     const requestedConversationId = optionalString(body.conversationId);
     const taskClassRaw = optionalTaskClass(body.taskClass);
+    // M12.6 approval continuation: resume the conversation's NEXT persona
+    // round with no new user turn. The approval decision route just posted
+    // the outcome note into the conversation — this streams the assistant's
+    // answer to it (the chat UI fires it after deciding an in-chat card).
+    const continueTurn = body.continueTurn === true;
+    if (continueTurn) {
+      if (requestedConversationId === undefined || requestedConversationId === '') {
+        res.status(400).json({
+          error: 'bad_params',
+          message: 'continueTurn requires conversationId',
+        });
+        return;
+      }
+      if (messages.length > 0) {
+        res.status(400).json({
+          error: 'bad_params',
+          message: 'a continueTurn request carries no user messages',
+        });
+        return;
+      }
+      if (body.noPersist === true) {
+        res.status(400).json({
+          error: 'bad_params',
+          message: 'continueTurn cannot be combined with noPersist',
+        });
+        return;
+      }
+    }
     if (
       body.taskClass !== undefined &&
       body.taskClass !== null &&
@@ -1440,6 +1480,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         // the backend is enabled (config read is cheap + sync; the key is
         // checked at exec time with a clear note when missing).
         searchEnabled: options.search !== undefined && options.search.config().enabled === true,
+        continueTurn,
       });
 
       // M11 F1: enrich the newest user turn with its bound attachment text
@@ -1739,6 +1780,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       persona: routingPersona,
       history: priorHistory,
       requestMessages: messages,
+      continueTurn,
     });
     if (persistedUserMessageId !== null && options.attachments) {
       appendAttachmentContext(

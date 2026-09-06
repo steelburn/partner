@@ -82,6 +82,9 @@ function toCall(row: PendingToolRow): PendingToolCall {
     risk: row.risk as ToolRisk,
     requestedBy: (REQUESTED_BY.has(row.requestedBy) ? row.requestedBy : 'web') as ToolRequestedBy,
     createdAt: row.createdAt,
+    // Chat-requested rows carry the conversation they asked from so the
+    // chat UI can surface approvals for the active conversation (M12.6).
+    conversationId: row.conversationId ?? null,
   };
 }
 

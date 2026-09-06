@@ -867,6 +867,9 @@ function ColumnDivider({
                   themes={themes}
                   activeThemeId={activeTheme?.themeId ?? null}
                   onBindTheme={(themeId) => void handleBindConversationTheme(activeConversationId, themeId)}
+                  pending={pending}
+                  onRefreshPending={refreshQueue}
+                  viewActive={view === 'chat'}
                 />
                 {notesLaneOpen ? (
                   <ColumnDivider

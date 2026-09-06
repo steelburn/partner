@@ -5,8 +5,12 @@
  * HTML (react-markdown + remark-gfm + rehype-sanitize; raw HTML never
  * renders). `:::partner.*` containers (C3) are sliced out before markdown
  * parsing and rendered by typed components — choices (F9) become clickable
- * single/multi option cards; asset containers are passed through as a
- * callout so F10 can hook extraction.
+ * single/multi option cards; asset containers (F10) keep their body visible
+ * in the transcript: a kind+title header followed by the artifact rendered
+ * inline (prose assets read as markdown, `kind=code` reads as a code well;
+ * html/css code assets offer the F12 sandboxed Preview via onPreviewCode).
+ * The persisted text is never rewritten, so Save to Assets still extracts
+ * the same container body.
  *
  * All styling is token-driven via class names (see app.css); the component
  * itself carries no colors or sizes. Links open in a new tab; partner-file
@@ -19,6 +23,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
 import type { ChoiceMode } from '@partner/shared';
 import { ChoiceCard } from './ChoiceCard.js';
+import { codeAssetBody, codeAssetPreview } from './lib/code-assets.js';
 
 export interface PartnerMarkdownProps {
   text: string;
@@ -28,6 +33,8 @@ export interface PartnerMarkdownProps {
   busy?: boolean;
   /** Intercept a partner-file link (F1); absent links render as plain text. */
   onFileLink?: (href: string) => void;
+  /** F12: an html/css code asset asked for a sandboxed preview. */
+  onPreviewCode?: (preview: { title: string; source: string }) => void;
 }
 
 const COMPONENTS: Components = {
@@ -107,6 +114,7 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   text,
   onAnswer,
   busy,
+  onPreviewCode,
 }: PartnerMarkdownProps) {
   const visibleText = useMemo(() => filterToolDirectives(text), [text]);
   const hits = useMemo(() => parseStructuredBlocks(visibleText), [visibleText]);
@@ -137,12 +145,61 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
         />,
       );
     } else {
-      segments.push(
-        <aside key={`asset-${index}`} className="md-asset-callout">
-          <span className="md-asset-kind">{block.assetKind}</span>
-          <span className="md-asset-title">{block.title ?? 'Saved artifact'}</span>
-        </aside>,
-      );
+      // Asset containers render their body INLINE — a kind+title header,
+      // then the artifact itself — so a definition/code answer is readable
+      // in the transcript and never hidden behind a bare tag. `kind=code`
+      // bodies render as a code well; html/css adds the F12 Preview action.
+      const kind = block.assetKind;
+      if (kind === 'code') {
+        const display = codeAssetBody(block.body);
+        const preview = codeAssetPreview(block.body);
+        segments.push(
+          <div className="md-asset" key={`asset-${index}`}>
+            <div className="md-asset-head">
+              <span className="md-asset-kind">code</span>
+              {block.title !== null ? (
+                <span className="md-asset-title">{block.title}</span>
+              ) : null}
+              {preview !== null && onPreviewCode ? (
+                <button
+                  type="button"
+                  className="btn-link md-asset-preview"
+                  disabled={busy === true}
+                  onClick={() =>
+                    onPreviewCode({
+                      title: block.title ?? (preview.lang === 'css' ? 'CSS preview' : 'HTML preview'),
+                      source: preview.source,
+                    })
+                  }
+                >
+                  Preview
+                </button>
+              ) : null}
+            </div>
+            {display.code !== '' ? (
+              <pre className="md-asset-code">
+                <code>{display.code}</code>
+              </pre>
+            ) : null}
+          </div>,
+        );
+      } else {
+        segments.push(
+          <div className="md-asset" key={`asset-${index}`}>
+            <div className="md-asset-head">
+              <span className="md-asset-kind">{kind}</span>
+              {block.title !== null ? (
+                <span className="md-asset-title">{block.title}</span>
+              ) : null}
+            </div>
+            {block.body !== '' ? (
+              <div className="md-asset-body">
+                <MarkdownFragment text={block.body} />
+              </div>
+            ) : null}
+          </div>,
+        );
+      }
     }
     cursor = hit.end;
   });

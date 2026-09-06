@@ -290,6 +290,13 @@ export interface StreamChatOptions {
   attachmentIds?: string[];
   /** M11 A/B studio: stream this persona turn WITHOUT persisting a conversation. */
   noPersist?: boolean;
+  /**
+   * M12.6 approval continuation: run the conversation's next persona round
+   * with NO new user message — the approval decision just posted its
+   * outcome note server-side and this streams the assistant's answer to it.
+   * Requires conversationId; content is ignored.
+   */
+  continueTurn?: boolean;
   /** Receives the persisted-turn ids off the trailing chat meta frame. */
   onDoneMeta?: (meta: StreamDoneMeta) => void;
   signal?: AbortSignal;
@@ -313,7 +320,10 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
     signal,
     fetchImpl = fetch,
   } = options;
-  const body: Record<string, unknown> = { messages: [{ role: 'user', content }] };
+  const body: Record<string, unknown> =
+    options.continueTurn === true
+      ? { messages: [], continueTurn: true }
+      : { messages: [{ role: 'user', content }] };
   if (conversationId !== undefined) body.conversationId = conversationId;
   if (personaId !== undefined) body.personaId = personaId;
   if (model !== undefined) body.model = model;

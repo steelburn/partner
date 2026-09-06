@@ -536,6 +536,9 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
         risk: 'medium',
         requestedBy: 'persona',
         personaName: 'Default partner',
+        // M12.6: chat-bound rows expose the conversation so the chat UI can
+        // surface the approval for the ACTIVE conversation (and continue it).
+        conversationId,
       });
 
       // Approve -> the backend runs exactly once and the result note lands.
@@ -631,6 +634,257 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
 
       const detail = h.conversations.get(conversationId);
       expect(detail.messages.some((m) => m.content.includes('could not run (disabled)'))).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// M12.6 in-chat approvals → continuation (PLAN-M12 README pass): chat-bound
+// queue rows expose their conversation, and a `continueTurn` chat request
+// resumes the conversation WITHOUT a new user message so the assistant
+// answers against the outcome note the decision just posted. The approval
+// decision route stays the single execution point — the chat UI decides the
+// row and then fires the continuation stream.
+// ---------------------------------------------------------------------------
+
+/** Upstream that answers each chat/completions request with the NEXT queued
+ *  text block (first reply may carry a tool directive, later ones plain). */
+function startStagedUpstream(
+  replies: string[],
+): Promise<{ server: http.Server; base: string; close(): Promise<void> }> {
+  let index = 0;
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const path = (req.url ?? '').split('?')[0] ?? '';
+      if (path === '/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }] }));
+        return;
+      }
+      if (path === '/chat/completions') {
+        const reply = replies[Math.min(index, replies.length - 1)] ?? '';
+        index += 1;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(sseReply([reply], { prompt: 10, completion: 10 }));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        server,
+        base: `http://127.0.0.1:${port}`,
+        close: async () => {
+          server.closeAllConnections?.();
+          await new Promise<void>((done) => server.close(() => done()));
+        },
+      });
+    });
+  });
+}
+
+describe('M12.6 chat approval continuation (decide in chat → continueTurn)', () => {
+  /** Suggest-routed Default partner + enabled fake search backend + a
+   *  staged persona upstream; returns drivers for one ask + one resume. */
+  async function setup(
+    h: Harness,
+    token: string,
+    staged: string[],
+  ): Promise<{ ask: () => Promise<string>; resume: (conversationId: string) => Promise<{ status: number; text: string; body: Record<string, unknown> }>; hits: () => number; queries: () => string[] }> {
+    const queries: string[] = [];
+    let hits = 0;
+    const backend = http.createServer((req, res) => {
+      if (req.method === 'POST') {
+        let raw = '';
+        req.on('data', (c: Buffer) => (raw += c));
+        req.on('end', () => {
+          hits += 1;
+          try {
+            const body = JSON.parse(raw) as { query?: string };
+            if (typeof body.query === 'string') queries.push(body.query);
+          } catch {
+            // ignore malformed
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              results: [{ title: 'hit', url: 'https://found.example', content: 'snippet body' }],
+            }),
+          );
+        });
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+    await new Promise<void>((done) => backend.listen(0, '127.0.0.1', done));
+    const { port } = backend.address() as AddressInfo;
+    servers.push({
+      close: async () => {
+        backend.closeAllConnections?.();
+        await new Promise<void>((r) => backend.close(() => r()));
+      },
+    });
+
+    const search = h.search as NonNullable<Harness['search']>;
+    search.updateConfig({ enabled: true, provider: 'tavily', endpoint: `http://127.0.0.1:${port}` });
+    await search.setKey('sk-continue-flow-1234567890');
+
+    const dp = h.personas.get('p-default');
+    expect(dp).not.toBeNull();
+    await request(h.app)
+      .put(`/v1/personas/${dp?.id}`)
+      .set(authed(token))
+      .send({
+        name: dp?.name,
+        character: dp?.character,
+        model: dp?.model,
+        independence: { level: 'suggest', requireHumanFor: ['high'], autoScopes: [] },
+        memory: dp?.memory,
+        isDefault: dp?.isDefault,
+      });
+
+    const upstream = await startStagedUpstream(staged);
+    servers.push(upstream);
+    const provider = await h.providerManager.create({
+      name: 'continue-upstream',
+      endpoint: upstream.base,
+      defaultModels: ['gpt-4o'],
+    });
+    await h.providerManager.setKey(provider.id, 'sk-continue-chat-12345678');
+
+    const ask = async (): Promise<string> => {
+      const res = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-default', messages: [{ role: 'user', content: 'search the web' }] });
+      expect(res.status).toBe(200);
+      const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(res.text);
+      expect(meta).not.toBeNull();
+      return meta?.[1] ?? '';
+    };
+    const resume = (conversationId: string): Promise<{ status: number; text: string; body: Record<string, unknown> }> =>
+      request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ conversationId, continueTurn: true, messages: [] });
+    return { ask, resume, hits: () => hits, queries: () => queries };
+  }
+
+  it('approve executes the search once; continueTurn streams the persona answer with no phantom user turn', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const app = await setup(h, token, [
+        'I will search the web.\n[[partner:tool search {"query":"continue after approval"}]]',
+        'Here is what I found — https://found.example confirms the approval flow continues.',
+      ]);
+      const conversationId = await app.ask();
+      expect(conversationId).not.toBe('');
+
+      // The queued row is conversation-bound so the chat card can find it.
+      const list = await request(h.app).get('/v1/tools/pending').set(authed(token));
+      const row = (list.body.pending as Array<Record<string, unknown>>).find(
+        (r) => r.toolId === 'search',
+      );
+      expect(row).toBeDefined();
+      expect(row?.conversationId).toBe(conversationId);
+      const pendingId = row?.id as string;
+
+      const decided = await request(h.app)
+        .post(`/v1/tools/pending/${pendingId}`)
+        .set(authed(token))
+        .send({ decision: 'approve' });
+      expect(decided.status).toBe(200);
+      expect(decided.body).toMatchObject({ executed: true, grantId: null });
+      expect(app.hits()).toBe(1);
+      expect(app.queries()).toEqual(['continue after approval']);
+
+      // Resume: the next persona round reads the posted result note and
+      // answers WITHOUT the client fabricating a user message.
+      const resumed = await app.resume(conversationId);
+      expect(resumed.status).toBe(200);
+      expect(resumed.text).toContain('Here is what I found');
+
+      const detail = h.conversations.get(conversationId);
+      const users = detail.messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(1);
+      const assistants = detail.messages.filter((m) => m.role === 'assistant');
+      expect(assistants).toHaveLength(2);
+      expect(assistants[1]?.content).toContain('approval flow continues');
+      expect(detail.messages.some((m) => m.content.includes('[tool search result]'))).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('deny closes the row without the backend and continueTurn still answers', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const app = await setup(h, token, [
+        'I would like to search.\n[[partner:tool search {"query":"deny me"}]]',
+        'No search ran — I will continue without it.',
+      ]);
+      const conversationId = await app.ask();
+
+      const list = await request(h.app).get('/v1/tools/pending').set(authed(token));
+      const row = (list.body.pending as Array<Record<string, unknown>>).find(
+        (r) => r.toolId === 'search',
+      );
+      expect(row).toBeDefined();
+      const pendingId = row?.id as string;
+
+      const decided = await request(h.app)
+        .post(`/v1/tools/pending/${pendingId}`)
+        .set(authed(token))
+        .send({ decision: 'deny' });
+      expect(decided.status).toBe(200);
+      expect(decided.body).toMatchObject({ executed: false, grantId: null });
+      expect(app.hits()).toBe(0);
+
+      const resumed = await app.resume(conversationId);
+      expect(resumed.status).toBe(200);
+      expect(resumed.text).toContain('No search ran');
+      const detail = h.conversations.get(conversationId);
+      expect(detail.messages.some((m) => m.content.includes('was denied'))).toBe(true);
+      const assistants = detail.messages.filter((m) => m.role === 'assistant');
+      expect(assistants).toHaveLength(2);
+      expect(assistants[1]?.content).toContain('continue without it');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('rejects malformed continueTurn requests before any stream', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      // No conversation to resume.
+      const noConv = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ continueTurn: true, messages: [] });
+      expect(noConv.status).toBe(400);
+      expect(noConv.body.message).toContain('conversationId');
+      // A resume round must not smuggle user messages.
+      const withMessage = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ conversationId: 'conv-x', continueTurn: true, messages: [{ role: 'user', content: 'hi' }] });
+      expect(withMessage.status).toBe(400);
+      // noPersist has no conversation to resume into.
+      const noPersist = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ conversationId: 'conv-x', continueTurn: true, noPersist: true, messages: [] });
+      expect(noPersist.status).toBe(400);
     } finally {
       h.close();
     }

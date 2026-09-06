@@ -233,4 +233,28 @@ describe('streamChat', () => {
       streamChat({ token: 't', content: 'x', onEvent: () => undefined, fetchImpl }),
     ).rejects.toThrow();
   });
+
+  it('continueTurn streams the next round with no user message (M12.6)', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      streamResponse([event({ type: 'delta', text: 'Here is what the search found.' })]),
+    );
+    const received: ChatEvent[] = [];
+    const result = await streamChat({
+      token: 'tok-secret',
+      content: 'ignored',
+      continueTurn: true,
+      conversationId: 'conv-1',
+      personaId: 'p-1',
+      onEvent: (e) => received.push(e),
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(received).toEqual([{ type: 'delta', text: 'Here is what the search found.' }]);
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    expect(body.continueTurn).toBe(true);
+    expect(body.conversationId).toBe('conv-1');
+    expect(body.personaId).toBe('p-1');
+    // No user message rides a resume round — the stored history is the turn.
+    expect(body.messages).toEqual([]);
+  });
 });

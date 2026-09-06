@@ -256,7 +256,7 @@ async function handleDirective(
       });
       appendSystemNote(
         `The persona requested tool "${toolId}" — it is awaiting your approval ` +
-          `(pending ${pendingId}). Approve or deny it from the Files queue.`,
+          `(pending ${pendingId}). Approve or deny it in this chat or from the Files queue.`,
       );
       return { toolId, decision: 'queued', pendingId };
     }

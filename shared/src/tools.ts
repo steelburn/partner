@@ -74,6 +74,14 @@ export interface PendingToolCall {
    * (route-enriched at GET /v1/tools/pending; absent/undefined otherwise).
    */
   personaName?: string | null;
+  /**
+   * Conversation a chat-requested approval belongs to ('' for queue rows
+   * outside a chat — web/try-a-tool asks and playbook runs). Set on the
+   * row when a persona turn asked from a persisted conversation; lets the
+   * chat UI surface approvals for the ACTIVE conversation and continue the
+   * turn once they are decided.
+   */
+  conversationId?: string | null;
 }
 
 export type ToolExecResponse =

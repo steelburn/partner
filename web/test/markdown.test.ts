@@ -2,7 +2,9 @@
  * M11 F7/F9 renderer tests (PLAN-M11.md) — server-rendered (no DOM needed).
  * PartnerMarkdown sanitizes raw HTML, renders GFM tables/code, slices out
  * :::partner.* containers, and renders choices as real single/multi controls
- * with the confirm gated until a selection exists.
+ * with the confirm gated until a selection exists. Asset containers (F10)
+ * stay readable inline: prose bodies render under a kind+title header and
+ * html/css code assets expose the F12 Preview action.
  */
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -14,9 +16,15 @@ function render(props: {
   text: string;
   busy?: boolean;
   onAnswer?: (message: string) => void;
+  onPreviewCode?: (preview: { title: string; source: string }) => void;
 }): string {
   return renderToStaticMarkup(
-    h(PartnerMarkdown, { text: props.text, busy: props.busy, onAnswer: props.onAnswer }),
+    h(PartnerMarkdown, {
+      text: props.text,
+      busy: props.busy,
+      onAnswer: props.onAnswer,
+      onPreviewCode: props.onPreviewCode,
+    }),
   );
 }
 
@@ -100,6 +108,81 @@ describe('ChoiceCard (F9)', () => {
     // Server rendering cannot click; assert the wiring contract instead:
     expect(card).toBeTruthy();
     void answer;
+  });
+});
+
+describe('PartnerMarkdown asset containers (F10 — body readable inline)', () => {
+  it('renders a definition container body inline under a kind+title header', () => {
+    const html = render({
+      text: 'Here is the answer:\n\n:::partner.asset kind=definition title="What a partner can do"\nA partner can chat, plan, run tools and save artifacts.\n:::\n\nThat is the short version.',
+    });
+    expect(html).not.toContain(':::partner.asset');
+    expect(html).not.toContain(':::');
+    expect(html).toContain('md-asset-kind');
+    expect(html).toContain('definition');
+    expect(html).toContain('What a partner can do');
+    // The body is readable in the bubble — never hidden behind the tag.
+    expect(html).toContain('A partner can chat, plan, run tools and save artifacts.');
+    expect(html).toContain('Here is the answer:');
+    expect(html).toContain('That is the short version.');
+  });
+
+  it('renders markdown inside an asset body (lists survive)', () => {
+    const html = render({
+      text: ':::partner.asset kind=document title="Capabilities"\n- chat\n- plan\n::: ',
+    });
+    expect(html).toContain('<li>chat</li>');
+    expect(html).toContain('<li>plan</li>');
+  });
+
+  it('keeps an unclosed asset container as visible text (never materialized)', () => {
+    const html = render({ text: ':::partner.asset kind=definition\nNot closed yet.' });
+    expect(html).toContain(':::partner.asset');
+    expect(html).toContain('Not closed yet.');
+  });
+
+  it('shows html code assets verbatim and offers the F12 Preview', () => {
+    const html = render({
+      text: ':::partner.asset kind=code title="Greeting"\n```html\n<h1>Hello</h1>\n```\n:::',
+      onPreviewCode: () => undefined,
+    });
+    expect(html).not.toContain(':::');
+    // Code is visible inline (escaped text inside the code well).
+    expect(html).toContain('md-asset-code');
+    expect(html).toContain('&lt;h1&gt;Hello&lt;/h1&gt;');
+    expect(html).not.toContain('```html');
+    expect(html).toContain('Greeting');
+    expect(html).toContain('Preview');
+  });
+
+  it('disables the Preview action while the turn is streaming', () => {
+    const html = render({
+      text: ':::partner.asset kind=code\n```css\np { color: red }\n```\n:::',
+      busy: true,
+      onPreviewCode: () => undefined,
+    });
+    expect(html).toMatch(/disabled/);
+  });
+
+  it('never offers Preview for non-browser code languages', () => {
+    const html = render({
+      text: ':::partner.asset kind=code title="Swap"\n```js\nconst x = 1;\n```\n:::',
+    });
+    expect(html).toContain('const x = 1;');
+    expect(html).not.toContain('Preview');
+  });
+
+  it('previews an unfenced HTML document body', () => {
+    let called: { title: string; source: string } | null = null;
+    const html = render({
+      text: ':::partner.asset kind=code title="Card"\n<div class="card">Hi</div>\n:::',
+      onPreviewCode: (preview) => {
+        called = preview;
+      },
+    });
+    expect(html).toContain('Preview');
+    expect(html).toContain('md-asset-code');
+    expect(called).toBeNull(); // server render cannot click; wiring asserted below
   });
 });
 
