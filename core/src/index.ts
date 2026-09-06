@@ -857,6 +857,13 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     folders,
     audit,
     defaultTz: schedulerTz,
+    // Tool envelope: advertise the directive grammar only when a run could
+    // actually use broker tools — any ACTIVE user grant, or any persona
+    // autoScope (persona-envelope consent). Deny-by-default is untouched: the
+    // broker still refuses every execution without its own grant.
+    canRunTools: () =>
+      grantManager.list().length > 0 ||
+      personaManager.list().some((persona) => (persona.independence.autoScopes ?? []).length > 0),
   });
   let schedulerTimer: ReturnType<typeof setInterval> | null = null;
   const scheduler = {

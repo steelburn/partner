@@ -588,6 +588,11 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       folders: folders as { get(id: string): unknown },
       audit,
       defaultTz: 'UTC',
+      // Test harnesses drive scripted providers over the real loop: keep the
+      // tool grammar advertised whenever the broker is wired so queued
+      // approval / auto-resume paths stay exercisable deterministically
+      // (real grants are NOT required in these tests).
+      canRunTools: () => brokerEnabled,
     });
   }
 

@@ -18,6 +18,13 @@
  *   - a queued tool pauses the run (status 'queued' + pendingId); deciding
  *     that approval later auto-resumes in-process (tryResumeAfterDecision);
  *   - a paused persona refuses new runs AND resume (kill switch).
+ *
+ * Tool-grammar gating: the run's system prompt advertises the
+ * [[partner:tool …]] directive grammar ONLY when the wiring's canRunTools()
+ * closure reports a usable tool envelope (grants live in the broker, which
+ * this manager never sees). Without an envelope a scheduled brief runs
+ * text-only in one round — the live-walk fix that stopped models queueing
+ * phantom files.* approvals under made-up projectIds.
  */
 import { randomUUID } from 'node:crypto';
 import type { Persona, PersonaSchedule } from '@partner/shared';
@@ -96,6 +103,13 @@ export interface ScheduleManagerOptions {
   audit: AuditService;
   /** Core timezone for schedules without an explicit tz. */
   defaultTz?: string;
+  /**
+   * True while a usable tool envelope exists (active broker grants or persona
+   * autoScopes). Decided by the wiring closure — grants live in the broker,
+   * which this manager never sees. When false (default) the run prompt is
+   * text-only and never advertises the tool directive grammar.
+   */
+  canRunTools?: () => boolean;
   /** Injectable clock (epoch ms). */
   now?: () => number;
 }
@@ -144,6 +158,8 @@ export function createScheduleManager(options: ScheduleManagerOptions): Schedule
   const { personas, conversations, notes, runs, loop, resolver, audit } = options;
   const now = options.now ?? Date.now;
   const defaultTz = options.defaultTz ?? 'UTC';
+  // Tool envelope: absent wiring = text-only scheduled runs (safe default).
+  const canRunTools = options.canRunTools ?? (() => false);
 
   function requirePersona(personaId: string): Persona {
     const persona = personas.get(personaId);
@@ -199,20 +215,31 @@ export function createScheduleManager(options: ScheduleManagerOptions): Schedule
     return prompt === '' ? prefix : `${prefix} ${prompt}`;
   }
 
+  /** The directive grammar advertised when a usable tool envelope exists. */
+  const TOOL_RUN_INSTRUCTIONS = [
+    'You are working a SCHEDULED autonomous task. The task may need tools:',
+    'emit ONE directive per reply, on its own line, in the exact form:',
+    '[[partner:tool <toolId> <json-args>]]',
+    'Example: [[partner:tool files.read {"projectId":"<root-id>","path":"notes.md"}]]',
+    'Tool results are fed back to you; chain further directives across replies.',
+    'When a tool needs human approval the run pauses automatically and resumes',
+    'after the decision — do not ask about approvals in your reply text.',
+    'Produce file edits as proposals (files.edit) — never apply writes yourself.',
+    'Finish with a concise summary of what you did.',
+  ];
+
+  /** Text-only guidance when no tool envelope exists (live-walk fix). */
+  const TEXT_ONLY_RUN_INSTRUCTIONS = [
+    'You are working a SCHEDULED autonomous task. Produce a complete, concrete',
+    'answer directly in your reply. Do not attempt to use tools in this run.',
+  ];
+
   /** Deterministic scheduled-run instruction block (mirrors playbooks). */
   function runPrompt(persona: Persona, schedule: PersonaSchedule): string {
     return [
       personaVoicePrompt(persona),
       '',
-      'You are working a SCHEDULED autonomous task. The task may need tools:',
-      'emit ONE directive per reply, on its own line, in the exact form:',
-      '[[partner:tool <toolId> <json-args>]]',
-      'Example: [[partner:tool files.read {"projectId":"<root-id>","path":"notes.md"}]]',
-      'Tool results are fed back to you; chain further directives across replies.',
-      'When a tool needs human approval the run pauses automatically and resumes',
-      'after the decision — do not ask about approvals in your reply text.',
-      'Produce file edits as proposals (files.edit) — never apply writes yourself.',
-      'Finish with a concise summary of what you did.',
+      ...(canRunTools() ? TOOL_RUN_INSTRUCTIONS : TEXT_ONLY_RUN_INSTRUCTIONS),
       '',
       `Scheduled task "${schedule.label}":`,
       schedule.prompt,

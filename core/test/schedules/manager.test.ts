@@ -84,7 +84,14 @@ function fakeNotes(): NoteCreateSurface & { created: Array<{ title: string }> } 
 
 type LoopScript = Array<ToolLoopResult>;
 
-function fakeLoop(script: LoopScript): ScheduleToolLoop & { calls: Array<{ kind: string; runId: string }> } {
+interface LoopCall {
+  kind: 'run' | 'resume';
+  runId: string;
+  /** System+user messages of a run call (grammar assertions). */
+  messages?: Array<{ role: string; content: string }>;
+}
+
+function fakeLoop(script: LoopScript): ScheduleToolLoop & { calls: LoopCall[] } {
   let index = 0;
   const take = (): ToolLoopResult => {
     const result = script[Math.min(index, script.length - 1)] as ToolLoopResult;
@@ -95,8 +102,9 @@ function fakeLoop(script: LoopScript): ScheduleToolLoop & { calls: Array<{ kind:
     calls: [],
     async *run(req: {
       runId: string;
+      messages: Array<{ role: string; content: string }>;
     }): AsyncGenerator<LoopEvent, ToolLoopResult, unknown> {
-      this.calls.push({ kind: 'run', runId: req.runId });
+      this.calls.push({ kind: 'run', runId: req.runId, messages: req.messages });
       return take();
     },
     async *resume(runId: string): AsyncGenerator<LoopEvent, ToolLoopResult, unknown> {
@@ -148,6 +156,7 @@ interface Harness {
 function makeHarness(opts: {
   script?: LoopScript;
   resolver?: (persona: Persona) => PlaybookChatTarget | null;
+  canRunTools?: boolean;
   now?: () => number;
 } = {}): Harness {
   const db = openDatabase(':memory:');
@@ -172,6 +181,8 @@ function makeHarness(opts: {
     audit,
     defaultTz: 'UTC',
     now: opts.now,
+    // Absent = false = text-only prompts (mirrors the manager default).
+    canRunTools: () => opts.canRunTools === true,
   });
   return { manager, personas, conversations, notes, loop, audit, resolver };
 }
@@ -470,5 +481,56 @@ describe('tick cadence', () => {
     });
     await h.manager.runNow(persona.id, 's1');
     expect(h.notes.created).toEqual([{ title: 'Morning brief' }]);
+  });
+});
+
+describe('M14 tool-grammar gating (live-walk fix)', () => {
+  const systemOf = (h: Harness): string | undefined => {
+    const run = h.loop.calls.find((call) => call.kind === 'run');
+    return run?.messages?.[0]?.content;
+  };
+
+  it('defaults to a text-only system prompt — no tool grammar advertised', async () => {
+    const h = makeHarness();
+    const persona = h.personas.create({
+      name: 'Text brief',
+      independence: { level: 'autonomous', schedules: [brief('s1')] },
+    });
+    await h.manager.runNow(persona.id, 's1');
+    const system = systemOf(h);
+    expect(system).toBeDefined();
+    expect(system).not.toContain('partner:tool');
+    expect(system).toContain('Do not attempt to use tools in this run');
+    expect(system).toContain('Scheduled task "Morning brief"');
+  });
+
+  it('advertises the tool grammar when canRunTools() is true', async () => {
+    const h = makeHarness({ canRunTools: true });
+    const persona = h.personas.create({
+      name: 'Tool brief',
+      independence: { level: 'autonomous', schedules: [brief('s1')] },
+    });
+    await h.manager.runNow(persona.id, 's1');
+    const system = systemOf(h);
+    expect(system).toBeDefined();
+    expect(system).toContain('partner:tool');
+    expect(system).toContain('[[partner:tool files.read');
+  });
+
+  it('keeps the directive grammar byte-identical to the pre-gating block', async () => {
+    const h = makeHarness({ canRunTools: true });
+    const persona = h.personas.create({
+      name: 'Tool brief',
+      independence: { level: 'autonomous', schedules: [brief('s1')] },
+    });
+    await h.manager.runNow(persona.id, 's1');
+    const system = systemOf(h) as string;
+    // Every original instruction line survives verbatim inside the prompt.
+    expect(system).toContain(
+      'emit ONE directive per reply, on its own line, in the exact form:',
+    );
+    expect(system).toContain('When a tool needs human approval the run pauses automatically and resumes');
+    expect(system).toContain('Produce file edits as proposals (files.edit) — never apply writes yourself.');
+    expect(system).toContain('Finish with a concise summary of what you did.');
   });
 });
