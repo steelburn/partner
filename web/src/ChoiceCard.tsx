@@ -7,7 +7,9 @@
  * focus-visible + disabled states. While a turn is streaming (`busy`) the
  * card is inert so an answer can never interleave with an in-flight turn.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useChoiceMemory } from './ChoiceMemory.js';
+import { conversationUi } from './lib/conversation-ui.js';
 
 export interface ChoiceCardProps {
   mode: 'single' | 'multi';
@@ -18,10 +20,32 @@ export interface ChoiceCardProps {
 }
 
 export function ChoiceCard({ mode, title, options, busy, onConfirm }: ChoiceCardProps) {
-  const [single, setSingle] = useState<string | null>(null);
-  const [multi, setMulti] = useState<ReadonlySet<string>>(new Set());
+  // M14: when a conversation context is present, pending selections survive
+  // "move to another chat and come back" (per-conversation UI memory).
+  const { conversationId } = useChoiceMemory();
+  const memoryKey =
+    conversationId !== null
+      ? conversationUi.getChoiceKey(mode, title, options)
+      : null;
+  const remembered = memoryKey !== null ? conversationUi.getChoice(conversationId, memoryKey) : null;
+  const [single, setSingle] = useState<string | null>(
+    () => remembered?.single ?? null,
+  );
+  const [multi, setMulti] = useState<ReadonlySet<string>>(
+    () => new Set(remembered?.multi ?? []),
+  );
   const [noneMode, setNoneMode] = useState(false);
   const [freeText, setFreeText] = useState('');
+
+  // Persist pending selections so returning to this conversation restores
+  // them (conversation-scoped UI memory — see lib/conversation-ui.ts).
+  useEffect(() => {
+    if (memoryKey === null) return;
+    conversationUi.setChoice(conversationId, memoryKey, {
+      single,
+      multi: mode === 'multi' ? [...multi] : [],
+    });
+  }, [conversationId, memoryKey, mode, single, multi]);
 
   const selected = mode === 'single' ? single : multi;
   const hasSelection =
@@ -53,7 +77,10 @@ export function ChoiceCard({ mode, title, options, busy, onConfirm }: ChoiceCard
           ? [single]
           : []
         : [...(selected as ReadonlySet<string>)];
-    if (labels.length > 0) onConfirm(labels);
+    if (labels.length === 0) return;
+    // The card is answered — forget the pending selection for this card.
+    if (memoryKey !== null) conversationUi.setChoice(conversationId, memoryKey, null);
+    onConfirm(labels);
   };
 
   return (

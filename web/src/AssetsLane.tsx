@@ -6,7 +6,8 @@
  * Export .md / promote-to-note / Delete. Saved asset bodies are owner
  * content: rendered only, never logged or echoed outside this pane.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { conversationUi } from './lib/conversation-ui.js';
 import type { Asset, AssetKind } from '@partner/shared';
 import { ApiRequestError } from './lib/api.js';
 import { deleteAsset, listAssets, promoteAsset } from './lib/assets.js';
@@ -55,6 +56,26 @@ export function AssetsLane({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // M14 per-conversation memory: which asset row is open is keyed by the
+  // conversation so switching chats and coming back restores the read view.
+  const openIdRef = useRef<string | null>(openId);
+  const lastConvRef = useRef<string | null>(conversationId);
+  /** Conversation whose list still needs its remembered asset restored. */
+  const hydrateRef = useRef<string | null>(conversationId);
+
+  useEffect(() => {
+    openIdRef.current = openId;
+  }, [openId]);
+
+  /** Remember the open asset for the conversation the user just left. */
+  useEffect(() => {
+    if (lastConvRef.current === conversationId) return;
+    conversationUi.setAssetOpen(lastConvRef.current, openIdRef.current);
+    lastConvRef.current = conversationId;
+    // Restore after the next successful list load for this conversation.
+    hydrateRef.current = conversationId;
+  }, [conversationId]);
+
   const load = useCallback(async (): Promise<void> => {
     if (conversationId === null) {
       setAssets(null);
@@ -68,8 +89,20 @@ export function AssetsLane({
       return;
     }
     try {
-      setAssets(await listAssets(token, conversationId));
+      const list = await listAssets(token, conversationId);
+      setAssets(list);
       setError(null);
+      // M14: after the list for a just-opened conversation arrives, restore
+      // its remembered open asset when it still exists (else close the view).
+      if (hydrateRef.current === conversationId) {
+        hydrateRef.current = null;
+        const remembered = conversationUi.getAssetOpen(conversationId);
+        setOpenId(
+          remembered !== null && list.some((asset) => asset.id === remembered)
+            ? remembered
+            : null,
+        );
+      }
     } catch (cause) {
       if (isSessionLost(cause)) {
         onUnpair();
@@ -91,6 +124,7 @@ export function AssetsLane({
 
   const select = (id: string): void => {
     setOpenId(id);
+    conversationUi.setAssetOpen(conversationId, id);
     setNotice(null);
     setError(null);
   };
@@ -139,7 +173,9 @@ export function AssetsLane({
     try {
       await deleteAsset(readStoredToken() ?? '', conversationId, asset.id);
       await load();
-      setOpenId((current) => (current === asset.id ? null : current));
+      const stillOpen = openIdRef.current === asset.id ? null : openIdRef.current;
+      setOpenId(stillOpen);
+      conversationUi.setAssetOpen(conversationId, stillOpen);
       setNotice(`Deleted “${asset.title}”.`);
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -193,6 +229,7 @@ export function AssetsLane({
             className="btn-link assets-lane-back"
             onClick={() => {
               setOpenId(null);
+              conversationUi.setAssetOpen(conversationId, null);
               setNotice(null);
             }}
             disabled={busyId !== null}

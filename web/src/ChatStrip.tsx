@@ -16,6 +16,8 @@ import {
 } from './lib/attachments.js';
 import { readStoredToken } from './lib/token.js';
 import { PartnerMarkdown } from './Markdown.js';
+import { ChoiceMemoryContext } from './ChoiceMemory.js';
+import { conversationUi } from './lib/conversation-ui.js';
 import { IconSave, IconSend } from './icons.js';
 import { CodePreview } from './CodePreview.js';
 import { SaveAssetsDialog } from './AssetsPanel.js';
@@ -677,11 +679,25 @@ export default function ChatStrip({
   /**
    * M13 model picker: reset to Auto whenever the persona changes so the next
    * persona's routing applies by default (provider list refresh is separate).
+   * An EXPLICIT pick remembered for this conversation wins over that default
+   * (M13: an explicit pick is never overridden).
    */
   useEffect(() => {
-    setTurnModel(null);
+    setTurnModel(conversationUi.getModelPick(conversationId));
     suggestApplied.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personaId]);
+
+  /**
+   * M14: restoring per-conversation selections — when the active conversation
+   * changes the picker must show that conversation's remembered explicit pick
+   * (or Auto), not whatever the previous conversation left in state (views
+   * stay mounted, so state would otherwise leak across chats).
+   */
+  useEffect(() => {
+    setTurnModel(conversationUi.getModelPick(conversationId));
+    suggestApplied.current = false;
+  }, [conversationId]);
 
   /**
    * M13 model picker: load enabled providers with known models (grouped by
@@ -751,8 +767,10 @@ export default function ChatStrip({
       setStaged([]);
       setReloadToken((n) => n + 1);
     }
-    // Back to Auto for the next message — the per-turn pick was for that turn.
-    setTurnModel(null);
+    // Keep the model remembered for this conversation (an explicit pick is a
+    // per-conversation default); Auto conversations stay on Auto. The pick is
+    // written to memory when the user changes the select below.
+    setTurnModel(conversationUi.getModelPick(conversationId));
     suggestApplied.current = false;
   };
 
@@ -920,12 +938,14 @@ export default function ChatStrip({
                 {row.text === '' && showPending ? (
                   '…'
                 ) : (
-                  <PartnerMarkdown
-                    text={row.text}
-                    busy={streaming}
-                    onAnswer={handleAnswer}
-                    onPreviewCode={({ title, source }) => setPreview({ title, source })}
-                  />
+                  <ChoiceMemoryContext.Provider value={{ conversationId }}>
+                    <PartnerMarkdown
+                      text={row.text}
+                      busy={streaming}
+                      onAnswer={handleAnswer}
+                      onPreviewCode={({ title, source }) => setPreview({ title, source })}
+                    />
+                  </ChoiceMemoryContext.Provider>
                 )}
                 {row.text !== '' ? (
                   <div className="msg-actions">
@@ -1126,12 +1146,18 @@ export default function ChatStrip({
               onChange={(event) => {
                 const value = event.target.value;
                 if (value === 'auto') {
+                  conversationUi.setModelPick(conversationId, null);
                   setTurnModel(null);
                   return;
                 }
                 const sep = value.indexOf('::');
                 if (sep > 0) {
-                  setTurnModel({ providerId: value.slice(0, sep), model: value.slice(sep + 2) });
+                  const pick = {
+                    providerId: value.slice(0, sep),
+                    model: value.slice(sep + 2),
+                  };
+                  conversationUi.setModelPick(conversationId, pick);
+                  setTurnModel(pick);
                 }
               }}
               disabled={streaming}

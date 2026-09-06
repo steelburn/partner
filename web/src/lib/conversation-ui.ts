@@ -1,0 +1,90 @@
+/**
+ * Per-conversation UI memory (session-scoped, client-side only).
+ *
+ * Chat view surfaces that hold a transient "what the user picked" state lose
+ * it the moment the active conversation changes: views stay mounted and swap
+ * the conversationId prop, so any per-conversation choice (an explicit model
+ * pick, ticked choice-card options, an open asset) must be keyed by the
+ * conversation to survive "move to another chat and come back".
+ *
+ * This is intentionally a plain module-level store: one writer process, no
+ * React context gymnastics, no persistence to the core (no wire change). It
+ * is NOT durable across reloads — that is fine for the ask ("when I move away
+ * and return", within a session).
+ */
+export interface ModelPick {
+  providerId: string;
+  model: string;
+}
+
+/** Multi choices hold an ordered string array; single a label or null. */
+export interface ChoiceSelection {
+  single: string | null;
+  multi: string[];
+}
+
+const modelPicks = new Map<string, ModelPick>();
+const choiceSelections = new Map<string, Map<string, ChoiceSelection>>();
+const assetOpens = new Map<string, string | null>();
+
+export const conversationUi = {
+  // ---- model picker ----------------------------------------------------
+  getModelPick(conversationId: string | null): ModelPick | null {
+    if (conversationId === null) return null;
+    return modelPicks.get(conversationId) ?? null;
+  },
+  /** `pick` of null stores Auto (an explicit reset). */
+  setModelPick(conversationId: string | null, pick: ModelPick | null): void {
+    if (conversationId === null) return;
+    if (pick === null) modelPicks.delete(conversationId);
+    else modelPicks.set(conversationId, pick);
+  },
+  // ---- choice cards (:::partner.choice single/multi) --------------------
+  /** Stable per-card key: the card's own identity (mode + title + options). */
+  getChoiceKey(mode: 'single' | 'multi', title: string | null, options: string[]): string {
+    return `${mode}\u001f${title ?? ''}\u001f${options.join('\u001f')}`;
+  },
+  getChoice(
+    conversationId: string | null,
+    key: string,
+  ): ChoiceSelection | null {
+    if (conversationId === null) return null;
+    return choiceSelections.get(conversationId)?.get(key) ?? null;
+  },
+  setChoice(
+    conversationId: string | null,
+    key: string,
+    selection: ChoiceSelection | null,
+  ): void {
+    if (conversationId === null) return;
+    if (selection === null) {
+      const cards = choiceSelections.get(conversationId);
+      cards?.delete(key);
+      if (cards !== undefined && cards.size === 0) choiceSelections.delete(conversationId);
+      return;
+    }
+    let cards = choiceSelections.get(conversationId);
+    if (cards === undefined) {
+      cards = new Map<string, ChoiceSelection>();
+      choiceSelections.set(conversationId, cards);
+    }
+    cards.set(key, selection);
+  },
+  // ---- assets lane open row ---------------------------------------------
+  getAssetOpen(conversationId: string | null): string | null {
+    if (conversationId === null) return null;
+    return assetOpens.get(conversationId) ?? null;
+  },
+  setAssetOpen(conversationId: string | null, assetId: string | null): void {
+    if (conversationId === null) return;
+    if (assetId === null) assetOpens.delete(conversationId);
+    else assetOpens.set(conversationId, assetId);
+  },
+  /** Forget every slot for a conversation (used when it is deleted). */
+  forget(conversationId: string | null): void {
+    if (conversationId === null) return;
+    modelPicks.delete(conversationId);
+    choiceSelections.delete(conversationId);
+    assetOpens.delete(conversationId);
+  },
+};

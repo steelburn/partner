@@ -6699,14 +6699,18 @@ select {
   color: var(--text);
 }
 
+/* Active view: a filled emphasis pill makes the current page unmissable
+ * (accent-contrast on accent-emphasis passes both modes — M12 P0.3 rule:
+ * accent TEXT on tinted wells under-reaches, so the filled surface is used). */
 .side-tab[aria-pressed='true'] {
-  background: var(--surface-2);
-  color: var(--text);
+  background: var(--accent-emphasis);
+  color: var(--accent-contrast);
   font-weight: var(--fw-medium);
 }
 
 .side-tab[aria-pressed='true']:hover:not(:disabled) {
-  color: var(--text);
+  background: var(--accent-emphasis-hover);
+  color: var(--accent-contrast);
 }
 
 .side-tab .side-label {
