@@ -76,6 +76,114 @@ type ViewName =
   | 'playbooks'
   | 'audit';
 
+/** M14 nav sidebar: groups keep the M3 order/aria semantics; labels are
+ *  hidden below the icon-rail breakpoint (CSS), never scrolled. */
+interface NavItem {
+  view: ViewName;
+  label: string;
+  icon: JSX.Element;
+  /** Badge text shown next to the label (e.g. pending approvals). */
+  badge?: string;
+}
+
+interface NavGroup {
+  name: string;
+  items: NavItem[];
+}
+
+function NavButton({
+  item,
+  current,
+  onSelect,
+}: {
+  item: NavItem;
+  current: ViewName;
+  onSelect: (view: ViewName) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="btn btn-secondary side-tab"
+      onClick={() => onSelect(item.view)}
+      aria-pressed={current === item.view}
+      aria-label={
+        item.badge !== undefined && item.badge !== ''
+          ? `${item.label} — ${item.badge}`
+          : item.label
+      }
+    >
+      {item.icon}
+      <span className="side-label">{item.label}</span>
+      {item.badge !== undefined && item.badge !== '' ? (
+        <span className="tab-badge" aria-hidden="true">
+          {item.badge}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function SideNav({
+  current,
+  pendingCount,
+  onSelect,
+}: {
+  current: ViewName;
+  pendingCount: number;
+  onSelect: (view: ViewName) => void;
+}) {
+  const groups: NavGroup[] = [
+    {
+      name: 'Workspace',
+      items: [
+        { view: 'chat', label: 'Chat', icon: <IconChat /> },
+        { view: 'notes', label: 'Notes', icon: <IconNotes /> },
+      ],
+    },
+    {
+      name: 'Studio',
+      items: [
+        { view: 'personas', label: 'Personas', icon: <IconPersonas /> },
+        { view: 'providers', label: 'Providers', icon: <IconProviders /> },
+        { view: 'themes', label: 'Themes', icon: <IconThemes /> },
+      ],
+    },
+    {
+      name: 'Tools',
+      items: [
+        {
+          view: 'files',
+          label: 'Files',
+          icon: <IconFiles />,
+          badge: pendingCount > 0 ? (pendingCount > 99 ? '99+' : String(pendingCount)) : undefined,
+        },
+        { view: 'skills', label: 'Skills', icon: <IconSkills /> },
+        { view: 'playbooks', label: 'Playbooks', icon: <IconPlaybooks /> },
+      ],
+    },
+    {
+      name: 'System',
+      items: [
+        { view: 'memory', label: 'Memory', icon: <IconMemory /> },
+        { view: 'audit', label: 'Audit', icon: <IconAudit /> },
+      ],
+    },
+  ];
+
+  return (
+    <nav className="side-nav" aria-label="Partner views">
+      {groups.map((group) => (
+        <div className="side-group" role="group" aria-label={group.name} key={group.name}>
+          <span className="side-group-title">{group.name}</span>
+          {group.items.map((item) => (
+            <NavButton key={item.view} item={item} current={current} onSelect={onSelect} />
+          ))}
+        </div>
+      ))}
+    </nav>
+  );
+}
+
 /**
  * App shell (M3): header row carries the brand, the view switch, the active
  * persona picker (chips + paused state) and the light/dark toggle; the chat
@@ -717,126 +825,16 @@ function ColumnDivider({
 
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="app-header-inner">
-          <div className="app-header-left">
-            <span className="app-brand">Partner</span>
-            {paired ? (
-              <div className="view-scroll">
-                <div className="view-switch" role="group" aria-label="Partner views">
-                  <div className="view-group" role="group" aria-label="Workspace">
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('chat')}
-                      aria-pressed={view === 'chat'}
-                    >
-                      <IconChat />
-                      Chat
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('notes')}
-                      aria-pressed={view === 'notes'}
-                    >
-                      <IconNotes />
-                      Notes
-                    </button>
-                  </div>
-                  <div className="view-group" role="group" aria-label="Studio">
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('personas')}
-                      aria-pressed={view === 'personas'}
-                    >
-                      <IconPersonas />
-                      Personas
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('providers')}
-                      aria-pressed={view === 'providers'}
-                    >
-                      <IconProviders />
-                      Providers
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('themes')}
-                      aria-pressed={view === 'themes'}
-                    >
-                      <IconThemes />
-                      Themes
-                    </button>
-                  </div>
-                  <div className="view-group" role="group" aria-label="Tools">
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('files')}
-                      aria-pressed={view === 'files'}
-                      aria-label={
-                        pending.length > 0
-                          ? `Files — ${pending.length} pending approval${pending.length === 1 ? '' : 's'}`
-                          : 'Files'
-                      }
-                    >
-                      <IconFiles />
-                      Files
-                      {pending.length > 0 ? (
-                        <span className="tab-badge" aria-hidden="true">
-                          {pending.length > 99 ? '99+' : pending.length}
-                        </span>
-                      ) : null}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('skills')}
-                      aria-pressed={view === 'skills'}
-                    >
-                      <IconSkills />
-                      Skills
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('playbooks')}
-                      aria-pressed={view === 'playbooks'}
-                    >
-                      <IconPlaybooks />
-                      Playbooks
-                    </button>
-                  </div>
-                  <div className="view-group" role="group" aria-label="System">
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('memory')}
-                      aria-pressed={view === 'memory'}
-                    >
-                      <IconMemory />
-                      Memory
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary view-tab"
-                      onClick={() => setView('audit')}
-                      aria-pressed={view === 'audit'}
-                    >
-                      <IconAudit />
-                      Audit
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="app-header-right">
+      <aside className="app-side" aria-label="App">
+        <span className="app-brand side-brand">Partner</span>
+        {paired ? (
+          <SideNav current={view} pendingCount={pending.length} onSelect={setView} />
+        ) : null}
+      </aside>
+      <div className="app-col">
+        {paired ? (
+          <header className="app-topbar">
+            <div className="app-topbar-right">
             {paired && personasLoaded && personas.length > 0 ? (
               <PersonaPicker
                 personas={personas}
@@ -884,9 +882,9 @@ function ColumnDivider({
             >
               {nextModeLabel}
             </button>
-          </div>
-        </div>
-      </header>
+            </div>
+          </header>
+        ) : null}
       <main className="app-main">
         {paired ? (
           <>
@@ -1075,6 +1073,8 @@ function ColumnDivider({
           <PairGate onPaired={handlePaired} />
         )}
       </main>
+      </div>
     </div>
   );
 }
+

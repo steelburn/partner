@@ -6617,3 +6617,177 @@ select {
   font-size: var(--fs-sm);
   color: var(--text-muted);
 }
+
+/* ==========================================================================
+ * M14 shell — left-hand navigation (replaces the overflowing top menu).
+ * The app is a horizontal shell: [sidebar | content column]. The content
+ * column holds a slim top bar (persona picker + lane/theme controls) above
+ * the view area. Separation is background shift + whitespace; the sidebar
+ * sits on --surface so the page reads as two quiet planes. No borders.
+ * ========================================================================== */
+
+.app {
+  flex-direction: row;
+}
+
+.app-side {
+  flex: none;
+  width: 224px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-2);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.side-brand {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+  min-height: 0;
+}
+
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+}
+
+.side-group-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+  padding: var(--space-0) var(--space-2) var(--space-0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.side-tab {
+  justify-content: flex-start;
+  width: 100%;
+  padding: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  border-radius: var(--radius-md);
+}
+
+.side-tab:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.side-tab[aria-pressed='true'] {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.side-tab[aria-pressed='true']:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.side-tab .side-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-tab .tab-badge {
+  margin-left: auto;
+}
+
+/* Content column: top bar + views. */
+.app-col {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-topbar {
+  background: var(--surface);
+}
+
+.app-topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  flex: none;
+}
+
+.app-topbar .picker-trigger {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.app-topbar .picker-label {
+  max-width: 132px;
+}
+
+/* --------------------------------------------------------------------------
+ * Icon-rail collapse: below 1150 the sidebar narrows to icon buttons (labels
+ * and group titles hidden) so no menu ever scrolls horizontally and the
+ * chat rails keep their usable widths at smaller viewports.
+ * ------------------------------------------------------------------------ */
+@media (max-width: 1150px) {
+  .app-side {
+    width: 60px;
+    padding: var(--space-3) var(--space-1);
+    align-items: center;
+  }
+
+  .app-side .side-brand {
+    display: none;
+  }
+
+  .app-side .side-group-title {
+    display: none;
+  }
+
+  .app-side .side-nav {
+    width: 100%;
+  }
+
+  .app-side .side-tab {
+    justify-content: center;
+    padding: var(--space-2);
+  }
+
+  .app-side .side-label,
+  .app-side .side-tab .tab-badge {
+    display: none;
+  }
+
+  .app-topbar .picker-label {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-side {
+    width: 52px;
+    padding: var(--space-3) var(--space-0);
+  }
+}
+
+/* Shell safety net: the sidebar + content column must never push the page
+ * sideways (resize drags and narrow viewports included). */
+.app {
+  overflow-x: hidden;
+}
