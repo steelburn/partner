@@ -8,6 +8,7 @@ import type { NoteSummary } from '@partner/shared';
 import { captureNote, listNotes } from './lib/notes.js';
 import { readStoredToken } from './lib/token.js';
 import { timeAgo } from './lib/persona-helpers.js';
+import { IconChevronLeft, IconChevronRight } from './icons.js';
 
 export interface NotesMiniProps {
   active: boolean;
@@ -15,11 +16,24 @@ export interface NotesMiniProps {
    * the Chat view opens the in-lane composer — capture stays side-by-side
    * with the transcript instead of navigating to the Notes page. */
   captureSignal?: number;
+  /** M12 (P1.2/D2): lane collapse control. When collapsed the lane renders
+   * as a slim strip with a single expand toggle. */
+  open?: boolean;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   onOpen: () => void;
   onUnpair: () => void;
 }
 
-export function NotesMini({ active, captureSignal = 0, onOpen, onUnpair }: NotesMiniProps) {
+export function NotesMini({
+  active,
+  captureSignal = 0,
+  open = true,
+  collapsed = false,
+  onToggleCollapsed,
+  onOpen,
+  onUnpair,
+}: NotesMiniProps) {
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
@@ -49,10 +63,10 @@ export function NotesMini({ active, captureSignal = 0, onOpen, onUnpair }: Notes
   };
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || !open) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [active, open]);
 
   // M12: open the in-lane composer on a global capture request (Chat view).
   useEffect(() => {
@@ -63,12 +77,14 @@ export function NotesMini({ active, captureSignal = 0, onOpen, onUnpair }: Notes
     }
   }, [captureSignal]);
 
-  // Focus the composer when it opens; Escape closes it.
+  // Focus the composer when it opens AND when a repeat capture request lands
+  // while the lane was collapsed (reviewer finding 3): a bumped signal with
+  // capturing already true still needs the focus to move into the textarea.
   useEffect(() => {
-    if (capturing) {
+    if (open && capturing) {
       textRef.current?.focus();
     }
-  }, [capturing]);
+  }, [open, capturing, captureSignal]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -113,98 +129,117 @@ export function NotesMini({ active, captureSignal = 0, onOpen, onUnpair }: Notes
   return (
     <aside className="notes-mini" aria-label="Notes">
       <div className="notes-mini-head">
-        <h2 className="notes-mini-title">Notes</h2>
-        <div className="notes-mini-actions">
+        {onToggleCollapsed !== undefined ? (
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => {
-              setCapturing((open) => !open);
-              setCaptureError(null);
-              setFeedback(null);
-            }}
-            disabled={captureBusy}
-            aria-expanded={capturing}
+            className="notes-mini-toggle"
+            onClick={onToggleCollapsed}
+            aria-label={collapsed ? 'Show notes lane' : 'Hide notes lane'}
+            title={collapsed ? 'Show notes lane' : 'Hide notes lane'}
           >
-            {capturing ? 'Close capture' : '＋ Capture'}
+            {collapsed ? <IconChevronRight /> : <IconChevronLeft />}
           </button>
-        </div>
+        ) : null}
+        {collapsed ? null : (
+          <>
+            <h2 className="notes-mini-title">Notes</h2>
+            <div className="notes-mini-actions">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setCapturing((isOpen) => !isOpen);
+                  setCaptureError(null);
+                  setFeedback(null);
+                }}
+                disabled={captureBusy}
+                aria-expanded={capturing}
+              >
+                {capturing ? 'Close capture' : '＋ Capture'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
-      <p className="notes-mini-intro">Notes live beside your chats — capture an idea or open the full Notes view.</p>
-      {capturing ? (
-        <div className="form-stack notes-mini-capture" aria-label="Quick capture">
-          <textarea
-            className="field"
-            rows={3}
-            ref={textRef}
-            value={captureText}
-            disabled={captureBusy}
-            onChange={(event) => {
-              setCaptureText(event.target.value);
-              setCaptureError(null);
-            }}
-            placeholder="Capture an idea beside your chat…"
-            aria-label="Quick capture text"
-          />
-          <div className="form-actions">
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={captureBusy}
-              onClick={() => void capture()}
-              aria-busy={captureBusy}
-            >
-              {captureBusy ? 'Capturing…' : 'Save capture'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              disabled={captureBusy}
-              onClick={() => {
-                setCapturing(false);
-                setCaptureError(null);
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-          {captureError ? (
-            <p className="row-error" role="alert">
-              {captureError}
+      {collapsed ? null : (
+        <>
+          <p className="notes-mini-intro">Notes live beside your chats — capture an idea or open the full Notes view.</p>
+          {capturing ? (
+            <div className="form-stack notes-mini-capture" aria-label="Quick capture">
+              <textarea
+                className="field"
+                rows={3}
+                ref={textRef}
+                value={captureText}
+                disabled={captureBusy}
+                onChange={(event) => {
+                  setCaptureText(event.target.value);
+                  setCaptureError(null);
+                }}
+                placeholder="Capture an idea beside your chat…"
+                aria-label="Quick capture text"
+              />
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={captureBusy}
+                  onClick={() => void capture()}
+                  aria-busy={captureBusy}
+                >
+                  {captureBusy ? 'Capturing…' : 'Save capture'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={captureBusy}
+                  onClick={() => {
+                    setCapturing(false);
+                    setCaptureError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {captureError ? (
+                <p className="row-error" role="alert">
+                  {captureError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {feedback ? (
+            <p className="form-feedback" role="status" aria-live="polite">
+              <span className="success-note">{feedback}</span>
             </p>
           ) : null}
-        </div>
-      ) : null}
-      {feedback ? (
-        <p className="form-feedback" role="status" aria-live="polite">
-          <span className="success-note">{feedback}</span>
-        </p>
-      ) : null}
-      {error !== null ? (
-        <p className="notes-mini-note" role="alert">
-          {error}
-        </p>
-      ) : notes === null ? (
-        <p className="notes-mini-note" aria-busy="true">
-          Loading notes…
-        </p>
-      ) : notes.length === 0 ? (
-        <p className="notes-mini-note">No notes yet — capture one above or ask the partner to save a response.</p>
-      ) : (
-        <ul className="notes-mini-list" role="list">
-          {notes.map((note) => (
-            <li key={note.id} className="notes-mini-row">
-              <button type="button" className="notes-mini-open" onClick={onOpen} title="Open in Notes">
-                <span className="notes-mini-row-title">{note.title}</span>
-                <span className="notes-mini-row-meta">{timeAgo(note.updatedAt)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+          {error !== null ? (
+            <p className="notes-mini-note" role="alert">
+              {error}
+            </p>
+          ) : notes === null ? (
+            <p className="notes-mini-note" aria-busy="true">
+              Loading notes…
+            </p>
+          ) : notes.length === 0 ? (
+            <p className="notes-mini-note">No notes yet — capture one above or ask the partner to save a response.</p>
+          ) : (
+            <ul className="notes-mini-list" role="list">
+              {notes.map((note) => (
+                <li key={note.id} className="notes-mini-row">
+                  <button type="button" className="notes-mini-open" onClick={onOpen} title="Open in Notes">
+                    <span className="notes-mini-row-title">{note.title}</span>
+                    <span className="notes-mini-row-meta">{timeAgo(note.updatedAt)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <button type="button" className="btn btn-secondary btn-sm btn-block" onClick={onOpen}>
+            Open Notes
+          </button>
+        </>
       )}
-      <button type="button" className="btn btn-secondary btn-sm btn-block" onClick={onOpen}>
-        Open Notes
-      </button>
     </aside>
   );
 }

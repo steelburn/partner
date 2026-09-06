@@ -207,7 +207,12 @@ export default function AuditView({ onUnpair, active }: AuditViewProps) {
         ) : null}
 
         {entries !== null && entries.length === 0 ? (
-          <p className="audit-empty">No audit rows match{filterDirty ? ' these filters' : ''}.</p>
+          /* M12 P2.2: empty state says what to do next. */
+          <p className="audit-empty">
+            {filterDirty
+              ? 'No rows match these filters — clear or widen them to see more.'
+              : 'Nothing here yet — run a chat, tool, playbook or skill and the action lands here, scrubbed of secrets.'}
+          </p>
         ) : null}
 
         <ul className="audit-list" aria-label="Audit log entries">

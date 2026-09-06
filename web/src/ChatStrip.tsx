@@ -11,6 +11,7 @@ import {
 } from './lib/attachments.js';
 import { readStoredToken } from './lib/token.js';
 import { PartnerMarkdown } from './Markdown.js';
+import { IconSave, IconSend } from './icons.js';
 import { CodePreview } from './CodePreview.js';
 import { AssetsDrawer, SaveAssetsDialog } from './AssetsPanel.js';
 import { extractCandidates, type AssetCandidate } from './lib/assets-extract.js';
@@ -659,6 +660,7 @@ export default function ChatStrip({
                       onClick={() => openSave(row.key, row.text)}
                       disabled={streaming || conversationId === null}
                     >
+                      <IconSave />
                       Save to Assets
                     </button>
                   </div>
@@ -861,6 +863,7 @@ export default function ChatStrip({
           disabled={!canSend}
           aria-busy={streaming}
         >
+          <IconSend />
           {streaming ? 'Working…' : 'Send'}
         </button>
       </form>

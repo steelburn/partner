@@ -115,7 +115,9 @@ textarea {
 
 .btn-sm {
   padding: var(--space-1) var(--space-2);
-  font-size: var(--fs-xs);
+  /* M12 P1.3: small buttons stay off the 12px floor (dense rows, actions,
+   * expanders, rail controls all use btn-sm). */
+  font-size: var(--fs-sm);
 }
 
 .btn-primary {
@@ -137,12 +139,17 @@ textarea {
 }
 
 .btn-secondary:hover:not(:disabled) {
-  color: var(--accent);
+  /* M12 P0.3 (option A): light accent text never sits on a surface-2 well —
+   * hover surfaces the button so the green rests on --surface (accentHover
+   * on --surface = Lc 80.5; on the surface-2 well it is only 74.9). Dark
+   * mode gets the same raised shift with the brighter hover green. */
+  background: var(--surface);
+  color: var(--accent-hover);
 }
 
 .btn-secondary:active:not(:disabled) {
   background: var(--surface);
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 
 /* --- Fields (input / textarea) ------------------------------------------
@@ -526,6 +533,16 @@ textarea {
   gap: var(--space-1);
   flex-wrap: wrap;
   margin-bottom: var(--space-3);
+}
+
+/* M12 P2.1/P2.3: the active purpose filter reads as the raised selection
+ * (surface shift + elevation-sm) — previously pressed chips were
+ * indistinguishable from resting ones. */
+.purpose-filter .btn[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  box-shadow: var(--elevation-sm);
 }
 
 .provider-card {
@@ -1619,7 +1636,12 @@ select {
 }
 
 .picker-option[aria-selected='true'] {
-  background: var(--surface-2);
+  /* M12 P0.3/P2.3 (option A): the selected row surfaces so the active-label
+   * green sits on --surface (Lc 80.5) and reads as the raised selection
+   * (elevation-sm) inside the popover. */
+  background: var(--surface);
+  /* M12 P2.3: the selected option is the raised row inside the popover. */
+  box-shadow: var(--elevation-sm);
 }
 
 .picker-option-avatar {
@@ -1676,7 +1698,10 @@ select {
 .picker-option-active {
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
-  color: var(--accent);
+  /* M12 P0.3 (option A): this label rests on the SELECTED row, which is
+   * surfaced to --surface (see .picker-option[aria-selected]) so the green
+   * keeps Lc 80.5 in light mode. */
+  color: var(--accent-hover);
 }
 
 /* --- Personas view ------------------------------------------------------- */
@@ -1801,6 +1826,12 @@ select {
   gap: var(--space-1);
 }
 
+/* M12 P1.3: persona chips clear the 12px floor (they are the densest
+ * repeated element on the Personas view). */
+.persona-chips .chip {
+  font-size: var(--fs-sm);
+}
+
 .persona-tagline {
   margin: 0;
   font-size: var(--fs-sm);
@@ -1809,7 +1840,8 @@ select {
 
 .persona-meta {
   margin: 0;
-  font-size: var(--fs-xs);
+  /* M12 P1.3: meta line off the 12px floor. */
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 
@@ -2289,7 +2321,8 @@ select {
 }
 
 .seg-tabs .btn[aria-pressed='true']:hover:not(:disabled) {
-  color: var(--accent);
+  /* M12 P0.3: hover emphasis on the active pill uses the darker green. */
+  color: var(--accent-hover);
 }
 
 /* Both segments stay mounted (a draft survives a tab flip); only the
@@ -3204,7 +3237,8 @@ select {
 
 .persona-theme-hint {
   margin: 0;
-  font-size: var(--fs-xs);
+  /* M12 P1.3: hint line off the 12px floor. */
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   max-width: 72ch;
 }
@@ -3734,12 +3768,26 @@ select {
 }
 
 .pb-card[aria-pressed='true'] {
-  background: var(--surface-2);
+  /* M12 P0.3/P2.3 (option A): the pressed (selected) row surfaces so its
+   * name green rests on --surface (Lc 80.5); the selection is signalled by
+   * the surface shift + accent stroke + elevation-sm, never by text on a
+   * surface-2 well. */
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: var(--elevation-sm);
 }
 
-.pb-card[aria-pressed='true']:hover:not(:disabled) .pb-card-name,
-.pb-card:hover:not(:disabled) .pb-card-name {
-  color: var(--accent);
+.pb-card[aria-pressed='true'] .pb-card-name,
+.pb-card[aria-pressed='true']:hover:not(:disabled) .pb-card-name {
+  color: var(--accent-hover);
+}
+
+.pb-card:hover:not(:disabled):not([aria-pressed='true']) .pb-card-name {
+  /* M12 P0.3/P2.1: non-pressed hover separates by surface shift only — the
+   * name stays on --text because the hover fill is surface-2 (accent-hover
+   * there is Lc 74.9 < 75 in light). The accent green is reserved for the
+   * pressed row, where it rests on the surfaced --surface fill. */
+  color: var(--text);
 }
 
 .pb-card-head {
@@ -4134,7 +4182,8 @@ select {
   flex: none;
   background: var(--bg);
   border-radius: var(--radius-full);
-  font-size: var(--fs-xs);
+  /* M12 P1.3: chip labels ride up from 12 to 14px (dense-list floor). */
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   line-height: 1;
   padding: var(--space-1) var(--space-2);
@@ -4159,13 +4208,14 @@ select {
 }
 
 .audit-time {
-  font-size: var(--fs-xs);
+  /* M12 P1.3: row metadata off the 12px floor. */
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   flex: none;
 }
 
 .audit-actor {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
   color: var(--text);
   flex: none;
@@ -4174,7 +4224,7 @@ select {
 .audit-action {
   font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
     'Liberation Mono', monospace;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -4194,7 +4244,8 @@ select {
   background: var(--bg);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
-  font-size: var(--fs-xs);
+  /* M12 P1.3: detail bodies also clear the 12px floor. */
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--text);
   white-space: pre;
@@ -5279,8 +5330,9 @@ select {
 
 .mcp-tool-name {
   font-family: var(--font-family);
-  font-size: var(--fs-xs);
-  color: var(--accent);
+  font-size: var(--fs-sm);
+  /* M12 P0.3: tool names sit on the surface inset well. */
+  color: var(--accent-hover);
   font-weight: var(--fw-medium);
 }
 
@@ -5415,19 +5467,25 @@ select {
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2);
-  background: var(--surface-2);
+  /* M12 P0.3 (option A): rows surface rather than sit on surface-2 so the
+   * title green (accentHover) keeps Lc 80.5 in light mode. */
+  background: var(--surface);
   border-radius: var(--radius-md);
 }
 
 .search-result-title {
   font-size: var(--fs-sm);
-  color: var(--accent);
+  /* M12 P0.3: result rows are surface wells (see .search-result) — accent-
+   * hover on --surface = Lc 80.5 in light; dark gets the brighter green. */
+  color: var(--accent-hover);
   font-weight: var(--fw-medium);
   overflow-wrap: anywhere;
 }
 
 .search-result-title:hover {
   color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .search-result-title:focus-visible {
@@ -5559,7 +5617,7 @@ select {
 }
 
 .compare-result-meta {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--text-faint);
 }
 
@@ -5574,4 +5632,253 @@ select {
   overflow-wrap: anywhere;
   max-height: 320px;
   overflow-y: auto;
+}
+
+/* ==========================================================================
+ * M12 — shell chrome pass (PLAN-M12 P0.1 / P0.2 / P1.1 / P1.2).
+ * Compact single-row header with a scrollable, grouped nav (icons beside
+ * labels), plus a collapsible notes lane and responsive workspace tiers.
+ * Token-only: colors/radius/spacing/shadows come from var(--…) tokens.
+ * ========================================================================== */
+
+.app-header-inner {
+  flex-wrap: nowrap;
+  max-width: 1440px;
+  padding: var(--space-1) var(--space-3);
+  gap: var(--space-2);
+}
+
+.app-brand {
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  flex: none;
+}
+
+.app-header-left {
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+  flex: 1;
+}
+
+/* Nav: a scroll container holding grouped segmented pills. */
+
+.view-scroll {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: transparent;
+}
+
+.view-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0);
+  padding: var(--space-1);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.view-switch .view-tab,
+.view-switch .view-action {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+
+.view-switch .view-tab:focus-visible,
+.view-switch .view-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.view-switch .view-tab:hover:not(:disabled),
+.view-switch .view-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  color: var(--text);
+}
+
+.view-switch .view-tab[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.view-switch .view-tab[aria-pressed='true']:hover:not(:disabled) {
+  color: var(--accent-hover);
+}
+
+.view-switch .view-action {
+  color: var(--text-muted);
+}
+
+/* M12: the quick-capture action must not read as another destination — its
+ * plus icon takes the accent green (icon, not text: Lc 69 on the surface-2
+ * pill is above the non-text floor) so the verb label stays distinct from
+ * the muted destination tabs beside it. */
+.view-switch .view-action .ic {
+  color: var(--accent);
+}
+
+.view-switch .view-action:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.view-switch .view-action:hover:not(:disabled) .ic {
+  color: var(--accent-hover);
+}
+
+/* Right cluster: persona picker + theme toggle. */
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  margin-left: var(--space-1);
+}
+
+.app-header .picker-trigger {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.app-header .picker-label {
+  max-width: 132px;
+}
+
+/* Icon module (P1.1): 16px glyphs, currentColor. */
+
+.ic {
+  width: var(--space-2);
+  height: var(--space-2);
+  flex: none;
+  display: inline-block;
+  vertical-align: -0.15em;
+}
+
+.msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Notes lane collapse (P1.2 / D2): collapsed = slim strip + expand toggle. */
+
+.notes-mini-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
+}
+
+.notes-mini-toggle:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.notes-mini-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.notes-mini-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-workspace.notes-lane-collapsed .notes-mini {
+  width: var(--space-5);
+  padding: var(--space-2) var(--space-1);
+  align-items: center;
+}
+
+.chat-workspace.notes-lane-collapsed .notes-mini-head {
+  width: 100%;
+  justify-content: center;
+}
+
+/* Composer never gets crushed by flex siblings (E4). */
+
+.chat-input {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+/* Responsive tiers (P0.1): shell stays inside the viewport, chat keeps a
+ * usable composer. */
+
+/* M12 D5: the wordmark stays until 1150, then yields to the scrollable nav
+ * (nav remains scrollable, so nothing clips). */
+@media (max-width: 1150px) {
+  .app-header .app-brand {
+    display: none;
+  }
+
+  .app-header .picker-label {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .chat-workspace .rail {
+    width: 260px;
+  }
+}
+
+@media (max-width: 960px) {
+  .chat-workspace .rail {
+    width: 240px;
+  }
+}
+
+/* M12 P0.1: at and below 900 the rail narrows so the composer keeps >= 320px
+ * of usable width next to the collapsed notes strip. */
+@media (max-width: 900px) {
+  .chat-workspace .rail {
+    width: 220px;
+  }
+}
+
+@media (max-width: 760px) {
+  .chat-workspace .rail {
+    width: 200px;
+  }
+
+  .chat-workspace {
+    position: relative;
+  }
+
+  .chat-workspace.notes-lane-collapsed .notes-mini {
+    display: none;
+  }
+
+  .chat-workspace.notes-lane-open .notes-mini {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 272px;
+    z-index: 30;
+    box-shadow: var(--elevation-lg);
+  }
 }

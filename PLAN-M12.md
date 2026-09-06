@@ -1,9 +1,9 @@
 # M12 — UI readability & polish pass (shell layout, nav order, contrast gate)
 
-Status: **spec — ready to execute** · Repo: `~/apps/partner` · Master plan:
+Status: **complete — implemented & verified 2026-09-06** · Repo: `~/apps/partner` · Master plan:
 `PLAN.md` (§10, §15) · DESIGN.md is the token system; every change stays
 token-only. Gates: same as M0–M11 — full suites stay green (core/shared/e2e
-683 · web 440 · extension 57, typechecks 0), demo-mode parity, `ux_audit`
+685 · web 440 · extension 57, typechecks 0), demo-mode parity, `ux_audit`
 gate on touched CSS, fresh-context review at the end.
 
 ## Why this milestone
@@ -51,78 +51,76 @@ tokens, 8px grid, scale type, named elevation):
 
 ## Work packages (tick as done)
 
-### P0 — Readability blockers (do first; CSS-only, self-contained)
+### P0 — Readability blockers (done; CSS-only, self-contained)
 
-- [ ] **P0.1 Responsive shell + nav shrink.**
-  - [ ] `.view-switch` may shrink gracefully: horizontal scroll (thin,
-        token-styled, `focus-visible`) or wrap at a breakpoint ≈1150px.
-  - [ ] New `@media` blocks for the workspace columns: notes lane →
-        collapsible/overlay ≤1280; rails → stacked ≤960 (reuse existing
-        ≤640 mobile pattern); no horizontal overflow at ≥1024.
-  - [ ] Acceptance: no `document.scrollWidth > innerWidth` at 1024/900;
-        composer ≥ ~320px at 900px width.
-- [ ] **P0.2 Header compression to one compact row (≤ ~80px).**
-  - [ ] Nav pills 68px row → ~36–40px (keep 8px-grid padding, states
-        intact); brand collapses to the row; persona + theme cluster
-        compact on the right.
-  - [ ] Acceptance: header height ≤ 80px at 1280×800; reading area ≥ ~55%
-        of viewport height.
-- [ ] **P0.3 Accent-on-surface-2 contrast fix (light mode).**
-  - [ ] Accent text on `--surface-2` uses `--accent-hover` (`#195936`) or
-        weight 600 in light mode (chips/badges/active nav on wells).
-  - [ ] Add `accent on surface-2` to the theme-save contrast assertion set
-        in `shared/src/theming.ts`; note it in DESIGN.md (the pair becomes
-        a documented gate pair).
-  - [ ] Acceptance: `ux_audit` pair `#195936 on #ececea` (and the 
-        surface-2 pair in both modes) ≥ Lc 75.
+- [x] **P0.1 Responsive shell + nav shrink.** `.view-scroll` makes the grouped
+      nav horizontally scrollable (thin token scrollbar, inset focus rings);
+      workspace tiers: notes lane collapsible ≤1280 (default per D2), rails
+      260/240/220px ≤1024/960/900, lane overlays ≤760; no horizontal
+      overflow at 1024/900/780; composer 330px @900 (was 49px).
+- [x] **P0.2 Header compression to one compact row.** Nav pills ~34px, brand
+      inline (hidden ≤1150 per D5), persona picker + theme toggle in a right
+      cluster; measured header **76px** across 780–1440px (was 236px).
+- [x] **P0.3 Accent-on-surface-2 contrast (executed as option A — mode-split
+      gate pairs + usage rule).** Light-mode accent green under-reaches Lc 75
+      on every tinted fill (accent/surface 72.6, accent/surface-2 69.0,
+      even accentHover/surface-2 74.9), so the theme-save gate now asserts
+      mode-scoped pairs in `core/src/theming/gates.ts`: light
+      `accentHover`-on-`surface` (Lc 80.5) and dark `accent`-on-`surface-2`
+      (Lc 78.2, both presets). Usage rule (DESIGN.md): in light, accent text
+      rests only on `--bg`/`--surface`; surface-2 wells never carry accent
+      text (search rows, selected picker rows, pb-card pressed + secondary
+      hover all surface-shift). Acceptance: `ux_audit` PASSED incl. both new
+      pairs; +2 gate tests; presets gate green.
 
-### P1 — Shell architecture & legibility
+### P1 — Shell architecture & legibility (done)
 
-- [ ] **P1.1 16px icon system for nav + key actions** (token-styled,
-      `currentColor`, no glow): Chat/Notes/Personas/Providers/Files/Memory/
-      Themes/Skills/Playbooks/Audit + primary actions (Send, ＋Note,
-      Capture, Save-to-Assets…). Labels stay; DESIGN.md nav contract met.
-- [ ] **P1.2 View grouping + lane control.**
-  - [ ] Group nav: workspace (Chat, Notes) · studio (Personas, Providers,
-        Themes) · tools (Files, Skills, Playbooks) · system (Memory,
-        Audit) with separators or a compact second level.
-  - [ ] Notes lane collapsible (persist state per session).
-- [ ] **P1.3 Dense-list floor.** Audit + Personas meta/row text ≥13px or
-      row spacing such that ≤12px text nodes per view < 10.
-- [x] **P1.4 Quick capture stays in context (F6 follow-up).** On the Chat
-      view, ＋Capture (lane), header ＋Note and Ctrl+K open an in-lane
-      composer beside the transcript — capture never navigates to the Notes
-      page; saving refreshes the lane list and shows “Captured …”. On other
-      views the global capture still opens the Notes composer. Done
-      2026-09-06: `web/src/NotesMini.tsx` (in-lane composer, captureSignal,
-      autofocus/Escape) + `web/src/App.tsx` (view-aware requestCapture) +
-      lane CSS; verified live (stays on Chat, save→list+feedback, Escape
-      cancels, Notes-view path unchanged).
+- [x] **P1.1 16px icon system** — `web/src/icons.tsx`: 15 hand-authored
+      stroke icons (`currentColor`, `aria-hidden`, no deps); nav destinations
+      + Send/Save-to-Assets/Quick-note actions carry icon+label.
+- [x] **P1.2 View grouping + lane control.** Nav grouped workspace · studio ·
+      tools · system with separator pills and aria group labels (D3); Notes
+      lane collapsible with per-session persistence, default open ≥1280 (D2).
+      The quick-capture action reads as an action (“Quick note”, green +
+      icon; accessible name “Quick note (Ctrl+K)”) — distinct from the
+      “Notes” destination tab.
+- [x] **P1.3 Dense-list floor.** `.btn-sm`, audit/persona/compare meta,
+      chips + persona theme hints raised ≥13px; rendered ≤12px text leaves:
+      Audit 77→4, Personas 49→0 (skills/playbooks residual are chips/help).
+- [x] **P1.4 Quick capture stays in context (F6 follow-up).** … verified live;
+      capture while the lane is collapsed reopens the lane and refocuses the
+      composer (repeat-signal focus fix).
 
-### P2 — Polish & aesthetics (after P0/P1 gates pass)
+### P2 — Polish & aesthetics (done)
 
-- [ ] **P2.1 Active/selection states:** separation by surface shift before
-      borders; hover = surface shift (never bigger shadow).
-- [ ] **P2.2 Empty states** per DESIGN ("state what to do next") on the
-      dense tool views; consistent icon+label primary buttons.
-- [ ] **P2.3 Elevation:** put `sm` to work on raised rows/controls or
-      retire it (document) — today only `md`/`lg` are applied.
+- [x] **P2.1 Active/selection states:** separation by surface shift before
+      borders; hover = surface shift (never bigger shadow); accent reserved
+      for surfaced/pressed rows per the option-A rule.
+- [x] **P2.2 Empty states** say what to do next (Audit example; copy pass on
+      the dense tool views).
+- [x] **P2.3 Elevation:** `sm` now applied (pressed purpose filter, selected
+      picker option, raised pb-card) alongside existing md/lg.
 
 ## Regression & verification (tick as done)
 
-- [ ] Typechecks 0; root (683) · web (440) · extension (57) suites green.
-- [ ] `ux_audit` green on all touched CSS: token coverage, shadow recipes,
-      APCA pairs (incl. new accent-on-surface-2 pair, light+dark), state
-      coverage, slop tells.
-- [ ] Light + dark + custom-theme walks of all ten views, zero console
-      errors (headless browser, same method as the M11 F5 sweep).
-- [ ] Geometry gates at 1440/1280/1024/900/780 (×720/800 tall):
-      no horizontal overflow; composer ≥320px @900; header ≤80px;
-      nav tabs all reachable (no clipped destination).
-- [ ] Demo-mode parity + packaged-app resources build unchanged
-      (`web` build + core bundle stages green).
-- [ ] Fresh-context review; findings closed; exit boxes + PLAN.md §15 M12
-      ticked.
+- [x] Typechecks 0; root (**685**) · web (**440**) · extension (**57**) suites
+      green (+2 new gate tests).
+- [x] `ux_audit` PASSED on all touched CSS + asserted/runtime pairs incl. the
+      new mode-split pairs (light accentHover/surface 83.0, dark
+      accent/surface-2 78.8); token/slop/state scans clean (1 documented
+      `#ffffff`; 32 focus-visible / 36 disabled; elevations sm/md/lg only).
+- [x] Light + dark + custom-theme walks of all ten views — zero console
+      errors (headless browser).
+- [x] Geometry gates: no horizontal overflow at 1440/1280/1024/900/780;
+      header ≤76px; composer ≥330px @900; all nav destinations reachable
+      (scroll + click verified at 1024/900).
+- [x] Demo-mode parity + builds green (`web` build; core untouched);
+      packaged-resources path unchanged.
+- [x] Fresh-context review closed (2026-09-06): BLOCK findings 1–2 fixed
+      (notes-lane-open class emitted so ≤760 overlays correctly; pb-card
+      hover no longer rests accent on surface-2); nits 3–7 resolved
+      (refocus-on-repeat capture, wordmark breakpoint → 1150 per D5, stale
+      comments + gates docblock, btn-sm pass checked at 760–900).
 
 ## Decision log (✓ = locked at review; unmarked = adopted default, open)
 

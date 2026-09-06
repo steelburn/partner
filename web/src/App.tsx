@@ -6,6 +6,19 @@ import type { StreamDoneMeta } from './lib/api.js';
 import type { ThemeTokenPair } from './lib/theme-helpers.js';
 import ChatStrip from './ChatStrip.js';
 import { NotesMini } from './NotesMini.js';
+import {
+  IconAudit,
+  IconChat,
+  IconFiles,
+  IconMemory,
+  IconNoteAdd,
+  IconNotes,
+  IconPersonas,
+  IconPlaybooks,
+  IconProviders,
+  IconSkills,
+  IconThemes,
+} from './icons.js';
 import AuditView from './AuditView.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
@@ -480,17 +493,58 @@ export default function App() {
   const personasLoaded = personas !== null;
   const railLocked = streaming || creatingChat;
 
+  /** M12 (D2): notes-lane visibility. Default = open at wide widths; the
+   * user's collapse choice is pinned per session (sessionStorage). */
+  const NOTES_LANE_KEY = 'partner.notesLane';
+  const [notesLaneOverride, setNotesLaneOverride] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem(NOTES_LANE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [notesLaneWide, setNotesLaneWide] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1280px)');
+    const onChange = (): void => setNotesLaneWide(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const notesLaneOpen = notesLaneOverride !== null ? notesLaneOverride === '1' : notesLaneWide;
+  const openNotesLane = useCallback((): void => {
+    setNotesLaneOverride('1');
+    try {
+      sessionStorage.setItem(NOTES_LANE_KEY, '1');
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  const toggleNotesLane = useCallback((): void => {
+    const next = !notesLaneOpen;
+    setNotesLaneOverride(next ? '1' : '0');
+    try {
+      sessionStorage.setItem(NOTES_LANE_KEY, next ? '1' : '0');
+    } catch {
+      /* private mode */
+    }
+  }, [notesLaneOpen]);
+
   /** M11 F6 / M12: Notes are one click/hotkey away — open the composer
    * anywhere. On the Chat view the composer opens IN the notes lane beside
-   * the transcript; everywhere else it opens on the Notes page. */
+   * the transcript (reopening the lane if it was collapsed); everywhere
+   * else it opens on the Notes page. */
   const requestCapture = useCallback((): void => {
     if (view === 'chat') {
+      openNotesLane();
       setNotesLaneCaptureNonce((n) => n + 1);
       return;
     }
     setView('notes');
     setNoteCaptureNonce((n) => n + 1);
-  }, [view]);
+  }, [view, openNotesLane]);
 
   useEffect(() => {
     if (!paired) return;
@@ -514,134 +568,158 @@ export default function App() {
           <div className="app-header-left">
             <span className="app-brand">Partner</span>
             {paired ? (
-              <>
+              <div className="view-scroll">
                 <div className="view-switch" role="group" aria-label="Partner views">
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('chat')}
-                    aria-pressed={view === 'chat'}
-                  >
-                    Chat
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('notes')}
-                    aria-pressed={view === 'notes'}
-                  >
-                    Notes
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={requestCapture}
-                    title="Quick note (Ctrl+K)"
-                  >
-                    ＋ Note
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('personas')}
-                    aria-pressed={view === 'personas'}
-                  >
-                    Personas
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('providers')}
-                    aria-pressed={view === 'providers'}
-                  >
-                    Providers
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('files')}
-                    aria-pressed={view === 'files'}
-                    aria-label={
-                      pending.length > 0
-                        ? `Files — ${pending.length} pending approval${pending.length === 1 ? '' : 's'}`
-                        : 'Files'
-                    }
-                  >
-                    Files
-                    {pending.length > 0 ? (
-                      <span className="tab-badge" aria-hidden="true">
-                        {pending.length > 99 ? '99+' : pending.length}
-                      </span>
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('memory')}
-                    aria-pressed={view === 'memory'}
-                  >
-                    Memory
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('themes')}
-                    aria-pressed={view === 'themes'}
-                  >
-                    Themes
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('skills')}
-                    aria-pressed={view === 'skills'}
-                  >
-                    Skills
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('playbooks')}
-                    aria-pressed={view === 'playbooks'}
-                  >
-                    Playbooks
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary view-tab"
-                    onClick={() => setView('audit')}
-                    aria-pressed={view === 'audit'}
-                  >
-                    Audit
-                  </button>
+                  <div className="view-group" role="group" aria-label="Workspace">
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('chat')}
+                      aria-pressed={view === 'chat'}
+                    >
+                      <IconChat />
+                      Chat
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('notes')}
+                      aria-pressed={view === 'notes'}
+                    >
+                      <IconNotes />
+                      Notes
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-action"
+                      onClick={requestCapture}
+                      title="Quick note (Ctrl+K)"
+                      aria-label="Quick note (Ctrl+K)"
+                    >
+                      <IconNoteAdd />
+                      Quick note
+                    </button>
+                  </div>
+                  <div className="view-group" role="group" aria-label="Studio">
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('personas')}
+                      aria-pressed={view === 'personas'}
+                    >
+                      <IconPersonas />
+                      Personas
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('providers')}
+                      aria-pressed={view === 'providers'}
+                    >
+                      <IconProviders />
+                      Providers
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('themes')}
+                      aria-pressed={view === 'themes'}
+                    >
+                      <IconThemes />
+                      Themes
+                    </button>
+                  </div>
+                  <div className="view-group" role="group" aria-label="Tools">
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('files')}
+                      aria-pressed={view === 'files'}
+                      aria-label={
+                        pending.length > 0
+                          ? `Files — ${pending.length} pending approval${pending.length === 1 ? '' : 's'}`
+                          : 'Files'
+                      }
+                    >
+                      <IconFiles />
+                      Files
+                      {pending.length > 0 ? (
+                        <span className="tab-badge" aria-hidden="true">
+                          {pending.length > 99 ? '99+' : pending.length}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('skills')}
+                      aria-pressed={view === 'skills'}
+                    >
+                      <IconSkills />
+                      Skills
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('playbooks')}
+                      aria-pressed={view === 'playbooks'}
+                    >
+                      <IconPlaybooks />
+                      Playbooks
+                    </button>
+                  </div>
+                  <div className="view-group" role="group" aria-label="System">
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('memory')}
+                      aria-pressed={view === 'memory'}
+                    >
+                      <IconMemory />
+                      Memory
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary view-tab"
+                      onClick={() => setView('audit')}
+                      aria-pressed={view === 'audit'}
+                    >
+                      <IconAudit />
+                      Audit
+                    </button>
+                  </div>
                 </div>
-                {personasLoaded && personas.length > 0 ? (
-                  <PersonaPicker
-                    personas={personas}
-                    activePersonaId={activePersonaId}
-                    disabled={streaming}
-                    onSelect={setActivePersonaId}
-                  />
-                ) : null}
-              </>
+              </div>
             ) : null}
           </div>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={handleToggleMode}
-            aria-pressed={mode === 'dark'}
-            aria-label={`Switch to ${nextModeLabel.toLowerCase()} theme`}
-          >
-            {nextModeLabel}
-          </button>
+          <div className="app-header-right">
+            {paired && personasLoaded && personas.length > 0 ? (
+              <PersonaPicker
+                personas={personas}
+                activePersonaId={activePersonaId}
+                disabled={streaming}
+                onSelect={setActivePersonaId}
+              />
+            ) : null}
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleToggleMode}
+              aria-pressed={mode === 'dark'}
+              aria-label={`Switch to ${nextModeLabel.toLowerCase()} theme`}
+            >
+              {nextModeLabel}
+            </button>
+          </div>
         </div>
       </header>
       <main className="app-main">
         {paired ? (
           <>
             <div className={view === 'chat' ? 'app-view app-view-active' : 'app-view'}>
-              <div className="chat-workspace">
+              <div
+                className={notesLaneOpen ? 'chat-workspace notes-lane-open' : 'chat-workspace notes-lane-collapsed'}
+              >
                 <ConversationRail
                   conversations={conversations}
                   folders={folders}
@@ -675,7 +753,10 @@ export default function App() {
                 />
                 <NotesMini
                   active={paired}
+                  open={notesLaneOpen}
+                  collapsed={!notesLaneOpen}
                   captureSignal={notesLaneCaptureNonce}
+                  onToggleCollapsed={toggleNotesLane}
                   onOpen={() => setView('notes')}
                   onUnpair={handleSessionLost}
                 />

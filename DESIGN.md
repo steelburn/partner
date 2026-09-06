@@ -56,6 +56,16 @@ Filled actions use `accent-emphasis` (dark green in dark mode) so
 Placeholders/disabled use `--text-faint` and are exempt from body-text
 minimums. Theme saves are contrast-gated (M6).
 
+M12 P0.3 note (gate pairs + usage rule): the light-mode `--accent` green
+under-reaches the Lc 75 floor on tinted fills (`--surface` 72.6,
+`--surface-2` 69.0), so the theme-save gate asserts the mode-split pairs
+`accentHover`-text on `--surface` (light, Lc 80.5) and `accent`-text on
+`--surface-2` (dark, Lc 78.2). **Usage rule:** in light mode accent-colored
+text only ever sits on `--bg`/`--surface` (use `--accent-hover` on
+surfaces); never on `--surface-2` wells — a well that must carry accent text
+surfaces to `--surface`. Dark mode may carry `--accent` on `--surface-2`
+wells.
+
 ## Typography
 
 - Family: Inter with system fallbacks (`--font-family`); UI and content share
@@ -92,7 +102,10 @@ v1 inventory (built from M3 onward; states are part of every component):
 | Card | bg `--surface` or `--bg` + elevation-sm at most; separation first by bg. |
 | Chat transcript | user bubbles on accent (contrast text), partner on surface; system/status rows muted. |
 | Sidebar nav | active item: accent text on surface-2 pill; icons 16–20px, no glow. |
-| Badge/chip | surface-2 with muted text; status tints from semantic tokens only. |
+| Badge/chip | surface-2 with muted text; status tints from semantic tokens only.
+            M12 P0.3: chips carrying accent-colored text use `--surface`
+            (light) or `--surface-2` (dark) fills — see the usage rule under
+            Colors. |
 | Modal / popover | elevation-lg, scrim from a named overlay token, focus trapped. |
 | Toast | surface + elevation-md + semantic left edge. |
 | Toggle / checkbox / radio | accent when on, surface-2 when off; disabled = faint. |

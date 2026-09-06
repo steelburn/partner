@@ -1,0 +1,180 @@
+/**
+ * M12 (P1.1) — hand-authored 16×16 inline icon set for nav destinations and
+ * key actions. Token-styled: shapes inherit `currentColor`; size comes from
+ * the `.ic` CSS class (var(--space-2) = 16px). No external deps, no raw
+ * colors, no glow. Decorative only (`aria-hidden`); every icon sits beside
+ * an accessible text label or has its own aria-label on the control.
+ */
+import type { ReactNode } from 'react';
+
+export interface IconProps {
+  className?: string;
+}
+
+const ATTRS = {
+  viewBox: '0 0 16 16',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.4,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': true,
+  focusable: 'false',
+} as const;
+
+function Svg({ children, className }: IconProps & { children: ReactNode }) {
+  return (
+    <svg {...ATTRS} className={className ?? 'ic'}>
+      {children}
+    </svg>
+  );
+}
+
+/** Chat — speech bubble with tail. */
+export function IconChat(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M2.75 4.25c0-.83.67-1.5 1.5-1.5h7.5c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5H8.5l-3.2 2.35c-.5.37-1.3.02-1.3-.55v-1.8h-.25c-.83 0-1.5-.67-1.5-1.5Z" />
+    </Svg>
+  );
+}
+
+/** Notes — page with lines. */
+export function IconNotes(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+      <path d="M5.5 6.4h5M5.5 9h5M5.5 11.6h3" />
+    </Svg>
+  );
+}
+
+/** Personas — two people. */
+export function IconPersonas(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="5.3" cy="5.2" r="2.1" />
+      <path d="M2.1 12.3c.4-2.2 1.7-3.3 3.2-3.3s2.8 1.1 3.2 3.3" />
+      <circle cx="11.6" cy="6.3" r="1.6" />
+      <path d="M9.7 9.9c1.3-.6 2.9-.1 3.6 1" />
+    </Svg>
+  );
+}
+
+/** Providers — server rack. */
+export function IconProviders(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="3" width="11" height="4.4" rx="1" />
+      <rect x="2.5" y="8.6" width="11" height="4.4" rx="1" />
+      <path d="M5 5.2h.01M5 10.8h.01M7.2 5.2h3.8M7.2 10.8h3.8" />
+    </Svg>
+  );
+}
+
+/** Files — folder. */
+export function IconFiles(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.25 6.2 4.5 4.45c.2-.26.5-.4.82-.4h2.9L10 6.2h2.75V11c0 .83-.67 1.5-1.5 1.5h-7a1.5 1.5 0 0 1-1.5-1.5Z" />
+      <path d="M2.75 6.2h10.5" />
+    </Svg>
+  );
+}
+
+/** Memory — chip with pins. */
+export function IconMemory(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.75" y="5.5" width="10.5" height="5" rx="1" />
+      <path d="M5.25 3.4v2.1M8 3.4v2.1M10.75 3.4v2.1M5.25 10.5v2.1M8 10.5v2.1M10.75 10.5v2.1" />
+      <circle cx="8" cy="8" r="0.8" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+/** Themes — half-filled contrast circle. */
+export function IconThemes(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 3.25a4.75 4.75 0 1 0 .01 9.5A4.75 4.75 0 0 1 8 3.25Z" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="4.75" />
+    </Svg>
+  );
+}
+
+/** Skills — puzzle piece. */
+export function IconSkills(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.3 6.6V4.9c0-.75.6-1.35 1.35-1.35h1.35V4.9a1.05 1.05 0 0 0 2.1 0V3.55H11c.75 0 1.35.6 1.35 1.35v1.6h-1.1a1.2 1.2 0 0 0 0 2.4h1.1v1.6c0 .75-.6 1.35-1.35 1.35H9.6v-1.1a1.05 1.05 0 0 0-2.1 0v1.1H4.65c-.75 0-1.35-.6-1.35-1.35V9.8h1.1a1.2 1.2 0 0 0 0-2.4Z" />
+    </Svg>
+  );
+}
+
+/** Playbooks — play mark. */
+export function IconPlaybooks(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6.1 4.05c0-.63.68-1.02 1.23-.7l5.1 3.15c.52.32.52 1.08 0 1.4L7.33 11.3c-.55.34-1.23-.05-1.23-.7Z" />
+    </Svg>
+  );
+}
+
+/** Audit — shield with check. */
+export function IconAudit(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.2 13 3.9v4.3c0 3.1-2 5.2-5 6.6-3-1.4-5-3.5-5-6.6V3.9Z" />
+      <path d="m6 8 1.4 1.4L10.2 6.7" />
+    </Svg>
+  );
+}
+
+/** ＋Note — quick capture (page + plus). */
+export function IconNoteAdd(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+      <path d="M8 5.4v5.2M5.4 8h5.2" />
+    </Svg>
+  );
+}
+
+/** Send — paper plane. */
+export function IconSend(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m13.2 3.6-9.4 4.9c-.6.3-.55 1.17.06 1.4l2.6.95 1.5 3.4c.25.57 1.07.53 1.26-.08L13.9 4.6c.17-.55-.35-1.07-.7-1Z" />
+      <path d="m6.5 10.8 2-1.9" />
+    </Svg>
+  );
+}
+
+/** Save to Assets — into a tray. */
+export function IconSave(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.5v6.4M5.5 6.3 8 8.9l2.5-2.6" />
+      <path d="M3.4 10.2v2.4h9.2v-2.4" />
+    </Svg>
+  );
+}
+
+/** Chevron left. */
+export function IconChevronLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m9.8 4.2-4 3.8 4 3.8" />
+    </Svg>
+  );
+}
+
+/** Chevron right. */
+export function IconChevronRight(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6.2 4.2l4 3.8-4 3.8" />
+    </Svg>
+  );
+}

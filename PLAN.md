@@ -573,7 +573,7 @@ apps/partner/
       A/B persona studio; sandboxed HTML/CSS preview; schema v12. *Exit:
       core 683 · web 440 · extension 57 · typechecks 0 · NSIS packaged app
       boots env-free (demo, schema v12); live + packaged UI sweeps green.*
-- [ ] **M12 — UI readability & polish pass (detailed spec: `PLAN-M12.md`).**
+- [x] **M12 — UI readability & polish pass (detailed spec: `PLAN-M12.md`).**
       Responsive shell (header ≤ 80px, nav shrinkable, rails adapt below
       1280/960), accent-on-surface-2 contrast-gate fix (light), 16px
       token-styled nav icons, grouped view order + collapsible Notes lane,

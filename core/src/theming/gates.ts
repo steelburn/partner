@@ -12,11 +12,14 @@
  *     the known audit pairs (e.g. #cbd1d8 on #191c1f ≈ Lc 76.7, WCAG 11.12).
  *  2. lintTokens() — structural lint: every ThemeTokens key present and a
  *     parseable #rrggbb hex color (oklch allowed in a later release).
- *  3. contrastReport() — the FIXED assertion pairs both modes must pass
- *     (mirror DESIGN.md): body text vs bg, muted vs surface, accentContrast
- *     on accentEmphasis (filled), accent link vs bg, danger vs bg. Each pair
- *     asserts APCA Lc >= 75 AND WCAG >= 4.5. textFaint/placeholder and
- *     disabled are EXEMPT (never asserted — DESIGN.md).
+ *  3. contrastReport() — the FIXED assertion pairs per mode must pass
+ *     (mirror DESIGN.md). Shared pairs: body text vs bg, muted vs surface,
+ *     accentContrast on accentEmphasis (filled), accent link vs bg, danger
+ *     vs bg. M12 P0.3 adds mode-split pairs: LIGHT asserts accentHover text
+ *     on surface (plain --accent on surface-2 measures Lc < 75), DARK
+ *     asserts accent text on surface-2. Each pair asserts APCA Lc >= 75 AND
+ *     WCAG >= 4.5. textFaint/placeholder and disabled are EXEMPT (never
+ *     asserted — DESIGN.md).
  *
  * validateTheme() composes lint (both modes) + contrast into a ThemeReport.
  * These functions never touch storage, the clock, or the audit.
@@ -188,8 +191,18 @@ interface ContrastPair {
   label: string;
   fgKey: keyof ThemeTokens;
   bgKey: keyof ThemeTokens;
+  /** Restrict the pair to one mode; absent = asserted in both modes. */
+  mode?: ThemeMode;
 }
 
+/**
+ * The FIXED assertion pairs (DESIGN.md token table). M12 P0.3 (option A,
+ * mode-split): in LIGHT, accent text is asserted on --surface (accentHover is
+ * the resting green there — plain --accent on surface-2 measures Lc < 75 and
+ * accent on surface is 72.6, both under the floor), and the usage rule is
+ * accent text never sits on surface-2 wells in light. In DARK, accent text
+ * is asserted on surface-2 (Lc 78.2) where wells may carry --accent.
+ */
 const CONTRAST_PAIRS: readonly ContrastPair[] = [
   { tokenKey: 'text', label: 'body text on the page background', fgKey: 'text', bgKey: 'bg' },
   { tokenKey: 'textMuted', label: 'muted text on a surface', fgKey: 'textMuted', bgKey: 'surface' },
@@ -201,6 +214,20 @@ const CONTRAST_PAIRS: readonly ContrastPair[] = [
   },
   { tokenKey: 'accent', label: 'accent link on the page background', fgKey: 'accent', bgKey: 'bg' },
   { tokenKey: 'danger', label: 'danger text on the page background', fgKey: 'danger', bgKey: 'bg' },
+  {
+    tokenKey: 'accentHover',
+    label: 'accent text on a surface (light)',
+    fgKey: 'accentHover',
+    bgKey: 'surface',
+    mode: 'light',
+  },
+  {
+    tokenKey: 'accent',
+    label: 'accent text on surface-2 (dark)',
+    fgKey: 'accent',
+    bgKey: 'surface2',
+    mode: 'dark',
+  },
 ];
 
 function pairFailure(pair: ContrastPair, mode: ThemeMode, apca: number, ratio: number): ThemeReportIssue {
@@ -234,6 +261,7 @@ export function contrastReport(light: unknown, dark: unknown): ThemeReport {
     const doc = recordOf(tokens);
     if (doc === null) continue;
     for (const pair of CONTRAST_PAIRS) {
+      if (pair.mode !== undefined && pair.mode !== mode) continue;
       const fg = doc[pair.fgKey];
       const bg = doc[pair.bgKey];
       if (!isHex(fg) || !isHex(bg)) continue; // lint reports the key.

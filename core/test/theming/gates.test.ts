@@ -137,6 +137,30 @@ describe('contrastReport + validateTheme', () => {
     expect(report.warnings.some((w) => w.token === 'light.accent')).toBe(false);
   });
 
+  // M12 P0.3 (option A): mode-split pairs — light asserts accentHover on
+  // surface; dark asserts accent on surface-2. A light theme whose accent
+  // green collapses to its surface fails only the light pair; the dark
+  // pair is independent (surface-2 wells carry --accent in dark).
+  it('light accent == light surface fails the light accentHover-on-surface pair', () => {
+    const light = { ...TOKENS.light, accentHover: TOKENS.light.surface };
+    const report = contrastReport(light, TOKENS.dark);
+    expect(report.ok).toBe(false);
+    expect(report.errors.some((e) => e.token === 'light.accentHover')).toBe(true);
+    // The dark accent-on-surface-2 pair is untouched by the light change.
+    expect(report.errors.some((e) => e.token === 'dark.accent')).toBe(false);
+  });
+
+  it('dark accent == dark surface-2 fails the dark accent-on-surface-2 pair', () => {
+    const dark = { ...TOKENS.dark, accent: TOKENS.dark.surface2 };
+    const report = contrastReport(TOKENS.light, dark);
+    expect(report.ok).toBe(false);
+    expect(
+      report.errors.some((e) => e.token === 'dark.accent' && e.message.includes('surface-2')),
+    ).toBe(true);
+    // The light pair is independent.
+    expect(report.errors.some((e) => e.token === 'light.accentHover')).toBe(false);
+  });
+
   it('validateTheme reports structural garbage instead of throwing', () => {
     const garbage = validateTheme({ light: 'nope', dark: null });
     expect(garbage.ok).toBe(false);
