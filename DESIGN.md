@@ -1,9 +1,14 @@
 # DESIGN.md — Partner default design system
 
-Status: **M0 draft** · Authoritative token values: `shared/src/theme.ts`
-(this doc is the human rationale; the code is the source of truth). Theme
-studio + user themes arrive in M6 and edit the token document, never
-component structure.
+Status: **v0.2 — design-review adoption (2026-09-06)** · Authoritative token
+values: `shared/src/theme.ts` (this doc is the human rationale; the code is
+the source of truth). Theme studio + user themes edit the token document,
+never component structure.
+
+v0.2 delta (review of steelburn/engage + teliti-team/teliti): new page-title
+step `--fs-xxl` (32px) and tracking tokens; screens lead with a context
+label (kicker) + sized title; empty states follow the four-part contract
+below. History: v0.1 = M0 draft baseline.
 
 ## Overview
 
@@ -12,6 +17,21 @@ providers, skills. The UI is calm, legible, and token-only. It must feel like
 a quiet instrument panel, not an art piece: neutral surfaces, one green
 accent family, generous whitespace, named elevation, zero decorative effects.
 Dark and light modes ship from day one via the same token set.
+
+Design-review adoption (M12 review of steelburn/engage + teliti-team/teliti):
+this system deliberately keeps one typeface and one neutral identity, but it
+borrows two disciplines from those products so dense screens never read flat
+or hollow:
+1. **Visible type hierarchy** — every screen leads with a *context label*
+   (kicker) above a sized page title (new 32px step below). Hierarchy comes
+   from scale, weight, tracking and uppercase labels — never from colour,
+   borders or decoration.
+2. **Role-aware empty states** — an empty view states *whose* view it is,
+   *why* it is empty for that role, and the exact next action (a named
+   button), with a numbered mini-guide on true first runs.
+Deliberately NOT adopted (they would break the quiet single-identity
+instrument panel): a second display typeface (Engage's condensed Barlow),
+per-surface palettes (stage/ticket/console), and decorative motion.
 
 Non-negotiable discipline (see also the repo UX rules):
 - **Tokens only.** No raw hex/px/shadow values in components. Consume
@@ -70,9 +90,17 @@ wells.
 
 - Family: Inter with system fallbacks (`--font-family`); UI and content share
   the family.
-- Scale (modular, snapped): 12 / 14 / 16 / 20 / 25 px (`--fs-xs…xl`); body
-  default 16. Weights 400/500/600/700 (`--fw-*`). Line-height ~1.5 body,
-  1.25 headings. Flush-left text; no justified text, no mid-word caps.
+- Scale (modular, snapped): 12 / 14 / 16 / 20 / 25 / 32 px
+  (`--fs-xs…xxl`); body default 16. Weights 400/500/600/700 (`--fw-*`).
+  Line-height ~1.5 body, 1.25 headings. Flush-left text; no justified text,
+  no mid-word caps.
+- `--fs-xxl` (32px) is the **page-title step**: reserved for the lead title
+  of a screen, above dense content. Never used inline or inside cards.
+  `--fs-xl` (25px) stays as a section/intermediate step; new page titles use
+  `--fs-xxl`.
+- Tracking tokens only (`--track-label` 0.08em on uppercase context labels;
+  `--track-head` −0.01em on `--fs-xl`/`--fs-xxl` headings). No ad-hoc
+  letter-spacing in components.
 
 ## Layout & spacing
 
@@ -106,13 +134,23 @@ v1 inventory (built from M3 onward; states are part of every component):
             M12 P0.3: chips carrying accent-colored text use `--surface`
             (light) or `--surface-2` (dark) fills — see the usage rule under
             Colors. |
+| Context label (kicker) | uppercase, `--fs-xs` / weight 600, `--track-label` 0.08em, `--text-muted`; sits only on `--bg`/`--surface` (APCA Lc ≥75 at 12px/600 in both modes, audited). One short word or phrase ("files", "providers", "live session") flush left above the page title. Never a sentence; never colour-tinted; never on `--surface-2`. |
+| Page header | composition contract: [optional context label] + `--fs-xxl` title + actions row on the right. One per screen, flush left; no page headers inside cards. |
+| Empty state | title + role-scoped reason + named primary action (+ numbered mini-guide ≤4 steps on true first runs). See the empty-state contract below. |
 | Modal / popover | elevation-lg, scrim from a named overlay token, focus trapped. |
 | Toast | surface + elevation-md + semantic left edge. |
 | Toggle / checkbox / radio | accent when on, surface-2 when off; disabled = faint. |
 | List rows | separators: space → surface shift → border (last resort). |
 
-Empty/loading states: skeleton rows use surface-2 blocks (no spinners-only);
-empty states state what to do next.
+Empty/loading states: skeletons are surface-2 blocks (no spinners-only).
+**Empty-state contract** (adopted from the design review): every empty view
+carries 1) a short title naming the thing ("No providers yet" may be the
+title only), 2) a reason line scoped to the viewer's role and active filters
+("No conversations in this folder", "Ask an admin to assign you as a
+moderator"), 3) a primary action that names the actual button to press
+("+ Add your first provider"), and 4) on true first runs, a numbered
+mini-guide of up to four steps. Banned: an empty state with no action, or
+copy that merely restates the title.
 
 ## Motion
 
@@ -124,6 +162,11 @@ Motion is for state feedback (appear/expand/focus), never decoration; respect
 
 - Do: reference tokens; use accent only for interactive/emphasis; separate
   with whitespace; make focus states obvious; keep dark+light in lockstep.
+- Do: open dense screens with the context-label + page-title composition,
+  and give every empty state a role-scoped reason plus a named next action.
+- Don't: title two screens at the same size with no context label; apply
+  letter-spacing by eye; ship an empty state with no action; use
+  `--surface-2` as a context-label seat.
 - Don't: invent colors/shadows/sizes; glassmorphism, gradient orbs, neon
   glow; 1px gray card borders as decoration; permanent-dark reflex; ship an
   interactive element without focus-visible and disabled states.

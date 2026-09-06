@@ -188,8 +188,13 @@ export default function ThemeStudio({
   return (
     <section className="themes" aria-label="Theme studio">
       <div className="themes-panel">
-        <h1 className="themes-title">Themes</h1>
-        <p className="themes-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Appearance</div>
+            <h1 className="page-title">Themes</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           Partner&apos;s look is a token set — pick a preset, tweak the color tokens in the
           studio, and save only themes that pass the core&apos;s contrast gate. Themes apply
           globally or per persona.
@@ -234,7 +239,8 @@ export default function ThemeStudio({
                 <div className="empty-state">
                   <p className="empty-state-title">No saved themes yet</p>
                   <p className="empty-state-copy">
-                    Create one from the default tokens, or bind personas below once you do.
+                    The built-in default is applying. Use <strong>New theme</strong> above to
+                    start from the default tokens, or bind personas below once you save one.
                   </p>
                 </div>
               ) : (
@@ -288,6 +294,17 @@ export default function ThemeStudio({
                     <strong>Edit</strong> on one of your themes. Color changes preview live and
                     the header Light/Dark toggle flips the draft between modes.
                   </p>
+                  <div className="empty-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => {
+                        setDraft(draftFromDefaults());
+                      }}
+                    >
+                      New theme
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <DraftEditor

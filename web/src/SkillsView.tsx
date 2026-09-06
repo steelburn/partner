@@ -319,8 +319,13 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
   return (
     <section className="skills" aria-label="Skills">
       <div className="skills-panel">
-        <h1 className="skills-title">Skills</h1>
-        <p className="skills-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Extensions</div>
+            <h1 className="page-title">Skills</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           Capability bundles this core can run for you. Install is default-deny: every skill
           shows the tools and risk it declares before you add it, runs in its own sandboxed
           worker with a time budget, and its store is wiped on uninstall.
@@ -383,7 +388,7 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
                 catalog to see what is available — each one shows its declared permissions
                 before you install it.
               </p>
-              <div className="skills-empty-action">
+              <div className="empty-actions">
                 <button
                   type="button"
                   className="btn btn-primary"

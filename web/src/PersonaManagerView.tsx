@@ -82,8 +82,13 @@ export default function PersonaManagerView({
   return (
     <section className="personas" aria-label="Personas">
       <div className="personas-panel">
-        <h1 className="personas-title">Personas</h1>
-        <p className="personas-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Identity</div>
+            <h1 className="page-title">Personas</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           Personas give Partner a voice, a model routing and an independence level. Pause one to
           stop it from chatting or acting anywhere — the kill switch.
         </p>
@@ -116,8 +121,9 @@ export default function PersonaManagerView({
           <div className="empty-state">
             <p className="empty-state-title">No personas yet</p>
             <p className="empty-state-copy">
-              Create your first persona below — a name, a voice and a system prompt are all you
-              need to start.
+              Until you create one, chat has no voice, routing or independence level of its own.
+              Use <strong>New persona</strong> below — a name, a voice and a system prompt are
+              all you need; the rest of the settings have safe defaults.
             </p>
           </div>
         ) : null}

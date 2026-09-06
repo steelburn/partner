@@ -95,8 +95,10 @@ export const SHARED_TOKENS = {
   /** 8px spacing grid. */
   space: { 0: '0', 1: '8px', 2: '16px', 3: '24px', 4: '32px', 5: '40px', 6: '48px', 7: '64px' },
   /** Modular-ish type scale. */
-  fontSize: { xs: '12px', sm: '14px', md: '16px', lg: '20px', xl: '25px' },
+  fontSize: { xs: '12px', sm: '14px', md: '16px', lg: '20px', xl: '25px', xxl: '32px' },
   fontWeight: { regular: '400', medium: '500', semibold: '600', bold: '700' },
+  /** Letter-spacing: label = uppercase context labels (kickers); head = xl/xxl titles. */
+  tracking: { label: '0.08em', head: '-0.01em' },
   fontFamily:
     "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif",
   radius: { sm: '6px', md: '10px', lg: '14px', full: '999px' },
@@ -139,6 +141,8 @@ export function cssVars(mode: ThemeMode): Record<string, string> {
     '--elevation-md': SHARED_TOKENS.elevation.md,
     '--elevation-lg': SHARED_TOKENS.elevation.lg,
     '--font-family': SHARED_TOKENS.fontFamily,
+    '--track-label': SHARED_TOKENS.tracking.label,
+    '--track-head': SHARED_TOKENS.tracking.head,
     '--motion-fast': SHARED_TOKENS.motion.fast,
     '--motion-base': SHARED_TOKENS.motion.base,
     '--motion-slow': SHARED_TOKENS.motion.slow,

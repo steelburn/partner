@@ -218,6 +218,79 @@ textarea {
   margin-top: var(--space-4);
 }
 
+/* ==========================================================================
+ * M12 design-review v0.2 — page-header atoms & empty-state actions.
+ *
+ * Every titled screen leads with the same composition: [optional .kicker
+ * context label] above a .page-title (--fs-xxl), intro copy in .page-copy,
+ * and a right-aligned .page-actions row when the screen owns an action.
+ * Empty states follow the DESIGN.md contract (title -> role/filter-scoped
+ * reason -> named action -> optional first-run mini-guide); action buttons
+ * sit in .empty-actions.
+ * ========================================================================== */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  /* Panels that host a .page-head are flex columns with --space-3 gaps; the
+   * following intro/section provides the vertical rhythm, so no bottom
+   * margin here (would double the space). */
+  margin-bottom: 0;
+}
+
+.page-head-titles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.kicker {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.page-title {
+  margin: 0;
+  font-size: var(--fs-xxl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.15;
+  letter-spacing: var(--track-head);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.page-copy {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Empty-state primary actions (design-review v0.2): a named button that
+ * starts the one thing the empty view is asking for. */
+.empty-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
 .gate-title {
   margin: 0 0 var(--space-2);
   font-size: var(--fs-xl);
@@ -452,21 +525,6 @@ textarea {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-4);
-}
-
-.providers-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.providers-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 60ch;
 }
 
 .providers-loading {
@@ -775,21 +833,6 @@ select {
   padding: var(--space-4);
 }
 
-.files-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.files-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 64ch;
-}
-
 .files-loading {
   margin: 0;
   padding: var(--space-4);
@@ -936,6 +979,42 @@ select {
   margin: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+
+/* --- M12.6 in-chat approvals -------------------------------------------
+ * Approvals of the ACTIVE conversation render as a card on the chat screen
+ * itself (decide where the ask happened). The card is a plain surface well
+ * — same separation logic as the Files queue — with a compact header; row
+ * internals reuse the queue styles above. Token-only, no borders/shadows.
+ * ------------------------------------------------------------------------ */
+
+.approval-in-chat {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  max-height: 30%;
+  overflow-y: auto;
+}
+
+.approval-in-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.approval-in-chat-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.approval-in-chat-list {
+  gap: var(--space-2);
 }
 
 /* --- Roots --------------------------------------------------------------- */
@@ -1758,21 +1837,6 @@ select {
   padding: var(--space-4);
 }
 
-.personas-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.personas-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 64ch;
-}
-
 .personas-loading {
   margin: 0;
   padding: var(--space-4);
@@ -1977,21 +2041,6 @@ select {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-4);
-}
-
-.memory-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.memory-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 72ch;
 }
 
 .memory-loading {
@@ -2310,21 +2359,6 @@ select {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-4);
-}
-
-.notes-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.notes-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 64ch;
 }
 
 .notes-loading {
@@ -2776,21 +2810,6 @@ select {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-4);
-}
-
-.themes-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.themes-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 76ch;
 }
 
 .themes-loading {
@@ -3325,21 +3344,6 @@ select {
   padding: var(--space-4);
 }
 
-.skills-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.skills-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 76ch;
-}
-
 .skills-loading {
   margin: 0;
   padding: var(--space-4);
@@ -3374,12 +3378,6 @@ select {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-}
-
-.skills-empty-action {
-  margin-top: var(--space-3);
-  display: flex;
-  justify-content: center;
 }
 
 /* --- Installed + catalog cards ------------------------------------------ */
@@ -3694,21 +3692,6 @@ select {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-4);
-}
-
-.playbooks-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.playbooks-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 76ch;
 }
 
 .pb-seg {
@@ -4148,21 +4131,6 @@ select {
   padding: var(--space-4);
 }
 
-.audit-title {
-  margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-semibold);
-  line-height: 1.25;
-  color: var(--text);
-}
-
-.audit-intro {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  max-width: 76ch;
-}
-
 .audit-filters {
   display: flex;
   align-items: flex-end;
@@ -4199,9 +4167,19 @@ select {
 }
 
 .audit-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+}
+
+.audit-empty-text {
   margin: 0;
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  max-width: 56ch;
+  text-align: center;
 }
 
 .audit-list {
@@ -4761,14 +4739,15 @@ select {
   display: contents;
 }
 
-.md-asset-callout {
+.md-asset {
+  margin: var(--space-2) 0;
+}
+
+.md-asset-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin: var(--space-2) 0;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-2);
-  border-radius: var(--radius-md);
+  flex-wrap: wrap;
 }
 
 .md-asset-kind {
@@ -4782,9 +4761,41 @@ select {
 }
 
 .md-asset-title {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
+  font-size: var(--fs-md);
+  color: var(--text);
   font-weight: var(--fw-medium);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.md-asset-preview {
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.md-asset-preview:hover:not(:disabled) {
+  color: var(--accent-hover, var(--accent));
+}
+
+.md-asset-body {
+  margin-top: var(--space-1);
+}
+
+.md-asset-body > :last-child {
+  margin-bottom: 0;
+}
+
+.md-asset-code {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  font-family: var(--font-family);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  white-space: pre;
 }
 
 .choice-card {

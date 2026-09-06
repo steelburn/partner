@@ -135,8 +135,13 @@ export default function FilesView({
   return (
     <section className="files" aria-label="Files and tools">
       <div className="files-panel">
-        <h1 className="files-title">Files &amp; tools</h1>
-        <p className="files-intro">{panelIntro}</p>
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Workspace access</div>
+            <h1 className="page-title">Files &amp; tools</h1>
+          </div>
+        </div>
+        <p className="page-copy">{panelIntro}</p>
 
         {sessionLost ? (
           <div className="files-alert" role="alert">
@@ -180,10 +185,11 @@ export default function FilesView({
             </p>
             {roots.length === 0 ? (
               <div className="empty-state empty-inline">
-                <p className="empty-state-title">No roots yet</p>
+                <p className="empty-state-title">No roots registered</p>
                 <p className="empty-state-copy">
-                  Register the folder you want to work in below. Files tools can only act inside
-                  registered roots.
+                  No folder is registered yet, so Partner&apos;s tools cannot see anything on
+                  this machine. Use <strong>Add a project root</strong> below — tools act only
+                  inside registered roots, and everything outside stays invisible.
                 </p>
               </div>
             ) : (

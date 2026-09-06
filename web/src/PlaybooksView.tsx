@@ -1348,8 +1348,13 @@ export default function PlaybooksView({
   return (
     <section className="playbooks" aria-label="Playbooks">
       <div className="playbooks-panel">
-        <h1 className="playbooks-title">Playbooks</h1>
-        <p className="playbooks-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Automation</div>
+            <h1 className="page-title">Playbooks</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           Personas as doers: named flows that orchestrate the broker into capabilities —
           research, vibe-code, docgen, email drafts, presentations, analysis, design
           prototypes and ship. Runs stream here with loop and tool markers; persona tool

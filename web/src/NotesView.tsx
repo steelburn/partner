@@ -32,8 +32,13 @@ export default function NotesView({ personas, onUnpair, active, captureSignal }:
   return (
     <section className="notes" aria-label="Notes and plans">
       <div className="notes-panel">
-        <h1 className="notes-title">Notes &amp; plans</h1>
-        <p className="notes-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Stores</div>
+            <h1 className="page-title">Notes &amp; plans</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           The stores you keep WITH the partner: markdown notes that link to each other, and
           structured plans with milestones, tasks and owners. Everything lives in the core on
           this machine.

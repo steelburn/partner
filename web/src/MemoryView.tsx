@@ -157,8 +157,13 @@ export default function MemoryView({ personas, onUnpair, active }: MemoryViewPro
   return (
     <section className="memory" aria-label="Memory">
       <div className="memory-panel">
-        <h1 className="memory-title">Memory</h1>
-        <p className="memory-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Context</div>
+            <h1 className="page-title">Memory</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           What the partner knows about you and your conversations. Everything here is visible,
           editable and exportable — nothing is learned silently.
         </p>

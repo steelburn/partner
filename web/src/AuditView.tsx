@@ -113,8 +113,13 @@ export default function AuditView({ onUnpair, active }: AuditViewProps) {
   return (
     <div className="audit">
       <div className="audit-panel">
-        <h2 className="audit-title">Audit</h2>
-        <p className="audit-intro">
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Activity</div>
+            <h1 className="page-title">Audit</h1>
+          </div>
+        </div>
+        <p className="page-copy">
           Every partner action lands here: tool runs, provider and budget
           events, persona and playbook activity, skill invocations. Secrets
           are scrubbed by the core before a row is ever stored — nothing in
@@ -207,12 +212,25 @@ export default function AuditView({ onUnpair, active }: AuditViewProps) {
         ) : null}
 
         {entries !== null && entries.length === 0 ? (
-          /* M12 P2.2: empty state says what to do next. */
-          <p className="audit-empty">
-            {filterDirty
-              ? 'No rows match these filters — clear or widen them to see more.'
-              : 'Nothing here yet — run a chat, tool, playbook or skill and the action lands here, scrubbed of secrets.'}
-          </p>
+          <div className="audit-empty" role="status">
+            {filterDirty ? (
+              <>
+                <p className="audit-empty-text">
+                  No rows match these filters. Widen or clear them to see more of the log.
+                </p>
+                <div className="empty-actions">
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={resetFilters}>
+                    Clear filters
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="audit-empty-text">
+                Nothing here yet — run a chat, tool, playbook or skill and the action lands
+                here, scrubbed of secrets.
+              </p>
+            )}
+          </div>
         ) : null}
 
         <ul className="audit-list" aria-label="Audit log entries">

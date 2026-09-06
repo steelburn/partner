@@ -107,11 +107,20 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
   const panelIntro =
     'Endpoints Partner may call, with keys kept in your OS keychain. Add an OpenAI-compatible endpoint, then test it from here.';
 
+  const scrollToCard = (id: string): void => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <section className="providers" aria-label="Providers">
       <div className="providers-panel">
-        <h1 className="providers-title">Providers</h1>
-        <p className="providers-intro">{panelIntro}</p>
+        <div className="page-head">
+          <div className="page-head-titles">
+            <div className="kicker">Model access</div>
+            <h1 className="page-title">Providers</h1>
+          </div>
+        </div>
+        <p className="page-copy">{panelIntro}</p>
 
         {sessionLost ? (
           <div className="providers-alert" role="alert">
@@ -139,11 +148,28 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
 
         {!sessionLost && providers !== null && providers.length === 0 && !loadError ? (
           <div className="empty-state">
-            <p className="empty-state-title">No providers yet</p>
+            <p className="empty-state-title">No providers connected</p>
             <p className="empty-state-copy">
-              Add an OpenAI-compatible endpoint below, or connect llm-self-service to pull in
-              your provisioned key.
+              Nothing can call a model yet. Add an OpenAI-compatible endpoint below (keys stay in
+              your OS keychain), or connect llm-self-service to pull in the key provisioned for
+              your account.
             </p>
+            <div className="empty-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => scrollToCard('add-provider-card')}
+              >
+                Add an endpoint
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => scrollToCard('connect-selfservice-card')}
+              >
+                Connect llm-self-service
+              </button>
+            </div>
           </div>
         ) : null}
 
@@ -511,7 +537,7 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
   const formDisabled = busy || disabled;
 
   return (
-    <section className="card add-card" aria-label="Add provider">
+    <section className="card add-card" id="add-provider-card" aria-label="Add provider">
       <h2 className="card-title">Add provider</h2>
       <p className="card-copy">
         Point Partner at any OpenAI-compatible endpoint. The key is added in a separate step and
@@ -709,7 +735,7 @@ function ImportCard({ disabled, onConnected, onSessionLost }: ImportCardProps) {
   const formDisabled = busy || disabled;
 
   return (
-    <section className="card import-card" aria-label="Connect llm-self-service">
+    <section className="card import-card" id="connect-selfservice-card" aria-label="Connect llm-self-service">
       <h2 className="card-title">Connect llm-self-service</h2>
       <p className="card-copy">
         Sign in with the same org credentials as the llm-self-service portal. Your password is
