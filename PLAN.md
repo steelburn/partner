@@ -573,6 +573,14 @@ apps/partner/
       A/B persona studio; sandboxed HTML/CSS preview; schema v12. *Exit:
       core 683 · web 440 · extension 57 · typechecks 0 · NSIS packaged app
       boots env-free (demo, schema v12); live + packaged UI sweeps green.*
+- [ ] **M12 — UI readability & polish pass (detailed spec: `PLAN-M12.md`).**
+      Responsive shell (header ≤ 80px, nav shrinkable, rails adapt below
+      1280/960), accent-on-surface-2 contrast-gate fix (light), 16px
+      token-styled nav icons, grouped view order + collapsible Notes lane,
+      dense-list legibility floor. No new features; token-only; suites and
+      ux_audit gates stay green. *Exit: PLAN-M12 P0–P2 ticked; geometry
+      gates at 1440/1280/1024/900/780 (no overflow, composer ≥ 320px @900);
+      light+dark+custom walks green; fresh-context review closed.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

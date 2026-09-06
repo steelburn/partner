@@ -11,6 +11,8 @@ extension. See the plans:
 - `HANDOFF-WINDOWS.md` — Windows CI handoff + full project state (read this
   first if picking up from GitHub on a Windows machine).
 - `PLAN-M1.md` — M1 spec: providers, model gateway, integrated key import.
+- `PLAN-M11.md` — M11 spec: chat as the workspace.
+- `PLAN-M12.md` — M12 spec: UI readability & polish pass (current).
 - `DESIGN.md` — default design system (tokens live in `shared/src/theme.ts`).
 
 ## Layout
