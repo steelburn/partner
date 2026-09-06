@@ -593,8 +593,12 @@ apps/partner/
       item). *Exit: core 681 · web 470 ·
       typechecks 0 · ux_audit green on new UI · live manual walk
       (env-gated).*
+      *State: implemented + verified (suites/typechecks/ux_audit per the
+      README M13 note). Box left open: the exit list also records a live
+      manual walk (env-gated) that has not yet been executed.*
 - [ ] **M14 — Scheduled & autonomous work (detailed spec: `PLAN-M14.md`,
-      IN PROGRESS: core + web green; live manual walk pending).** Personas carry
+      implemented + live-walked 2026-09-07; packaged-app walk (shell/NSIS)
+      env-gated remains).** Personas carry
       schedule definitions (`independence.schedules[]`: daily / weekly /
       interval + prompt + tz, JSON column on personas, schema v13); a
       scheduler driver fires due schedules (auto/autonomous, unpaused,

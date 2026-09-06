@@ -12,15 +12,17 @@ extension. See the plans:
   first if picking up from GitHub on a Windows machine).
 - `PLAN-M1.md` — M1 spec: providers, model gateway, integrated key import.
 - `PLAN-M11.md` — M11 spec: chat as the workspace.
-- `PLAN-M12.md` — M12 spec: UI readability & polish pass (current).
+- `PLAN-M12.md` — M12 spec: UI readability & polish pass.
+- `PLAN-M13.md` — M13 spec: purpose providers & in-session model switch.
+- `PLAN-M14.md` — M14 spec: scheduled & autonomous work (current).
 - `DESIGN.md` — default design system (tokens live in `shared/src/theme.ts`).
 
 ## Layout
 
 ```
 shell/      Tauri v2 app (tray, window, autostart, updater)   [M0 · packaged M10/11]
-core/       Node core = Tauri sidecar (spine → workspace)     [M0–M11]
-web/        SPA (Vite + React)                                [M0–M11]
+core/       Node core = Tauri sidecar (spine → workspace)     [M0–M13]
+web/        SPA (Vite + React)                                [M0–M13]
 extension/  MV3 (native-messaging bridge, theme stream)      [M7–M11]
 shared/     types: tokens, contracts, redaction (no runtime deps)
 tests/      cross-cutting integration tests
@@ -36,14 +38,15 @@ npm run dev:core     # core on http://127.0.0.1:4390 (demo mode by default)
 npm run dev:web      # SPA dev server on :5173 (standalone dev)
 ```
 
-## Status (2026-09-06)
+## Status (2026-09-07)
 
-M0–M11 complete (PLAN.md §15): suites core 683 · web 440 · extension 57,
-typechecks 0. The packaged app is verified two ways — the container
-toolchain (`shell/docker/gate`) and a green NSIS installer on the
-self-hosted Windows runner that boots env-free (demo, schema v12); the
-packaged UI was swept headlessly with zero console errors. Remaining items
-are manual / env-gated: the per-surface light/dark/custom theme walkthrough
+M0–M14 implemented and verified (PLAN.md §15): schema v13; current root
+suite **773 passed · 5 env-gated skips** · typechecks 0 · web build green.
+The packaged app is verified two ways — the container toolchain
+(`shell/docker/gate`) and a green NSIS installer on the self-hosted Windows
+runner (boot verified env-free through schema v12 under M11). Remaining
+items are manual / env-gated: the M14 packaged-app boot walk at schema v13,
+the per-surface light/dark/custom theme walkthrough
 (`docs/theme-conformance.md`), the `docs/VERIFY-M10.md` live-mode walk,
 browser-actuator research capture (real Chrome + installed native host), and
 the S0 companion API in `~/apps/llm-self-service`. Read
