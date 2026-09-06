@@ -448,8 +448,16 @@ any Partner-owned server (there is none in v1).
 | `skills` | installed skill metadata + hashes |
 | `skill_audit` / `audit_log` | append-only activity |
 | `themes` | named theme JSON |
-| `settings` | key-value (budget caps, browser scopes, blocklists) |
+| `settings` | key-value (budget caps, browser scopes, blocklists, active theme, per-conversation themes) |
+| `folders` | chat organization tree (conversations.folder_id = the edge) |
+| `chat_blobs` / `attachments` | chat uploads: deduped payload bytes + per-message edges |
+| `assets` | typed saved artifacts (documents/tables/code/references/deductions…) |
+| `mcp_servers` | configured stdio MCP servers (default-deny OFF) |
 | `pairing` | device/origin session tokens |
+
+Schema is `v12` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+`personas.policy`, `providers.purpose`, `conversations.folder_id`,
+`messages.content_type`, `personas.home_folder`).
 
 `better-sqlite3` (same as llm-self-service) + `sqlite-vec` extension. A
 `data/` dir inside the core's app-data folder; per-OS-profile separation.
@@ -464,7 +472,13 @@ REST + SSE + WebSocket events, all behind pairing/session auth:
 `/v1/personas` · `/v1/tools` (list) · `/v1/tools/exec` (goes through broker) ·
 `/v1/files/*` (scoped) · `/v1/browser/*` (bridge intents) ·
 `/v1/notes` · `/v1/plans` · `/v1/memory/*` · `/v1/skills` (install/list/run) ·
-`/v1/theme` · `/v1/audit` · `/v1/budget` · `/v1/health`
+`/v1/theme` · `/v1/audit` · `/v1/budget` · `/v1/health` ·
+`/v1/conversations/:id/attachments` (+ `/content`) · `/v1/conversations/:id/assets`
+(+ `/promote`) · `/v1/folders` · `/v1/files/refs` (granted-root autocomplete) ·
+`/v1/mcp/servers` (+ `/tools`, `/call`) · `/v1/search/config|key|query` ·
+`/v1/conversations/:id/theme` · `/v1/personas/:id/theme` · `/v1/theme/active
+?personaId=&conversationId=` · `/v1/chat` also accepts `{tools:true}` (native
+function calls) and `{noPersist:true}` (A/B compare — streams, saves nothing)
 
 WS events: `turn.started`, `tool.request` (confirmation), `tool.executed`,
 `grant.revoked`, `skill.install`…, `persona.paused`, `budget.reached`.
@@ -547,6 +561,18 @@ apps/partner/
       budgets enforcement, audit UI, degrade-mode chat, packaging (NSIS on
       the self-hosted Windows runner; installer boots env-free; signed
       updates env-gated post-M10), demo mode + verification checklist + docs.
+- [x] **M11 — Chat as the workspace (detailed spec: `PLAN-M11.md`).**
+      Chat attachments + granted-root file references + multimodal image
+      parts; chat tool execution (directive + native `tool_calls`), MCP
+      stdio client with persona auto-calls, API-key internet search (core +
+      chat tool + UI); persona skill/tool policy; purpose-based providers;
+      clickable single/multi choices; markdown→HTML rendering; follow-latest;
+      Assets (save/copy/promote-to-note); chat folders + drag-to-move +
+      persona home folders; per-conversation themes (D6) + extension-chrome
+      theme stream; Notes promoted (tab order, ＋Note/Ctrl+K, Notes lane);
+      A/B persona studio; sandboxed HTML/CSS preview; schema v12. *Exit:
+      core 683 · web 440 · extension 57 · typechecks 0 · NSIS packaged app
+      boots env-free (demo, schema v12); live + packaged UI sweeps green.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
@@ -556,13 +582,14 @@ credentials. Never in production builds.
 
 ## 16. Non-goals for v1
 - No Partner-hosted cloud backend, accounts, or sync (optional later).
-- No bundled cloud search: v1 research search is the browser actuator
-  (extension); API-key search is an optional later provider (§6.2).
+- API-key search is IMPLEMENTED (Tavily/Brave adapters, default-deny, chat
+  tool + panel); the browser-actuator research capture remains an extension
+  follow-up (env-gated).
 - No plugin execution by web content; skills only via the core sandbox.
 - No autonomous payment/banking actions; no acting on sensitive sites.
 - No multi-user *server* mode (one machine, per-OS-profile separation only).
-- Not an MCP *server* yet — but the tool broker is designed so an MCP adapter
-  can come later without rework.
+- Partner is an MCP **client** (stdio, config + persona tool calls) — it is
+  still not an MCP *server*, and never will be in v1.
 
 ## 17. Open questions (resolve before/while building)
 1. **Tauri core-sidecar packaging** (M0 spike): Node SEA vs `bun build
