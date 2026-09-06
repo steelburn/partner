@@ -220,6 +220,14 @@ production build green):
       persisted — verified live: conversations count unchanged, zero console
       errors). Server + client tests; suites: core 681, web 440.
 
+- [x] **F5 packaged-app sweep (current changes)** — rebuilt the NSIS
+      desktop resources (web build + core bundle staged, incremental tauri
+      release) and swept the PACKAGED app headlessly: Personas shows the A/B
+      compare panel, Providers shows the MCP + Internet-search panels, Themes
+      studio renders — zero console errors, proof screenshots. The
+      home-folder select lives in the persona editor (opens on New/Edit),
+      per the editor design.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
