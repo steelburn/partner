@@ -1417,6 +1417,8 @@ select {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* M12 follow-up: hover-revealed row actions never push the rail wider. */
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -1461,8 +1463,8 @@ select {
 .rail-item {
   position: relative;
   display: flex;
-  align-items: stretch;
-  gap: var(--space-0);
+  align-items: center;
+  gap: var(--space-1);
   border-radius: var(--radius-md);
 }
 
@@ -1474,7 +1476,9 @@ select {
 
 .rail-item-open {
   flex: 1;
-  min-width: 0;
+  /* M12 follow-up: a resting row never lets its text vanish — the title
+   * keeps a readable floor even while hover actions are revealed. */
+  min-width: 64px;
   display: flex;
   flex-direction: column;
   gap: var(--space-0);
@@ -1522,24 +1526,55 @@ select {
 }
 
 .rail-item-meta {
+  /* M12 follow-up: meta must never wrap into fragments — one clipped line. */
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.rail-item-del {
-  align-self: center;
+/* M12 follow-up: per-row actions (move + delete) are hidden at rest — they
+ * previously sat in-flow at opacity 0, stealing ~170px of rail width and
+ * crushing titles to “*R.*…” on 200–240px rails. Both collapse to zero and
+ * expand on hover/focus-within; the title keeps a 64px floor. */
+.rail-item-del,
+.rail-item-move {
   flex: none;
+  max-width: 0;
+  overflow: hidden;
+  padding: 0;
   opacity: 0;
-  margin-right: var(--space-1);
+  white-space: nowrap;
+  transition:
+    max-width var(--motion-fast) var(--motion-ease),
+    opacity var(--motion-fast) var(--motion-ease),
+    padding var(--motion-fast) var(--motion-ease),
+    margin var(--motion-fast) var(--motion-ease);
 }
 
-.rail-item-del-visible {
+.rail-item:hover .rail-item-move,
+.rail-item:focus-within .rail-item-move,
+.rail-item-move:focus-visible,
+.rail-item-del-visible,
+.rail-item:hover .rail-item-del,
+.rail-item:focus-within .rail-item-del {
+  max-width: 100px;
   opacity: 1;
+}
+
+.rail-item:hover .rail-item-move,
+.rail-item:focus-within .rail-item-move,
+.rail-item-move:focus-visible {
+  max-width: 96px;
+  padding: 2px var(--space-1);
 }
 
 .rail-item:hover .rail-item-del,
-.rail-item:focus-within .rail-item-del {
-  opacity: 1;
+.rail-item:focus-within .rail-item-del,
+.rail-item-del-visible {
+  padding: var(--space-1) var(--space-2);
+  margin-right: var(--space-1);
 }
 
 /* --- Header persona picker ---------------------------------------------- */
@@ -4570,14 +4605,11 @@ select {
 }
 
 .rail-item-move {
-  flex: none;
-  max-width: 110px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
   background: var(--surface-2);
   border: 0;
   border-radius: var(--radius-sm);
-  padding: 2px var(--space-1);
 }
 
 .rail-foot {
