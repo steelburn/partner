@@ -1016,8 +1016,13 @@ M11 scope folded into PLAN.md §12/§13/§16.
 
 Remaining — manual / env-gated only, no code:
 
-- `docs/theme-conformance.md` "Surfaces" — per-surface light/dark/custom
-  walkthrough of the packaged app on a real desktop (F5 final polish).
+- `docs/theme-conformance.md` — headless per-surface sweep COMPLETED
+  2026-09-06 (light + dark + custom-theme-active over all ten views,
+  real-provider chat, chips/preview/assets/markdown exercised, zero console
+  errors — evidence in that doc). Only the real-desktop visual walk of the
+  packaged app remains (drag interactions, OS file-picker staging, alt-
+  palette custom theme via the studio save gate, F9 choice round against a
+  `:::partner.choice`-capable model).
 - `docs/VERIFY-M10.md` manual walk — live-mode packaged-core boot, real
   keyring, charged-provider budget, NSIS install on a Windows desktop.
 - Browser-actuator research capture end-to-end (real Chrome + installed
