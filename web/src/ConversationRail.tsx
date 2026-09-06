@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type ReactNode } from 'react';
 import type { ConversationSummary, Folder } from '@partner/shared';
 import { conversationTitle, sortConversations, timeAgo } from './lib/persona-helpers.js';
 
@@ -56,6 +56,45 @@ export default function ConversationRail({
   onMoveConversation,
 }: ConversationRailProps) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  /** Drag-to-move (M11 extra): dragged chat + current drop target
+   *  ('' = Inbox, else a folder id; null = none). The move select on each
+   *  chat row remains the accessible fallback. */
+  const [dragChatId, setDragChatId] = useState<string | null>(null);
+  const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
+
+  const dragStart = (event: DragEvent<HTMLElement>, chatId: string): void => {
+    if (disabled) return;
+    event.dataTransfer.setData('text/plain', chatId);
+    event.dataTransfer.effectAllowed = 'move';
+    setDragChatId(chatId);
+  };
+
+  const dragEnd = (): void => {
+    setDragChatId(null);
+    setDropTargetKey(null);
+  };
+
+  const dropOver = (event: DragEvent<HTMLElement>, targetKey: string): void => {
+    if (event.dataTransfer.types.includes('text/plain')) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      if (dropTargetKey !== targetKey) setDropTargetKey(targetKey);
+    }
+  };
+
+  const dropLeave = (targetKey: string): void => {
+    setDropTargetKey((current) => (current === targetKey ? null : current));
+  };
+
+  const drop = (event: DragEvent<HTMLElement>, targetKey: string): void => {
+    event.preventDefault();
+    const chatId = event.dataTransfer.getData('text/plain');
+    setDragChatId(null);
+    setDropTargetKey(null);
+    if (chatId !== '' && !disabled) {
+      void onMoveConversation(chatId, targetKey === '' ? null : targetKey);
+    }
+  };
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmingFolderId, setConfirmingFolderId] = useState<string | null>(null);
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
@@ -176,7 +215,15 @@ export default function ConversationRail({
     const isConfirming = confirmingId === chat.id;
     const isDeleting = deletingId === chat.id;
     return (
-      <li key={chat.id} className={isActive ? 'rail-item rail-item-active' : 'rail-item'}>
+      <li key={chat.id} className={
+          isActive
+            ? dragChatId === chat.id
+              ? 'rail-item rail-item-active rail-item-dragging'
+              : 'rail-item rail-item-active'
+            : dragChatId === chat.id
+              ? 'rail-item rail-item-dragging'
+              : 'rail-item'
+        }>
         <button
           type="button"
           className="rail-item-open"
@@ -192,6 +239,18 @@ export default function ConversationRail({
             {timeAgo(chat.updatedAt)}
           </span>
         </button>
+        <span
+          className="rail-item-drag"
+          draggable={!disabled && !isDeleting}
+          onDragStart={(event) => dragStart(event, chat.id)}
+          onDragEnd={dragEnd}
+          title="Drag to a folder"
+          role="button"
+          aria-label={`Drag ${conversationTitle(chat)} to a folder`}
+          tabIndex={-1}
+        >
+          ≡
+        </span>
         <select
           className="rail-item-move"
           aria-label={`Move ${conversationTitle(chat)} to folder`}
@@ -245,7 +304,12 @@ export default function ConversationRail({
         className="folder-node"
         style={{ '--folder-depth': depth } as CSSProperties}
       >
-        <div className="folder-row">
+        <div
+          className={dropTargetKey === folder.id ? 'folder-row drop-target' : 'folder-row'}
+          onDragOver={(event) => dropOver(event, folder.id)}
+          onDragLeave={() => dropLeave(folder.id)}
+          onDrop={(event) => drop(event, folder.id)}
+        >
           <button
             type="button"
             className="folder-toggle"
@@ -389,7 +453,14 @@ export default function ConversationRail({
             {/* Inbox: chats with no folder — always shown when non-empty. */}
             {inboxChats.length > 0 || !anyFolders ? (
               <li className="folder-node" style={{ '--folder-depth': 0 } as CSSProperties}>
-                <div className="folder-row folder-row-inbox">
+                <div
+                  className={
+                    dropTargetKey === '' ? 'folder-row folder-row-inbox drop-target' : 'folder-row folder-row-inbox'
+                  }
+                  onDragOver={(event) => dropOver(event, '')}
+                  onDragLeave={() => dropLeave('')}
+                  onDrop={(event) => drop(event, '')}
+                >
                   <span className="folder-name folder-name-inbox">Inbox</span>
                   <span className="folder-count">{inboxChats.length}</span>
                 </div>

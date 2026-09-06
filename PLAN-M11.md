@@ -194,6 +194,11 @@ production build green):
       (Auto = persona/global); App refetches on persona/conversation change.
       Manager + route tests; suites: core 680, web 440.
 
+- [x] **Drag-to-move chats** (rail) — drag a chat row's handle onto a folder
+      row (or Inbox) to move it; highlight on drag-over, opacity feedback on
+      the dragged item, HTML5 DnD guarded by the rail lock. The per-row
+      move select remains as the accessible fallback.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
