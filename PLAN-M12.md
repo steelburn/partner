@@ -89,6 +89,15 @@ tokens, 8px grid, scale type, named elevation):
   - [ ] Notes lane collapsible (persist state per session).
 - [ ] **P1.3 Dense-list floor.** Audit + Personas meta/row text ≥13px or
       row spacing such that ≤12px text nodes per view < 10.
+- [x] **P1.4 Quick capture stays in context (F6 follow-up).** On the Chat
+      view, ＋Capture (lane), header ＋Note and Ctrl+K open an in-lane
+      composer beside the transcript — capture never navigates to the Notes
+      page; saving refreshes the lane list and shows “Captured …”. On other
+      views the global capture still opens the Notes composer. Done
+      2026-09-06: `web/src/NotesMini.tsx` (in-lane composer, captureSignal,
+      autofocus/Escape) + `web/src/App.tsx` (view-aware requestCapture) +
+      lane CSS; verified live (stays on Chat, save→list+feedback, Escape
+      cancels, Notes-view path unchanged).
 
 ### P2 — Polish & aesthetics (after P0/P1 gates pass)
 

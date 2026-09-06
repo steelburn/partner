@@ -80,6 +80,9 @@ export default function App() {
   const [foldersError, setFoldersError] = useState<string | null>(null);
   /** M11 F6: increments open Notes quick capture (header / Ctrl+K). */
   const [noteCaptureNonce, setNoteCaptureNonce] = useState(0);
+  /** M12: increments the in-lane quick capture on the Chat view — capture
+   * stays side-by-side with the transcript (never navigates away). */
+  const [notesLaneCaptureNonce, setNotesLaneCaptureNonce] = useState(0);
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -477,11 +480,17 @@ export default function App() {
   const personasLoaded = personas !== null;
   const railLocked = streaming || creatingChat;
 
-  /** M11 F6: Notes are one click/hotkey away — open the composer anywhere. */
+  /** M11 F6 / M12: Notes are one click/hotkey away — open the composer
+   * anywhere. On the Chat view the composer opens IN the notes lane beside
+   * the transcript; everywhere else it opens on the Notes page. */
   const requestCapture = useCallback((): void => {
+    if (view === 'chat') {
+      setNotesLaneCaptureNonce((n) => n + 1);
+      return;
+    }
     setView('notes');
     setNoteCaptureNonce((n) => n + 1);
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     if (!paired) return;
@@ -666,7 +675,7 @@ export default function App() {
                 />
                 <NotesMini
                   active={paired}
-                  onCapture={requestCapture}
+                  captureSignal={notesLaneCaptureNonce}
                   onOpen={() => setView('notes')}
                   onUnpair={handleSessionLost}
                 />

@@ -5134,6 +5134,31 @@ select {
   line-height: 1.45;
 }
 
+/* M12: in-lane quick capture — the composer lives beside the transcript,
+ * never navigates to the Notes page. Actions wrap so the two small buttons
+ * fit the 232px lane at every width. */
+.notes-mini-capture {
+  gap: var(--space-2);
+}
+
+.notes-mini-capture .form-actions {
+  flex-wrap: wrap;
+}
+
+/* Capture feedback + errors sit at lane level (sibling of the composer). */
+.notes-mini > .form-feedback {
+  margin: 0;
+  font-size: var(--fs-xs);
+}
+
+.notes-mini > .form-feedback .success-note {
+  margin: 0;
+}
+
+.notes-mini-capture .row-error {
+  font-size: var(--fs-xs);
+}
+
 .notes-mini-note {
   margin: 0;
   font-size: var(--fs-sm);
