@@ -10,6 +10,7 @@
 import type {
   ChatEvent,
   ProviderInput,
+  ProviderPurpose,
   ProviderSummary,
   SelfServiceConnectInput,
   SelfServiceLoginKey,
@@ -286,6 +287,12 @@ export interface StreamChatOptions {
   personaId?: string;
   /** Optional explicit model override (M3). */
   model?: string;
+  /**
+   * M13 per-turn provider pin (the chat model picker): when set alongside
+   * `model`, the turn rides that provider regardless of persona pinning and
+   * purpose routing.
+   */
+  providerId?: string;
   /** M11 F1: staged attachment ids to bind to this turn. */
   attachmentIds?: string[];
   /** M11 A/B studio: stream this persona turn WITHOUT persisting a conversation. */
@@ -327,6 +334,7 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
   if (conversationId !== undefined) body.conversationId = conversationId;
   if (personaId !== undefined) body.personaId = personaId;
   if (model !== undefined) body.model = model;
+  if (options.providerId !== undefined) body.providerId = options.providerId;
   if (options.attachmentIds !== undefined && options.attachmentIds.length > 0) {
     body.attachmentIds = options.attachmentIds;
   }
@@ -475,6 +483,62 @@ export async function createProvider(
     body: JSON.stringify(input),
   });
   return expectJson<ProviderSummary>(response);
+}
+
+/**
+ * M13 purpose-provider bundle (PLAN-M13.md F2): one OpenAI-compatible
+ * endpoint + ONE key -> one provider profile per purpose. The key is stored
+ * into each profile's keychain item by the core and never returns. When
+ * `modelPins` is supplied every requested purpose must map to a non-empty
+ * list of models the endpoint actually reported (via discover) — the first
+ * model is that purpose's default.
+ */
+export async function createPurposeProviders(
+  token: string,
+  input: {
+    endpoint: string;
+    key: string;
+    purposes?: ProviderPurpose[];
+    modelPins?: Partial<Record<ProviderPurpose, string[]>>;
+    /** Optional per-profile spend cap in USD cents (applied to every purpose). */
+    budgetCents?: number;
+  },
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<{ created: ProviderSummary[]; models: string[] }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${PROVIDERS_PATH}/purposes`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+  return expectJson<{ created: ProviderSummary[]; models: string[] }>(response);
+}
+
+/**
+ * M13 pre-bundle model discovery: fetch the upstream model list for an
+ * endpoint + key WITHOUT persisting anything — the UI uses it to let the
+ * user assign models to purposes before adding the purpose providers.
+ */
+export async function discoverProviderModels(
+  token: string,
+  input: { endpoint: string; key: string },
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<{ endpoint: string; models: string[] }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${PROVIDERS_PATH}/discover`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+  return expectJson<{ endpoint: string; models: string[] }>(response);
 }
 
 /** POST /v1/providers/:id/key {key} -> 204. The key is never echoed back. */

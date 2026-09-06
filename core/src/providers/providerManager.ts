@@ -294,16 +294,26 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
       }
 
       const latencyMs = Date.now() - started;
+      // M13: Test refreshes HEALTH but never clobbers a curated model list —
+      // purpose profiles carry exactly the models the user pinned. Only a
+      // profile with NO defaults yet is auto-populated from the live list
+      // (fresh single-provider adds). The fresh list still rides lastHealth
+      // so the UI reports the upstream's current models.
+      const existingModels = parseJsonArray(row.defaultModels);
+      const defaultModelsUpdate =
+        existingModels.length === 0
+          ? { defaultModels: models.length > 0 ? JSON.stringify(models) : null }
+          : {};
       if (probeError !== null) {
         store.update(id, {
-          defaultModels: models.length > 0 ? JSON.stringify(models) : null,
+          ...defaultModelsUpdate,
           lastHealth: JSON.stringify({ ok: false, latencyMs, error: probeError, models: [], checkedAt }),
           updatedAt: checkedAt,
         });
         audit.log('provider', 'provider.test', id, { ok: false, latencyMs, error: probeError });
       } else {
         store.update(id, {
-          defaultModels: models.length > 0 ? JSON.stringify(models) : null,
+          ...defaultModelsUpdate,
           lastHealth: JSON.stringify({ ok: true, latencyMs, error: null, models, checkedAt }),
           updatedAt: checkedAt,
         });

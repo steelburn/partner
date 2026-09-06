@@ -22,6 +22,7 @@
  * configured" result.
  */
 import type { Persona, ProviderPurpose, ProviderSummary, TaskClass } from '@partner/shared';
+import { isImageCapableModel } from './vision.js';
 import type { ProviderManager } from '../providers/providerManager.js';
 
 /**
@@ -39,6 +40,51 @@ const TASK_PURPOSE_ORDER: Record<TaskClass, ProviderPurpose[]> = {
 /** Research-style flows (F2 search/playbooks) prefer a 'research' provider. */
 export function purposeOrderForTaskClass(taskClass: TaskClass): ProviderPurpose[] {
   return TASK_PURPOSE_ORDER[taskClass] ?? ['general'];
+}
+
+/**
+ * M13 image-turn vision upgrade (see PLAN-M13.md). When a turn carries an
+ * inline image but routing landed on a model that cannot see it, find the
+ * best vision-capable replacement: (1) the persona's own `vision` task-class
+ * mapping when it resolves to an image-capable model, else (2) the first
+ * image-capable model among the enabled providers' default model lists,
+ * preferring the persona's pinned provider, then a purpose-'vision'
+ * provider, then creation order. Returns null when nothing can see images.
+ */
+export interface ImageTurnUpgrade {
+  provider: ProviderSummary;
+  model: string;
+}
+
+export function resolveImageTurnUpgrade(options: {
+  persona?: Persona | null;
+  providers: ProviderSummary[];
+}): ImageTurnUpgrade | null {
+  const persona = options.persona ?? null;
+  const enabled = options.providers.filter((p) => p.enabled);
+  if (enabled.length === 0) return null;
+
+  // (1) The persona's explicit vision mapping — the resolver already prefers
+  // the pinned / vision-purpose provider for the 'vision' task class.
+  const personaVision = persona?.model.taskClasses.vision;
+  if (personaVision !== undefined && personaVision.trim() !== '') {
+    const routed = resolveChatModel({ persona, providers: options.providers, taskClass: 'vision' });
+    if (routed.provider !== null && isImageCapableModel(routed.model)) {
+      return { provider: routed.provider, model: routed.model };
+    }
+  }
+
+  // (2) Scan every enabled provider's default models for the first one that
+  // can actually see images (pinned first, then vision-purpose, then order).
+  const pinnedId = persona?.model.providerId;
+  const rank = (p: ProviderSummary): number =>
+    p.id === pinnedId ? 3 : p.purpose === 'vision' ? 2 : 1;
+  const ordered = [...enabled].sort((a, b) => rank(b) - rank(a));
+  for (const p of ordered) {
+    const model = p.defaultModels.find((m) => isImageCapableModel(m));
+    if (model !== undefined) return { provider: p, model };
+  }
+  return null;
 }
 
 /**
@@ -71,6 +117,13 @@ export interface ResolveChatModelOptions {
   persona?: Persona | null;
   /** Explicit model id from the request body. */
   requestedModel?: string;
+  /**
+   * M13 explicit per-turn provider pin (the chat UI's model picker rides
+   * this): when provided AND enabled it wins over the persona pin and the
+   * purpose chain, so a model that only exists on another provider can be
+   * used for one turn. Invalid/disabled ids are validated by the route.
+   */
+  providerId?: string;
   /** Every registered provider (enabled filtering happens here). */
   providers: ProviderSummary[];
   /** Task class to route (default 'chat'). */
@@ -96,10 +149,17 @@ export function resolveChatModel(options: ResolveChatModelOptions): ResolvedChat
   const firstEnabled: ProviderSummary | null = enabled[0] ?? null;
   const pinnedId = persona?.model.providerId;
   const pinned = pinnedId ? enabled.find((p) => p.id === pinnedId) ?? null : null;
-  // Purpose-aware provider for this task class (F4): an explicit persona pin
-  // wins; otherwise prefer the provider whose purpose fits the task.
+  // M13 explicit per-turn provider pin wins over everything else (the chat
+  // UI sends it alongside requestedModel when the user picks a model).
+  const explicitProvider =
+    options.providerId !== undefined
+      ? enabled.find((p) => p.id === options.providerId) ?? null
+      : null;
+  // Purpose-aware provider for this task class (F4): an explicit request
+  // provider wins, then an explicit persona pin, then the provider whose
+  // purpose fits the task.
   const personaProvider =
-    pinned ?? pickProviderByPurpose(enabled, purposeOrderForTaskClass(taskClass));
+    explicitProvider ?? pinned ?? pickProviderByPurpose(enabled, purposeOrderForTaskClass(taskClass));
 
   if (requestedModel !== undefined) {
     // An explicit model always wins — even with no usable provider, the

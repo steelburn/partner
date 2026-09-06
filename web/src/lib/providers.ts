@@ -5,7 +5,8 @@
  * formatting lives here.
  */
 
-import type { ProviderHealth, ProviderPurpose, ProviderSource } from '@partner/shared';
+import type { ProviderHealth, ProviderPurpose, ProviderSource, ProviderSummary } from '@partner/shared';
+import { PROVIDER_PURPOSES } from '@partner/shared';
 
 /** Display labels for the provider `source` wire field. */
 export const SOURCE_LABELS: Record<ProviderSource, string> = {
@@ -37,6 +38,27 @@ export function parseModelList(raw: string): string[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+/**
+ * M13: which purposes should be PRE-TICKED for the purpose-provider card.
+ * Same endpoint already has profiles -> only the purposes it is missing;
+ * no providers at all -> all six; providers exist but none for this
+ * endpoint -> nothing (a dedicated endpoint such as a second Vision
+ * provider usually adds one purpose, not a second full set).
+ */
+export function suggestPurposesForAdd(
+  endpoint: string,
+  providers: ProviderSummary[],
+): ProviderPurpose[] {
+  const key = normalizeEndpoint(endpoint);
+  const sameEndpoint = providers.filter((p) => p.endpoint === key);
+  if (sameEndpoint.length > 0) {
+    const present = new Set(sameEndpoint.map((p) => p.purpose));
+    return PROVIDER_PURPOSES.filter((p) => !present.has(p));
+  }
+  if (providers.length === 0) return [...PROVIDER_PURPOSES];
+  return [];
 }
 
 export type BudgetParse =

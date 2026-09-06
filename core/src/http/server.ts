@@ -34,18 +34,18 @@ import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
-import type { ProviderInput, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
+import type { ProviderInput, ProviderPurpose, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
 import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import type { SiteScope } from '@partner/shared';
-import { redactString } from '@partner/shared';
+import { redactString, isProviderPurpose, PROVIDER_PURPOSES } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
 import { centsForTokens } from '../gateway/pricing.js';
 import type { SpendLedgerManager } from '../gateway/spend.js';
-import { resolveChatModel } from '../gateway/resolver.js';
+import { resolveChatModel, resolveImageTurnUpgrade } from '../gateway/resolver.js';
 import { isImageCapableModel } from '../gateway/vision.js';
-import { UpstreamError } from '../gateway/openaiCompatible.js';
+import { UpstreamError, createOpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import {
   connectSelfService,
@@ -53,6 +53,7 @@ import {
   fetchSelfServiceLoginKey,
   SelfServiceError,
 } from '../gateway/selfService.js';
+import { normalizeEndpoint } from '../providers/providerManager.js';
 import type { ProviderManager } from '../providers/providerManager.js';
 import { ProviderError } from '../providers/errors.js';
 import type { PairingManager } from './pairing.js';
@@ -609,6 +610,74 @@ function optionalTaskClass(value: unknown): 'chat' | 'deep' | 'coding' | 'vision
   return undefined;
 }
 
+/**
+ * M13: does this conversation have a staged inline image (uploaded, bound to
+ * the NEXT turn — messageId null) small enough to ride as an image part?
+ * Best-effort: an attachment-store failure just means "no image" (the turn
+ * falls back to the descriptor context as before).
+ */
+function stagedInlineImage(attachments: AttachmentManager, conversationId: string): boolean {
+  try {
+    return attachments
+      .list(conversationId)
+      .some((m) => m.messageId === null && m.mime.startsWith('image/') && m.size <= 3 * 1024 * 1024);
+  } catch {
+    return false;
+  }
+}
+
+/** M13: host label for purpose-bundle provider names (never the key). */
+const PURPOSE_LABELS: Record<ProviderPurpose, string> = {
+  general: 'General',
+  cheap: 'Cheap',
+  deep: 'Deep',
+  coding: 'Coding',
+  vision: 'Vision',
+  research: 'Research',
+};
+
+function endpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return endpoint;
+  }
+}
+
+/**
+ * M13: parse the bundle `modelPins` body field. null when absent; throws a
+ * typed ProviderError on malformed input (unknown purpose keys or non-array/
+ * empty model lists). The route enforces completeness against the requested
+ * purposes and membership in the fetched model list.
+ */
+function parseModelPins(raw: unknown): Partial<Record<ProviderPurpose, string[]>> | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ProviderError(
+      'invalid_input',
+      'modelPins must be an object mapping purpose -> array of model ids',
+    );
+  }
+  const pins: Partial<Record<ProviderPurpose, string[]>> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isProviderPurpose(key)) {
+      throw new ProviderError('invalid_input', `modelPins contains an unknown purpose "${key}"`);
+    }
+    if (
+      !Array.isArray(value) ||
+      value.length === 0 ||
+      value.some((m) => typeof m !== 'string' || m.trim() === '')
+    ) {
+      throw new ProviderError(
+        'invalid_input',
+        `modelPins.${key} must be a non-empty array of model id strings`,
+      );
+    }
+    pins[key as ProviderPurpose] = (value as string[]).map((m) => m.trim());
+  }
+  return pins;
+}
+
 /** Safe audit target for a self-service endpoint: its host, or a constant. */
 function endpointAuditTarget(raw: unknown): string {
   if (typeof raw !== 'string') return 'self-service';
@@ -1093,6 +1162,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const body = (req.body ?? {}) as {
       messages?: unknown;
       model?: unknown;
+      providerId?: unknown;
       conversationId?: unknown;
       personaId?: unknown;
       taskClass?: unknown;
@@ -1113,6 +1183,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       ? body.attachmentIds.filter((entry): entry is string => typeof entry === 'string')
       : [];
     const requestedModel = optionalString(body.model);
+    // M13 per-turn provider pin (the chat model picker): explicit providerId
+    // is validated below and wins over persona pinning + purpose routing.
+    const requestedProviderId = optionalString(body.providerId);
     const requestedPersonaId = optionalString(body.personaId);
     const requestedConversationId = optionalString(body.conversationId);
     const taskClassRaw = optionalTaskClass(body.taskClass);
@@ -1242,9 +1315,27 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // ---------------------------------------------------------------------
     const manager = options.providerManager;
     const providers = manager ? manager.list() : [];
+    // M13: an explicit per-turn provider pin must exist and be enabled — the
+    // resolver trusts it (invalid ids would otherwise surface as a confusing
+    // upstream model_not_found mid-stream).
+    if (requestedProviderId !== undefined) {
+      const target = providers.find((p) => p.id === requestedProviderId) ?? null;
+      if (target === null) {
+        res.status(404).json({ error: 'not_found', message: 'provider not found' });
+        return;
+      }
+      if (!target.enabled) {
+        res.status(400).json({
+          error: 'provider_disabled',
+          message: 'provider is disabled — enable it before chatting',
+        });
+        return;
+      }
+    }
     const resolved = resolveChatModel({
       persona: routingPersona,
       requestedModel,
+      providerId: requestedProviderId,
       providers,
       taskClass: taskClassRaw ?? 'chat',
     });
@@ -1380,13 +1471,44 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     if (managedProvider) {
       // managedProvider is only ever non-null when a manager is wired.
       const activeManager: ProviderManager = manager as ProviderManager;
-      const model = resolved.model;
+      // M13: let so an image-turn vision upgrade can reroute below.
+      let model = resolved.model;
       if (model === '') {
         res.status(400).json({
           error: 'model_required',
           message: 'no model chosen — set a model in the request or run a provider test to populate defaults',
         });
         return;
+      }
+      // M13 image-turn vision upgrade (PLAN-M13.md F1): when an inline image
+      // rides this turn and routing was IMPLICIT (no model/task/provider pin
+      // from the client) but landed on a model that cannot see, hand the turn
+      // to the best vision-capable model so the photo is actually analyzed
+      // instead of degrading to a text stub. An EXPLICIT pick is the user's
+      // confirmed choice and is never overridden.
+      const implicitTurn =
+        requestedModel === undefined &&
+        taskClassRaw === undefined &&
+        requestedProviderId === undefined;
+      if (
+        implicitTurn &&
+        conversationId !== null &&
+        options.attachments &&
+        stagedInlineImage(options.attachments, conversationId) &&
+        !isImageCapableModel(model)
+      ) {
+        const upgrade = resolveImageTurnUpgrade({ persona: routingPersona, providers });
+        if (
+          upgrade !== null &&
+          (upgrade.provider.id !== managedProvider.id || upgrade.model !== model)
+        ) {
+          audit.log('session', 'chat.vision_reroute', `${managedProvider.id}/${model}`, {
+            to: `${upgrade.provider.id}/${upgrade.model}`,
+            reason: 'image_attached',
+          });
+          managedProvider = upgrade.provider;
+          model = upgrade.model;
+        }
       }
       let client: OpenAICompatibleClient;
       try {
@@ -1866,6 +1988,144 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       const summary = await manager.create((req.body ?? {}) as ProviderInput);
       res.status(201).json(summary);
     } catch (err) {
+      if (sendProviderError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // M13 purpose-provider bundle (PLAN-M13.md F2): one OpenAI-compatible
+  // endpoint + one key -> one provider profile PER purpose (general | cheap |
+  // deep | coding | vision | research), so purpose routing has real profiles
+  // to pick. The single key is stored into each profile's own keychain item
+  // (never the DB or a response). When the caller supplies `modelPins` (a
+  // map of purpose -> model ids, as fetched by /v1/providers/discover), each
+  // purpose profile carries EXACTLY the pinned models — the first one is the
+  // purpose's default when a persona has no override. Without pins the
+  // heuristic applies (vision keeps image-capable models, others the full
+  // list). The chat probe is left to the per-profile Test button.
+  api.post('/v1/providers/purposes', requireSession(sessions), async (req: Request, res: Response) => {
+    const manager = requireProviderManager(options, res);
+    if (!manager) return;
+    const body = (req.body ?? {}) as {
+      endpoint?: unknown;
+      key?: unknown;
+      purposes?: unknown;
+      modelPins?: unknown;
+      budgetCents?: unknown;
+    };
+    if (typeof body.key !== 'string' || body.key.trim() === '') {
+      res.status(400).json({ error: 'invalid_input', message: 'key is required and must be a non-empty string' });
+      return;
+    }
+    if (
+      body.budgetCents !== undefined &&
+      body.budgetCents !== null &&
+      typeof body.budgetCents !== 'number'
+    ) {
+      res.status(400).json({ error: 'invalid_input', message: 'budgetCents must be a number of cents or null' });
+      return;
+    }
+    const budgetCents =
+      typeof body.budgetCents === 'number' ? Math.round(body.budgetCents) : null;
+    const rawPurposes = Array.isArray(body.purposes) ? body.purposes : null;
+    if (rawPurposes !== null && rawPurposes.some((p) => typeof p !== 'string' || !isProviderPurpose(p))) {
+      res.status(400).json({ error: 'invalid_input', message: 'purposes contains an unknown purpose tag' });
+      return;
+    }
+    const purposes = rawPurposes === null
+      ? [...PROVIDER_PURPOSES]
+      : PROVIDER_PURPOSES.filter((p) => (rawPurposes as unknown[]).includes(p));
+    if (purposes.length === 0) {
+      res.status(400).json({ error: 'invalid_input', message: 'purposes must be a non-empty array of purpose tags' });
+      return;
+    }
+    // modelPins (M13): present -> must be a full, valid assignment for the
+    // requested purposes (every purpose needs a non-empty model list).
+    let modelPins: Partial<Record<ProviderPurpose, string[]>> | null = null;
+    if (body.modelPins !== undefined) {
+      try {
+        modelPins = parseModelPins(body.modelPins);
+      } catch (err) {
+        if (sendProviderError(res, err)) return;
+        throw err;
+      }
+    }
+    try {
+      const endpoint = normalizeEndpoint(body.endpoint);
+      const key = body.key.trim();
+      const client = createOpenAICompatibleClient({ endpoint, apiKey: key });
+      const models = await client.listModels();
+      const visionModels = models.filter(isImageCapableModel);
+      if (modelPins !== null) {
+        const missing = purposes.filter((p) => modelPins[p] === undefined || modelPins[p].length === 0);
+        if (missing.length > 0) {
+          throw new ProviderError(
+            'invalid_input',
+            `modelPins must assign at least one model to every requested purpose (missing: ${missing.join(', ')})`,
+          );
+        }
+        const modelSet = new Set(models);
+        for (const purpose of purposes) {
+          for (const model of modelPins[purpose] ?? []) {
+            if (!modelSet.has(model)) {
+              throw new ProviderError(
+                'invalid_input',
+                `model "${model}" (purpose ${purpose}) is not in the provider's model list`,
+              );
+            }
+          }
+        }
+      }
+      const created: ProviderSummary[] = [];
+      for (const purpose of purposes) {
+        const pinned = modelPins?.[purpose];
+        const summary = await manager.create({
+          name: `${PURPOSE_LABELS[purpose]} · ${endpointHost(endpoint)}`,
+          purpose,
+          endpoint,
+          ...(budgetCents !== null ? { budgetCents } : {}),
+          // Explicit pins win; otherwise the heuristic: vision keeps the
+          // models that can actually see, every other profile carries the
+          // full list so persona task-class pins resolve to real ids.
+          defaultModels:
+            pinned ??
+            (purpose === 'vision' && visionModels.length > 0 ? visionModels : models),
+        });
+        await manager.setKey(summary.id, key);
+        created.push(summary);
+      }
+      res.status(201).json({ created, models });
+    } catch (err) {
+      if (err instanceof UpstreamError) {
+        res.status(502).json({ error: 'upstream', message: err.message });
+        return;
+      }
+      if (sendProviderError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // M13 pre-bundle model discovery: fetch the upstream /models for an
+  // endpoint + key WITHOUT persisting anything. The web UI uses it so the
+  // user can assign models to purposes BEFORE adding the purpose providers
+  // (the key is never stored by this route and never returns).
+  api.post('/v1/providers/discover', requireSession(sessions), async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { endpoint?: unknown; key?: unknown };
+    if (typeof body.key !== 'string' || body.key.trim() === '') {
+      res.status(400).json({ error: 'invalid_input', message: 'key is required and must be a non-empty string' });
+      return;
+    }
+    try {
+      const endpoint = normalizeEndpoint(body.endpoint);
+      const client = createOpenAICompatibleClient({ endpoint, apiKey: body.key.trim() });
+      const models = await client.listModels();
+      audit.log('web', 'provider.discover', endpointHost(endpoint), { models: models.length });
+      res.json({ endpoint, models });
+    } catch (err) {
+      if (err instanceof UpstreamError) {
+        res.status(502).json({ error: 'upstream', message: err.message });
+        return;
+      }
       if (sendProviderError(res, err)) return;
       throw err;
     }

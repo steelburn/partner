@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import type { AttachmentMeta, ChatEvent, ConversationMessage, ThemeProfile } from '@partner/shared';
+import type { AttachmentMeta, ChatEvent, ConversationMessage, ProviderSummary, ThemeProfile } from '@partner/shared';
+import { isImageCapableModel } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
-import { ApiRequestError, streamChat, type StreamDoneMeta } from './lib/api.js';
+import { ApiRequestError, listProviders, streamChat, type StreamDoneMeta } from './lib/api.js';
+import { purposeLabel } from './lib/providers.js';
 import { getConversation } from './lib/conversations.js';
 import { RISK_LABELS, RISK_TONE_CLASS, pendingLabel, summarizeTool } from './lib/roots.js';
 import { decidePending } from './lib/tools.js';
@@ -132,6 +134,29 @@ export default function ChatStrip({
   const [msgAttachments, setMsgAttachments] = useState<Record<string, AttachmentMeta[]>>({});
   const [attachError, setAttachError] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
+  /**
+   * M13 per-turn model picker: explicit (providerId, model) for the NEXT
+   * message; null = Auto (persona routing). When an image is staged and the
+   * picker is still on Auto, a vision-capable suggestion is auto-applied
+   * (the user can change it before sending — their pick is explicit).
+   */
+  const [turnModel, setTurnModel] = useState<{ providerId: string; model: string } | null>(null);
+  /** M13: enabled providers with known models, for the picker options. */
+  const [availableProviders, setAvailableProviders] = useState<ProviderSummary[]>([]);
+  /** Auto-apply the vision suggestion once per staging batch. */
+  const suggestApplied = useRef(false);
+  /** M13: an inline image is staged for the next message. */
+  const stagedHasImage = staged.some((meta) => meta.mime.startsWith('image/'));
+  /** M13: one-line explanation of what the next message will use. */
+  const stagedInlineImageNote = stagedHasImage
+    ? turnModel === null
+      ? 'Auto — a vision-capable model reads attached photos when the persona model cannot.'
+      : `Photo attached — this turn uses ${turnModel.model}${
+          isImageCapableModel(turnModel.model) ? ' (vision)' : ''
+        }.`
+    : turnModel === null
+      ? null
+      : `Sending with ${turnModel.model} for this turn.`;
   /** M11 F12 code preview state (attachment source fetched on demand). */
   const [preview, setPreview] = useState<{ title: string; source: string } | null>(null);
   /** M11 F10 assets: drawer visibility + save-from-message state. */
@@ -611,6 +636,7 @@ export default function ChatStrip({
         conversationId: conversationId ?? undefined,
         personaId: personaId ?? undefined,
         ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+        ...(turnModel !== null ? { model: turnModel.model, providerId: turnModel.providerId } : {}),
         signal: controller.signal,
         onEvent: handleStreamEvent,
         onDoneMeta: (meta) => {
@@ -639,6 +665,72 @@ export default function ChatStrip({
     }
   };
 
+  /**
+   * M13 model picker: reset to Auto whenever the persona changes so the next
+   * persona's routing applies by default (provider list refresh is separate).
+   */
+  useEffect(() => {
+    setTurnModel(null);
+    suggestApplied.current = false;
+  }, [personaId]);
+
+  /**
+   * M13 model picker: load enabled providers with known models (grouped by
+   * purpose in the picker). Fetches on mount and every time the Chat view
+   * becomes visible again — providers added in the Providers view must show
+   * up here without remounting (views stay mounted, so a persona-only fetch
+   * would otherwise go stale forever).
+   */
+  useEffect(() => {
+    if (!viewActive) return;
+    const token = readStoredToken();
+    if (!token) return;
+    let cancelled = false;
+    listProviders(token)
+      .then((providers) => {
+        if (!cancelled) {
+          setAvailableProviders(providers.filter((p) => p.enabled && p.defaultModels.length > 0));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableProviders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [personaId, viewActive]);
+
+  /** First image-capable model across the picker providers (vision first). */
+  const suggestVision = (): { providerId: string; model: string } | null => {
+    const ordered = [...availableProviders].sort(
+      (a, b) => (b.purpose === 'vision' ? 1 : 0) - (a.purpose === 'vision' ? 1 : 0),
+    );
+    for (const p of ordered) {
+      const model = p.defaultModels.find((m) => isImageCapableModel(m));
+      if (model !== undefined) return { providerId: p.id, model };
+    }
+    return null;
+  };
+
+  /**
+   * M13 vision auto-suggest: a staged image with the picker still on Auto
+   * pre-selects a vision-capable model (confirmed by the user when they hit
+   * Send — the server never overrides an explicit pick).
+   */
+  useEffect(() => {
+    if (stagedHasImage) {
+      if (turnModel === null && suggestApplied.current === false) {
+        const suggested = suggestVision();
+        if (suggested !== null) {
+          setTurnModel(suggested);
+          suggestApplied.current = true;
+        }
+      }
+    } else {
+      suggestApplied.current = false;
+    }
+  }, [stagedHasImage, turnModel, availableProviders]);
+
   /** Composer submit: send the typed draft with any staged attachments. */
   const send = async (): Promise<void> => {
     const content = draft.trim();
@@ -650,6 +742,9 @@ export default function ChatStrip({
       setStaged([]);
       setReloadToken((n) => n + 1);
     }
+    // Back to Auto for the next message — the per-turn pick was for that turn.
+    setTurnModel(null);
+    suggestApplied.current = false;
   };
 
   /** F9: an option card answered — send the answer as a normal user turn. */
@@ -1019,6 +1114,49 @@ export default function ChatStrip({
             ))}
           </ul>
         </section>
+      ) : null}
+
+      {availableProviders.length > 0 && !personaPaused ? (
+        <div className="chat-model-bar">
+          <label className="chat-model-label">
+            <span className="label chat-model-caption">Model for this message</span>
+            <select
+              id="chat-turn-model"
+              className="field chat-model-select"
+              value={turnModel === null ? 'auto' : `${turnModel.providerId}::${turnModel.model}`}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === 'auto') {
+                  setTurnModel(null);
+                  return;
+                }
+                const sep = value.indexOf('::');
+                if (sep > 0) {
+                  setTurnModel({ providerId: value.slice(0, sep), model: value.slice(sep + 2) });
+                }
+              }}
+              disabled={streaming}
+              aria-label="Model for this message — Auto uses the persona routing"
+            >
+              <option value="auto">Auto — persona routing</option>
+              {availableProviders.map((provider) => (
+                <optgroup key={provider.id} label={`${provider.name} · ${purposeLabel(provider.purpose)}`}>
+                  {provider.defaultModels.map((model) => (
+                    <option key={`${provider.id}:${model}`} value={`${provider.id}::${model}`}>
+                      {model}
+                      {isImageCapableModel(model) ? ' · vision' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          {stagedInlineImageNote !== null ? (
+            <span className="chat-model-note" role="status">
+              {stagedInlineImageNote}
+            </span>
+          ) : null}
+        </div>
       ) : null}
 
       <form className="chat-form" onSubmit={handleSubmit}>

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ProviderInput, ProviderPurpose, ProviderSummary } from '@partner/shared';
-import { PROVIDER_PURPOSES } from '@partner/shared';
+import type { ProviderPurpose, ProviderSummary } from '@partner/shared';
+import { isImageCapableModel, PROVIDER_PURPOSES } from '@partner/shared';
 import {
   ApiRequestError,
   connectSelfService,
-  createProvider,
+  createPurposeProviders,
   deleteProvider,
+  discoverProviderModels,
   fetchSelfServiceLoginKey,
   listProviders,
   setProviderKey,
@@ -17,10 +18,10 @@ import {
   describeHealth,
   normalizeEndpoint,
   parseBudgetDollars,
-  parseModelList,
   purposeLabel,
   remainingBudgetLabel,
   sourceLabel,
+  suggestPurposesForAdd,
   validateEndpoint,
 } from './lib/providers.js';
 import { readStoredToken } from './lib/token.js';
@@ -45,8 +46,8 @@ function isSessionLost(cause: unknown): boolean {
 
 /**
  * M1 Providers screen (provisional): list + per-row Test/Set key/Delete,
- * an inline "Add provider" form, and the "Connect llm-self-service" import
- * card. Secrets policy: provider keys and the org password live only in
+ * an inline purpose-provider setup card (discover + assign models per
+ * purpose), and the "Connect llm-self-service" import card. Secrets policy: provider keys and the org password live only in
  * transient, uncontrolled input fields and are cleared immediately; only the
  * ciphertext produced in this page is ever sent to the core.
  */
@@ -102,6 +103,11 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
     setKeyHintId(created.id);
   };
 
+  /** M13 purpose bundle: append every created profile (keys already stored). */
+  const appendProviders = (created: ProviderSummary[]): void => {
+    setProviders((prev) => [...(prev ?? []), ...created]);
+  };
+
   const handleSessionLost = (): void => setSessionLost(true);
 
   const panelIntro =
@@ -150,17 +156,18 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
           <div className="empty-state">
             <p className="empty-state-title">No providers connected</p>
             <p className="empty-state-copy">
-              Nothing can call a model yet. Add an OpenAI-compatible endpoint below (keys stay in
-              your OS keychain), or connect llm-self-service to pull in the key provisioned for
-              your account.
+              Nothing can call a model yet. Add your OpenAI-compatible endpoint once below and
+              Partner creates a provider per purpose (General, Cheap, Deep, Coding, Vision,
+              Research) — keys stay in your OS keychain. Or connect llm-self-service to pull in
+              the key provisioned for your account.
             </p>
             <div className="empty-actions">
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => scrollToCard('add-provider-card')}
+                onClick={() => scrollToCard('purpose-bundle-card')}
               >
-                Add an endpoint
+                Set up purpose providers
               </button>
               <button
                 type="button"
@@ -206,10 +213,11 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
           </>
         ) : null}
 
-        <AddProviderCard
+        <PurposeBundleCard
           disabled={sessionLost}
-          onAdded={appendProvider}
+          onAddedMany={appendProviders}
           onSessionLost={handleSessionLost}
+          providers={providers ?? []}
         />
         <ImportCard
           disabled={sessionLost}
@@ -458,26 +466,84 @@ function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }:
 }
 
 // ---------------------------------------------------------------------------
-// Add provider form
-// ---------------------------------------------------------------------------
+// M13 purpose-provider bundle (PLAN-M13.md F2)
 
-interface AddProviderCardProps {
+interface PurposeBundleCardProps {
   disabled: boolean;
-  onAdded: (created: ProviderSummary) => void;
+  onAddedMany: (created: ProviderSummary[]) => void;
   onSessionLost: () => void;
+  /** All existing provider profiles — drives the pre-ticked purpose defaults. */
+  providers: ProviderSummary[];
 }
 
-function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardProps) {
-  const [name, setName] = useState('');
+/**
+ * Add one OpenAI-compatible endpoint + key and get one provider profile PER
+ * purpose (General | Cheap | Deep | Coding | Vision | Research). Step 1
+ * discovers the endpoint's models (one upstream /models call, nothing
+ * persisted); step 2 lets the user pin which models each purpose profile
+ * carries — the FIRST pinned model is that purpose's default when a persona
+ * has no override. The single key is stored by the core into each profile's
+ * own keychain item.
+ */
+function PurposeBundleCard({ disabled, onAddedMany, onSessionLost, providers }: PurposeBundleCardProps) {
   const [endpoint, setEndpoint] = useState('');
-  const [purpose, setPurpose] = useState<ProviderPurpose>('general');
-  const [models, setModels] = useState('');
+  const [key, setKey] = useState('');
+  const [selected, setSelected] = useState<ReadonlySet<ProviderPurpose>>(new Set());
+  /** True once the user touches the purpose ticks — stop auto-suggesting. */
+  const touchedPurposes = useRef(false);
+  /** Models the endpoint reported (null = step 1 not run yet). */
+  const [models, setModels] = useState<string[] | null>(null);
+  /** purpose -> pinned models (kept in the endpoint's model order). */
+  const [pins, setPins] = useState<Partial<Record<ProviderPurpose, string[]>>>({});
+  /** Optional USD budget applied to EVERY created purpose profile (null = off). */
   const [budget, setBudget] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  // Keep the pre-ticked purposes in step with reality UNTIL the user picks
+  // for themselves: no providers -> all six; same endpoint -> only the
+  // purposes it lacks; new endpoint alongside others -> none (tick what this
+  // endpoint is FOR, e.g. Vision only for a second vision provider).
+  useEffect(() => {
+    if (touchedPurposes.current) return;
+    setSelected(new Set(suggestPurposesForAdd(endpoint, providers)));
+    // Intended: providers/endpoint drive the suggestion; manual edits win.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providers]);
+
+  const toggle = (purpose: ProviderPurpose): void => {
+    touchedPurposes.current = true;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(purpose)) next.delete(purpose);
+      else next.add(purpose);
+      return next;
+    });
+  };
+
+  const tickAll = (all: boolean): void => {
+    touchedPurposes.current = true;
+    setSelected(all ? new Set(PROVIDER_PURPOSES) : new Set());
+  };
+
+  /** Default assignment mirrors the core heuristic: vision keeps models that
+   *  can see images; every other purpose gets the full list. Restricted to
+   *  the purposes the user ticked. */
+  const defaultPinsFor = (
+    purposes: ProviderPurpose[],
+    list: string[],
+  ): Partial<Record<ProviderPurpose, string[]>> => {
+    const visionModels = list.filter(isImageCapableModel);
+    const next: Partial<Record<ProviderPurpose, string[]>> = {};
+    for (const purpose of purposes) {
+      next[purpose] =
+        purpose === 'vision' && visionModels.length > 0 ? visionModels : [...list];
+    }
+    return next;
+  };
+
+  const handleDiscover = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (busy || disabled) return;
     const token = readStoredToken();
@@ -485,50 +551,127 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
       onSessionLost();
       return;
     }
-
-    const trimmedName = name.trim();
-    if (trimmedName.length === 0) {
-      setError('Name is required.');
-      return;
-    }
     const endpointError = validateEndpoint(endpoint);
     if (endpointError) {
       setError(endpointError);
       return;
+    }
+    if (key.trim().length === 0) {
+      setError('The API key is required to list the endpoint\u2019s models.');
+      return;
+    }
+    // Apply the purpose suggestion unless the user picked their own set, and
+    // never discover models for zero purposes.
+    const suggested = touchedPurposes.current
+      ? PROVIDER_PURPOSES.filter((p) => selected.has(p))
+      : suggestPurposesForAdd(endpoint, providers);
+    if (suggested.length === 0) {
+      setError(
+        'Pick at least one purpose — tick only the purposes this endpoint should serve (e.g. Vision only for a dedicated vision provider).',
+      );
+      return;
+    }
+    if (!touchedPurposes.current) {
+      setSelected(new Set(suggested));
+    }
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const result = await discoverProviderModels(token, {
+        endpoint: normalizeEndpoint(endpoint),
+        key: key.trim(),
+      });
+      setModels(result.models);
+      setPins(defaultPinsFor(suggested, result.models));
+      setError(null);
+      setNote(
+        result.models.length > 0
+          ? `Found ${result.models.length} model${result.models.length === 1 ? '' : 's'} — assign them to purposes below.`
+          : 'The endpoint reported no models. You can still add the purpose profiles — set the model ids per persona in Personas (or per message in the chat picker) afterwards.',
+      );
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : 'Could not reach that endpoint.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectedPurposes = PROVIDER_PURPOSES.filter((p) => selected.has(p));
+  /** True when the endpoint reported models to pin per purpose. */
+  const canPinModels = (models ?? []).length > 0;
+
+  const toggleModel = (purpose: ProviderPurpose, model: string): void => {
+    setPins((prev) => {
+      const current = prev[purpose] ?? [];
+      const has = current.includes(model);
+      const chosen = new Set(has ? current.filter((m) => m !== model) : [...current, model]);
+      // Keep the endpoint's model order — the first pinned model is default.
+      const ordered = (models ?? []).filter((m) => chosen.has(m));
+      return { ...prev, [purpose]: ordered };
+    });
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (busy || disabled) return;
+    if (canPinModels) {
+      const missing = selectedPurposes.filter(
+        (p) => (pins[p] ?? []).length === 0,
+      );
+      if (missing.length > 0) {
+        setError(
+          `Pick at least one model for ${missing.map((p) => purposeLabel(p)).join(', ')}, or uncheck ${missing.length === 1 ? 'that purpose' : 'those purposes'} above.`,
+        );
+        return;
+      }
     }
     const parsedBudget = parseBudgetDollars(budget);
     if (!parsedBudget.ok) {
       setError(parsedBudget.error);
       return;
     }
-    const defaultModels = parseModelList(models);
-
-    const input: ProviderInput = {
-      name: trimmedName,
-      endpoint: normalizeEndpoint(endpoint),
-      purpose,
-      ...(defaultModels.length > 0 ? { defaultModels } : {}),
-      ...(parsedBudget.budgetCents !== null ? { budgetCents: parsedBudget.budgetCents } : {}),
-    };
-
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    const modelPins = Object.fromEntries(
+      selectedPurposes.map((p) => [p, pins[p] ?? []]),
+    ) as Record<ProviderPurpose, string[]>;
     setBusy(true);
     setError(null);
     setNote(null);
     try {
-      const created = await createProvider(token, input);
-      setName('');
+      const result = await createPurposeProviders(token, {
+        endpoint: normalizeEndpoint(endpoint),
+        key: key.trim(),
+        purposes: selectedPurposes,
+        ...(canPinModels ? { modelPins } : {}),
+        ...(parsedBudget.budgetCents !== null
+          ? { budgetCents: parsedBudget.budgetCents }
+          : {}),
+      });
       setEndpoint('');
-      setPurpose('general');
-      setModels('');
+      setKey('');
       setBudget('');
-      setNote(`Provider "${created.name}" added — paste its API key to finish.`);
-      onAdded(created);
+      setModels(null);
+      setPins({});
+      setSelected(new Set());
+      touchedPurposes.current = false;
+      const names = result.created.map((p) => purposeLabel(p.purpose)).join(', ');
+      setNote(`Added ${result.created.length} purpose provider${result.created.length === 1 ? '' : 's'} (${names}).`);
+      onAddedMany(result.created);
     } catch (cause) {
       if (isSessionLost(cause)) {
         onSessionLost();
         return;
       }
-      setError(cause instanceof Error ? cause.message : 'Could not add the provider.');
+      setError(cause instanceof Error ? cause.message : 'Could not add the purpose providers.');
     } finally {
       setBusy(false);
     }
@@ -537,106 +680,187 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
   const formDisabled = busy || disabled;
 
   return (
-    <section className="card add-card" id="add-provider-card" aria-label="Add provider">
-      <h2 className="card-title">Add provider</h2>
+    <section className="card bundle-card" id="purpose-bundle-card" aria-label="Add purpose providers">
+      <h2 className="card-title">Add purpose providers</h2>
       <p className="card-copy">
-        Point Partner at any OpenAI-compatible endpoint. The key is added in a separate step and
-        never stored by the page.
+        One endpoint + one key creates a provider profile per purpose — General, Cheap, Deep,
+        Coding, Vision and Research. Discover the endpoint&rsquo;s models, then choose which model
+        each purpose uses; routing prefers the matching purpose profile automatically. The key is
+        stored once per profile in your OS keychain and never in Partner.
       </p>
-      <form className="form-stack" onSubmit={(event) => void handleSubmit(event)} aria-busy={busy}>
-        <div className="form-field">
-          <label className="label" htmlFor="provider-name">
-            Name
-          </label>
-          <input
-            id="provider-name"
-            className="field"
-            type="text"
-            value={name}
-            disabled={formDisabled}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="My provider"
-            aria-required="true"
-          />
-        </div>
-        <div className="form-field">
-          <label className="label" htmlFor="provider-endpoint">
-            Endpoint
-          </label>
-          <input
-            id="provider-endpoint"
-            className="field"
-            type="text"
-            inputMode="url"
-            autoComplete="off"
-            spellCheck={false}
-            value={endpoint}
-            disabled={formDisabled}
-            onChange={(event) => setEndpoint(event.target.value)}
-            placeholder="https://api.ne1.dev/v1"
-            aria-required="true"
-          />
-        </div>
-        <div className="form-field">
-          <label className="label" htmlFor="provider-purpose">
-            Purpose
-          </label>
-          <select
-            id="provider-purpose"
-            className="field"
-            value={purpose}
-            disabled={formDisabled}
-            onChange={(event) => setPurpose(event.target.value as ProviderPurpose)}
-          >
-            {PROVIDER_PURPOSES.map((option) => (
-              <option key={option} value={option}>
-                {purposeLabel(option)}
-              </option>
-            ))}
-          </select>
-          <p className="field-hint">
-            What this endpoint is best for. Routing prefers the matching purpose, then General.
-          </p>
-        </div>
-        <div className="form-row">
-          <div className="form-field">
-            <label className="label" htmlFor="provider-models">
-              Default models (optional, comma-separated)
-            </label>
-            <input
-              id="provider-models"
-              className="field"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={models}
-              disabled={formDisabled}
-              onChange={(event) => setModels(event.target.value)}
-              placeholder="gpt-4o, gpt-4o-mini"
-            />
-          </div>
-          <div className="form-field">
-            <label className="label" htmlFor="provider-budget">
-              Budget per session, USD (optional)
-            </label>
-            <input
-              id="provider-budget"
-              className="field"
-              type="text"
-              inputMode="decimal"
-              autoComplete="off"
-              value={budget}
-              disabled={formDisabled}
-              onChange={(event) => setBudget(event.target.value)}
-              placeholder="2.50"
-            />
-          </div>
-        </div>
-        <div className="form-actions">
-          <button type="submit" className="btn btn-primary" disabled={formDisabled}>
-            {busy ? 'Adding…' : 'Add provider'}
-          </button>
-        </div>
+
+      <form className="form-stack" onSubmit={(event) => void (models === null ? handleDiscover(event) : handleSubmit(event))} aria-busy={busy}>
+        {models === null ? (
+          <>
+            <div className="form-field">
+              <label className="label" htmlFor="bundle-endpoint">
+                Endpoint
+              </label>
+              <input
+                id="bundle-endpoint"
+                className="field"
+                type="text"
+                inputMode="url"
+                autoComplete="off"
+                spellCheck={false}
+                value={endpoint}
+                disabled={formDisabled}
+                onChange={(event) => setEndpoint(event.target.value)}
+                placeholder="https://api.ne1.dev/v1"
+                aria-required="true"
+              />
+            </div>
+            <div className="form-field">
+              <label className="label" htmlFor="bundle-key">
+                API key
+              </label>
+              <input
+                id="bundle-key"
+                className="field key-field"
+                type="password"
+                autoComplete="new-password"
+                spellCheck={false}
+                value={key}
+                disabled={formDisabled}
+                onChange={(event) => setKey(event.target.value)}
+                placeholder="Paste the API key — one key for all purpose profiles"
+                aria-required="true"
+              />
+              <p className="field-hint">
+                Sent once over the loopback to list the endpoint&rsquo;s models, then stored per
+                profile in the OS keychain. Cleared here after adding.
+              </p>
+            </div>
+            <div className="form-field">
+              <label className="label" htmlFor="bundle-budget">
+                Budget per provider, USD (optional)
+              </label>
+              <input
+                id="bundle-budget"
+                className="field"
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={budget}
+                disabled={formDisabled}
+                onChange={(event) => setBudget(event.target.value)}
+                placeholder="2.50"
+              />
+              <p className="field-hint">
+                Applied to every created purpose profile; an empty budget means no cap. Remove a
+                profile to drop its cap.
+              </p>
+            </div>
+            <div className="bundle-purposes" role="group" aria-label="Purposes to create">
+              <div className="bundle-purposes-head">
+                <span className="label bundle-purposes-legend">Purposes</span>
+                <span className="bundle-purposes-actions">
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => tickAll(true)}
+                    disabled={formDisabled}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => tickAll(false)}
+                    disabled={formDisabled}
+                  >
+                    None
+                  </button>
+                </span>
+              </div>
+              <div className="bundle-purpose-row" role="group">
+                {PROVIDER_PURPOSES.map((purpose) => (
+                  <label key={purpose} className="bundle-purpose-pick">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(purpose)}
+                      disabled={formDisabled}
+                      onChange={() => toggle(purpose)}
+                      aria-label={`${purposeLabel(purpose)} provider`}
+                    />
+                    {purposeLabel(purpose)}
+                  </label>
+                ))}
+              </div>
+              <p className="field-hint">
+                Tick only the purposes this endpoint should serve. If you already have purpose
+                providers for another endpoint, a dedicated endpoint usually adds just one — for
+                example Vision for a second vision provider.
+              </p>
+            </div>
+            <div className="form-actions">
+              <button type="submit" className="btn btn-primary" disabled={formDisabled}>
+                {busy ? 'Discovering…' : 'Discover models'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="bundle-assign" role="group" aria-label="Assign models to purposes">
+              {canPinModels ? (
+                <p className="form-hint bundle-assign-heading">
+                  Pick which model(s) each purpose may use. The first picked model is that
+                  purpose&rsquo;s default when a persona has no override — these models also show in
+                  the chat model picker under each purpose.
+                </p>
+              ) : (
+                <p className="form-hint bundle-assign-heading" role="status">
+                  This endpoint reported no models, so the purpose profiles are added without
+                  defaults. Set a model id per persona in Personas (or per message in the chat
+                  picker) to use them.
+                </p>
+              )}
+              {selectedPurposes.map((purpose) => (
+                <div key={purpose} className="bundle-assign-row">
+                  <span className="bundle-assign-purpose">{purposeLabel(purpose)}</span>
+                  <div className="bundle-assign-models">
+                    {(models ?? []).map((model) => {
+                      const on = (pins[purpose] ?? []).includes(model);
+                      return (
+                        <label
+                          key={model}
+                          className={on ? 'chip bundle-model-chip is-on' : 'chip bundle-model-chip'}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            disabled={formDisabled}
+                            onChange={() => toggleModel(purpose, model)}
+                            aria-label={`${model}${isImageCapableModel(model) ? ' (vision)' : ''} for ${purposeLabel(purpose)}`}
+                          />
+                          {model}
+                          {isImageCapableModel(model) ? ' · vision' : ''}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="form-actions bundle-assign-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setModels(null);
+                  setNote(null);
+                  setError(null);
+                }}
+                disabled={formDisabled}
+              >
+                ‹ Endpoint
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={formDisabled}>
+                {busy ? 'Adding…' : 'Add purpose providers'}
+              </button>
+            </div>
+          </>
+        )}
         <div className="form-feedback" aria-live="polite">
           {error ? (
             <p className="form-error" role="alert">
@@ -651,9 +875,6 @@ function AddProviderCard({ disabled, onAdded, onSessionLost }: AddProviderCardPr
   );
 }
 
-// ---------------------------------------------------------------------------
-// Connect llm-self-service import card
-// ---------------------------------------------------------------------------
 
 interface ImportCardProps {
   disabled: boolean;

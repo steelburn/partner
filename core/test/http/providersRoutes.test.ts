@@ -515,6 +515,36 @@ describe('provider CRUD routes', () => {
     }
   });
 
+  it('test() NEVER clobbers curated default models (M13 purpose pins survive)', async () => {
+    const upstream = await track(await startFakeUpstream());
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const created = await request(h.app)
+        .post('/v1/providers')
+        .set(authed(token))
+        .send({ name: 'curated', endpoint: upstream.base, defaultModels: ['gpt-4o'] });
+      const id = (created.body as { id: string }).id;
+      await request(h.app).post(`/v1/providers/${id}/key`).set(authed(token)).send({ key: PROVISIONED_KEY });
+
+      const test = await request(h.app).post(`/v1/providers/${id}/test`).set(authed(token));
+      expect(test.status).toBe(200);
+      // The curated list is untouched — the upstream's FULL list (which also
+      // contains gpt-4.1-mini) stays out of defaultModels.
+      expect(test.body).toMatchObject({
+        defaultModels: ['gpt-4o'],
+        health: { ok: true, models: ['gpt-4o', 'gpt-4.1-mini'] },
+      });
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      const row = (listed.body as { providers: Array<{ id: string; defaultModels: string[] }> }).providers.find(
+        (p) => p.id === id,
+      );
+      expect(row?.defaultModels).toEqual(['gpt-4o']);
+    } finally {
+      h.close();
+    }
+  });
+
   it('DELETE removes the row AND the keychain entry (204)', async () => {
     const h = demoHarness();
     try {
@@ -1072,6 +1102,275 @@ describe('M10 cumulative spend ledger (route-level enforcement)', () => {
       expect(JSON.stringify(charged)).not.toContain('charge me');
     } finally {
       h.close();
+    }
+  });
+});
+
+describe('M13 purpose-provider bundle route', () => {
+  function startModelsUpstream(models: string[], status = 200): Promise<{ base: string; close(): Promise<void> }> {
+    return new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        const path = (req.url ?? '').split('?')[0] ?? '';
+        if (path === '/models') {
+          if (status !== 200) {
+            res.writeHead(status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'boom' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+          return;
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'nf' }));
+      });
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server.address() as AddressInfo;
+        resolve({
+          base: `http://127.0.0.1:${port}`,
+          close(): Promise<void> {
+            return new Promise((done) => {
+              server.closeAllConnections();
+              server.close(() => done());
+            });
+          },
+        });
+      });
+    });
+  }
+
+  const BUNDLE_KEY = 'sk-bundle-secret-1234567890';
+
+  it('creates one provider per purpose from one endpoint+key; key lands in each keychain item', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o', 'llama-3.1-8b']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY });
+      expect(res.status).toBe(201);
+      const body = res.body as { created: Array<{ id: string; purpose: string; defaultModels: string[] }>; models: string[] };
+      expect(body.models).toEqual(['gpt-4o', 'llama-3.1-8b']);
+      expect(body.created).toHaveLength(6);
+      expect(body.created.map((p) => p.purpose)).toEqual(['general', 'cheap', 'deep', 'coding', 'vision', 'research']);
+      const vision = body.created.find((p) => p.purpose === 'vision');
+      expect(vision?.defaultModels).toEqual(['gpt-4o']); // vision-capable only
+      const general = body.created.find((p) => p.purpose === 'general');
+      expect(general?.defaultModels).toEqual(['gpt-4o', 'llama-3.1-8b']);
+      // The key never appears in the response or the DB — only the keychain.
+      expect(JSON.stringify(res.body)).not.toContain(BUNDLE_KEY);
+      for (const p of body.created) {
+        await expect(h.keychain.get('partner', `provider:${p.id}`)).resolves.toBe(BUNDLE_KEY);
+      }
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      expect((listed.body as { providers: unknown[] }).providers).toHaveLength(6);
+      expect(JSON.stringify(listed.body)).not.toContain(BUNDLE_KEY);
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('honors an explicit purposes subset in PROVIDER_PURPOSES order', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY, purposes: ['research', 'vision'] });
+      expect(res.status).toBe(201);
+      const created = (res.body as { created: Array<{ purpose: string }> }).created;
+      expect(created.map((p) => p.purpose)).toEqual(['vision', 'research']); // canonical order wins
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('validates: bad purpose / empty purposes / missing key all 400; unauthed 401', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const bad = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY, purposes: ['telepathy'] });
+      expect(bad.status).toBe(400);
+      const empty = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY, purposes: [] });
+      expect(empty.status).toBe(400);
+      const noKey = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base });
+      expect(noKey.status).toBe(400);
+      const unauthed = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set({ Host: ALLOWED_HOST })
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY });
+      expect(unauthed.status).toBe(401);
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      expect((listed.body as { providers: unknown[] }).providers).toHaveLength(0);
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('surfaces an upstream failure as 502 without creating any profile', async () => {
+    const upstream = await startModelsUpstream([], 500);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY });
+      expect(res.status).toBe(502);
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      expect((listed.body as { providers: unknown[] }).providers).toHaveLength(0);
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('modelPins: each purpose profile carries EXACTLY the pinned models', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o', 'llama-3.1-8b', 'deepseek-r1']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({
+          endpoint: upstream.base,
+          key: BUNDLE_KEY,
+          purposes: ['general', 'coding', 'vision'],
+          modelPins: {
+            general: ['llama-3.1-8b'],
+            coding: ['deepseek-r1', 'gpt-4o'],
+            vision: ['gpt-4o'],
+          },
+        });
+      expect(res.status).toBe(201);
+      const created = (res.body as { created: Array<{ purpose: string; defaultModels: string[] }> }).created;
+      const byPurpose = Object.fromEntries(created.map((p) => [p.purpose, p.defaultModels]));
+      expect(byPurpose.general).toEqual(['llama-3.1-8b']);
+      expect(byPurpose.coding).toEqual(['deepseek-r1', 'gpt-4o']); // order kept = default first
+      expect(byPurpose.vision).toEqual(['gpt-4o']);
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('applies an optional budgetCents to every created purpose profile', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY, purposes: ['general', 'vision'], budgetCents: 250 });
+      expect(res.status).toBe(201);
+      const created = (res.body as { created: Array<{ budgetCents: number | null }> }).created;
+      expect(created.map((p) => p.budgetCents)).toEqual([250, 250]);
+      // A non-numeric cap is refused and nothing is created.
+      const bad = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY, purposes: ['general'], budgetCents: 'lots' });
+      expect(bad.status).toBe(400);
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      expect((listed.body as { providers: unknown[] }).providers).toHaveLength(2);
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('modelPins: rejects missing purposes, empty lists, unknown keys and off-list models', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o', 'llama-3.1-8b']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const post = async (modelPins: unknown, purposes?: string[]): Promise<number> => {
+        const res = await request(h.app)
+          .post('/v1/providers/purposes')
+          .set(authed(token))
+          .send({
+            endpoint: upstream.base,
+            key: BUNDLE_KEY,
+            purposes: purposes ?? ['general', 'vision'],
+            modelPins,
+          });
+        return res.status;
+      };
+      // Every requested purpose must be pinned.
+      expect(await post({ general: ['gpt-4o'] })).toBe(400);
+      // Empty pin list.
+      expect(await post({ general: ['gpt-4o'], vision: [] })).toBe(400);
+      // Unknown purpose key inside the pins.
+      expect(await post({ general: ['gpt-4o'], vision: ['llama-3.1-8b'], telepathy: ['x'] })).toBe(400);
+      // A model the provider did not report.
+      expect(await post({ general: ['gpt-4o'], vision: ['not-a-real-model'] })).toBe(400);
+      // Nothing was created by any failed attempt.
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      expect((listed.body as { providers: unknown[] }).providers).toHaveLength(0);
+    } finally {
+      h.close();
+      await upstream.close();
+    }
+  });
+
+  it('discover returns the upstream models for an endpoint+key without persisting', async () => {
+    const upstream = await startModelsUpstream(['gpt-4o', 'llama-3.1-8b']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/discover')
+        .set(authed(token))
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ endpoint: upstream.base, models: ['gpt-4o', 'llama-3.1-8b'] });
+      expect(JSON.stringify(res.body)).not.toContain(BUNDLE_KEY);
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      expect((listed.body as { providers: unknown[] }).providers).toHaveLength(0);
+      // Guards: missing key 400, bad endpoint 400, unauthed 401, upstream 502.
+      const noKey = await request(h.app)
+        .post('/v1/providers/discover')
+        .set(authed(token))
+        .send({ endpoint: upstream.base });
+      expect(noKey.status).toBe(400);
+      const unauthed = await request(h.app)
+        .post('/v1/providers/discover')
+        .set({ Host: ALLOWED_HOST })
+        .send({ endpoint: upstream.base, key: BUNDLE_KEY });
+      expect(unauthed.status).toBe(401);
+      const broken = await startModelsUpstream([], 500);
+      try {
+        const failing = await request(h.app)
+          .post('/v1/providers/discover')
+          .set(authed(token))
+          .send({ endpoint: broken.base, key: BUNDLE_KEY });
+        expect(failing.status).toBe(502);
+      } finally {
+        await broken.close();
+      }
+    } finally {
+      h.close();
+      await upstream.close();
     }
   });
 });

@@ -581,6 +581,18 @@ apps/partner/
       ux_audit gates stay green. *Exit: PLAN-M12 P0–P2 ticked; geometry
       gates at 1440/1280/1024/900/780 (no overflow, composer ≥ 320px @900);
       light+dark+custom walks green; fresh-context review closed.*
+- [ ] **M13 — Purpose providers & in-session model switch (detailed spec:
+      `PLAN-M13.md`).** Image-turn vision handoff (implicit text-model
+      turns with an attached photo reroute to a vision-capable model;
+      explicit picks never overridden; shared vision capability in
+      `shared/src/vision.ts`); per-message model picker in chat
+      (`providerId` + `model` per turn); purpose-provider bundle with model
+      assignment (`POST /v1/providers/discover` + `/v1/providers/purposes`
+      `modelPins`: one endpoint + key → one profile per purpose carrying
+      exactly the models you choose, first = default; key in each keychain
+      item). *Exit: core 681 · web 470 ·
+      typechecks 0 · ux_audit green on new UI · live manual walk
+      (env-gated).*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

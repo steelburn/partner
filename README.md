@@ -49,6 +49,29 @@ browser-actuator research capture (real Chrome + installed native host), and
 the S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
 
+### M13 — purpose providers & in-session model switch (2026-09-06)
+
+Providers can be set up **by purpose** (General · Cheap · Deep · Coding ·
+Vision · Research) from one endpoint + key: discover the endpoint's models,
+**assign which model(s) each purpose uses** (first = default), optionally cap
+spend per profile, then
+`POST /v1/providers/purposes` creates one profile per purpose with those
+pins (no pins = heuristic: vision keeps image-capable models, others the
+full list); the single key lands in each profile's keychain item. The
+standalone single-provider add form is gone — the purpose card is the only
+add surface (the single-provider create route stays for API clients and the
+llm-self-service import). Chat
+has a **per-message model picker** (Auto = persona routing, or any
+provider's models grouped by purpose, vision-marked), backed by a per-turn
+`providerId` pin that wins over persona pinning and purpose routing.
+Attached photos now reach a vision model: an implicit turn whose model
+can't see images is rerouted to the best vision-capable model
+(`chat.vision_reroute` audit), an explicit pick is never overridden, and
+vision capability lives in one shared module (`shared/src/vision.ts`)
+used by core and web alike. Spec: `PLAN-M13.md`.
+Suites after the pass: core 681 (5 env-gated skips) · web 470 · typechecks
+0 · ux_audit green on the new picker + bundle card.
+
 ### M12 capability pass — personas can actually use web search (2026-09-06)
 
 Chat personas now know what they may do: every persona turn declares its

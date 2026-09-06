@@ -6070,3 +6070,169 @@ select {
     --rail-w: 200px;
   }
 }
+
+/* --- M13 chat per-message model picker ------------------------------------- */
+
+.chat-model-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1) 0 0;
+}
+
+.chat-model-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.chat-model-caption {
+  margin-bottom: 0;
+}
+
+.chat-model-select {
+  max-width: min(420px, 72vw);
+  font-size: var(--fs-sm);
+  padding: 2px var(--space-1);
+}
+
+.chat-model-note {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* --- M13 purpose-provider bundle card -------------------------------------- */
+
+.bundle-purposes {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--space-1);
+}
+
+.bundle-purpose-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.bundle-purpose-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.chat-model-select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-color: var(--focus);
+}
+
+.chat-model-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bundle-purpose-pick input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.bundle-purpose-pick input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- M13 purpose bundle assignment (model chips per purpose) ---------------- */
+
+.bundle-assign {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: var(--space-1);
+}
+
+.bundle-assign-heading {
+  margin-bottom: 0;
+}
+
+.bundle-assign-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.bundle-assign-purpose {
+  flex: none;
+  width: 84px;
+  padding-top: var(--space-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+}
+
+.bundle-assign-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.bundle-model-chip {
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 1px solid transparent;
+}
+
+.bundle-model-chip input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.bundle-model-chip.is-on {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--surface);
+}
+
+.bundle-model-chip input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.bundle-model-chip input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bundle-purposes-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.bundle-purposes-legend {
+  margin-bottom: 0;
+}
+
+.bundle-purposes-actions {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.bundle-purposes-actions .btn-link {
+  font-size: var(--fs-xs);
+  padding: 0;
+}

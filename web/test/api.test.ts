@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ApiRequestError,
   asChatEvent,
+  createPurposeProviders,
+  discoverProviderModels,
   fetchDemoPairCode,
   requestPair,
   streamChat,
@@ -256,5 +258,96 @@ describe('streamChat', () => {
     expect(body.personaId).toBe('p-1');
     // No user message rides a resume round — the stored history is the turn.
     expect(body.messages).toEqual([]);
+  });
+});
+
+describe('M13 per-turn model picker payloads', () => {
+  const event = (e: ChatEvent) => `data: ${JSON.stringify(e)}\n\n`;
+
+  it('streamChat sends providerId + model for an explicit per-turn pick', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      streamResponse([event({ type: 'done', model: 'gpt-4o', latencyMs: 3 })]),
+    );
+    const result = await streamChat({
+      token: 'tok-secret',
+      content: 'look at the photo',
+      personaId: 'p-1',
+      providerId: 'prov-vision',
+      model: 'gpt-4o',
+      onEvent: () => undefined,
+      fetchImpl,
+    });
+    expect(result).toEqual({ ok: true });
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    expect(body.providerId).toBe('prov-vision');
+    expect(body.model).toBe('gpt-4o');
+    expect(body.personaId).toBe('p-1');
+  });
+
+  it('streamChat omits providerId when Auto (no per-turn pick)', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      streamResponse([event({ type: 'done', model: 'demo', latencyMs: 3 })]),
+    );
+    await streamChat({ token: 't', content: 'hi', onEvent: () => undefined, fetchImpl });
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    expect(body.providerId).toBeUndefined();
+    expect(body.model).toBeUndefined();
+  });
+
+  it('createPurposeProviders posts endpoint+key+purposes and parses the created set', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({
+        created: [{ id: 'p-vision', purpose: 'vision', defaultModels: ['gpt-4o'] }],
+        models: ['gpt-4o', 'llama-3.1-8b'],
+      }),
+    );
+    const result = await createPurposeProviders(
+      'tok-secret',
+      { endpoint: 'https://api.ne1.dev/v1', key: 'sk-bundle', purposes: ['vision', 'coding'] },
+      { fetchImpl },
+    );
+    expect(result.created[0]?.purpose).toBe('vision');
+    expect(calls[0]?.input).toBe('/v1/providers/purposes');
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      endpoint: 'https://api.ne1.dev/v1',
+      key: 'sk-bundle',
+      purposes: ['vision', 'coding'],
+    });
+    expect(calls[0]?.init?.headers).toMatchObject({ authorization: 'Bearer tok-secret' });
+  });
+
+  it('createPurposeProviders sends per-purpose model pins (first = default)', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ created: [{ id: 'p-vision', purpose: 'vision' }], models: ['gpt-4o'] }),
+    );
+    await createPurposeProviders(
+      'tok-secret',
+      {
+        endpoint: 'https://api.ne1.dev/v1',
+        key: 'sk-bundle',
+        purposes: ['vision', 'coding'],
+        modelPins: { vision: ['gpt-4o'], coding: ['deepseek-r1'] },
+      },
+      { fetchImpl },
+    );
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    expect(body.modelPins).toEqual({ vision: ['gpt-4o'], coding: ['deepseek-r1'] });
+  });
+
+  it('discoverProviderModels posts endpoint+key to discover and parses the model list', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ endpoint: 'https://api.ne1.dev/v1', models: ['gpt-4o', 'llama-3.1-8b'] }),
+    );
+    const result = await discoverProviderModels('tok-secret', {
+      endpoint: 'https://api.ne1.dev/v1',
+      key: 'sk-bundle',
+    }, { fetchImpl });
+    expect(result.models).toEqual(['gpt-4o', 'llama-3.1-8b']);
+    expect(calls[0]?.input).toBe('/v1/providers/discover');
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      endpoint: 'https://api.ne1.dev/v1',
+      key: 'sk-bundle',
+    });
   });
 });

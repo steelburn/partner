@@ -395,3 +395,80 @@ describe('M12 capability declaration in the persona chat context', () => {
     }
   });
 });
+
+describe('M13 per-turn provider pin (chat model picker)', () => {
+  let upstreamA: Awaited<ReturnType<typeof startCaptureUpstream>> | null = null;
+  let upstreamB: Awaited<ReturnType<typeof startCaptureUpstream>> | null = null;
+
+  afterEach(async () => {
+    await upstreamA?.close();
+    await upstreamB?.close();
+    upstreamA = null;
+    upstreamB = null;
+  });
+
+  it('an explicit providerId + model rides that provider for one turn (persona pin ignored)', async () => {
+    upstreamA = await startCaptureUpstream();
+    upstreamB = await startCaptureUpstream();
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const idA = await registerProvider(h, token, upstreamA.base);
+      const idB = await registerProvider(h, token, upstreamB.base);
+      await routePersona(h, token, 'p-analyst', idA);
+
+      // Persona-default turn goes to A.
+      const plain = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-analyst', messages: [{ role: 'user', content: 'hi' }] });
+      expect(plain.status).toBe(200);
+      expect(upstreamA.calls).toHaveLength(1);
+
+      // Explicit per-turn model switch: B serves gpt-4o-x for THIS turn.
+      const switched = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          personaId: 'p-analyst',
+          providerId: idB,
+          model: 'gpt-4o-x',
+          messages: [{ role: 'user', content: 'now on the other provider' }],
+        });
+      expect(switched.status).toBe(200);
+      expect(upstreamA.calls).toHaveLength(1); // unchanged
+      expect(upstreamB.calls).toHaveLength(1);
+      expect(upstreamB.calls[0]?.body.model).toBe('gpt-4o-x');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('rejects an unknown (404) or disabled (400) explicit provider', async () => {
+    upstreamA = await startCaptureUpstream();
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const idA = await registerProvider(h, token, upstreamA.base);
+      const ghost = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ providerId: 'nope', model: 'x', messages: [{ role: 'user', content: 'hi' }] });
+      expect(ghost.status).toBe(404);
+
+      // A provider created disabled cannot be pinned (400 provider_disabled).
+      const off = await request(h.app)
+        .post('/v1/providers')
+        .set(authed(token))
+        .send({ name: 'offline', endpoint: upstreamA.base, defaultModels: ['x'], enabled: false });
+      expect(off.status).toBe(201);
+      const disabled = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ providerId: off.body.id, model: 'x', messages: [{ role: 'user', content: 'hi' }] });
+      expect(disabled.status).toBe(400);
+    } finally {
+      h.close();
+    }
+  });
+});
