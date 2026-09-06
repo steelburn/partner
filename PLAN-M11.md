@@ -199,6 +199,20 @@ production build green):
       the dragged item, HTML5 DnD guarded by the rail lock. The per-row
       move select remains as the accessible fallback.
 
+- [x] **F5 live sweep (this auto pass)** — demo core + Vite, headless browser:
+      paired; chat turn rendered with Copy / Save-to-Assets actions; Notes
+      quick-capture opens via ＋ Note; Providers show MCP + Internet-search
+      panels; Themes studio renders. **Zero console errors**; proof
+      screenshots captured. (Purpose filter chips correctly only appear once
+      providers exist; light/dark toggle verified in an earlier session.)
+      Remaining manual polish: per-surface light/dark/custom walkthrough on
+      the packaged app (checklist in docs/theme-conformance.md).
+- [ ] **Deferred (post-review):** extension-chrome theme stream (popup is an
+      env-gated placeholder linking to the web UI — wiring the NM theme
+      command waits until the popup grows); A/B persona studio (design-level
+      UI comparing two personas on one prompt needs a review pass);
+      drag-to-move keyboard drag alternative & more M11 extras.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet
