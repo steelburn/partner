@@ -6,8 +6,17 @@
  * UI (choices F9, assets F10, results F2). It is a plain string — no model
  * state, no hidden prompts — and never enters audit (owner data, like the
  * persona system prompt itself).
+ *
+ * M12 capability pass: the same system message also carries a DETERMINISTIC
+ * capability declaration so a persona can honestly "check what it can do"
+ * before acting: its independence level is always declared in chat (the
+ * starter prompt says "respect the declared independence level" but nothing
+ * declared it), and the internet-search tool grammar is appended ONLY when
+ * the persona could actually run it (backend enabled, auto/autonomous, not
+ * banned). Default-deny: other personas are never told the search tool
+ * exists.
  */
-import type { ChatMessage } from '@partner/shared';
+import type { ChatMessage, IndependenceLevel } from '@partner/shared';
 
 /** Feature-flagged instruction blocks (id -> text). Order is stable. */
 const INSTRUCTIONS: ReadonlyArray<readonly [string, string]> = [
@@ -75,6 +84,54 @@ export const DEFAULT_STRUCTURED_FEATURES: ReadonlySet<string> = new Set([
  * carries the persona identity (no persona -> the caller's messages are
  * untouched, matching pre-M11 one-shot chat byte-for-byte).
  */
+/** Plain-language meaning of each independence level (mirrors the M9 gate
+ *  matrix in playbooks/gate.ts + the persona editor explainers). */
+const INDEPENDENCE_MEANINGS: Record<IndependenceLevel, string> = {
+  assist: 'answer and propose only — you never execute tools or prompt for permission (tool use starts at higher levels)',
+  suggest: 'execute low-risk tools when granted; propose medium- and high-risk actions for approval',
+  auto: 'execute low- and medium-risk tools when consent covers them; propose high-risk actions for approval',
+  autonomous: 'act within your configured envelope — execute what is granted, propose the rest',
+};
+
+/** Deterministic declaration appended to a persona's chat system prompt so
+ *  the model can reason about what it may do ("check capability"). Same
+ *  input, same string. */
+export function independenceDeclaration(level: IndependenceLevel): string {
+  const meaning = INDEPENDENCE_MEANINGS[level] ?? INDEPENDENCE_MEANINGS.assist;
+  return `Your independence level is ${level}: ${meaning}.`;
+}
+
+/** Deterministic internet-search tool instruction. Appended to the persona
+ *  system message ONLY when the search backend is enabled AND the persona
+ *  can direct-execute it (auto/autonomous, not banned) — see
+ *  canRunSearchTool in the chat route. */
+export const SEARCH_TOOL_INSTRUCTION = [
+  'Internet search is available to you (the user enabled it and your independence level lets you run it).',
+  'When you need current web information, emit ONE directive on its own line inside your reply:',
+  '',
+  '[[partner:tool search {"query":"<what to look up>"}]]',
+  '',
+  'Rules: only when a live web lookup is genuinely needed; never for local files, notes or conversation history;',
+  'results are added to the conversation as a note AFTER your reply — if your answer depends on them, say you',
+  "are looking it up and answer on the following turn; never invent titles, URLs or facts; never emit this",
+  'directive for any other tool.',
+].join('\n');
+
+/** Deterministic internet-search instruction for SUGGEST personas: the tool
+ *  exists but every use needs the user's approval (the directive queues an
+ *  approval row the user decides in the Files queue). Appended only when the
+ *  backend is enabled and the persona is suggest (not banned). */
+export const SEARCH_TOOL_APPROVAL_INSTRUCTION = [
+  'Internet search is enabled, but your independence level requires the user to approve each use.',
+  'When you need current web information, emit ONE directive on its own line inside your reply:',
+  '',
+  '[[partner:tool search {"query":"<what to look up>"}]]',
+  '',
+  'Rules: emitting it queues an approval request the user decides (Files queue); do not claim the search ran',
+  'until you see its results; results arrive as a note AFTER the approval — say you are looking it up and',
+  'answer on the following turn; never invent titles, URLs or facts; never emit this directive for any other tool.',
+].join('\n');
+
 export function applyStructuredGuidance(
   out: ChatMessage[],
   personaSystemIndex: number,

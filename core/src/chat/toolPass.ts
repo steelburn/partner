@@ -45,6 +45,9 @@ export interface ChatToolBrokerLike {
       params: Record<string, unknown>;
       risk: ToolRisk;
       requestedBy: 'persona';
+      /** M12 external approvals: conversation + persona behind the ask. */
+      conversationId?: string | null;
+      personaId?: string | null;
     }): string;
   };
 }
@@ -52,6 +55,8 @@ export interface ChatToolBrokerLike {
 export interface ChatToolPassDeps {
   persona: Persona;
   broker: ChatToolBrokerLike;
+  /** Conversation the outcome notes land in (persisted persona chat). */
+  conversationId?: string | null;
   /**
    * M11 F2/F2-MCP external tools (network search, MCP servers…): each entry
    * contributes manifests, an allow() gate (default-deny) and an exec() that
@@ -222,12 +227,38 @@ async function handleDirective(
 
   if (gate.decision === 'queued') {
     if (owner !== undefined) {
-      // External tools only run at levels the gate allowed as granted
-      // (medium risk needs auto+); there is no project approval queue here.
+      // External tool whose gate wants approval (suggest proposing a medium-
+      // risk external like web search). Queue a persona-requested approval
+      // row: the user decides it from the Files queue and an approval
+      // executes the tool ONCE (see the /v1/tools/pending/:id route). There
+      // is no project grant for external tools — the enabled backend + the
+      // user's approval IS the consent.
+      if (!broker.pending) {
+        appendSystemNote(
+          `The tool "${toolId}" needs your approval, but approvals are unavailable — nothing ran.`,
+        );
+        return { toolId, decision: 'refused', reason: 'no_approval_channel' };
+      }
+      if (deps.conversationId === undefined || deps.conversationId === null || deps.conversationId === '') {
+        appendSystemNote(
+          `The tool "${toolId}" needs a conversation to approve into — nothing ran.`,
+        );
+        return { toolId, decision: 'refused', reason: 'missing_conversation' };
+      }
+      const pendingId = broker.pending.enqueue({
+        toolId,
+        projectId: '',
+        params: args,
+        risk: manifest.risk,
+        requestedBy: 'persona',
+        conversationId: deps.conversationId,
+        personaId: persona.id,
+      });
       appendSystemNote(
-        `The tool "${toolId}" needs an auto-or-above persona with the backend enabled — nothing ran.`,
+        `The persona requested tool "${toolId}" — it is awaiting your approval ` +
+          `(pending ${pendingId}). Approve or deny it from the Files queue.`,
       );
-      return { toolId, decision: 'refused', reason: 'needs_grant_or_level' };
+      return { toolId, decision: 'queued', pendingId };
     }
     if (projectId === '') {
       appendSystemNote(

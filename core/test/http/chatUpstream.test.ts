@@ -36,7 +36,13 @@ interface AnyServerEvent {
 // ---------------------------------------------------------------------------
 
 interface CapturedChat {
-  body: { model: string; messages: ChatMessage[]; temperature?: number; stream: boolean };
+  body: {
+    model: string;
+    messages: ChatMessage[];
+    temperature?: number;
+    stream: boolean;
+    tools?: unknown[];
+  };
 }
 
 function startCaptureUpstream(): Promise<{ base: string; calls: CapturedChat[]; close(): Promise<void> }> {
@@ -261,6 +267,129 @@ describe('chat upstream context (multi-turn + persona identity)', () => {
       expect(body?.temperature).toBeUndefined();
       // No done_meta: not persisted.
       expect(res.text).not.toContain('done_meta');
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('M12 capability declaration in the persona chat context', () => {
+  let upstream: Awaited<ReturnType<typeof startCaptureUpstream>> | null = null;
+
+  afterEach(async () => {
+    await upstream?.close();
+    upstream = null;
+  });
+
+  const setIndependence = async (h: Harness, token: string, personaId: string, level: string): Promise<void> => {
+    const res = await request(h.app)
+      .put(`/v1/personas/${personaId}`)
+      .set(authed(token))
+      .send({ independence: { level, requireHumanFor: ['high'], autoScopes: [] } });
+    expect(res.status).toBe(200);
+  };
+
+  it('declares the level always; search grammar only when enabled AND the persona can run it', async () => {
+    upstream = await startCaptureUpstream();
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const providerId = await registerProvider(h, token, upstream.base);
+      await routePersona(h, token, 'p-builder', providerId);
+      // p-builder seeds at auto; raise to autonomous (direct-executes
+      // whatever the envelope grants).
+      await setIndependence(h, token, 'p-builder', 'autonomous');
+
+      const systemOf = async (personaId: string): Promise<string> => {
+        const res = await request(h.app)
+          .post('/v1/chat')
+          .set(authed(token))
+          .send({ personaId, messages: [{ role: 'user', content: 'ping' }] });
+        expect(res.status).toBe(200);
+        const body = upstream?.calls[upstream.calls.length - 1]?.body;
+        return String(body?.messages[0]?.content ?? '');
+      };
+
+      // 1. Backend OFF (default-deny): the level IS declared, the tool is NOT.
+      let system = await systemOf('p-builder');
+      expect(system).toContain('Your independence level is autonomous');
+      expect(system).not.toContain('[[partner:tool search');
+
+      // 2. Backend ON: an autonomous persona is told the grammar.
+      const search = h.search;
+      expect(search).toBeDefined();
+      search!.updateConfig({ enabled: true, provider: 'tavily' });
+      await search!.setKey('sk-capability-test-12345678');
+      system = await systemOf('p-builder');
+      expect(system).toContain('Your independence level is autonomous');
+      expect(system).toContain('Internet search is available to you');
+      expect(system).toContain('[[partner:tool search {"query":"<what to look up>"}]]');
+
+      // 3. Assist persona (p-default): level declared, tool NOT announced —
+      // an assist persona can never execute tools (gate refuses always).
+      await routePersona(h, token, 'p-default', providerId);
+      const assistSystem = await systemOf('p-default');
+      expect(assistSystem).toContain('Your independence level is assist');
+      expect(assistSystem).not.toContain('partner:tool search');
+
+      // 4. Suggest persona with the backend on: the APPROVAL grammar is
+      // announced (medium-risk external -> every use queues an approval),
+      // not the direct-run grammar.
+      await setIndependence(h, token, 'p-default', 'suggest');
+      const suggestSystem = await systemOf('p-default');
+      expect(suggestSystem).toContain('Your independence level is suggest');
+      expect(suggestSystem).toContain('[[partner:tool search {"query":"<what to look up>"}]]');
+      expect(suggestSystem).toContain('approve each use');
+      expect(suggestSystem).not.toContain('lets you run it');
+
+      // 5. Banned at autonomous: no announcement even when the backend is on.
+      const ban = await request(h.app)
+        .put('/v1/personas/p-builder')
+        .set(authed(token))
+        .send({ policy: { tools: { banned: ['search'] } } });
+      expect(ban.status).toBe(200);
+      system = await systemOf('p-builder');
+      expect(system).toContain('Your independence level is autonomous');
+      expect(system).not.toContain('partner:tool search');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('advertises the native search function only to runnable personas (tools:true)', async () => {
+    upstream = await startCaptureUpstream();
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const providerId = await registerProvider(h, token, upstream.base);
+      const search = h.search;
+      expect(search).toBeDefined();
+      search!.updateConfig({ enabled: true, provider: 'tavily' });
+      await search!.setKey('sk-capability-native-12345678');
+      await routePersona(h, token, 'p-builder', providerId); // auto
+
+      const advertised = async (): Promise<unknown[]> => {
+        const res = await request(h.app)
+          .post('/v1/chat')
+          .set(authed(token))
+          .send({ personaId: 'p-builder', messages: [{ role: 'user', content: 'ping' }], tools: true });
+        expect(res.status).toBe(200);
+        const body = upstream?.calls[upstream.calls.length - 1]?.body;
+        return (body?.tools as unknown[] | undefined) ?? [];
+      };
+      const names = (tools: unknown[]): string[] =>
+        tools.map((t) => (t as { function?: { name?: string } }).function?.name ?? '');
+
+      // Enabled + auto persona: the search function is advertised.
+      expect(names(await advertised())).toContain('search');
+
+      // Banned persona: search is never advertised (files.* may still be).
+      const ban = await request(h.app)
+        .put('/v1/personas/p-builder')
+        .set(authed(token))
+        .send({ policy: { tools: { banned: ['search'] } } });
+      expect(ban.status).toBe(200);
+      expect(names(await advertised())).not.toContain('search');
     } finally {
       h.close();
     }

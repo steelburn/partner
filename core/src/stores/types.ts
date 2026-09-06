@@ -224,6 +224,10 @@ export interface PendingToolRow {
   /** 'approve' | 'deny' | null while open. */
   decision: string | null;
   decidedBy: string | null;
+  /** M12 search approvals: conversation to post the outcome note into. */
+  conversationId: string | null;
+  /** M12 search approvals: persona behind the request (queue tagging). */
+  personaId: string | null;
 }
 
 export interface PendingToolStore {

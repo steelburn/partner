@@ -48,3 +48,29 @@ are manual / env-gated: the per-surface light/dark/custom theme walkthrough
 browser-actuator research capture (real Chrome + installed native host), and
 the S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
+
+### M12 capability pass — personas can actually use web search (2026-09-06)
+
+Chat personas now know what they may do: every persona turn declares its
+independence level, and when the internet-search backend is enabled
+(Providers → Internet search) the persona is told the tool exists with the
+exact directive grammar to call it:
+
+- **auto / autonomous** — run `search` directly (the enabled backend is the
+  consent); results land as a system note for the next turn.
+- **suggest** — every search request queues an approval in the Files queue
+  (tagged with the persona, showing the truncated query); **Approve** runs
+  the search once and posts the result note into the conversation, **Deny**
+  posts a denial note. No grant is ever created (external tools have no
+  project root).
+- **assist** — chat/proposals only; never offered the tool and never asked
+  to approve (approvals start at Suggest).
+
+Persona tool bans are respected everywhere; disabled/assist personas are
+never even told the tool exists (default-deny). Audit rows stay query-free
+(query length + hit count only). Suites after the pass: core 657 passed
+(5 env-gated skips) · web 460 passed.
+
+Dev note: `npm run dev:core` runs demo mode by default — an **in-memory
+DB + fake keychain**, so personas/config/search keys reset on every restart.
+Use `DEMO_MODE=0` (with a `DB_PATH`) for a persistent setup.

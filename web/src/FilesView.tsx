@@ -346,16 +346,18 @@ function QueueItem({
           >
             {busy === 'approve' ? 'Approving…' : 'Approve'}
           </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={busy !== null}
-            onClick={() => handle('remember')}
-            aria-busy={busy === 'remember'}
-            aria-label={`${labelText}, always for this root`}
-          >
-            {busy === 'remember' ? 'Approving…' : 'Approve + remember'}
-          </button>
+          {projectLabel !== undefined ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={busy !== null}
+              onClick={() => handle('remember')}
+              aria-busy={busy === 'remember'}
+              aria-label={`${labelText}, always for this root`}
+            >
+              {busy === 'remember' ? 'Approving…' : 'Approve + remember'}
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn btn-secondary btn-sm btn-danger"

@@ -183,7 +183,9 @@ CREATE TABLE IF NOT EXISTS pending_tools (
   created_at INTEGER NOT NULL,
   decided_at INTEGER,
   decision TEXT,
-  decided_by TEXT
+  decided_by TEXT,
+  conversation_id TEXT,
+  persona_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS file_proposals (
@@ -531,7 +533,8 @@ const GRANT_COLUMNS = `
 const PENDING_TOOL_COLUMNS = `
   id, tool_id AS toolId, project_id AS projectId, params, risk,
   requested_by AS requestedBy, created_at AS createdAt,
-  decided_at AS decidedAt, decision, decided_by AS decidedBy`;
+  decided_at AS decidedAt, decision, decided_by AS decidedBy,
+  conversation_id AS conversationId, persona_id AS personaId`;
 
 const FILE_PROPOSAL_COLUMNS = `
   id, project_id AS projectId, path, original_mtime AS originalMtime,
@@ -646,6 +649,10 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   ['conversations', 'folder_id', 'folder_id TEXT'],
   // Message payload kind (C2): 'text' | 'parts'. Legacy rows read as 'text'.
   ['messages', 'content_type', "content_type TEXT NOT NULL DEFAULT 'text'"],
+  // M12 search approvals: external-tool (web search) queue rows carry the
+  // conversation to post the outcome note into + the requesting persona.
+  ['pending_tools', 'conversation_id', 'conversation_id TEXT'],
+  ['pending_tools', 'persona_id', 'persona_id TEXT'],
 ];
 
 /**
@@ -1021,8 +1028,8 @@ export function createGrantStore(db: Database.Database): GrantStore {
  */
 export function createPendingToolStore(db: Database.Database): PendingToolStore {
   const insert = db.prepare(
-    `INSERT INTO pending_tools (id, tool_id, project_id, params, risk, requested_by, created_at)
-     VALUES (@id, @toolId, @projectId, @params, @risk, @requestedBy, @createdAt)`,
+    `INSERT INTO pending_tools (id, tool_id, project_id, params, risk, requested_by, created_at, conversation_id, persona_id)
+     VALUES (@id, @toolId, @projectId, @params, @risk, @requestedBy, @createdAt, @conversationId, @personaId)`,
   );
   const findById = db.prepare(`SELECT ${PENDING_TOOL_COLUMNS} FROM pending_tools WHERE id = ?`);
   const listOpen = db.prepare(

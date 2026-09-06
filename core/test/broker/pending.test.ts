@@ -70,6 +70,41 @@ describe('pending manager', () => {
     ).toThrowError(expect.objectContaining({ code: 'bad_params' }));
   });
 
+  it('M12: external rows may enqueue without a project and carry conversation/persona ids', () => {
+    const { manager } = newManager();
+    const id = manager.enqueue({
+      toolId: 'search',
+      projectId: '',
+      params: { query: 'ces news' },
+      risk: 'medium',
+      requestedBy: 'persona',
+      conversationId: 'conv-1',
+      personaId: 'p-default',
+    });
+    const row = manager.get(id);
+    expect(row).toMatchObject({
+      id,
+      toolId: 'search',
+      projectId: '',
+      requestedBy: 'persona',
+      conversationId: 'conv-1',
+      personaId: 'p-default',
+      decidedAt: null,
+    });
+    // Omitted ids default to null (broker rows stay unchanged).
+    const plain = manager.get(
+      manager.enqueue({
+        toolId: 'files.list',
+        projectId: 'root-1',
+        params: {},
+        risk: 'low',
+        requestedBy: 'web',
+      }),
+    );
+    expect(plain?.conversationId).toBeNull();
+    expect(plain?.personaId).toBeNull();
+  });
+
   it('decide with approve + remember creates a grant via the callback', () => {
     const { manager, createdGrants } = newManager();
     const id = manager.enqueue({

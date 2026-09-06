@@ -429,3 +429,210 @@ describe('M11 F2 chat search tool (route)', () => {
     }
   });
 });
+
+describe('M12 search approval flow (suggest persona → queue → decide)', () => {
+  /** Fake Tavily POST backend + suggest-routed Default partner + directive
+   *  upstream; returns a chat driver and backend hit counting. */
+  async function setup(h: Harness, token: string): Promise<{
+    chat: () => Promise<{ conversationId: string }>;
+    hits: () => number;
+    queries: () => string[];
+  }> {
+    const queries: string[] = [];
+    let hits = 0;
+    const backend = http.createServer((req, res) => {
+      if (req.method === 'POST') {
+        let raw = '';
+        req.on('data', (c: Buffer) => (raw += c));
+        req.on('end', () => {
+          hits += 1;
+          try {
+            const body = JSON.parse(raw) as { query?: string };
+            if (typeof body.query === 'string') queries.push(body.query);
+          } catch {
+            // ignore malformed
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              results: [{ title: 'hit', url: 'https://found.example', content: 'search snippet body' }],
+            }),
+          );
+        });
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+    await new Promise<void>((done) => backend.listen(0, '127.0.0.1', done));
+    const { port } = backend.address() as AddressInfo;
+    servers.push({
+      close: async () => {
+        backend.closeAllConnections?.();
+        await new Promise<void>((r) => backend.close(() => r()));
+      },
+    });
+
+    const search = h.search as NonNullable<Harness['search']>;
+    search.updateConfig({ enabled: true, provider: 'tavily', endpoint: `http://127.0.0.1:${port}` });
+    await search.setKey('sk-approval-flow-1234567890');
+
+    // Default partner at SUGGEST (medium-risk external -> approval queue).
+    const dp = h.personas.get('p-default');
+    expect(dp).not.toBeNull();
+    await request(h.app)
+      .put(`/v1/personas/${dp?.id}`)
+      .set(authed(token))
+      .send({
+        name: dp?.name,
+        character: dp?.character,
+        model: dp?.model,
+        independence: { level: 'suggest', requireHumanFor: ['high'], autoScopes: [] },
+        memory: dp?.memory,
+        isDefault: dp?.isDefault,
+      });
+
+    const upstream = await startDirectiveUpstream(
+      'Let me look that up.\n[[partner:tool search {"query":"ces approval flow"}]]',
+    );
+    servers.push(upstream);
+    const provider = await h.providerManager.create({
+      name: 'approval-upstream',
+      endpoint: upstream.base,
+      defaultModels: ['gpt-4o'],
+    });
+    await h.providerManager.setKey(provider.id, 'sk-approval-chat-12345678');
+
+    const chat = async (): Promise<{ conversationId: string }> => {
+      const res = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-default', messages: [{ role: 'user', content: 'search the web' }] });
+      expect(res.status).toBe(200);
+      const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(res.text);
+      expect(meta).not.toBeNull();
+      return { conversationId: meta?.[1] ?? '' };
+    };
+    return { chat, hits: () => hits, queries: () => queries };
+  }
+
+  it('queues a search approval at suggest and approve executes it once into the conversation', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const app = await setup(h, token);
+      const { conversationId } = await app.chat();
+      expect(conversationId).not.toBe('');
+
+      // The turn queued an approval row, tagged with the persona.
+      const list = await request(h.app).get('/v1/tools/pending').set(authed(token));
+      expect(list.status).toBe(200);
+      const row = (list.body.pending as Array<Record<string, unknown>>).find(
+        (r) => r.toolId === 'search',
+      );
+      expect(row).toBeDefined();
+      expect(row).toMatchObject({
+        toolId: 'search',
+        risk: 'medium',
+        requestedBy: 'persona',
+        personaName: 'Default partner',
+      });
+
+      // Approve -> the backend runs exactly once and the result note lands.
+      const pendingId = row?.id as string;
+      const decided = await request(h.app)
+        .post(`/v1/tools/pending/${pendingId}`)
+        .set(authed(token))
+        .send({ decision: 'approve' });
+      expect(decided.status).toBe(200);
+      expect(decided.body).toMatchObject({ executed: true, grantId: null });
+      expect(app.hits()).toBe(1);
+      expect(app.queries()).toEqual(['ces approval flow']);
+
+      const detail = h.conversations.get(conversationId);
+      const note = detail.messages.find((m) => m.content.includes('[tool search result]'));
+      expect(note).toBeDefined();
+      expect(note?.content).toContain('found.example');
+      expect(detail.messages.some((m) => m.content.includes('awaiting your approval'))).toBe(true);
+
+      // Audit: the queue decision + the executed search, ids only.
+      const audit = h.audit.query({ limit: 50 });
+      expect(audit.some((r) => r.action === 'tool.approve' && r.details.includes('executed'))).toBe(true);
+      expect(audit.some((r) => r.action === 'search.exec')).toBe(true);
+      expect(audit.some((r) => r.action === 'chat.tool' && r.target === 'search' && r.details.includes('queued'))).toBe(true);
+      // The query text never crosses audit.
+      expect(JSON.stringify(audit)).not.toContain('ces approval flow');
+
+      // Deciding twice is refused (row already closed -> 403 not_pending).
+      const again = await request(h.app)
+        .post(`/v1/tools/pending/${pendingId}`)
+        .set(authed(token))
+        .send({ decision: 'approve' });
+      expect(again.status).toBe(403);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('deny closes the row without running the backend and posts a denial note', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const app = await setup(h, token);
+      const { conversationId } = await app.chat();
+
+      const list = await request(h.app).get('/v1/tools/pending').set(authed(token));
+      const row = (list.body.pending as Array<Record<string, unknown>>).find(
+        (r) => r.toolId === 'search',
+      );
+      expect(row).toBeDefined();
+      const pendingId = row?.id as string;
+
+      const decided = await request(h.app)
+        .post(`/v1/tools/pending/${pendingId}`)
+        .set(authed(token))
+        .send({ decision: 'deny' });
+      expect(decided.status).toBe(200);
+      expect(decided.body).toMatchObject({ executed: false, grantId: null });
+      expect(app.hits()).toBe(0);
+
+      const detail = h.conversations.get(conversationId);
+      const denial = detail.messages.find((m) => m.content.includes('was denied'));
+      expect(denial).toBeDefined();
+      const audit = h.audit.query({ limit: 20, action: 'tool.deny' });
+      expect(audit.some((r) => r.target === pendingId && r.details.includes('search'))).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('approving after the backend was disabled closes the row and notes the failure', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const app = await setup(h, token);
+      const { conversationId } = await app.chat();
+
+      const list = await request(h.app).get('/v1/tools/pending').set(authed(token));
+      const row = (list.body.pending as Array<Record<string, unknown>>).find(
+        (r) => r.toolId === 'search',
+      );
+      expect(row).toBeDefined();
+      const search = h.search as NonNullable<Harness['search']>;
+      search.updateConfig({ enabled: false, provider: 'tavily', endpoint: null });
+
+      const decided = await request(h.app)
+        .post(`/v1/tools/pending/${row?.id as string}`)
+        .set(authed(token))
+        .send({ decision: 'approve' });
+      expect(decided.status).toBe(200);
+      expect(decided.body).toMatchObject({ executed: false, error: 'disabled' });
+      expect(app.hits()).toBe(0);
+
+      const detail = h.conversations.get(conversationId);
+      expect(detail.messages.some((m) => m.content.includes('could not run (disabled)'))).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+});

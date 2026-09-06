@@ -43,8 +43,16 @@ export const RISK_TONE_CLASS: Record<ToolRisk, string> = {
 
 /** Short label + risk tier for a tool id (drives queue rows and chips). */
 export function summarizeTool(toolId: ToolId): { label: string; risk: ToolRisk } {
+  // External (non-broker) tools can appear in the queue (M12 web search).
+  const external = EXTERNAL_TOOL_LABELS[toolId as string];
+  if (external) return external;
   return { label: TOOL_LABELS[toolId] ?? toolId, risk: riskOf(toolId) };
 }
+
+/** External-tool queue overrides (label + risk per the core manifest). */
+const EXTERNAL_TOOL_LABELS: Record<string, { label: string; risk: ToolRisk }> = {
+  search: { label: 'Web search', risk: 'medium' },
+};
 
 /** Tool risk per manifest (PLAN-M2): list/read/search low, edit medium, apply/delete high. */
 export function riskOf(toolId: ToolId): ToolRisk {
@@ -84,7 +92,14 @@ export function pendingLabel(
   options?: { projectLabel?: string },
 ): string {
   let summary: string;
-  if (toolId === 'files.search') {
+  if ((toolId as string) === 'search') {
+    // Web-search approval: the query IS the consent subject (and already
+    // owner data in the chat transcript the ask came from), so it is shown
+    // truncated — unlike files.search, whose content pattern stays hidden.
+    const raw = params.query;
+    const query = typeof raw === 'string' && raw.trim() !== '' ? shorten(raw.trim(), 80) : '';
+    summary = query === '' ? 'the web' : `the web · “${query}”`;
+  } else if (toolId === 'files.search') {
     const where = paramPath(params) ?? 'project root';
     summary = `${where} · content search`;
   } else if (toolId === 'files.apply') {

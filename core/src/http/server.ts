@@ -58,9 +58,10 @@ import { ProviderError } from '../providers/errors.js';
 import type { PairingManager } from './pairing.js';
 import type { SessionInfo, SessionManager } from './session.js';
 import type { AuditService } from '../services/redaction.js';
+import type { PendingToolRow } from '../stores/types.js';
 import type { ToolBroker } from '../broker/broker.js';
 import type { ToolErrorCode } from '../broker/errors.js';
-import { ToolError, toolErrorStatus } from '../broker/errors.js';
+import { ToolError, toolError, toolErrorStatus } from '../broker/errors.js';
 import type { ConversationManager, ConversationDetail } from '../conversations/manager.js';
 import type { PersonaManager } from '../personas/manager.js';
 import { ConversationError } from '../conversations/errors.js';
@@ -89,10 +90,17 @@ import type { McpManager } from '../mcp/manager.js';
 import { McpError, mcpErrorStatus } from '../mcp/errors.js';
 import type { SearchManager } from '../search/manager.js';
 import { SearchError, searchErrorStatus } from '../search/errors.js';
-import { applyStructuredGuidance } from '../chat/instructions.js';
+import {
+  applyStructuredGuidance,
+  independenceDeclaration,
+  SEARCH_TOOL_APPROVAL_INSTRUCTION,
+  SEARCH_TOOL_INSTRUCTION,
+} from '../chat/instructions.js';
+import { SEARCH_MANIFEST } from '../search/tool.js';
 import { runChatToolPass, runNativeToolCalls } from '../chat/toolPass.js';
 import { searchToolExternal } from '../search/tool.js';
 import { mcpToolExternal } from '../mcp/tool.js';
+import { summarizeToolResult } from '../playbooks/loop.js';
 import { fileRefsExcerpt, parseFileRefs } from '../chat/fileRefs.js';
 import type { PlaybookManager, PbEvent } from '../playbooks/manager.js';
 import type { DeployManager } from '../playbooks/deploy.js';
@@ -276,6 +284,8 @@ function assembleRequestMessages(input: {
   requestMessages: ChatMessage[];
   /** M4 profile tailoring to honor (already trimmed to null when absent). */
   profilePrelude?: string | null;
+  /** M12 F2-capability: the search backend is enabled (default-deny OFF). */
+  searchEnabled?: boolean;
 }): ChatMessage[] {
   const out: ChatMessage[] = [];
   // M4 profile prelude keeps its documented position as the FIRST system
@@ -294,7 +304,14 @@ function assembleRequestMessages(input: {
   const systemPrompt = input.persona?.character.systemPrompt.trim() ?? '';
   if (systemPrompt !== '') {
     const systemIndex = out.length;
-    out.push({ role: 'system', content: systemPrompt });
+    // M12 capability pass: every persona turn declares its independence level
+    // (chat never did — only playbooks did) so the model can honestly check
+    // what it may do before answering "can I search?".
+    const personaIdentity =
+      input.persona !== null
+        ? `${systemPrompt}\n\n${independenceDeclaration(input.persona.independence.level)}`
+        : systemPrompt;
+    out.push({ role: 'system', content: personaIdentity });
     // M11 C3: teach capable personas the :::partner.* container grammar for
     // clickable choices (F9) and assets (F10). Deterministic, opt-in per
     // conversation feature set (default on for persisted persona chat).
@@ -313,6 +330,23 @@ function assembleRequestMessages(input: {
           };
         }
       }
+      // M12 F2-capability: announce the internet-search tool ONLY when the
+      // persona could actually use it (enabled backend; auto/autonomous run
+      // it directly, suggest queues an approval). Default-deny — assist and
+      // every disabled/banned case are never told it exists.
+      const searchInstruction = searchInstructionFor(
+        input.persona,
+        input.searchEnabled === true,
+      );
+      if (searchInstruction !== null) {
+        const base = out[systemIndex];
+        if (base) {
+          out[systemIndex] = {
+            ...base,
+            content: `${base.content}\n\n${searchInstruction}`,
+          };
+        }
+      }
     }
   }
   const singleNewUserTurn =
@@ -326,6 +360,32 @@ function assembleRequestMessages(input: {
     out.push(message);
   }
   return out;
+}
+
+/** Can this persona direct-execute the external `search` tool this turn?
+ *  Default-deny: the backend must be enabled AND the persona must sit at a
+ *  level the gate would allow for a medium-risk EXTERNAL tool (auto+ —
+ *  assist never runs tools, suggest queues an approval instead) AND the
+ *  persona must not have banned it (F3 bans are enforced at the gate, so
+ *  announcing a banned tool would bait a refusal). */
+function canRunSearchTool(persona: Persona, searchEnabled: boolean): boolean {
+  if (!searchEnabled) return false;
+  const level = persona.independence.level;
+  if (level !== 'auto' && level !== 'autonomous') return false;
+  return !(persona.policy?.tools?.banned ?? []).includes('search');
+}
+
+/** Deterministic search announcement for a persona's system message: null
+ *  when nothing should be announced (backend disabled, assist level, or a
+ *  persona-level ban); the run grammar at auto/autonomous; the approval
+ *  grammar at suggest (medium-risk external — every use queues an approval). */
+function searchInstructionFor(persona: Persona, searchEnabled: boolean): string | null {
+  if (!searchEnabled) return null;
+  if ((persona.policy?.tools?.banned ?? []).includes('search')) return null;
+  const level = persona.independence.level;
+  if (level === 'auto' || level === 'autonomous') return SEARCH_TOOL_INSTRUCTION;
+  if (level === 'suggest') return SEARCH_TOOL_APPROVAL_INSTRUCTION;
+  return null;
 }
 
 function appendAttachmentContext(messages: ChatMessage[], context: string): void {
@@ -829,6 +889,117 @@ function actorOf(session: SessionInfo): string {
   return session.kind !== '' ? session.kind : 'web';
 }
 
+/** Post a system note into the conversation a search approval belongs to
+ *  (no-op when the row has no conversation or the manager is absent). */
+function appendConversationSystemNote(
+  options: CoreAppOptions,
+  conversationId: string | null,
+  content: string,
+): void {
+  if (conversationId === null || conversationId === '') return;
+  const manager = options.conversationManager;
+  if (!manager) return;
+  try {
+    (manager as ConversationManager).append(conversationId, 'system', {
+      content,
+      personaId: null,
+      model: null,
+      latencyMs: null,
+    });
+  } catch {
+    // The decision itself already succeeded; a lost note must not 500 it.
+  }
+}
+
+interface ExternalApprovalDeps {
+  broker: ToolBroker;
+  row: PendingToolRow;
+  decision: 'approve' | 'deny';
+  by: string;
+  options: CoreAppOptions;
+  audit: AuditService;
+}
+
+/** Decide a persona-requested EXTERNAL (web search) approval row. Approve
+ *  executes the search ONCE through the enabled backend and posts the result
+ *  note into the conversation; deny just closes the row with a note. The row
+ *  closes regardless of execution outcome (mirrors broker.decide). No grant
+ *  is ever created (external tools have no project grants — remember is not
+ *  honored). Audit carries tool/decision only — never the query text. */
+async function decideExternalApproval(
+  deps: ExternalApprovalDeps,
+): Promise<{
+  ok: true;
+  grantId: null;
+  executed: boolean;
+  error?: string;
+  result?: Record<string, unknown>;
+}> {
+  const { broker, row, decision, by, options, audit } = deps;
+  const approved = decision === 'approve';
+  let executed = false;
+  let error: string | undefined;
+  let result: Record<string, unknown> | undefined;
+
+  if (approved) {
+    const owner = searchToolExternal(options.search);
+    if (!owner) {
+      error = 'not_configured';
+    } else if (!owner.allow(SEARCH_MANIFEST.id)) {
+      error = 'disabled';
+    } else {
+      let params: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(row.params) as unknown;
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          params = parsed as Record<string, unknown>;
+        }
+      } catch {
+        error = 'bad_params';
+      }
+      if (error === undefined) {
+        const response = await owner.exec(SEARCH_MANIFEST.id, params);
+        if (response.outcome === 'executed') {
+          executed = true;
+          result = response.result ?? {};
+        } else if (response.outcome === 'needs_approval') {
+          error = 'needs_approval';
+        } else {
+          error = response.reason;
+        }
+      }
+    }
+  }
+
+  // Close the row once (throws not_pending on a double decision).
+  broker.pending.decide(row.id, { decision, remember: false }, by);
+  audit.log(by, approved ? 'tool.approve' : 'tool.deny', row.id, {
+    toolId: row.toolId,
+    external: true,
+    executed,
+    ...(error !== undefined ? { error } : {}),
+  });
+
+  let note: string;
+  if (!approved) {
+    note = `[tool ${row.toolId}] was denied by the user — do not retry it; continue with what you have.`;
+  } else if (error !== undefined) {
+    note = `The tool "${row.toolId}" could not run (${error}) — continue without it.`;
+  } else {
+    const summary = summarizeToolResult(result ?? {});
+    note = `[tool ${row.toolId} result]\n${summary}\n[end tool ${row.toolId} result]`;
+  }
+  appendConversationSystemNote(options, row.conversationId, note);
+
+  return {
+    ok: true,
+    grantId: null,
+    executed,
+    ...(error !== undefined ? { error } : {}),
+    ...(executed && result !== undefined ? { result } : {}),
+  };
+}
+
 export function createCoreApp(options: CoreAppOptions): express.Express {
   const { pairing, sessions, audit } = options;
   const allowlist = new Set(
@@ -1265,6 +1436,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         history: priorHistory,
         requestMessages: messages,
         profilePrelude: tailoring,
+        // M12 F2-capability: the internet-search tool is announced only when
+        // the backend is enabled (config read is cheap + sync; the key is
+        // checked at exec time with a clear note when missing).
+        searchEnabled: options.search !== undefined && options.search.config().enabled === true,
       });
 
       // M11 F1: enrich the newest user turn with its bound attachment text
@@ -1346,6 +1521,30 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             },
           }));
         }
+      }
+      // M12 F2-capability: the external `search` tool joins the advertisement
+      // ONLY when the persona could actually run it (enabled backend,
+      // auto/autonomous, not banned) — the same default-deny gate as the
+      // system-prompt announcement above.
+      if (
+        advertiseTools &&
+        routingPersona !== null &&
+        options.search !== undefined &&
+        canRunSearchTool(routingPersona, options.search.config().enabled === true)
+      ) {
+        chatRequest.tools = Array.isArray(chatRequest.tools) ? chatRequest.tools : [];
+        chatRequest.tools.push({
+          type: 'function',
+          function: {
+            name: SEARCH_MANIFEST.id,
+            description: SEARCH_MANIFEST.description,
+            parameters: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+            },
+          },
+        });
       }
       let events = 0;
       let ok = true;
@@ -1453,6 +1652,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               broker: options.broker,
               external: externalTools,
               audit,
+              conversationId: activeConversationId,
               appendSystemNote,
             });
             // M11 F2 native function calls (same gate/broker, same notes).
@@ -1462,6 +1662,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 broker: options.broker,
                 external: externalTools,
                 audit,
+                conversationId: activeConversationId,
                 appendSystemNote,
               });
             }
@@ -3073,17 +3274,25 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const broker = requireBroker(options, res);
     if (!broker) return;
     // Persona-requested rows get their persona's identity so the queue can
-    // tag them like "Builder · files.read" (PLAN-M9 Web bullet). Lookup is
-    // live (only while the queued run still waits); plain rows stay as-is.
+    // tag them like "Builder · files.read" (PLAN-M9 Web bullet). Live lookup
+    // wins (queued playbook runs); chat-requested rows (M12 search
+    // approvals) carry the stored persona_id instead; plain rows stay as-is.
     const pending = broker.pending.list().map((row) => {
       if (row.requestedBy !== 'persona') return { ...row, personaName: null };
-      const persona = options.playbooks?.personaForPending(row.id) ?? null;
-      return { ...row, personaName: persona === null ? null : persona.name };
+      const playbookPersona = options.playbooks?.personaForPending(row.id) ?? null;
+      if (playbookPersona !== null) return { ...row, personaName: playbookPersona.name };
+      const stored = broker.pending.get(row.id);
+      const storedPersonaId = stored?.personaId ?? null;
+      if (storedPersonaId !== null && options.personaManager !== undefined) {
+        const persona = options.personaManager.get(storedPersonaId);
+        if (persona !== null) return { ...row, personaName: persona.name };
+      }
+      return { ...row, personaName: null };
     });
     res.json({ pending });
   });
 
-  api.post('/v1/tools/pending/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/tools/pending/:id', requireSession(sessions), async (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
     const actor = actorOf(res.locals.session as SessionInfo);
@@ -3100,11 +3309,32 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
     const note = typeof body.note === 'string' && body.note.trim() !== '' ? body.note.trim() : undefined;
     try {
-      const result = broker.decide(id, {
-        decision,
-        remember: body.remember === true,
-        ...(note !== undefined ? { note } : {}),
-      }, actor);
+      const row = broker.pending.get(id);
+      if (!row) throw toolError('not_found', 'pending call not found');
+      // M12 search approvals: a persona-requested row for an EXTERNAL tool
+      // (no project root, no broker manifest) is decided against the search
+      // backend — approve executes the search ONCE and posts the outcome
+      // note back into the conversation the persona asked from. Every other
+      // row stays on the broker decision path.
+      const externalSearch = row.toolId === SEARCH_MANIFEST.id && row.requestedBy === 'persona';
+      const result = externalSearch
+        ? await decideExternalApproval({
+            broker,
+            row,
+            decision,
+            by: actor,
+            options,
+            audit,
+          })
+        : broker.decide(
+            id,
+            {
+              decision,
+              remember: body.remember === true,
+              ...(note !== undefined ? { note } : {}),
+            },
+            actor,
+          );
       res.status(200).json(result);
     } catch (err) {
       if (sendToolError(res, err)) return;

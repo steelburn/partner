@@ -28,6 +28,12 @@ describe('summarizeTool + risk tiers', () => {
     expect(RISK_LABELS.low).toBe('Low');
     expect(RISK_LABELS.high).toBe('High');
   });
+
+  it('labels external queue tools (M12 web search)', () => {
+    // The search tool id is external (not in the closed ToolId union) — the
+    // queue renders it via the string-keyed override.
+    expect(summarizeTool('search' as never)).toEqual({ label: 'Web search', risk: 'medium' });
+  });
 });
 
 describe('pendingLabel (params summary — never content)', () => {
@@ -64,6 +70,16 @@ describe('pendingLabel (params summary — never content)', () => {
     expect(pendingLabel('files.search', { projectId: 'r-1', query: 'needle' })).toBe(
       'project root · content search',
     );
+  });
+
+  it('M12 web-search approvals show the truncated query (the consent subject)', () => {
+    const label = pendingLabel('search' as never, { query: '2026 CES keynote news' });
+    expect(label).toContain('the web');
+    expect(label).toContain('2026 CES keynote news');
+    const long = pendingLabel('search' as never, { query: 'x'.repeat(300) });
+    expect(long.length).toBeLessThan(120);
+    const empty = pendingLabel('search' as never, {});
+    expect(empty).toBe('the web');
   });
 
   it('summarizes apply by its proposal id and prefixes a project label', () => {

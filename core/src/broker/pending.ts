@@ -26,11 +26,16 @@ export interface PendingManagerOptions {
 
 export interface EnqueueInput {
   toolId: string;
+  /** Project root id for broker (files.*) rows; '' for external tools (no root). */
   projectId: string;
   /** Raw tool params — stored verbatim so the UI can render + re-exec. */
   params: Record<string, unknown>;
   risk: ToolRisk;
   requestedBy: ToolRequestedBy;
+  /** M12 external approvals: conversation to post the outcome note into. */
+  conversationId?: string | null;
+  /** M12 external approvals: persona behind the request (queue tagging). */
+  personaId?: string | null;
 }
 
 export interface PendingDecision {
@@ -87,15 +92,25 @@ export function createPendingManager(options: PendingManagerOptions): PendingMan
 
   function enqueue(input: EnqueueInput): string {
     const toolId = typeof input.toolId === 'string' ? input.toolId.trim() : '';
+    // projectId is required for broker (files.*) rows — external tool rows
+    // (M12 web-search approvals) have no project root and pass ''.
     const projectId = typeof input.projectId === 'string' ? input.projectId.trim() : '';
-    if (toolId === '' || projectId === '') {
-      throw toolError('bad_params', 'toolId and projectId are required');
+    if (toolId === '') {
+      throw toolError('bad_params', 'toolId is required');
     }
     if (input.params === null || typeof input.params !== 'object' || Array.isArray(input.params)) {
       throw toolError('bad_params', 'params must be an object');
     }
     const id = randomUUID();
     const at = now();
+    const conversationId =
+      typeof input.conversationId === 'string' && input.conversationId.trim() !== ''
+        ? input.conversationId.trim()
+        : null;
+    const personaId =
+      typeof input.personaId === 'string' && input.personaId.trim() !== ''
+        ? input.personaId.trim()
+        : null;
     store.insert({
       id,
       toolId,
@@ -107,6 +122,8 @@ export function createPendingManager(options: PendingManagerOptions): PendingMan
       decidedAt: null,
       decision: null,
       decidedBy: null,
+      conversationId,
+      personaId,
     });
     return id;
   }

@@ -79,6 +79,116 @@ describe('M11 F2 chat tool pass', async () => {
     expect(notes.join('\n')).toContain('hello world');
   });
 
+  it('suggest queues an EXTERNAL approval row (web search) instead of refusing', async () => {
+    const notes: string[] = [];
+    const enqueued: Array<Record<string, unknown>> = [];
+    const broker = brokerLike({
+      grants: { hasGrant: () => false },
+      pending: {
+        enqueue: (input) => {
+          enqueued.push(input as unknown as Record<string, unknown>);
+          return 'pending-ext-1';
+        },
+      },
+    });
+    const external = [
+      {
+        manifests: [
+          { id: 'search' as never, description: 's', risk: 'medium' as const, confirm: 'once' as const, network: true, scope: { kind: 'project' } as const },
+        ],
+        allow: () => true,
+        exec: async () => ({ outcome: 'executed' as const, result: { result_1: 'hit' } }),
+      },
+    ];
+    const result = await runChatToolPass('[[partner:tool search {"query":"x"}]]', {
+      persona: persona('suggest'),
+      broker,
+      external,
+      audit: auditLog({ store: createAuditStore(openDatabase(':memory:')) }),
+      appendSystemNote: (content) => notes.push(content),
+      conversationId: 'conv-9',
+    });
+    expect(result.decisions[0]).toMatchObject({ toolId: 'search', decision: 'queued', pendingId: 'pending-ext-1' });
+    expect(enqueued[0]).toMatchObject({
+      toolId: 'search',
+      projectId: '',
+      risk: 'medium',
+      requestedBy: 'persona',
+      conversationId: 'conv-9',
+      personaId: 'p-1',
+      params: { query: 'x' },
+    });
+    expect(notes[0]).toContain('awaiting your approval');
+    expect(notes[0]).toContain('Files queue');
+  });
+
+  it('assist refuses an external tool without queueing (no ask at assist)', async () => {
+    const notes: string[] = [];
+    const enqueued: string[] = [];
+    const broker = brokerLike({
+      grants: { hasGrant: () => false },
+      pending: {
+        enqueue: (input) => {
+          enqueued.push(input.toolId);
+          return 'never';
+        },
+      },
+    });
+    const external = [
+      {
+        manifests: [
+          { id: 'search' as never, description: 's', risk: 'medium' as const, confirm: 'once' as const, network: true, scope: { kind: 'project' } as const },
+        ],
+        allow: () => true,
+        exec: async () => ({ outcome: 'executed' as const, result: {} }),
+      },
+    ];
+    const result = await runChatToolPass('[[partner:tool search {"query":"x"}]]', {
+      persona: persona('assist'),
+      broker,
+      external,
+      audit: auditLog({ store: createAuditStore(openDatabase(':memory:')) }),
+      appendSystemNote: (content) => notes.push(content),
+      conversationId: 'conv-9',
+    });
+    expect(result.decisions[0]).toMatchObject({ toolId: 'search', decision: 'refused', reason: 'assist_level_no_tools' });
+    expect(enqueued).toEqual([]);
+    expect(notes[0]).toContain('refused');
+  });
+
+  it('a disabled external backend never queues — the directive refuses default-deny', async () => {
+    const notes: string[] = [];
+    const enqueued: string[] = [];
+    const broker = brokerLike({
+      grants: { hasGrant: () => false },
+      pending: {
+        enqueue: (input) => {
+          enqueued.push(input.toolId);
+          return 'never';
+        },
+      },
+    });
+    const external = [
+      {
+        manifests: [
+          { id: 'search' as never, description: 's', risk: 'medium' as const, confirm: 'once' as const, network: true, scope: { kind: 'project' } as const },
+        ],
+        allow: () => false,
+        exec: async () => ({ outcome: 'denied' as const, reason: 'disabled' }),
+      },
+    ];
+    const result = await runChatToolPass('[[partner:tool search {"query":"x"}]]', {
+      persona: persona('suggest'),
+      broker,
+      external,
+      audit: auditLog({ store: createAuditStore(openDatabase(':memory:')) }),
+      appendSystemNote: (content) => notes.push(content),
+    });
+    expect(result.decisions[0]).toMatchObject({ toolId: 'search', decision: 'refused', reason: 'external_disabled' });
+    expect(enqueued).toEqual([]);
+    expect(notes[0]).toContain('disabled');
+  });
+
   it('assist level refuses with a note (propose only)', async () => {
     const notes: string[] = [];
     const result = await runChatToolPass(directive(), makeDeps(persona('assist'), brokerLike({}), notes));

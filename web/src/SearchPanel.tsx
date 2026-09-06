@@ -153,9 +153,10 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
       <h2 className="card-title">Internet search</h2>
       <p className="card-copy">
         One optional API-key search backend. OFF until you enable it and store a key. When
-        enabled, personas at <strong>auto+</strong> autonomy can use the{' '}
-        <code className="md-code-inline">search</code> tool in chat; you can also search right
-        here. Your key lives in the OS keychain.
+        enabled: <strong>auto</strong> and <strong>autonomous</strong> personas can use the{' '}
+        <code className="md-code-inline">search</code> tool in chat directly; at{' '}
+        <strong>suggest</strong> the persona asks and you approve from the Files queue; assist
+        never runs tools. You can also search right here. Your key lives in the OS keychain.
       </p>
 
       {error !== null ? (

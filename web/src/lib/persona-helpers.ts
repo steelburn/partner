@@ -41,7 +41,7 @@ export function levelLabel(level: IndependenceLevel): string {
 }
 
 const LEVEL_EXPLAINERS: Record<IndependenceLevel, string> = {
-  assist: 'Answers and proposes only — never runs a tool without you asking.',
+  assist: 'Answers and proposes only — never runs a tool and never prompts for permission; tool approvals start at Suggest.',
   suggest: 'Runs low-risk tools under grants; proposes medium and high risk and waits for you.',
   auto: 'Runs within its allowed scopes up to medium risk; high-risk actions still ask you.',
   autonomous:
