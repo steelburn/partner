@@ -15,12 +15,33 @@
  * only and never logged.
  */
 
-import { isCaptureReply, nmRequest, stateRequest } from './lib/messages.js';
+import { isCaptureReply, nmRequest, stateRequest, themeRequest, isThemeReply, type ActiveThemeWire } from './lib/messages.js';
 import type { PartnerRuntimeMessage, PartnerRuntimeReply, TabReply } from './lib/messages.js';
 import { scopeLabel } from './lib/scope.js';
 import type { SiteScope } from './lib/scope.js';
 
 const WEB_UI = 'http://127.0.0.1:4390';
+
+/** M11 theme stream: apply the core's active theme tokens to the popup
+ *  chrome (a few CSS vars). Best-effort — offline/paired-less popups keep
+ *  the neutral fallbacks in popup.html. */
+function applyActiveTheme(theme: ActiveThemeWire): void {
+  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const tokens = dark ? theme.dark : theme.light;
+  const root = document.documentElement;
+  const mapping: Record<string, string | undefined> = {
+    '--pp-bg': tokens.bg,
+    '--pp-text': tokens.text,
+    '--pp-muted': tokens.textMuted,
+    '--pp-surface': tokens.surface,
+    '--pp-accent': tokens.accent,
+    '--pp-danger': tokens.danger,
+    '--pp-border': tokens.border,
+  };
+  for (const [name, value] of Object.entries(mapping)) {
+    if (value !== undefined) root.style.setProperty(name, value);
+  }
+}
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -36,6 +57,12 @@ const codeText = el<HTMLElement>('codeText');
 const manualRow = el<HTMLParagraphElement>('manualRow');
 const codeInput = el<HTMLInputElement>('codeInput');
 const submitPair = el<HTMLButtonElement>('submitPair');
+
+// M11 theme stream: ask the background (native port -> core) for the active
+// theme and tint this chrome. No token is a secret.
+void runtimeSend(themeRequest()).then((reply) => {
+  if (isThemeReply(reply)) applyActiveTheme(reply.payload);
+});
 const pageLine = el<HTMLParagraphElement>('pageLine');
 const partnerBtn = el<HTMLButtonElement>('partnerBtn');
 const pageResult = el<HTMLParagraphElement>('pageResult');

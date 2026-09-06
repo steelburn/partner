@@ -228,6 +228,13 @@ production build green):
       home-folder select lives in the persona editor (opens on New/Edit),
       per the editor design.
 
+- [x] **Extension-chrome theme stream** — core native session gains a
+      `theme.active` command (returns the resolved ActiveTheme; `themes` dep
+      optional — unknown_command when unwired); the MV3 popup requests it on
+      open and applies light/dark tokens to its chrome CSS vars (neutral
+      fallbacks offline). Core + extension tests; suites: core 683, web 440,
+      extension 57.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet

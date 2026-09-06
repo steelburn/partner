@@ -934,6 +934,7 @@ async function main(): Promise<void> {
       personas: bundle.personaManager,
       providers: bundle.providerManager,
       audit: bundle.audit,
+      themes: bundle.themes,
     };
     try {
       await createNativeSession(deps, { stdin: process.stdin, stdout: process.stdout });

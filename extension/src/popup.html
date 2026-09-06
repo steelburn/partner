@@ -7,6 +7,15 @@
       /* Chrome chrome: neutral, minimal, no design tokens required. */
       :root {
         color-scheme: light dark;
+        /* M11 theme stream: the popup overrides these from the core's active
+           theme when the core is reachable; the fallbacks keep the chrome
+           usable offline. */
+        --pp-bg: #fbfbfb;
+        --pp-text: #1c1c1c;
+        --pp-muted: #6a6a6a;
+        --pp-accent: #1f6f43;
+        --pp-danger: #b42318;
+        --pp-border: rgba(127, 127, 127, 0.25);
       }
       * {
         box-sizing: border-box;
@@ -15,8 +24,8 @@
         width: 320px;
         margin: 0;
         font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-        background: #fbfbfb;
-        color: #1c1c1c;
+        background: var(--pp-bg, #fbfbfb);
+        color: var(--pp-text, #1c1c1c);
       }
       @media (prefers-color-scheme: dark) {
         body {
@@ -29,7 +38,7 @@
         align-items: center;
         gap: 8px;
         padding: 10px 12px;
-        border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+        border-bottom: 1px solid var(--pp-border, rgba(127, 127, 127, 0.25));
       }
       header h1 {
         font-size: 13px;
@@ -44,17 +53,17 @@
         background: #9a9a9a;
       }
       .dot.ok {
-        background: #1f6f43;
+        background: var(--pp-accent, #1f6f43);
       }
       .dot.bad {
-        background: #b42318;
+        background: var(--pp-danger, #b42318);
       }
       .dot.off {
         background: #6a6a6a;
       }
       section {
         padding: 10px 12px;
-        border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+        border-bottom: 1px solid var(--pp-border, rgba(127, 127, 127, 0.2));
       }
       section:last-child {
         border-bottom: none;
@@ -63,7 +72,7 @@
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: #6a6a6a;
+        color: var(--pp-muted, #6a6a6a);
         margin: 0 0 6px;
       }
       p {

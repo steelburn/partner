@@ -81,6 +81,9 @@ export interface NativeSessionDeps {
   personas: PersonaManager;
   providers: ProviderManager;
   audit: AuditService;
+  /** M11 extension theme stream: when wired, the extension popup can apply
+   *  the core's ACTIVE theme. Optional so older harnesses compile unchanged. */
+  themes?: import('../theming/manager.js').ThemeManager;
 }
 
 export interface NativeSessionIo {
@@ -225,6 +228,13 @@ async function handlePair(
   session.paired = true;
   deps.audit.log('nm', 'pair.ok', 'nm', {});
   return ok({ paired: true });
+}
+
+/** M11 extension theme stream: return the core's ACTIVE theme (resolved
+ *  tokens are not secrets; the extension popup applies them to its chrome). */
+async function handleThemeActive(deps: NativeSessionDeps): Promise<Outcome> {
+  if (!deps.themes) return fail('unknown_command');
+  return ok(deps.themes.active());
 }
 
 async function handleScopeGet(deps: NativeSessionDeps, payload: unknown): Promise<Outcome> {
@@ -458,6 +468,8 @@ async function dispatch(
         return handlePair(deps, session, request.payload);
       case 'scope.get':
         return handleScopeGet(deps, request.payload);
+      case 'theme.active':
+        return handleThemeActive(deps);
       case 'page.capture':
         return handleCapture(deps, request.payload);
       case 'page.analyze':

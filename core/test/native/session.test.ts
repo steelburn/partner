@@ -54,6 +54,7 @@ function runSession(
   h: Harness,
   frames: Buffer[],
   chunkSize?: number,
+  options: { themes?: import('../../src/theming/manager.js').ThemeManager } = {},
 ): Promise<{ result: NativeSessionResult; responses: NmEnvelope[] }> {
   const deps: NativeSessionDeps = {
     version: CORE_VERSION,
@@ -64,6 +65,7 @@ function runSession(
     personas: h.personas,
     providers: h.providerManager,
     audit: h.audit,
+    ...(options.themes !== undefined ? { themes: options.themes } : {}),
   };
   const stdout = new PassThrough();
   const chunks: Buffer[] = [];
@@ -386,6 +388,41 @@ describe('M7 native session — capture + analyze happy path', () => {
       }
       expect(rows.some((row) => row.action === 'browser.capture' && row.target === 'news.example')).toBe(true);
       expect(rows.some((row) => row.action === 'browser.analyze' && row.target === 'news.example')).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('theme.active (M11 extension theme stream)', () => {
+  it('returns the resolved active theme after pairing when themes are wired', async () => {
+    const h = demoHarness();
+    try {
+      const codeRes = await runSession(h, [requestFrame('c', 'pair.code')]);
+      const code = (codeRes.responses[0]?.payload as { code: string }).code;
+      // Pair + theme in ONE session: the pairing code is single-use.
+      const themeRes = await runSession(h, [requestFrame('p', 'pair', { code }), requestFrame('t', 'theme.active')], undefined, {
+        themes: h.themes ?? undefined,
+      });
+      expect(themeRes.responses[0]).toMatchObject({ id: 'p', ok: true, payload: { paired: true } });
+      const reply = themeRes.responses[1];
+      expect(reply).toMatchObject({ id: 't', ok: true });
+      const payload = reply?.payload as { themeId: string; source: string; light: unknown; dark: unknown };
+      expect(typeof payload.themeId).toBe('string');
+      expect(payload.light).toBeTruthy();
+      expect(payload.dark).toBeTruthy();
+    } finally {
+      h.close();
+    }
+  });
+
+  it('answers unknown_command when themes are not wired', async () => {
+    const h = demoHarness();
+    try {
+      const codeRes = await runSession(h, [requestFrame('c', 'pair.code')]);
+      const code = (codeRes.responses[0]?.payload as { code: string }).code;
+      const { responses } = await runSession(h, [requestFrame('p', 'pair', { code }), requestFrame('t', 'theme.active')]);
+      expect(responses[1]).toMatchObject({ id: 't', ok: false, error: 'unknown_command' });
     } finally {
       h.close();
     }

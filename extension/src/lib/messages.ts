@@ -49,3 +49,42 @@ export function nmRequest(command: string, payload?: unknown): PartnerRuntimeMes
 export function stateRequest(): PartnerRuntimeMessage {
   return { kind: 'state' };
 }
+
+/** Minimal wire shape of the core's ActiveTheme for popup token application. */
+export interface ThemeTokensWire {
+  bg?: string;
+  text?: string;
+  textMuted?: string;
+  surface?: string;
+  accent?: string;
+  danger?: string;
+  border?: string;
+}
+
+export interface ActiveThemeWire {
+  themeId: string;
+  source: string;
+  light: ThemeTokensWire;
+  dark: ThemeTokensWire;
+}
+
+/** M11 extension theme stream: request the core's active theme. */
+export function themeRequest(): PartnerRuntimeMessage {
+  return nmRequest('theme.active');
+}
+
+/** Guard: a successful nm.reply whose payload is a resolved ActiveTheme. */
+export function isThemeReply(
+  reply: PartnerRuntimeReply | undefined,
+): reply is PartnerRuntimeReply & { payload: ActiveThemeWire } {
+  if (reply === undefined || reply.kind !== 'nm.reply' || reply.ok !== true) return false;
+  const payload = reply.payload as ActiveThemeWire | undefined;
+  if (payload === undefined || payload === null || typeof payload !== 'object') return false;
+  return (
+    typeof payload.themeId === 'string' &&
+    typeof payload.light === 'object' &&
+    payload.light !== null &&
+    typeof payload.dark === 'object' &&
+    payload.dark !== null
+  );
+}
