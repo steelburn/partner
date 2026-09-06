@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { PersonaCompare } from './PersonaCompare.js';
 import type { Folder, IndependenceLevel, Persona, PersonaInput, TaskClass, ThemeProfile } from '@partner/shared';
 import {
   LEVEL_ORDER,
@@ -160,6 +161,10 @@ export default function PersonaManagerView({
               </div>
             )}
           </section>
+        ) : null}
+
+        {!sessionLost && list.length >= 2 ? (
+          <PersonaCompare personas={personas} onUnpair={handleSessionLost} />
         ) : null}
       </div>
     </section>

@@ -213,6 +213,13 @@ production build green):
       UI comparing two personas on one prompt needs a review pass);
       drag-to-move keyboard drag alternative & more M11 extras.
 
+- [x] **A/B persona studio** — Personas view gains a compare card: pick two
+      personas, one prompt, side-by-side live streams with model + token meta
+      and per-side Copy. Runs via `/v1/chat {noPersist:true}` (new opt-out
+      keeps comparisons off the rail; SSE has no done_meta and nothing is
+      persisted — verified live: conversations count unchanged, zero console
+      errors). Server + client tests; suites: core 681, web 440.
+
 Remaining / deferred (see D-log + final report):
 
 - [ ] **F2** native tool_calls in plain chat + MCP client + wired internet

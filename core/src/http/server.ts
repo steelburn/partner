@@ -916,6 +916,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       taskClass?: unknown;
       attachmentIds?: unknown;
       tools?: unknown;
+      noPersist?: unknown;
     };
     const messages = sanitizeMessages(body.messages);
     if (messages === null) {
@@ -954,7 +955,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // names a personaId OR a conversationId does chat persist; otherwise the
     // rest of this handler is byte-identical to M0/M1 one-shot chat.
     // ---------------------------------------------------------------------
-    const persist = requestedPersonaId !== undefined || requestedConversationId !== undefined;
+    // A/B persona studio (M11): noPersist streams a persona turn WITHOUT
+    // creating a conversation — comparisons never clutter the rail. SSE still
+    // ends with usage/done (no done_meta, nothing persisted, no bindings).
+    const noPersist = body.noPersist === true;
+    const persist = !noPersist && (requestedPersonaId !== undefined || requestedConversationId !== undefined);
     let personaManager: PersonaManager | null = null;
     let conversationManager: ConversationManager | null = null;
     // The persona that supplies model routing (null = legacy no-persona).

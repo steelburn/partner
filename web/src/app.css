@@ -5465,3 +5465,88 @@ select {
   border-radius: var(--radius-md);
   background: var(--surface-2);
 }
+
+/* --- M11 A/B persona compare ---------------------------------------------- */
+
+.compare-card {
+  margin-top: var(--space-4);
+}
+
+.compare-picks {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-2) 0;
+}
+
+.compare-picks .field {
+  flex: 1;
+  min-width: 180px;
+}
+
+.compare-vs {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.compare-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+  margin: var(--space-2) 0;
+}
+
+.compare-prompt .chat-input {
+  width: 100%;
+}
+
+.compare-results {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.compare-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  min-height: 160px;
+}
+
+.compare-result-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.compare-result-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.compare-result-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.compare-text {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+}
