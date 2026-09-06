@@ -2,8 +2,10 @@
  * M14 schedule validation (PLAN-M14.md S1) — pure shared rules.
  */
 import { describe, expect, it } from 'vitest';
+import type { PersonaSchedule } from '../src/schedules.js';
 import {
   SCHEDULE_LIMITS,
+  scheduleNextLabel,
   validateSchedule,
   validateSchedules,
 } from '../src/schedules.js';
@@ -123,5 +125,73 @@ describe('validateSchedules', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.values.map((s) => s.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('scheduleNextLabel (display-only, web editor)', () => {
+  const base = (overrides: Record<string, unknown> = {}): PersonaSchedule =>
+    ({
+      id: 's1',
+      label: 'Brief',
+      when: { kind: 'daily', hour: 9, minute: 15 },
+      prompt: 'Do the thing.',
+      enabled: true,
+      tz: 'UTC',
+      ...overrides,
+    }) as PersonaSchedule;
+
+  it('daily: labels today vs tomorrow from the schedule tz wall clock', () => {
+    const schedule = base();
+    // Monday 2026-01-05 08:00Z — before 09:15.
+    expect(scheduleNextLabel(schedule, Date.UTC(2026, 0, 5, 8, 0, 0))).toBe(
+      'Next: today at 09:15',
+    );
+    // Same day 20:00Z — already passed.
+    expect(scheduleNextLabel(schedule, Date.UTC(2026, 0, 5, 20, 0, 0))).toBe(
+      'Next: tomorrow at 09:15',
+    );
+    // Crosses a month boundary.
+    expect(scheduleNextLabel(schedule, Date.UTC(2026, 11, 31, 12, 0, 0))).toBe(
+      'Next: tomorrow at 09:15',
+    );
+  });
+
+  it('daily: resolves against a non-UTC tz', () => {
+    // 2026-07-05 12:00Z == 08:00 EDT in New York.
+    const schedule = base({
+      when: { kind: 'daily', hour: 9, minute: 0 },
+      tz: 'America/New_York',
+    });
+    expect(scheduleNextLabel(schedule, Date.UTC(2026, 6, 5, 12, 0, 0))).toBe(
+      'Next: today at 09:00',
+    );
+  });
+
+  it('weekly: today, tomorrow and named weekdays', () => {
+    // Monday 2026-01-05 07:00Z — before the 08:00 fire time.
+    const before = Date.UTC(2026, 0, 5, 7, 0, 0);
+    const mondayMorning = base({ when: { kind: 'weekly', weekday: 0, hour: 8, minute: 0 } });
+    expect(scheduleNextLabel(mondayMorning, before)).toBe('Next: today at 08:00');
+    // Monday time already passed -> rolls a full week (same weekday name).
+    expect(scheduleNextLabel(mondayMorning, Date.UTC(2026, 0, 5, 20, 0, 0))).toBe(
+      'Next: Monday at 08:00',
+    );
+    const thursday = base({ when: { kind: 'weekly', weekday: 3, hour: 9, minute: 15 } });
+    expect(scheduleNextLabel(thursday, Date.UTC(2026, 0, 5, 12, 0, 0))).toBe(
+      'Next: Thursday at 09:15',
+    );
+  });
+
+  it('interval schedules and unknown tz return null', () => {
+    expect(scheduleNextLabel(base({ when: { kind: 'interval', everyMinutes: 30 } }), 0)).toBeNull();
+    expect(scheduleNextLabel(base({ tz: 'Not/AZone' }), Date.UTC(2026, 0, 5, 8, 0, 0))).toBeNull();
+  });
+
+  it('defaults to the machine timezone when tz is absent (UTC test env)', () => {
+    const schedule = base({ tz: undefined });
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const label = scheduleNextLabel(schedule, now);
+    // The label is timezone-relative; assert the shape, not the exact word.
+    expect(label).toMatch(/^Next: (today|tomorrow|Monday) at 09:15$/);
   });
 });

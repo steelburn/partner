@@ -6473,6 +6473,11 @@ select {
   color: var(--text-muted);
 }
 
+.schedule-next-text {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
 .schedule-item-actions,
 .schedule-editor-actions {
   display: inline-flex;
@@ -6549,10 +6554,10 @@ select {
 
 .schedule-run-row {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto;
   grid-template-areas:
-    'status label'
-    'status meta';
+    'status label open'
+    'status meta open';
   column-gap: var(--space-2);
   row-gap: var(--space-0);
   padding: var(--space-2) 0;
@@ -6610,6 +6615,13 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.schedule-run-open {
+  grid-area: open;
+  align-self: center;
+  justify-self: end;
+  font-size: var(--fs-sm);
 }
 
 .schedule-run-meta {

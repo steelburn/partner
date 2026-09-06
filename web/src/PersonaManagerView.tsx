@@ -46,6 +46,8 @@ export interface PersonaManagerProps {
   onRefreshThemes: () => void;
   /** A persona theme binding changed — the shell re-resolves the active theme. */
   onPersonaThemeBound: () => void;
+  /** M14 runs panel: jump to a scheduled run's conversation in Chat. */
+  onOpenConversation?: (conversationId: string) => void;
   /** True while this view is the visible one (triggers one refresh). */
   active?: boolean;
 }
@@ -71,6 +73,7 @@ export default function PersonaManagerView({
   onRefresh,
   onRefreshThemes,
   onPersonaThemeBound,
+  onOpenConversation,
   active,
 }: PersonaManagerProps) {
   const [sessionLost, setSessionLost] = useState(false);
@@ -147,6 +150,7 @@ export default function PersonaManagerView({
                   themesError={themesError}
                   onChanged={onRefresh}
                   onPersonaThemeBound={onPersonaThemeBound}
+                  onOpenConversation={onOpenConversation}
                   onSessionLost={handleSessionLost}
                 />
               </li>
@@ -165,6 +169,7 @@ export default function PersonaManagerView({
                   onRefresh();
                 }}
                 onCancel={() => setCreating(false)}
+                onOpenConversation={onOpenConversation}
                 onSessionLost={handleSessionLost}
               />
             ) : (
@@ -199,10 +204,12 @@ interface PersonaRowProps {
   onChanged: () => void;
   /** A successful bind changes what theme applies to this persona. */
   onPersonaThemeBound: () => void;
+  /** M14 runs panel: jump to a scheduled run's conversation in Chat. */
+  onOpenConversation?: (conversationId: string) => void;
   onSessionLost: () => void;
 }
 
-function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBound, onSessionLost }: PersonaRowProps) {
+function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBound, onOpenConversation, onSessionLost }: PersonaRowProps) {
   const [busy, setBusy] = useState<RowOp | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -403,6 +410,7 @@ function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBou
             hasDefault={persona.isDefault}
             onSaved={onChanged}
             onCancel={() => setEditing(false)}
+            onOpenConversation={onOpenConversation}
             onSessionLost={onSessionLost}
           />
         </div>
@@ -497,6 +505,8 @@ interface PersonaEditorProps {
   hasDefault: boolean;
   onSaved: () => void;
   onCancel: () => void;
+  /** M14 runs panel: jump to a scheduled run's conversation in Chat. */
+  onOpenConversation?: (conversationId: string) => void;
   onSessionLost: () => void;
 }
 
@@ -510,7 +520,7 @@ function list(raw: string): string[] {
     .filter((entry) => entry !== '');
 }
 
-function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }: PersonaEditorProps) {
+function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversation, onSessionLost }: PersonaEditorProps) {
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [homeFolderId, setHomeFolderId] = useState(persona?.homeFolderId ?? '');  const editing = persona !== null;
   const [name, setName] = useState(persona?.name ?? '');
@@ -834,6 +844,7 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onSessionLost }
           schedules={schedules}
           onChange={setSchedules}
           disabled={formDisabled}
+          onOpenConversation={onOpenConversation}
           onSessionLost={onSessionLost}
         />
 

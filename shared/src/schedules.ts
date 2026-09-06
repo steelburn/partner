@@ -258,3 +258,103 @@ export function validateSchedules(raw: unknown, label: string): ScheduleListVali
   }
   return { ok: true, values };
 }
+
+// ---------------------------------------------------------------------------
+// Display-only next-run label (web schedule editor). Pure and zero-dependency
+// (Intl only, like the validation above). It deliberately does NOT reproduce
+// the core engine's DST-safe nextFire math (core/src/schedules/engine.ts) —
+// it only labels the next civil wall-clock occurrence (today / tomorrow /
+// this weekday) in the schedule's timezone, which is all a UI hint needs.
+// Interval schedules return null (their next run is always "N minutes after
+// the previous one finished", which needs the last-run anchor).
+// ---------------------------------------------------------------------------
+
+const NEXT_WEEKDAY_NAMES: readonly string[] = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+];
+
+const WEEKDAY_SHORT: Readonly<Record<string, number>> = {
+  Mon: 0,
+  Tue: 1,
+  Wed: 2,
+  Thu: 3,
+  Fri: 4,
+  Sat: 5,
+  Sun: 6,
+};
+
+interface WallClock {
+  weekday: number;
+  hour: number;
+  minute: number;
+}
+
+function wallClockAt(epochMs: number, tz: string): WallClock | null {
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return null;
+  }
+  const parts = formatter.formatToParts(new Date(epochMs));
+  const read = (type: string): string | undefined =>
+    parts.find((part) => part.type === type)?.value;
+  const hourRaw = read('hour');
+  if (hourRaw === undefined) return null;
+  // Some ICU builds emit '24' for midnight with hour12:false — normalize.
+  const hour = hourRaw === '24' ? 0 : Number(hourRaw);
+  const weekdayRaw = read('weekday');
+  const weekday = weekdayRaw !== undefined ? WEEKDAY_SHORT[weekdayRaw] : undefined;
+  if (weekday === undefined || !Number.isFinite(hour)) return null;
+  return { weekday, hour, minute: Number(read('minute')) };
+}
+
+function systemTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/**
+ * A short, honest "when does this fire next" label for the schedule list,
+ * e.g. `Next: today at 09:15` or `Next: Monday at 08:00`. Interval schedules
+ * return null (no anchor here). Invalid/unknown timezones return null too
+ * (the caller keeps showing only the static "when" summary).
+ */
+export function scheduleNextLabel(schedule: PersonaSchedule, nowEpochMs?: number): string | null {
+  const when = schedule.when;
+  if (when.kind === 'interval') return null;
+  const tz = schedule.tz ?? systemTimeZone();
+  const wall = wallClockAt(nowEpochMs ?? Date.now(), tz);
+  if (wall === null) return null;
+  const at = `${pad2(when.hour)}:${pad2(when.minute)}`;
+  const passed =
+    wall.hour > when.hour || (wall.hour === when.hour && wall.minute >= when.minute);
+  if (when.kind === 'daily') {
+    return `Next: ${passed ? 'tomorrow' : 'today'} at ${at}`;
+  }
+  const delta = (when.weekday - wall.weekday + 7) % 7;
+  const days = delta === 0 && passed ? 7 : delta;
+  if (days === 0) return `Next: today at ${at}`;
+  if (days === 1) return `Next: tomorrow at ${at}`;
+  const name = NEXT_WEEKDAY_NAMES[when.weekday];
+  return name !== undefined ? `Next: ${name} at ${at}` : null;
+}

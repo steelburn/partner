@@ -1006,6 +1006,7 @@ function ColumnDivider({
                 onRefresh={() => void refreshPersonas()}
                 onRefreshThemes={() => void refreshThemes()}
                 onPersonaThemeBound={handlePersonaThemeBound}
+                onOpenConversation={handleOpenConversation}
                 active={view === 'personas'}
               />
             </div>

@@ -15,6 +15,7 @@
  * focus-visible + disabled come from app.css tokens, never local CSS.
  */
 import { useEffect, useState } from 'react';
+import { scheduleNextLabel } from '@partner/shared';
 import type { PersonaSchedule, ScheduleWeekday, ScheduleWhen } from '@partner/shared';
 import { isSessionLost } from './lib/personas.js';
 import { listScheduleRuns, runScheduleNow, type ScheduleRun } from './lib/schedules.js';
@@ -427,10 +428,12 @@ interface RunsPanelProps {
   personaId: string;
   /** Bumped after a run-now so the list refreshes. */
   refreshSignal: number;
+  /** Jump to a run's conversation in the Chat view (optional). */
+  onOpenConversation?: (conversationId: string) => void;
   onSessionLost(): void;
 }
 
-function RunsPanel({ personaId, refreshSignal, onSessionLost }: RunsPanelProps) {
+function RunsPanel({ personaId, refreshSignal, onOpenConversation, onSessionLost }: RunsPanelProps) {
   const [runs, setRuns] = useState<ScheduleRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -498,6 +501,16 @@ function RunsPanel({ personaId, refreshSignal, onSessionLost }: RunsPanelProps) 
                   ? 'Decide the approval in Chat or Files to continue automatically.'
                   : `${timeAgo(run.startedAt)}${run.model !== null ? ` · ${run.model}` : ''}`}
               </span>
+              {onOpenConversation !== undefined && run.conversationId !== null ? (
+                <button
+                  type="button"
+                  className="btn-link schedule-run-open"
+                  onClick={() => onOpenConversation(run.conversationId as string)}
+                  aria-label={`Open ${run.label} in chat`}
+                >
+                  Open in chat
+                </button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -516,6 +529,7 @@ export interface SchedulesSectionProps {
   schedules: PersonaSchedule[];
   onChange(next: PersonaSchedule[]): void;
   disabled: boolean;
+  onOpenConversation?: (conversationId: string) => void;
   onSessionLost(): void;
 }
 
@@ -526,6 +540,7 @@ export function SchedulesSection({
   schedules,
   onChange,
   disabled,
+  onOpenConversation,
   onSessionLost,
 }: SchedulesSectionProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -647,6 +662,9 @@ export function SchedulesSection({
                       <span className="schedule-when-text">
                         {scheduleWhenText(schedule.when, schedule.tz)}
                       </span>
+                      {schedule.enabled !== false ? (
+                        <NextRunText schedule={schedule} />
+                      ) : null}
                     </div>
                     <div className="schedule-item-actions">
                       {knownScheduleIds.has(schedule.id) ? (
@@ -702,10 +720,23 @@ export function SchedulesSection({
       </div>
 
       {personaId !== null && schedules.length > 0 ? (
-        <RunsPanel personaId={personaId} refreshSignal={runVersion} onSessionLost={onSessionLost} />
+        <RunsPanel
+          personaId={personaId}
+          refreshSignal={runVersion}
+          onOpenConversation={onOpenConversation}
+          onSessionLost={onSessionLost}
+        />
       ) : null}
     </fieldset>
   );
+}
+
+/** Honest display-only "Next:" label for an enabled schedule row (interval
+ *  schedules have no anchor here and render nothing extra). */
+function NextRunText({ schedule }: { schedule: PersonaSchedule }) {
+  const label = scheduleNextLabel(schedule);
+  if (label === null) return null;
+  return <span className="schedule-next-text">{label}</span>;
 }
 
 // Re-exported so tests can pin the pure helpers without React DOM.
