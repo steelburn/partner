@@ -178,3 +178,23 @@ export function IconChevronRight(props: IconProps) {
     </Svg>
   );
 }
+
+/** Conversations rail — left panel with a split line. */
+export function IconPanelLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 3.5h10a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5Z" />
+      <path d="M6.4 3.5v9" />
+    </Svg>
+  );
+}
+
+/** Notes lane — right panel with a split line. */
+export function IconPanelRight(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 3.5h10a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5Z" />
+      <path d="M9.6 3.5v9" />
+    </Svg>
+  );
+}

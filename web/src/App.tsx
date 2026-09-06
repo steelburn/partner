@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import type { ConversationSummary, Folder, Persona, ThemeMode } from '@partner/shared';
 import type { ActiveTheme, ThemeProfile } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
@@ -13,6 +18,8 @@ import {
   IconMemory,
   IconNoteAdd,
   IconNotes,
+  IconPanelLeft,
+  IconPanelRight,
   IconPersonas,
   IconPlaybooks,
   IconProviders,
@@ -496,6 +503,106 @@ export default function App() {
   /** M12 (D2): notes-lane visibility. Default = open at wide widths; the
    * user's collapse choice is pinned per session (sessionStorage). */
   const NOTES_LANE_KEY = 'partner.notesLane';
+const RAIL_OPEN_KEY = 'partner.railOpen';
+const RAIL_W_KEY = 'partner.railWidth';
+const NOTES_W_KEY = 'partner.notesWidth';
+
+const readSession = (key: string): string | null => {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const writeSession = (key: string, value: string): void => {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    /* private mode */
+  }
+};
+const readIntSession = (key: string): number | null => {
+  const raw = readSession(key);
+  if (raw === null) return null;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) ? value : null;
+};
+const clampWidth = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, Math.round(value)));
+
+interface ColumnDividerProps {
+  label: string;
+  /** Signed drag direction: +1 = dragging right widens the column. */
+  direction: 1 | -1;
+  current: number | null;
+  fallback: number;
+  min: number;
+  max: number;
+  onSet: (width: number) => void;
+  onCommit: (width: number) => void;
+}
+
+/** M12.5: a vertical drag divider between two workspace columns. Pointer +
+ * keyboard (arrows resize by a 16px step), token-styled, focusable. */
+function ColumnDivider({
+  label,
+  direction,
+  current,
+  fallback,
+  min,
+  max,
+  onSet,
+  onCommit,
+}: ColumnDividerProps) {
+  const drag = useRef<{ pointerId: number; startX: number; base: number } | null>(null);
+  const baseWidth = current ?? fallback;
+
+  const widthFor = (clientX: number, startX: number, base: number): number =>
+    clampWidth(base + direction * (clientX - startX), min, max);
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { pointerId: event.pointerId, startX: event.clientX, base: baseWidth };
+  };
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const d = drag.current;
+    if (d === null || event.pointerId !== d.pointerId) return;
+    onSet(widthFor(event.clientX, d.startX, d.base));
+  };
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const d = drag.current;
+    if (d === null || event.pointerId !== d.pointerId) return;
+    onCommit(widthFor(event.clientX, d.startX, d.base));
+    drag.current = null;
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      const step = event.key === 'ArrowRight' ? 16 : -16;
+      const next = clampWidth(baseWidth + direction * step, min, max);
+      onSet(next);
+      onCommit(next);
+    }
+  };
+
+  return (
+    <div
+      className="col-divider"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      tabIndex={0}
+      title={label}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
   const [notesLaneOverride, setNotesLaneOverride] = useState<string | null>(() => {
     try {
       return sessionStorage.getItem(NOTES_LANE_KEY);
@@ -503,9 +610,10 @@ export default function App() {
       return null;
     }
   });
-  const [notesLaneWide, setNotesLaneWide] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches,
+  const [notesLaneWide, setNotesLaneWide] = useState<boolean>(() =>
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches,
   );
+
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 1280px)');
     const onChange = (): void => setNotesLaneWide(mq.matches);
@@ -525,12 +633,30 @@ export default function App() {
   const toggleNotesLane = useCallback((): void => {
     const next = !notesLaneOpen;
     setNotesLaneOverride(next ? '1' : '0');
-    try {
-      sessionStorage.setItem(NOTES_LANE_KEY, next ? '1' : '0');
-    } catch {
-      /* private mode */
-    }
+    writeSession(NOTES_LANE_KEY, next ? '1' : '0');
   }, [notesLaneOpen]);
+
+  /* M12.5: conversations rail visibility + resizable column widths. The
+   * widths are per-session; defaults come from CSS (breakpoint-tuned), so a
+   * null width means "follow the responsive default". */
+  const [railOpen, setRailOpen] = useState<boolean>(() => readSession(RAIL_OPEN_KEY) === null ? true : readSession(RAIL_OPEN_KEY) === '1');
+  const [railW, setRailW] = useState<number | null>(() => readIntSession(RAIL_W_KEY));
+  const [notesW, setNotesW] = useState<number | null>(() => readIntSession(NOTES_W_KEY));
+  const toggleRail = useCallback((): void => {
+    setRailOpen((open) => {
+      writeSession(RAIL_OPEN_KEY, open ? '0' : '1');
+      return !open;
+    });
+  }, []);
+  const commitRailW = useCallback((value: number): void => writeSession(RAIL_W_KEY, String(value)), []);
+  const commitNotesW = useCallback((value: number): void => writeSession(NOTES_W_KEY, String(value)), []);
+  const workspaceStyle = {
+    ...(railOpen && railW !== null ? { '--rail-w': `${railW}px` } : {}),
+    ...(notesLaneOpen && notesW !== null ? { '--notes-w': `${notesW}px` } : {}),
+  } as CSSProperties;
+  const railDefaultW = typeof window !== 'undefined' && window.innerWidth <= 1024 ? 260 : 288;
+  const notesDefaultW = 232;
+
 
   /** M11 F6 / M12: Notes are one click/hotkey away — open the composer
    * anywhere. On the Chat view the composer opens IN the notes lane beside
@@ -704,6 +830,26 @@ export default function App() {
             <button
               type="button"
               className="btn btn-secondary btn-sm"
+              onClick={toggleRail}
+              aria-pressed={railOpen}
+              aria-label={railOpen ? 'Hide conversations' : 'Show conversations'}
+              title={railOpen ? 'Hide conversations' : 'Show conversations'}
+            >
+              <IconPanelLeft />
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={toggleNotesLane}
+              aria-pressed={notesLaneOpen}
+              aria-label={notesLaneOpen ? 'Hide notes panel' : 'Show notes panel'}
+              title={notesLaneOpen ? 'Hide notes panel' : 'Show notes panel'}
+            >
+              <IconPanelRight />
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
               onClick={handleToggleMode}
               aria-pressed={mode === 'dark'}
               aria-label={`Switch to ${nextModeLabel.toLowerCase()} theme`}
@@ -717,10 +863,16 @@ export default function App() {
         {paired ? (
           <>
             <div className={view === 'chat' ? 'app-view app-view-active' : 'app-view'}>
-              <div
-                className={notesLaneOpen ? 'chat-workspace notes-lane-open' : 'chat-workspace notes-lane-collapsed'}
-              >
-                <ConversationRail
+            <div
+              className={[
+                notesLaneOpen ? 'chat-workspace notes-lane-open' : 'chat-workspace notes-lane-collapsed',
+                railOpen ? '' : 'rail-hidden',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              style={workspaceStyle}
+            >
+              <ConversationRail
                   conversations={conversations}
                   folders={folders}
                   loadError={conversationsError ?? foldersError}
@@ -739,6 +891,18 @@ export default function App() {
                   onDeleteFolder={(id) => void handleDeleteFolder(id)}
                   onMoveConversation={(id, folderId) => void handleMoveConversation(id, folderId)}
                 />
+                {railOpen ? (
+                  <ColumnDivider
+                    label="Resize conversations"
+                    direction={1}
+                    current={railW}
+                    fallback={railDefaultW}
+                    min={170}
+                    max={520}
+                    onSet={setRailW}
+                    onCommit={commitRailW}
+                  />
+                ) : null}
                 <ChatStrip
                   onUnpair={handleSessionLost}
                   conversationId={activeConversationId}
@@ -751,6 +915,18 @@ export default function App() {
                   activeThemeId={activeTheme?.themeId ?? null}
                   onBindTheme={(themeId) => void handleBindConversationTheme(activeConversationId, themeId)}
                 />
+                {notesLaneOpen ? (
+                  <ColumnDivider
+                    label="Resize notes lane"
+                    direction={-1}
+                    current={notesW}
+                    fallback={notesDefaultW}
+                    min={170}
+                    max={460}
+                    onSet={setNotesW}
+                    onCommit={commitNotesW}
+                  />
+                ) : null}
                 <NotesMini
                   active={paired}
                   open={notesLaneOpen}

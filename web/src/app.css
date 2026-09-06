@@ -5914,3 +5914,128 @@ select {
     box-shadow: var(--elevation-lg);
   }
 }
+
+/* ==========================================================================
+ * M12.5 — full-width layout + resizable/hideable workspace columns.
+ * The shell no longer centers content on a fixed column: every surface uses
+ * the browser width (readable copy inside keeps its own ch-constrained
+ * measure). Chat workspace column widths are CSS custom properties set per
+ * drag; the M12 breakpoints retune the DEFAULTS only, so a user's chosen
+ * width (inline style on .chat-workspace) always wins.
+ * ========================================================================== */
+
+/* 1. Full width everywhere: header + centered panels become fluid. */
+.app-header-inner {
+  max-width: none;
+}
+
+.providers-panel,
+.files-panel,
+.personas-panel,
+.memory-panel,
+.notes-panel,
+.themes-panel,
+.skills-panel,
+.playbooks-panel,
+.deploy-panel,
+.audit-panel,
+.gate-panel {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+  width: 100%;
+}
+
+/* 2. Column width system (defaults retuned by the breakpoints below). */
+.chat-workspace {
+  --rail-w: 288px;
+  --notes-w: 232px;
+}
+
+.chat-workspace .rail {
+  width: var(--rail-w);
+}
+
+.chat-workspace .notes-mini {
+  width: var(--notes-w);
+}
+
+/* User collapse beats everything (including any drag width). */
+.chat-workspace.rail-hidden .rail {
+  display: none;
+}
+
+.chat-workspace.notes-lane-collapsed {
+  --notes-w: var(--space-5);
+}
+
+/* Divider handles between the columns: invisible hit areas, cursor +
+ * keyboard resize, subtle hover tint. */
+.col-divider {
+  flex: none;
+  align-self: stretch;
+  width: var(--space-2);
+  margin: 0 calc(-1 * var(--space-0));
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+}
+
+.col-divider:hover,
+.col-divider:focus-visible {
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  color: var(--text-muted);
+}
+
+.col-divider:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.col-divider::after {
+  content: '';
+  width: 2px;
+  height: 100%;
+  background: currentColor;
+  opacity: 0.7;
+  border-radius: var(--radius-full);
+}
+
+/* Reapply the ≤760 open-lane overlay width after the var rule above. */
+@media (max-width: 760px) {
+  .chat-workspace.notes-lane-open .notes-mini {
+    width: 272px;
+  }
+}
+
+/* Retune the responsive DEFAULTS (user drag width, when set, wins via the
+ * inline style on .chat-workspace). */
+@media (max-width: 1024px) {
+  .chat-workspace {
+    --rail-w: 260px;
+  }
+}
+
+@media (max-width: 960px) {
+  .chat-workspace {
+    --rail-w: 240px;
+  }
+}
+
+@media (max-width: 900px) {
+  .chat-workspace {
+    --rail-w: 220px;
+  }
+}
+
+@media (max-width: 760px) {
+  .chat-workspace {
+    --rail-w: 200px;
+  }
+}
