@@ -517,7 +517,7 @@ apps/partner/
       rate-limited, demo-mode path, plus exposing the login public key for
       the envelope. TDD in that repo. *Exit: curl with a demo-mode session
       returns the key JSON. Unblocks the M1 import wizard.*
-- [ ] **M0 — Scaffold, Tauri shell & security spine.** Repo layout, shared
+- [x] **M0 — Scaffold, Tauri shell & security spine.** Repo layout, shared
       types, vitest, config/.env patterns, keychain access abstraction
       (fake keychain for tests), pairing code + session tokens, origin
       allowlist. **Tauri v2 shell scaffold + core-sidecar packaging spike**
@@ -525,31 +525,31 @@ apps/partner/
       §17.1). *Exit: two processes (web, core) pair and echo a chat round
       with a demo fake provider; the packaged app opens and serves the UI on
       loopback.*
-- [ ] **M1 — Providers, gateway & key import.** Provider CRUD,
+- [x] **M1 — Providers, gateway & key import.** Provider CRUD,
       OpenAI-compatible client (SSE streaming, header scrub for ne1 WAF,
       neutral UA), routing by task class + fallback, budget caps, usage
       surfacing. Integrated "Connect llm-self-service" wizard (org login via
       the envelope, S0 key fetch → keychain). *Exit: real chat against a
       user-supplied endpoint in demo mode; import pulls a demo key.*
-- [ ] **M2 — Tool broker & files.** Tool manifests, grant store, risk tiers,
+- [x] **M2 — Tool broker & files.** Tool manifests, grant store, risk tiers,
       confirmation UX, project roots, read/search/write-preview/apply with
       backups, audit log. *Exit: user grants a root; partner proposes a diff
       in a temp file; UI review; apply.*
-- [ ] **M3 — Chat + persona engine v1.** Conversation UI (SSE), persona CRUD,
+- [x] **M3 — Chat + persona engine v1.** Conversation UI (SSE), persona CRUD,
       independence levels + pause/kill, model routing per persona. *Exit:
       two personas with different characters/autonomy respond appropriately.*
-- [ ] **M4 — Memory & profile.** Profile facts w/ user confirmation, episode
+- [x] **M4 — Memory & profile.** Profile facts w/ user confirmation, episode
       summaries, semantic index, tailoring loop, forgetting + export.
-- [ ] **M5 — Plans & notes.** Stores, editors, wiki-links, daily note
+- [x] **M5 — Plans & notes.** Stores, editors, wiki-links, daily note
       summary, plan execution with approved diffs.
-- [ ] **M6 — Theming.** `theme/v1` schema, presets, Theme Studio, token lint +
+- [x] **M6 — Theming.** `theme/v1` schema, presets, Theme Studio, token lint +
       APCA/WCAG gate on save, DESIGN.md component compliance.
-- [ ] **M7 — Extension bridge & search actuator.** Native messaging host,
+- [x] **M7 — Extension bridge & search actuator.** Native messaging host,
       pairing, page capture, per-site scopes, sensitive-site blocklist,
       "partner this page", search-engine capture for research. *Exit:
       research flow end-to-end into a note, search results captured from the
       user's engine with no API key.*
-- [ ] **M8 — Skills runtime.** Manifest + signing + hash verify, sandboxed
+- [x] **M8 — Skills runtime.** Manifest + signing + hash verify, sandboxed
       workers, permission enforcement, audit, install/update/uninstall flows,
       local catalog + registry protocol.
 - [x] **M9 — Capability playbooks.** Research, vibe-code, docgen, email
