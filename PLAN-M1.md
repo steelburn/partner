@@ -192,8 +192,8 @@ portal's `encryptPassword`).
 - [ ] Key import works end-to-end against the fake llm-self-service; manual
       live check against `enter.ne1.dev` with real org creds (verify
       envelope, retrieval, no stored password, key present only in keychain).
-- [ ] Budget cap aborts a runaway stream; redaction scan tests green.
-- [ ] Providers screen + probe console functional (provisional UI).
+- [x] Budget cap aborts a runaway stream; redaction scan tests green.
+- [x] Providers screen + probe console functional (provisional UI).
 
 ## Out of scope here
 

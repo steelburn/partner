@@ -117,12 +117,12 @@ ordering helpers. E2E (spawned demo core): create persona → new conversation
 
 ## Exit criteria (tick PLAN.md M3)
 
-- [ ] Personas + conversations persisted; routing per persona with fallback;
+- [x] Personas + conversations persisted; routing per persona with fallback;
       pause/kill + default invariants, all test-covered.
-- [ ] Web: conversation history + persona picker/manager + pause UI, token-only.
-- [ ] E2E persists a real conversation under a persona over the spawned core.
-- [ ] Typechecks, root + web suites green, ux_audit passes on new CSS.
-- [ ] Packaged-app (Rust) gate still open (unchanged).
+- [x] Web: conversation history + persona picker/manager + pause UI, token-only.
+- [x] E2E persists a real conversation under a persona over the spawned core.
+- [x] Typechecks, root + web suites green, ux_audit passes on new CSS.
+- [x] Packaged-app (Rust) gate still open (unchanged).
 
 ## Out of scope (this milestone)
 

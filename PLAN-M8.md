@@ -111,10 +111,10 @@ install hello-skill from catalog → invoke → result; uninstall removes it.
 
 ## Exit criteria (tick PLAN.md M8)
 
-- [ ] Local catalog + install/uninstall/disable + sandboxed runner through
+- [x] Local catalog + install/uninstall/disable + sandboxed runner through
       the broker with budgets/kill + user-scoped store + audit, all
       test-covered; two sample skills + a broker-denied demo skill.
-- [ ] Skills view token-only; e2e install → invoke → uninstall passes.
+- [x] Skills view token-only; e2e install → invoke → uninstall passes.
 - [ ] Remote gallery/signing flagged environment+later (documented).
 
 ## Out of scope

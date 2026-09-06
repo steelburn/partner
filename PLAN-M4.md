@@ -78,10 +78,10 @@ search finds it → export has it → forget → gone.
 
 ## Exit criteria (tick PLAN.md M4)
 
-- [ ] Profile + episodes + FTS retrieval + forgetting + export/import +
+- [x] Profile + episodes + FTS retrieval + forgetting + export/import +
       chat-time tailoring, all test-covered.
-- [ ] Web memory view token-only; e2e over the spawned core passes.
-- [ ] Typechecks, root + web suites green, ux_audit passes on new CSS.
+- [x] Web memory view token-only; e2e over the spawned core passes.
+- [x] Typechecks, root + web suites green, ux_audit passes on new CSS.
 
 ## Out of scope
 

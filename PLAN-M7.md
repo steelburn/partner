@@ -96,7 +96,7 @@ decision for ask/read/act, snapshot truncation + selection extraction; build
 
 ## Exit criteria (tick PLAN.md M7)
 
-- [ ] Core NM mode + scope manager/policy tested; extension source builds,
+- [x] Core NM mode + scope manager/policy tested; extension source builds,
       logic unit-tested; manual Chrome-load checklist documented.
 - [ ] Browser click-through + native-host OS install flagged as
       environment-gated (needs a real Chrome + packaged host) — the

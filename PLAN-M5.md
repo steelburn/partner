@@ -86,10 +86,10 @@ task flatten/validate). E2E (spawned demo core): create note w/ [[Other]]
 
 ## Exit criteria (tick PLAN.md M5)
 
-- [ ] Notes + plans stores, wiki-links/backlinks, tags, search, daily +
+- [x] Notes + plans stores, wiki-links/backlinks, tags, search, daily +
       export, task status + audit, all test-covered.
-- [ ] Notes/Plans UI token-only, e2e over spawned core passes.
-- [ ] Typechecks, root + web suites green, ux_audit passes.
+- [x] Notes/Plans UI token-only, e2e over spawned core passes.
+- [x] Typechecks, root + web suites green, ux_audit passes.
 
 ## Out of scope
 

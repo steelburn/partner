@@ -126,13 +126,13 @@ stay green.
 
 ## Exit criteria (tick PLAN.md M2)
 
-- [ ] Broker + grants + roots + six tools with preview/apply, fully
+- [x] Broker + grants + roots + six tools with preview/apply, fully
       test-covered.
-- [ ] Approval queue + grants/roots UI usable end to end (provisional).
-- [ ] E2E over the spawned demo core: add a temp root → `files.edit` proposal
+- [x] Approval queue + grants/roots UI usable end to end (provisional).
+- [x] E2E over the spawned demo core: add a temp root → `files.edit` proposal
       → approve (high-risk) → apply → file changed on disk; audit shows no
       secret material.
-- [ ] UX audit passes on new CSS; typechecks; root + web suites green.
+- [x] UX audit passes on new CSS; typechecks; root + web suites green.
 - [ ] PLAN-M0 packaged-app gate still open (Rust toolchain) — unchanged.
 
 ## Out of scope

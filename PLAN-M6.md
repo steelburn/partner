@@ -85,10 +85,10 @@ create an INVALID theme (muted equal to surface) → 400 with a report.
 
 ## Exit criteria (tick PLAN.md M6)
 
-- [ ] Theme store + presets + gates (lint + contrast) + activation +
+- [x] Theme store + presets + gates (lint + contrast) + activation +
       persona binding, test-covered; /v1/theme/active feeds the UI.
-- [ ] Theme Studio token-only with live preview + inline reports + export.
-- [ ] Typechecks, root + web suites green, e2e passes.
+- [x] Theme Studio token-only with live preview + inline reports + export.
+- [x] Typechecks, root + web suites green, e2e passes.
 
 ## Out of scope
 
