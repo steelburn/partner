@@ -23,6 +23,8 @@ so no local-only context is lost. Refreshed 2026-09-07 (M13/M14 shipped; schema 
   and passes end-to-end on both. `windows-build` produces the NSIS installer;
   the last packaged boot verified env-free was **schema v12 (M11)** — the
   M14 packaged boot at **schema v13** is the remaining env-gated walk.
+  (M15 changed the packaged boot: the desktop shell now runs the core LIVE
+  by default — `PARTNER_DEMO_MODE=1` restores the demo boot.)
 - Remaining is **manual / env-gated only**: the M14 packaged-app boot walk
   (NSIS installer at schema v13; built on the self-hosted Windows runner via
   `.github/workflows/windows-build.yml` — `shell/` has no local build
@@ -134,6 +136,7 @@ when the dir is full of files.
 | M13 purpose providers + model switch | ✅ implemented + verified (purpose bundle, per-message model picker, photo→vision handoff; README M13 note). PLAN §15 box open: exit also lists an env-gated live manual walk (not yet recorded) |
 | M14 scheduled & autonomous work | ✅ core + web shipped; decide-hook e2e (real loop approve/deny auto-resume); live walk 2026-09-07 (api.ne1.dev + Brave — approval pause → headless auto-resume → done + note; resume save-note bug found + fixed); schema v13 |
 | M14 packaged boot (schema v13) | ⚠️ env-gated: NSIS windows-build boot walk on the self-hosted Windows runner remains |
+| M15 live desktop mode | ✅ core+web+shell shipped: packaged shell boots LIVE by default (persistent encrypted DB + native keychain + skills under app-local data dir), header-guarded device pairing channel (PARTNER_DEVICE_SECRET → GET /v1/pair/device), tray (Show pairing code… / Open Partner / Quit), health-aware PairGate, stdin parent-watch (core exits when the shell dies by any path) + e2e. Suite 726 core (+2 e2e) · typechecks 0 · windows-build green; packaged live walk executed 2026-09-07 (encrypted DB + keyring, tray-minted code → pair → conversation → restart-survives; force-kill → core self-exits) |
 | Web shell rework | ✅ left sidebar nav (icon rail ≤1150px), slim top bar, zero h-scroll 1440→640, ux_audit green |
 | Web/extension test-runner wiring | ⚠️ open infra item: root vitest excludes web/test + extension suites (historical counts not wired) |
 | VERIFY-M10 manual walk | ⚠️ live-mode packaged-core boot (DEMO_MODE=0 + native keychain in-shell), real keyring, charged-provider budget, NSIS install on a desktop — env/manual |

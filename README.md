@@ -40,16 +40,23 @@ npm run dev:web      # SPA dev server on :5173 (standalone dev)
 
 ## Status (2026-09-07)
 
-M0–M14 implemented and verified (PLAN.md §15): schema v13; current root
-suite **773 passed · 5 env-gated skips** · typechecks 0 · web build green.
-The packaged app is verified two ways — the container toolchain
-(`shell/docker/gate`) and a green NSIS installer on the self-hosted Windows
-runner (boot verified env-free through schema v12 under M11). Remaining
-items are manual / env-gated: the M14 packaged-app boot walk at schema v13,
-the per-surface light/dark/custom theme walkthrough
-(`docs/theme-conformance.md`), the `docs/VERIFY-M10.md` live-mode walk,
-browser-actuator research capture (real Chrome + installed native host), and
-the S0 companion API in `~/apps/llm-self-service`. Read
+M0–M15 implemented and verified (PLAN.md §15): schema v13; current root
+suite **773 passed · 5 env-gated skips** (+ M15 e2e parent-watch) ·
+typechecks 0 · web build green.
+
+**M15 — Live desktop mode (exit demo).** The packaged shell now boots the
+core LIVE by default: persistent whole-file-encrypted DB + OS-keychain key
+and skills under the per-user app-local data dir (`%LOCALAPPDATA%\dev.ne1.partner`
+on Windows), a per-boot device secret enables the header-guarded
+`GET /v1/pair/device` code channel, and the **tray** (Show pairing code… /
+Open Partner / Quit) surfaces the live pairing code for the web PairGate
+(now health-aware: live copy, no demo button). The core exits itself when
+its shell dies by any path (stdin parent-watch). `PARTNER_DEMO_MODE=1`
+keeps the historical in-memory demo boot. Remaining items are manual /
+env-gated: the packaged live-boot walk on this desktop is executed in
+PLAN-M15; per-surface theme walkthrough (`docs/theme-conformance.md`); the
+`docs/VERIFY-M10.md` live-mode walk details; browser-actuator research
+capture; S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
 
 ### M14 — scheduled & autonomous work (2026-09-06, core engine green)

@@ -68,12 +68,11 @@ runs, typechecks, ux_audit on new UI) are assumed green before this walk.
     glob warning.
 17. On a Windows box: install the NSIS build; Partner opens WITHOUT
     `PARTNER_CORE_BUNDLE`/`PARTNER_STATIC_DIR` env (resources embedded);
-    demo pair + chat round-trip inside the shell window. NOTE: the packaged
-    shell boots DEMO mode by default (in-memory DB, fake keychain) — the
-    secrets-protecting live core needs DEMO_MODE=0 + DB_PATH + native
-    keychain env; that live-packaged path is a post-M10 hardening item, not
-    part of this smoke test (see HANDOFF). Live-mode boot on the core itself
-    = B above.
+    demo pair + chat round-trip inside the shell window. NOTE: this item
+    predates M15 — the packaged shell now boots LIVE by default (persistent
+    encrypted DB + native keychain under the app-local data dir, tray
+    pairing code). The historical in-memory demo boot is one env away:
+    `PARTNER_DEMO_MODE=1` (see PLAN-M15.md).
 
 ## G. Docs & exit
 
