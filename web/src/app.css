@@ -5268,6 +5268,60 @@ select {
   overflow-wrap: anywhere;
 }
 
+/* Read-view markdown keeps the transcript's rhythm (.msg rules) at any pane
+ * width — saved assets render with the same type, spacing and block tones. */
+.assets-lane-body p {
+  margin: 0 0 var(--space-2);
+}
+
+.assets-lane-body p:last-child {
+  margin-bottom: 0;
+}
+
+.assets-lane-body ul,
+.assets-lane-body ol {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+}
+
+.assets-lane-body li {
+  margin: var(--space-0) 0;
+}
+
+.assets-lane-body blockquote {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-0) var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+
+.assets-lane-body h1,
+.assets-lane-body h2,
+.assets-lane-body h3,
+.assets-lane-body h4 {
+  margin: var(--space-3) 0 var(--space-2);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.assets-lane-body h1 {
+  font-size: var(--fs-xl);
+}
+
+.assets-lane-body h2 {
+  font-size: var(--fs-lg);
+}
+
+.assets-lane-body h3 {
+  font-size: var(--fs-md);
+}
+
+.assets-lane-body .md-image {
+  max-width: 100%;
+  height: auto;
+}
+
 .asset-candidates {
   list-style: none;
   margin: 0;
@@ -5957,8 +6011,11 @@ select {
 
 /* Notes lane collapse (P1.2 / D2): collapsed = slim strip + expand toggle. */
 
+/* Pane icon buttons: the assets lane uses the same icon-button recipe as
+ * the notes collapse toggle (close pane + focus-mode expand). */
 .notes-mini-toggle,
-.assets-lane-close {
+.assets-lane-close,
+.assets-lane-expand {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5974,21 +6031,36 @@ select {
 }
 
 .notes-mini-toggle:hover:not(:disabled),
-.assets-lane-close:hover:not(:disabled) {
+.assets-lane-close:hover:not(:disabled),
+.assets-lane-expand:hover:not(:disabled) {
   background: var(--surface-2);
   color: var(--text);
 }
 
 .notes-mini-toggle:focus-visible,
-.assets-lane-close:focus-visible {
+.assets-lane-close:focus-visible,
+.assets-lane-expand:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
 .notes-mini-toggle:disabled,
-.assets-lane-close:disabled {
+.assets-lane-close:disabled,
+.assets-lane-expand:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Focus mode is ON while reading full width: the toggle reads as the
+ * raised state with the accent glyph (same convention as pressed chips). */
+.assets-lane-expand[aria-pressed='true'] {
+  background: var(--surface-2);
+  color: var(--accent-hover);
+}
+
+.assets-lane-expand[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--accent);
 }
 
 .chat-workspace.notes-lane-collapsed .notes-mini {
@@ -6174,9 +6246,11 @@ select {
 
 /* M14: same overlay treatment for the assets pane — on phone widths the
  * right-hand panes float over the transcript (the shell keeps Assets and
- * Notes mutually exclusive there, so they never stack). */
+ * Notes mutually exclusive there, so they never stack). Focus mode
+ * (M14.1) opts out: an expanded pane fills the whole workspace instead of
+ * floating a 300px sheet over it. */
 @media (max-width: 760px) {
-  .chat-workspace.assets-pane-open .assets-lane {
+  .chat-workspace.assets-pane-open:not(.assets-expanded) .assets-lane {
     position: absolute;
     top: 0;
     right: 0;
@@ -6211,6 +6285,73 @@ select {
   .chat-workspace {
     --rail-w: 200px;
   }
+}
+
+/* ==========================================================================
+ * M14.1 — Assets focus mode. When the pane head's focus toggle is on, the
+ * assets lane grows to take over the whole chat workspace: rail, transcript
+ * and notes lane yield, and the pane fills the space. The read view becomes
+ * a pinned document sheet — head + title + actions stay fixed, only the
+ * body scrolls — with the document centered on a wide-but-readable measure
+ * so tables/code/wide figures get real width (the narrow lane caps at
+ * 300-460px). Toggled off via the same control or Escape.
+ * ========================================================================== */
+
+.chat-workspace.assets-expanded .rail,
+.chat-workspace.assets-expanded .chat,
+.chat-workspace.assets-expanded .notes-mini,
+.chat-workspace.assets-expanded > .col-divider {
+  display: none;
+}
+
+/* The pane inherits the workspace's full width (user drag width is inert
+ * here — the pane is the whole surface). The lane stops scrolling itself so
+ * the list/read views own their scroll region below the pinned head. */
+.chat-workspace.assets-expanded .assets-lane {
+  width: 100%;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+/* Document sheet: pinned chrome above a scrolling body, column centered on
+ * a wide reading measure. */
+.chat-workspace.assets-expanded .assets-lane-detail {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 1000px;
+  margin-inline: auto;
+  gap: var(--space-3);
+}
+
+.chat-workspace.assets-expanded .assets-lane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Pinned chrome (back link, title, meta, actions) never yields its height
+ * to the scrolling body. */
+.chat-workspace.assets-expanded .assets-lane-detail > :not(.assets-lane-body) {
+  flex: none;
+}
+
+.chat-workspace.assets-expanded .assets-lane-detail-title {
+  font-size: var(--fs-xl);
+  letter-spacing: var(--track-head);
+  line-height: 1.25;
+}
+
+/* The full-width list scrolls under the pinned head too; empty/notice text
+ * centers in the freed space instead of clinging to the top-left corner. */
+.chat-workspace.assets-expanded .assets-lane-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.chat-workspace.assets-expanded .assets-lane-note,
+.chat-workspace.assets-expanded .assets-lane-status {
+  margin-block: auto;
 }
 
 /* --- M13 chat per-message model picker ------------------------------------- */

@@ -179,6 +179,24 @@ export function IconChevronRight(props: IconProps) {
   );
 }
 
+/** Full width (focus mode) — corners outward. */
+export function IconMaximize(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M2.75 6.5V2.75H6.5M9.5 2.75h3.75V6.5M13.25 9.5v3.75H9.5M6.5 13.25H2.75V9.5" />
+    </Svg>
+  );
+}
+
+/** Side-by-side (exit focus mode) — corners inward. */
+export function IconMinimize(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6.5 2.75v3.75H2.75M9.5 2.75v3.75h3.75M13.25 9.5H9.5v3.75M6.5 13.25V9.5H2.75" />
+    </Svg>
+  );
+}
+
 /** Conversations rail — left panel with a split line. */
 export function IconPanelLeft(props: IconProps) {
   return (

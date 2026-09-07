@@ -15,7 +15,7 @@ import { exportAssetFile } from './lib/assets-export.js';
 import { readStoredToken } from './lib/token.js';
 import { timeAgo } from './lib/persona-helpers.js';
 import { PartnerMarkdown } from './Markdown.js';
-import { IconChevronLeft } from './icons.js';
+import { IconChevronLeft, IconMaximize, IconMinimize } from './icons.js';
 
 export interface AssetsLaneProps {
   /** The open conversation whose assets this pane shows (null = none yet). */
@@ -25,6 +25,11 @@ export interface AssetsLaneProps {
   active: boolean;
   /** Bumped when an asset is saved outside the pane (Save-to-assets flow). */
   version: number;
+  /** M14.1 focus mode: the pane grows to take over the whole chat workspace
+   *  (rail + transcript + notes lane yield) so wide documents get a real
+   *  reading measure. Owned by the shell (it toggles the workspace class). */
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   /** Collapse the pane (the transcript regains the width). */
   onClose: () => void;
   onUnpair: () => void;
@@ -46,6 +51,8 @@ export function AssetsLane({
   conversationId,
   active,
   version,
+  expanded,
+  onExpandedChange,
   onClose,
   onUnpair,
 }: AssetsLaneProps) {
@@ -119,6 +126,20 @@ export function AssetsLane({
     setNotice(null);
     void load();
   }, [load, active, version]);
+
+  // Focus mode is a reading surface: Escape collapses it back to the
+  // side-by-side pane (mirrors the Notes lane capture composer).
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onExpandedChange(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded, onExpandedChange]);
 
   const open = assets?.find((asset) => asset.id === openId) ?? null;
 
@@ -203,6 +224,17 @@ export function AssetsLane({
         <h2 className="assets-lane-title">
           Assets{assets !== null ? ` (${assets.length})` : ''}
         </h2>
+        <button
+          type="button"
+          className="assets-lane-expand"
+          onClick={() => onExpandedChange(!expanded)}
+          aria-pressed={expanded}
+          aria-label={expanded ? 'Back to side-by-side view' : 'Read at full width'}
+          title={expanded ? 'Back to side-by-side view' : 'Read at full width'}
+          disabled={conversationId === null}
+        >
+          {expanded ? <IconMinimize /> : <IconMaximize />}
+        </button>
       </div>
       {error !== null ? (
         <p className="assets-lane-note assets-lane-error" role="alert">

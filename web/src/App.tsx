@@ -755,6 +755,7 @@ function ColumnDivider({
   const setAssetsLaneOpen = useCallback((open: boolean): void => {
     setAssetsLaneOverride(open ? '1' : '0');
     writeSession(ASSETS_LANE_KEY, open ? '1' : '0');
+    if (!open) setAssetsExpanded(false);
   }, []);
   const toggleAssetsLane = useCallback((): void => {
     const next = !assetsLaneOpen;
@@ -764,6 +765,13 @@ function ColumnDivider({
     }
     setAssetsLaneOpen(next);
   }, [assetsLaneOpen, notesLaneOpen, panelsFit, setAssetsLaneOpen]);
+
+  // Focus mode applies to one conversation's reading: switching chats
+  // returns the workspace to side-by-side (the read asset is remembered per
+  // conversation inside the lane and restored on its own).
+  useEffect(() => {
+    setAssetsExpanded(false);
+  }, [activeConversationId]);
 
   const toggleNotesLane = useCallback((): void => {
     const next = !notesLaneOpen;
@@ -802,6 +810,10 @@ function ColumnDivider({
     (value: number): void => writeSession(ASSETS_W_KEY, String(value)),
     [],
   );
+  /** M14.1: focus mode — the pane grows to take over the whole chat
+   *  workspace so wide documents get a real reading measure. Transient (not
+   *  session-pinned): collapses on pane close or conversation switch. */
+  const [assetsExpanded, setAssetsExpanded] = useState<boolean>(false);
   const workspaceStyle = {
     ...(railOpen && railW !== null ? { '--rail-w': `${railW}px` } : {}),
     ...(notesLaneOpen && notesW !== null ? { '--notes-w': `${notesW}px` } : {}),
@@ -894,6 +906,7 @@ function ColumnDivider({
                 notesLaneOpen ? 'chat-workspace notes-lane-open' : 'chat-workspace notes-lane-collapsed',
                 railOpen ? '' : 'rail-hidden',
                 assetsLaneOpen ? 'assets-pane-open' : '',
+                assetsExpanded ? 'assets-expanded' : '',
               ]
                 .filter(Boolean)
                 .join(' ')}
@@ -964,7 +977,12 @@ function ColumnDivider({
                       conversationId={activeConversationId}
                       active={view === 'chat'}
                       version={assetsVersion}
-                      onClose={() => setAssetsLaneOpen(false)}
+                      expanded={assetsExpanded}
+                      onExpandedChange={setAssetsExpanded}
+                      onClose={() => {
+                        setAssetsLaneOpen(false);
+                        setAssetsExpanded(false);
+                      }}
                       onUnpair={handleSessionLost}
                     />
                   </>
