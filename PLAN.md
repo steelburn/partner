@@ -619,6 +619,18 @@ apps/partner/
       auto-resume → done + note; found/fixed resume save-note bug) ·
       packaged-app walk (shell/NSIS) env-gated.*
 
+- [ ] **M15 — Live desktop mode (exit demo; detailed spec: `PLAN-M15.md`).**
+      Packaged shell boots LIVE by default (persistent whole-file-encrypted
+      DB + OS-keychain key + skills under the per-user app-local data dir,
+      not the install dir); a per-boot device secret enables the
+      header-guarded `GET /v1/pair/device` code channel; the tray (Show
+      pairing code… / Open Partner / Quit) surfaces the live pairing code;
+      the PairGate is health-aware (live copy + no demo button).
+      `PARTNER_DEMO_MODE=1` keeps the demo boot.
+      *Exit: core 726 passed · typechecks 0 · web tests + build green ·
+      windows-build green · live packaged-boot walk (tray → pair → chat →
+      restart-survives, ciphertext DB, demo override) · HANDOFF refreshed.*
+
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
 credentials. Never in production builds.

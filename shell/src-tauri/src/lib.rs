@@ -156,6 +156,11 @@ fn spawn_core(app: &tauri::App, demo: bool) -> Result<(), Box<dyn std::error::Er
     if let Some(dir) = web {
         envs.push(("STATIC_DIR".to_string(), dir.to_string_lossy().to_string()));
     }
+    // M15 lifecycle: the shell owns the core. stdin is piped to the sidecar
+    // and stays open while the shell lives; the core watches for EOF and
+    // exits itself if the shell dies by ANY path (graceful quit, crash,
+    // force-kill) — no orphan core ever holds :4390 or the DB lock.
+    envs.push(("PARTNER_PARENT_WATCH".to_string(), "1".to_string()));
     if demo {
         // Historical demo boot (PARTNER_DEMO_MODE=1): in-memory + fake keychain.
         envs.push(("DEMO_MODE".to_string(), "1".to_string()));

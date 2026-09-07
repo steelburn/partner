@@ -1063,6 +1063,29 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // M15 lifecycle: the desktop shell keeps this process's stdin pipe open and
+  // sets PARTNER_PARENT_WATCH=1. When the shell dies — graceful quit, crash,
+  // or force-kill — the OS closes the pipe write end, this stream emits 'end',
+  // and the core exits itself. An orphaned core must never hold :4390 or the
+  // encrypted DB lock after its shell is gone. Skipped for --native-messaging
+  // (stdin carries the framed protocol there) and for plain core runs that
+  // were not spawned by the shell (dev terminals, docker demo — their stdin
+  // may be closed or a TTY from the start, so EOF is not a signal).
+  if (process.env.PARTNER_PARENT_WATCH === '1' && !process.argv.includes('--native-messaging')) {
+    let parentGone = false;
+    const onParentExit = (): void => {
+      if (parentGone) return;
+      parentGone = true;
+      shutdown('parent-exit');
+    };
+    process.stdin.resume();
+    process.stdin.on('end', onParentExit);
+    process.stdin.on('close', onParentExit);
+    process.stdin.on('error', () => {
+      /* EPIPE etc. — 'end'/'close' is the real signal; ignore. */
+    });
+  }
 }
 
 // CLI entry guard: listen only when executed directly (tsx src/index.ts, or a
