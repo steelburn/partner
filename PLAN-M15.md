@@ -70,14 +70,14 @@ user the code.
 - [x] A. Core: device channel unit tests green (absent/wrong/ok/no-code-in-
       audit/demo-seam-still-live-hidden); full core suite green (726).
 - [x] B. Web: typecheck + `fetchCoreHealth` tests + build green.
-- [ ] C. Shell: windows-build green (Rust compiles: tray + dialog + env).
-- [ ] D. **Live boot walk on a desktop**: install NSIS build → tray exists →
+- [x] C. Shell: windows-build green (Rust compiles: tray + dialog + env).
+- [x] D. **Live boot walk (this desktop, 2026-09-07):** install NSIS build →
       "Show pairing code…" dialog shows 6 digits → PairGate (live copy, no
       demo button) accepts the code → chat round-trips; a provider key is
       held by the OS keychain; the DB file on disk opens as ciphertext;
       restart the app → data + pairing survive; Quit kills the core.
-- [ ] E. Demo override still boots (`PARTNER_DEMO_MODE=1`): PairGate shows
+- [x] E. Demo override boots (`PARTNER_DEMO_MODE=1`): health demo=true,
       "Get demo pairing code".
-- [ ] F. Docs: HANDOFF-WINDOWS.md + README state refreshed; VERIFY live
+- [x] F. Docs: HANDOFF-WINDOWS.md + README state refreshed; VERIFY live
       lines updated to the new reality (tray exists; live boot no longer
       env-blocked on the code surface).
