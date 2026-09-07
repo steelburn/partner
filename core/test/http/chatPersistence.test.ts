@@ -277,6 +277,76 @@ describe('chat persistence with a persona (demo provider)', () => {
     }
   });
 
+  it('titles a pre-created empty conversation from its first user message (web New-chat path)', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const created = h.conversations.create({ personaId: 'p-researcher' });
+      expect(created.title).toBeNull();
+
+      const content = 'the web pre-created me, now I have a first message';
+      const res = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content }], conversationId: created.id });
+      expect(res.status).toBe(200);
+      const meta = doneMeta(parseSse(res.text));
+      expect(meta.conversationId).toBe(created.id);
+
+      const detail = h.conversations.get(created.id);
+      expect(detail.summary.title).toBe(content);
+      expect(detail.summary.messageCount).toBe(2);
+      expect(detail.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('titles a pre-created empty conversation truncated to 60 chars', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const created = h.conversations.create({ personaId: 'p-researcher' });
+      const long = 'y'.repeat(120);
+      await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content: long }], conversationId: created.id });
+      const summary = h.conversations.get(created.id).summary;
+      expect(summary.title?.length).toBe(60);
+      expect(summary.title).toBe('y'.repeat(60));
+    } finally {
+      h.close();
+    }
+  });
+
+  it('never retitles a conversation that already has a title or messages', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      // An explicitly titled conversation keeps its title.
+      const named = h.conversations.create({ personaId: 'p-researcher', title: 'Named chat' });
+      await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content: 'hello there' }], conversationId: named.id });
+      expect(h.conversations.get(named.id).summary.title).toBe('Named chat');
+
+      // An untitled conversation that ALREADY has messages is not renamed by
+      // a later turn — only the true first message titles.
+      const older = h.conversations.create({ personaId: 'p-researcher' });
+      h.conversations.append(older.id, 'user', { content: 'earlier turn' });
+      h.conversations.append(older.id, 'assistant', { content: 'earlier reply' });
+      await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ messages: [{ role: 'user', content: 'do not title me' }], conversationId: older.id });
+      expect(h.conversations.get(older.id).summary.title).toBeNull();
+    } finally {
+      h.close();
+    }
+  });
+
   it('persisted turns are retrievable over HTTP (conversation list + transcript)', async () => {
     const h = demoHarness();
     try {

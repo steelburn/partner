@@ -1452,6 +1452,27 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
 
     const persistUserTurn = (): void => {
       if (!persist || conversationId === null || lastUser === undefined) return;
+      // A conversation that pre-existed WITHOUT a title (the web rail
+      // pre-creates empty chats via POST /v1/conversations) gets titled by
+      // its FIRST user message — mirroring the auto-create rule in
+      // ensureConversation, so both entry paths title the same way. Only an
+      // empty conversation that is still untitled is titled; a title a user
+      // set explicitly is never overwritten. Best effort only.
+      if (firstUser !== undefined && firstUser.content !== '') {
+        try {
+          const detail = (conversationManager as ConversationManager).get(conversationId);
+          if (detail.messages.length === 0) {
+            const existing = detail.summary.title;
+            if (existing === null || existing === '') {
+              (conversationManager as ConversationManager).update(conversationId, {
+                title: firstUser.content.slice(0, 60),
+              });
+            }
+          }
+        } catch (err) {
+          logPersistenceFailure('conversation title', err);
+        }
+      }
       try {
         // Per-message persona switch (PLAN-M3): the conversation follows its
         // latest message's persona, so rebind when they differ.
