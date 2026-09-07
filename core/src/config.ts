@@ -39,6 +39,14 @@ export interface CoreConfig {
   keychain: KeychainKind;
   /** Optional built SPA directory to serve at / (packaged shell wires it). */
   staticDir?: string;
+  /**
+   * M15: per-boot secret the desktop shell generates and hands to the core
+   * (PARTNER_DEVICE_SECRET). When set, core enables the header-guarded
+   * GET /v1/pair/device channel the tray uses to mint the LIVE pairing
+   * code. Absent in dev/CI/container runs — a plain live core exposes no
+   * code surface (the demo seam stays demo-only).
+   */
+  deviceSecret?: string;
   /** Host header allowlist (loopback only), derived from the port. */
   hostAllowlist: string[];
   codeTtlMs: number;
@@ -117,6 +125,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     dbPath,
     keychain,
     staticDir: env.STATIC_DIR?.trim() || undefined,
+    // M15: trim so a stray empty value behaves like unset (route hidden).
+    deviceSecret: env.PARTNER_DEVICE_SECRET?.trim() || undefined,
     hostAllowlist: [`127.0.0.1:${port}`, `localhost:${port}`],
     codeTtlMs: readInt(env.PAIR_CODE_TTL_MS, 120_000, 1, Number.MAX_SAFE_INTEGER),
     maxAttempts: readInt(env.PAIR_MAX_ATTEMPTS, 3, 1, 100),

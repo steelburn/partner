@@ -18,6 +18,7 @@ import type {
 import { parseSseStream } from './sse.js';
 
 const PAIR_PATH = '/v1/pair';
+const HEALTH_PATH = '/v1/health';
 const CHAT_PATH = '/v1/chat';
 const SESSION_PATH = '/v1/session';
 const DEMO_PAIR_CODE_PATH = '/v1/dev/pair-code';
@@ -39,6 +40,44 @@ export class ApiRequestError extends Error {
 
 export interface PairResult {
   token: string;
+}
+
+export interface CoreHealth {
+  demo: boolean;
+  version: string;
+  schemaVersion: number;
+}
+
+/**
+ * Probe the public /v1/health surface. Returns null when the core is
+ * unreachable or the body is not the expected shape (callers then keep the
+ * neutral pairing copy instead of guessing the mode).
+ */
+export async function fetchCoreHealth(
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<CoreHealth | null> {
+  const fetchImpl: FetchLike = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(HEALTH_PATH, { headers: { accept: 'application/json' } });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  if (typeof body !== 'object' || body === null) return null;
+  const record = body as Record<string, unknown>;
+  if (typeof record.demo !== 'boolean') return null;
+  return {
+    demo: record.demo,
+    version: typeof record.version === 'string' ? record.version : '',
+    schemaVersion: typeof record.schemaVersion === 'number' ? record.schemaVersion : 0,
+  };
 }
 
 /** Parse the session token out of an unknown pairing response body. */

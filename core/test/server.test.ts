@@ -73,6 +73,91 @@ describe('public surface', () => {
   });
 });
 
+describe('device pairing channel (M15)', () => {
+  const SECRET = 'shell-boot-secret-abc123';
+
+  it('does not exist without a configured device secret (plain live core)', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const res = await request(h.app)
+        .get('/v1/pair/device')
+        .set('Host', ALLOWED_HOST)
+        .set('x-partner-device', SECRET);
+      expect(res.status).toBe(404);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('stays demo-only for /v1/dev/pair-code in live mode even with a secret', async () => {
+    const h = demoHarness({ demo: false, deviceSecret: SECRET });
+    try {
+      const res = await request(h.app).get('/v1/dev/pair-code').set('Host', ALLOWED_HOST);
+      expect(res.status).toBe(404);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('rejects a wrong device secret with 401', async () => {
+    const h = demoHarness({ demo: false, deviceSecret: SECRET });
+    try {
+      const res = await request(h.app)
+        .get('/v1/pair/device')
+        .set('Host', ALLOWED_HOST)
+        .set('x-partner-device', 'wrong-secret');
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('device_secret_mismatch');
+      // A wrong guess must not rotate the active code.
+      const res2 = await request(h.app)
+        .get('/v1/pair/device')
+        .set('Host', ALLOWED_HOST)
+        .set('x-partner-device', SECRET);
+      expect(res2.status).toBe(200);
+      expect(res2.body.code).toMatch(/^\d{6}$/);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('issues a fresh single-use code the web pair flow can exchange', async () => {
+    const h = demoHarness({ demo: false, deviceSecret: SECRET });
+    try {
+      const res = await request(h.app)
+        .get('/v1/pair/device')
+        .set('Host', ALLOWED_HOST)
+        .set('x-partner-device', SECRET);
+      expect(res.status).toBe(200);
+      expect(res.body.code).toMatch(/^\d{6}$/);
+
+      // The tray-minted code flows through the ordinary web pairing ceremony
+      // (host-allowlisted loopback -> web session).
+      const token = await pair(h.app, res.body.code as string);
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('audits device issues as pair.issue.device (shell actor, no code logged)', async () => {
+    const h = demoHarness({ demo: false, deviceSecret: SECRET });
+    try {
+      await request(h.app)
+        .get('/v1/pair/device')
+        .set('Host', ALLOWED_HOST)
+        .set('x-partner-device', SECRET);
+      const rows = h.audit.list(100);
+      const device = rows.find((row) => row.action === 'pair.issue.device');
+      expect(device).toBeDefined();
+      expect(device?.actor).toBe('shell');
+      // The code itself never lands in the audit trail (details stay empty).
+      expect(JSON.parse(String(device?.details ?? '{}'))).toEqual({});
+    } finally {
+      h.close();
+    }
+  });
+});
+
 describe('auth gate', () => {
   it('POST /v1/chat without a token is 401', async () => {
     const h = demoHarness();

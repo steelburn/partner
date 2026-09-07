@@ -30,6 +30,7 @@
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import express from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
@@ -116,6 +117,14 @@ export interface CoreAppOptions {
   schemaVersion: number;
   /** Host header allowlist; defaults to loopback for `port`. */
   hostAllowlist?: string[];
+  /**
+   * M15 device pairing channel: when the shell hands the core a per-boot
+   * secret, GET /v1/pair/device (header-guarded) issues the live pairing
+   * code for the tray. Absent = the route does not exist (a plain live core
+   * still exposes no code surface — the demo /v1/dev/pair-code seam stays
+   * demo-only).
+   */
+  deviceSecret?: string;
   /** Optional built SPA directory served at / (stub at M0; the packaged shell wires the real path). */
   staticDir?: string;
   pairing: PairingManager;
@@ -1151,6 +1160,26 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         code = await pairing.issue();
         audit.log('pair', 'pair.issue', 'demo', { demo: true });
       }
+      res.json({ code });
+    });
+  }
+
+  // M15 device channel: the desktop shell (tray) mints the code for the LIVE
+  // pairing ceremony on demand. Enabled only when the shell generated a
+  // per-boot secret and handed it to the core in its environment — the code
+  // is single-active with the usual 120s TTL and dies with the process, and
+  // no other loopback caller (browser page, local process) can read it
+  // without the header secret.
+  if (options.deviceSecret !== undefined && options.deviceSecret !== '') {
+    const expected = Buffer.from(options.deviceSecret, 'utf8');
+    app.get('/v1/pair/device', async (req: Request, res: Response) => {
+      const actual = Buffer.from(req.header('x-partner-device') ?? '', 'utf8');
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+        res.status(401).json({ error: 'device_secret_mismatch' });
+        return;
+      }
+      const code = await pairing.issue();
+      audit.log('shell', 'pair.issue.device', 'shell', {});
       res.json({ code });
     });
   }

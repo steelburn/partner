@@ -164,6 +164,8 @@ export interface HarnessOptions {
   demo?: boolean;
   pairing?: PairingOptions;
   staticDir?: string;
+  /** M15: enable the header-guarded /v1/pair/device channel with this secret. */
+  deviceSecret?: string;
   /** Wire the M2 tool broker (default true). */
   broker?: boolean;
   /** Wire + seed the M3 persona/conversation managers (default true). */
@@ -603,6 +605,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     schemaVersion: SCHEMA_VERSION,
     hostAllowlist: ALLOWLIST,
     staticDir: options.staticDir,
+    deviceSecret: options.deviceSecret,
     pairing,
     sessions,
     audit,

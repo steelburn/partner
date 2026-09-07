@@ -7,14 +7,26 @@
 // loopback HTTP server on 127.0.0.1:4390, and shows the webview pointed at
 // it (window declared in tauri.conf.json). Core child is killed on exit.
 //
-// Not-yet-implemented (future milestones): tray, autostart, updater,
-// restart/recovery policy when the core dies, and pairing notification.
+// M15 (live desktop mode): the shell boots the core LIVE by default —
+// persistent whole-file-encrypted DB + OS-keychain key under the per-user
+// app-local data dir, skills installed under that same dir, and a per-boot
+// device secret handed to the core so the tray can mint the live pairing
+// code (GET /v1/pair/device) for the web PairGate. PARTNER_DEMO_MODE=1 keeps
+// the old in-memory demo boot (dev/CI/webapp container). Tray = Show pairing
+// code / Open Partner / Quit.
+//
+// Not-yet-implemented (future milestones): autostart, updater, and
+// restart/recovery policy when the core dies.
 
 #![cfg_attr(mobile, tauri::mobile_entry_point)]
 
+use std::fs;
 use std::time::Duration;
 
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -26,6 +38,10 @@ pub const CORE_PORT: u16 = 4390;
 /// Sidecar base name registered via `bundle.externalBin`; Tauri renames the
 /// per-triple build artifact to this name at bundle time (binaries/README.md).
 pub const CORE_SIDECAR: &str = "partner-core";
+
+/// M15: the per-boot secret the shell generates and hands to the core, so the
+/// tray can mint pairing codes over the header-guarded device channel.
+struct DeviceSecret(String);
 
 /// Strips the `\\?\` verbatim prefix tauri's path resolver returns on Windows
 /// (node's CJS loader cannot resolve verbatim main-script paths).
@@ -78,16 +94,24 @@ impl Drop for CoreChild {
 /// ships under Tauri resources next to the web UI. Bundled-node runtime per
 /// core/docs/spike-sidecar.md.
 ///
-/// Resource layout (built by shell/docker/gate/run.sh on Linux and
-/// shell/windows/build-windows.ps1 on Windows):
+/// Resource layout (built by the windows-build workflow):
 ///   resources/core-bundle.cjs        (esbuild CJS bundle of core/src)
 ///   resources/node_modules/…         (vendored better-sqlite3 + keyring)
 ///   resources/web-dist/              (built web UI, served by the core)
+///   resources/skills-catalog/        (read-only shipped skill catalog)
 ///
 /// Dev fallbacks: PARTNER_CORE_BUNDLE / PARTNER_STATIC_DIR point at a
 /// host-side bundle + web dist when the resources were not staged;
 /// PARTNER_NO_SIDECAR skips the spawn entirely (headless gate smoke).
-fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// M15 env policy:
+///  - LIVE (default): DEMO_MODE=0, DB_PATH + SKILLS_DIR under the per-user
+///    app-local data dir (created here), PARTNER_DEVICE_SECRET set. The OS
+///    keychain (native) holds the DB cipher key.
+///  - DEMO (PARTNER_DEMO_MODE=1): the historical env-free boot — in-memory
+///    DB, fake keychain, /v1/dev/pair-code seam; skills stay under the
+///    staged resources dir (throwaway).
+fn spawn_core(app: &tauri::App, demo: bool) -> Result<(), Box<dyn std::error::Error>> {
     let res_dir = app.path().resource_dir()?;
     // tauri returns verbatim (`\\?\`-prefixed) paths on Windows; node cannot
     // load a `\\?\C:\...` main script (its loader lstat's `C:` and dies), so
@@ -125,16 +149,47 @@ fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cmd = app.shell().sidecar(CORE_SIDECAR)?;
     cmd = cmd.arg(bundle.to_string_lossy().to_string());
-    let mut envs: Vec<(&str, String)> = vec![
-        ("PORT", CORE_PORT.to_string()),
-        ("HOST", CORE_HOST.to_string()),
+    let mut envs: Vec<(String, String)> = vec![
+        ("PORT".to_string(), CORE_PORT.to_string()),
+        ("HOST".to_string(), CORE_HOST.to_string()),
     ];
     if let Some(dir) = web {
-        envs.push(("STATIC_DIR", dir.to_string_lossy().to_string()));
+        envs.push(("STATIC_DIR".to_string(), dir.to_string_lossy().to_string()));
     }
-    // Keep skills out of cwd-dependent paths in packaged runs.
-    envs.push(("SKILLS_DIR", staged_root.join("skills").to_string_lossy().to_string()));
-    envs.push(("SKILLS_CATALOG_DIR", staged_root.join("skills-catalog").to_string_lossy().to_string()));
+    if demo {
+        // Historical demo boot (PARTNER_DEMO_MODE=1): in-memory + fake keychain.
+        envs.push(("DEMO_MODE".to_string(), "1".to_string()));
+        // Keep skills out of cwd-dependent paths in packaged runs (staged dir).
+        envs.push(("SKILLS_DIR".to_string(), staged_root.join("skills").to_string_lossy().to_string()));
+        envs.push((
+            "SKILLS_CATALOG_DIR".to_string(),
+            staged_root.join("skills-catalog").to_string_lossy().to_string(),
+        ));
+    } else {
+        // M15 live boot: persistent encrypted data under the per-user
+        // app-local data dir (LOCALAPPDATA on Windows), not the install dir —
+        // upgrades replace resources/ but must never touch user data.
+        let data_dir = app.path().app_local_data_dir()?;
+        fs::create_dir_all(&data_dir)?;
+        let skills_dir = data_dir.join("skills");
+        fs::create_dir_all(&skills_dir)?;
+        envs.push(("DEMO_MODE".to_string(), "0".to_string()));
+        envs.push((
+            "DB_PATH".to_string(),
+            data_dir.join("partner.db").to_string_lossy().to_string(),
+        ));
+        envs.push(("SKILLS_DIR".to_string(), skills_dir.to_string_lossy().to_string()));
+        envs.push((
+            "SKILLS_CATALOG_DIR".to_string(),
+            staged_root.join("skills-catalog").to_string_lossy().to_string(),
+        ));
+        // Per-boot device secret: the tray uses it to mint live pairing codes
+        // (header-guarded loopback channel; a fresh secret per boot).
+        envs.push((
+            "PARTNER_DEVICE_SECRET".to_string(),
+            app.state::<DeviceSecret>().0.clone(),
+        ));
+    }
     for (key, value) in envs.iter() {
         cmd = cmd.env(key, value);
     }
@@ -165,15 +220,116 @@ fn spawn_core(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// M15: ask the core (over the header-guarded loopback device channel) for a
+/// fresh 6-digit pairing code. Returns the code on success.
+fn fetch_pairing_code(app: &tauri::AppHandle) -> Result<String, String> {
+    let secret = &app.state::<DeviceSecret>().0;
+    let url = format!("http://{CORE_HOST}:{CORE_PORT}/v1/pair/device");
+    let response = ureq::get(&url)
+        .set("x-partner-device", secret)
+        .call()
+        .map_err(|err| format!("Could not reach the Partner core: {err}."))?;
+    if response.status() != 200 {
+        return Err(format!("The core refused the request (HTTP {}).", response.status()));
+    }
+    let body = response
+        .into_string()
+        .map_err(|err| format!("Bad response from the core: {err}."))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| "Unexpected core response.".to_string())?;
+    json.get("code")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "The core did not return a code.".to_string())
+}
+
+/// Native dialog showing the live pairing code (or the failure reason).
+/// Runs on a worker thread: the plugin's blocking dialog must never freeze
+/// the main thread (the tray menu event handler is main-thread).
+fn show_pairing_code(app: &tauri::AppHandle) {
+    let (title, message, kind) = match fetch_pairing_code(app) {
+        Ok(code) => (
+            "Partner — pairing code".to_string(),
+            format!(
+                "Your pairing code is:\n\n    {code}\n\n\
+                 It expires in about 2 minutes and can be used once. \
+                 Type or paste it into the Partner window or browser you want to pair."
+            ),
+            MessageDialogKind::Info,
+        ),
+        Err(reason) => (
+            "Partner".to_string(),
+            format!("{reason}\n\nIs the core running?"),
+            MessageDialogKind::Error,
+        ),
+    };
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = handle
+            .dialog()
+            .message(message)
+            .title(title)
+            .kind(kind)
+            .buttons(MessageDialogButtons::Ok)
+            .blocking_show();
+    });
+}
+
+/// M15 tray: Show pairing code / Open Partner / Quit. Built from Rust only —
+/// no webview IPC or ACL changes.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_code = MenuItem::with_id(app, "pair-code", "Show pairing code…", true, None::<&str>)?;
+    let open_window = MenuItem::with_id(app, "open-window", "Open Partner", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Partner", true, None::<&str>)?;
+    let separator_a = PredefinedMenuItem::separator(app)?;
+    let separator_b = PredefinedMenuItem::separator(app)?;
+    let items: [&dyn tauri::menu::IsMenuItem<tauri::Wry>; 5] =
+        [&show_code, &separator_a, &open_window, &separator_b, &quit];
+    let menu = Menu::with_items(app, &items)?;
+    let icon = app
+        .default_window_icon()
+        .expect("bundled window icon (tauri.conf.json bundle.icon)")
+        .clone();
+    TrayIconBuilder::with_id("partner-tray")
+        .icon(icon)
+        .tooltip("Partner")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "pair-code" => show_pairing_code(app),
+            "open-window" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // M15: the packaged shell boots LIVE by default; PARTNER_DEMO_MODE=1
+            // restores the historical in-memory demo boot (dev/webapp container/
+            // CI smoke). The per-boot device secret is generated here and both
+            // the core (env) and the tray (state) read it.
+            let demo = std::env::var("PARTNER_DEMO_MODE").map(|value| value == "1").unwrap_or(false);
+            let secret = std::env::var("PARTNER_DEVICE_SECRET")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            app.manage(DeviceSecret(secret));
+
             // PARTNER_NO_SIDECAR (headless gate / CI smoke): the artifact core
             // is started out-of-band on :4390, so the shell must not double-
             // spawn a sidecar. Normal desktop runs keep the default spawn.
             if std::env::var_os("PARTNER_NO_SIDECAR").is_none() {
-                spawn_core(app)?;
+                spawn_core(app, demo)?;
             } else {
                 println!("[shell] PARTNER_NO_SIDECAR set — skipping core sidecar spawn");
             }
@@ -186,6 +342,13 @@ pub fn run() {
                     // error page. Real impl: retry policy + dialog.
                     eprintln!("[shell] {err}");
                 }
+            }
+            // The tray is the live pairing surface (code dialog) + window/quit
+            // controls. Non-fatal: an environment without a tray (headless
+            // service sessions) still runs the app, pairing via demo/env paths.
+            match build_tray(app) {
+                Ok(()) => println!("[shell] tray ready"),
+                Err(err) => eprintln!("[shell] tray unavailable: {err}"),
             }
             Ok(())
         })

@@ -15,13 +15,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png"] }
 # Required to spawn the core sidecar (Command::sidecar) and to keep the
 # tauri-plugin-shell permissions available. Spawning happens Rust-side in
 # `setup`; the plugin's IPC permissions are only exercised by future UI.
 tauri-plugin-shell = "2"
+# M15: native message dialogs for the tray pairing code (Rust-side only).
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# M15: per-boot device secret handed to the core (v4 = CSPRNG-backed).
+uuid = { version = "1", features = ["v4"] }
+# M15: tiny blocking HTTP client for the loopback device channel (no TLS —
+# the core is reachable on 127.0.0.1 only in live mode).
+ureq = { version = "2", default-features = false }
 
 [profile.release]
 # Recommended Tauri release profile (smaller/faster binaries).

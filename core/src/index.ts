@@ -897,6 +897,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     schemaVersion: config.schemaVersion,
     hostAllowlist: config.hostAllowlist,
     staticDir: config.staticDir,
+    deviceSecret: config.deviceSecret,
     pairing,
     sessions,
     audit,
@@ -1038,10 +1039,17 @@ async function main(): Promise<void> {
   }
 
   const { bundle, server } = await startServer(config);
-  const demoHint = config.demo ? ' · dev pairing code: GET /v1/dev/pair-code' : ' · pair via tray code';
+  // M15: the boot hint tells an operator where the pairing code comes from —
+  // the demo seam, the shell device channel (tray), or nowhere (a bare live
+  // core intentionally exposes no code surface).
+  const pairHint = config.demo
+    ? ' · dev pairing code: GET /v1/dev/pair-code'
+    : config.deviceSecret !== undefined
+      ? ' · device pairing: GET /v1/pair/device (shell tray)'
+      : ' · no pairing code surface (boot inside the shell, or set PARTNER_DEVICE_SECRET)';
   console.log(
     `partner-core v${config.version} up on http://${config.host}:${config.port}` +
-      ` demo=${config.demo ? 'on' : 'off'} schema=v${config.schemaVersion}${demoHint}`,
+      ` demo=${config.demo ? 'on' : 'off'} schema=v${config.schemaVersion}${pairHint}`,
   );
 
   const shutdown = (signal: string): void => {

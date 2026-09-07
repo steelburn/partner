@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from 'react';
-import { ApiRequestError, fetchDemoPairCode, requestPair } from './lib/api.js';
+import { useEffect, useState, type FormEvent } from 'react';
+import { ApiRequestError, fetchCoreHealth, fetchDemoPairCode, requestPair } from './lib/api.js';
 import { storeToken } from './lib/token.js';
 import SessionChat from './SessionChat.js';
 
@@ -30,6 +30,19 @@ export default function PairGate({ onPaired }: PairGateProps) {
   const [demoBusy, setDemoBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hint, setHint] = useState<Hint | null>(null);
+  /** M15: null while probing / when the core is unreachable — the demo
+   *  affordance only appears once /v1/health confirms demo mode. */
+  const [liveMode, setLiveMode] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchCoreHealth().then((health) => {
+      if (alive) setLiveMode(health === null ? null : !health.demo);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const canConnect = code.length === 6 && !busy && !demoBusy;
 
@@ -74,7 +87,7 @@ export default function PairGate({ onPaired }: PairGateProps) {
         setHint({ text: 'Demo code filled in — press Connect to start a demo session.' });
       } else if (result.notDemo) {
         setHint({
-          text: 'Core not in demo mode. Start the core with DEMO_MODE=1 to fetch a demo code.',
+          text: 'This core is not in demo mode — grab the code from the Partner tray icon instead.',
         });
       } else {
         setError(result.message);
@@ -100,8 +113,9 @@ export default function PairGate({ onPaired }: PairGateProps) {
       <div className="gate-panel">
         <h1 className="gate-title">Pair your browser</h1>
         <p className="gate-copy">
-          Enter the 6-digit code shown by the Partner app on this machine. The code expires after a
-          couple of minutes and can be used once.
+          {liveMode === true
+            ? 'Partner is running in live mode on this machine. Click the Partner icon in the system tray (near the clock), choose Show pairing code, then type the 6-digit code below. Codes expire after a couple of minutes and can be used once.'
+            : 'Enter the 6-digit code shown by the Partner app on this machine. The code expires after a couple of minutes and can be used once.'}
         </p>
 
         <form className="gate-form" onSubmit={handleSubmit} aria-busy={busy}>
@@ -134,14 +148,16 @@ export default function PairGate({ onPaired }: PairGateProps) {
         </form>
 
         <div className="gate-actions">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={demoBusy || busy}
-            onClick={() => void fetchDemoCode()}
-          >
-            {demoBusy ? 'Getting code…' : 'Get demo pairing code'}
-          </button>
+          {liveMode === false ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={demoBusy || busy}
+              onClick={() => void fetchDemoCode()}
+            >
+              {demoBusy ? 'Getting code…' : 'Get demo pairing code'}
+            </button>
+          ) : null}
         </div>
 
         <p className="gate-alt">

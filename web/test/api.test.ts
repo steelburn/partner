@@ -4,6 +4,7 @@ import {
   asChatEvent,
   createPurposeProviders,
   discoverProviderModels,
+  fetchCoreHealth,
   fetchDemoPairCode,
   requestPair,
   streamChat,
@@ -78,6 +79,31 @@ describe('requestPair', () => {
       throw new TypeError('fetch failed');
     });
     await expect(requestPair('483920', { fetchImpl })).rejects.toThrow('network');
+  });
+});
+
+describe('fetchCoreHealth (M15)', () => {
+  it('parses the demo flag from /v1/health', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ status: 'ok', demo: false, version: '0.1.0', schemaVersion: 13 }),
+    );
+    const health = await fetchCoreHealth({ fetchImpl });
+    expect(health).toEqual({ demo: false, version: '0.1.0', schemaVersion: 13 });
+    expect(calls[0]?.input).toBe('/v1/health');
+  });
+
+  it('returns null when the core is unreachable', async () => {
+    const { fetchImpl } = recordFetch(() => {
+      throw new Error('network down');
+    });
+    expect(await fetchCoreHealth({ fetchImpl })).toBeNull();
+  });
+
+  it('returns null on non-2xx or a malformed body (caller keeps neutral copy)', async () => {
+    const notOk = recordFetch(() => new Response('nope', { status: 503 }));
+    expect(await fetchCoreHealth({ fetchImpl: notOk.fetchImpl })).toBeNull();
+    const badShape = recordFetch(() => jsonResponse({ status: 'ok' }));
+    expect(await fetchCoreHealth({ fetchImpl: badShape.fetchImpl })).toBeNull();
   });
 });
 
