@@ -90,3 +90,80 @@ export interface NotesExportBundle {
   exportedAt: number;
   notes: Note[];
 }
+
+// ---------------------------------------------------------------------------
+// M16 F1/F2/F3 (PLAN-M16.md) — relationship graph, versions, brainstorm.
+// ---------------------------------------------------------------------------
+
+export interface NoteGraphNode {
+  id: string;
+  title: string;
+  tags: string[];
+  isDaily: boolean;
+  /** Last persisted canvas position (null = never dragged/auto-arranged). */
+  x: number | null;
+  y: number | null;
+}
+
+export interface NoteGraphEdge {
+  /** The referencing note. */
+  source: string;
+  /** The referenced note. */
+  target: string;
+  /** True when the target also links the source (mutual refs collapse to one
+   *  bidirectional edge rendered with arrowheads at both ends). */
+  bidirectional: boolean;
+}
+
+export interface NoteGraph {
+  nodes: NoteGraphNode[];
+  edges: NoteGraphEdge[];
+}
+
+export type NoteVersionWriter =
+  | 'user'
+  | 'capture'
+  | 'promote'
+  | 'playbook'
+  | 'schedule'
+  | 'summarize'
+  | 'restore'
+  | 'brainstorm';
+
+export interface NoteVersionSummary {
+  id: string;
+  noteId: string;
+  seq: number;
+  createdAt: number;
+  writer: NoteVersionWriter;
+  /** True when this version's title differs from the previous version's. */
+  titleChanged: boolean;
+}
+
+export interface NoteVersion extends NoteVersionSummary {
+  title: string;
+  content: string;
+  tags: string[];
+}
+
+export interface GraphPositionInput {
+  noteId: string;
+  x: number;
+  y: number;
+}
+
+export interface BrainstormRequest {
+  /** Notes/captures to brainstorm over (capped at 20 by the core). */
+  noteIds: string[];
+  /** Optional conversation title; a default is derived when absent. */
+  title?: string;
+}
+
+export interface BrainstormResult {
+  conversationId: string;
+  personaId: string;
+  /** Note ids whose excerpts were bundled into the first user turn. */
+  used: number;
+  /** Note ids truncated to the per-note excerpt cap. */
+  truncated: number;
+}

@@ -36,12 +36,12 @@ function expectPersonaError(fn: () => void, code: string): void {
 }
 
 describe('seedIfEmpty', () => {
-  it('seeds the EIGHT starter personas on an empty table, idempotently', () => {
+  it('seeds the NINE starter personas on an empty table, idempotently', () => {
     const { manager } = makeManager();
     expect(manager.list()).toHaveLength(0);
-    expect(manager.seedIfEmpty()).toBe(8);
+    expect(manager.seedIfEmpty()).toBe(9);
     const once = manager.list();
-    expect(once).toHaveLength(8);
+    expect(once).toHaveLength(9);
     expect(once.map((p) => p.name)).toEqual([
       'Researcher',
       'Builder',
@@ -50,11 +50,12 @@ describe('seedIfEmpty', () => {
       'Presenter',
       'Analyst',
       'Note-taker',
+      'Brainstorming',
       'Default partner',
     ]);
     // Idempotent: a second seed run inserts nothing.
     expect(manager.seedIfEmpty()).toBe(0);
-    expect(manager.list()).toHaveLength(8);
+    expect(manager.list()).toHaveLength(9);
   });
 
   it('gives exactly one default — the Default partner — and the planned levels', () => {
@@ -114,10 +115,10 @@ describe('persona CRUD', () => {
     const { manager } = makeManager();
     manager.seedIfEmpty();
     const target = manager.create({ name: 'Temp' });
-    expect(manager.list()).toHaveLength(9);
+    expect(manager.list()).toHaveLength(10);
     manager.remove(target.id);
     expect(manager.get(target.id)).toBeNull();
-    expect(manager.list()).toHaveLength(8);
+    expect(manager.list()).toHaveLength(9);
     // Unknown remove -> typed not_found.
     expectPersonaError(() => manager.remove('nope'), 'not_found');
   });

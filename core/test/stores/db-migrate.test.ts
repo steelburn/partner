@@ -29,13 +29,21 @@ describe('M11 schema v12 (guarded columns)', () => {
       const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as
         | { value: string }
         | undefined;
-      expect(meta?.value).toBe('13');
-      expect(SCHEMA_VERSION).toBe(13);
+      expect(meta?.value).toBe('14');
+      expect(SCHEMA_VERSION).toBe(14);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');
       expect(columnNames(db, 'conversations')).toContain('folder_id');
       expect(columnNames(db, 'messages')).toContain('content_type');
+      // M16 v14: lineage columns + version/graph tables (PLAN-M16.md).
+      expect(columnNames(db, 'conversations')).toContain('parent_id');
+      expect(columnNames(db, 'conversations')).toContain('source_asset_id');
+      const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map(
+        (t) => t.name,
+      );
+      expect(tables).toContain('note_versions');
+      expect(tables).toContain('note_graph');
 
       // Existing tables still have every legacy column (guards are additive).
       const legacy = [

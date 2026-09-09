@@ -14,7 +14,10 @@ extension. See the plans:
 - `PLAN-M11.md` — M11 spec: chat as the workspace.
 - `PLAN-M12.md` — M12 spec: UI readability & polish pass.
 - `PLAN-M13.md` — M13 spec: purpose providers & in-session model switch.
-- `PLAN-M14.md` — M14 spec: scheduled & autonomous work (current).
+- `PLAN-M14.md` — M14 spec: scheduled & autonomous work.
+- `PLAN-M15.md` — M15 spec: live desktop mode (exit demo).
+- `PLAN-M16.md` — M16 spec: knowledge workspace — notes graph,
+  brainstorming, versioning & asset depth (**planned**).
 - `DESIGN.md` — default design system (tokens live in `shared/src/theme.ts`).
 
 ## Layout
@@ -58,6 +61,22 @@ PLAN-M15; per-surface theme walkthrough (`docs/theme-conformance.md`); the
 `docs/VERIFY-M10.md` live-mode walk details; browser-actuator research
 capture; S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
+
+### M16 — knowledge workspace (2026-09-09, implemented)
+
+`PLAN-M16.md` ships six features (implemented; packaged walk env-gated): a
+React Flow notes relationship graph (edges follow who references whom; mutual
+refs render bidirectional; drag positions persist), **Brainstorm from notes &
+captures**
+activating a seed-on-demand **Brainstorming** persona (`p-brainstorm`),
+**versioning for notes & captures** (history, diff, undoable restore),
+**Discuss in Assets** (branch/thread of the asset's own discussion, or fork
+into a new one — schema v14 adds `conversations.parent_id` +
+`source_asset_id`), **Assets → Export working in the packaged desktop app**
+(native save-dialog path in the Tauri shell; blob fallback in browsers), and
+**CSV assets rendered as tables** (pure shared parser). Schema v13 → v14.
+Root suites: shared 51 · core 837 (2 pre-existing env cipher failures) ·
+web 486 · typechecks 0 · web build green · `ux_audit` green.
 
 ### M14 — scheduled & autonomous work (2026-09-06, core engine green)
 

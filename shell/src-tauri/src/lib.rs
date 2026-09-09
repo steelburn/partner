@@ -314,6 +314,53 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// M16 F5 (PLAN-M16.md): native “Save as” for text exports (Assets → Export
+/// .md, Notes export JSON) from the packaged app.
+///
+/// The web UI (loopback webview) detects the Tauri bridge and routes text
+/// downloads here instead of the blob click that WebView2 silently drops.
+/// The shell shows a NATIVE save dialog and writes ONLY to the path the
+/// user picks — no forced directories, no auto-write; payload bounded. The
+/// blocking dialog runs on a worker thread (never freezes the main thread).
+#[tauri::command]
+fn save_text_file(
+    app: tauri::AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    const MAX_CHARS: usize = 50 * 1024 * 1024;
+    if content.chars().count() > MAX_CHARS {
+        return Err("content exceeds the native save cap (50 MB)".to_string());
+    }
+    let handle = app.clone();
+    let picked = std::thread::spawn(move || {
+        handle
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .blocking_save_file()
+    })
+    .join()
+    .map_err(|_| "The save dialog failed.".to_string())?;
+    let Some(file_path) = picked else {
+        return Ok(serde_json::json!({ "saved": false })); // user cancelled
+    };
+    let path = file_path
+        .into_path()
+        .map_err(|err| format!("Bad save path: {err}"))?;
+    std::fs::File::create(&path)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(content.as_bytes())?;
+            Ok(())
+        })
+        .map_err(|err| format!("Could not write {}: {err}", path.display()))?;
+    Ok(serde_json::json!({
+        "saved": true,
+        "path": path.to_string_lossy().to_string(),
+    }))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -357,6 +404,7 @@ pub fn run() {
             }
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![save_text_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

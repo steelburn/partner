@@ -630,6 +630,33 @@ apps/partner/
       *Exit: core 726 passed · typechecks 0 · web tests + build green ·
       windows-build green · live packaged-boot walk (tray → pair → chat →
       restart-survives, ciphertext DB, demo override) · HANDOFF refreshed.*
+- [ ] **M16 — Knowledge workspace (implemented + verified 2026-09-09;
+      detailed spec: `PLAN-M16.md`).**
+      Notes relationship graph (view notes + relationships; edge direction =
+      who references whom, mutual refs render bidirectional; React Flow,
+      `@xyflow/react`, drag positions persist; reuse for brainstorming and,
+      later, doc building); **Brainstorm from notes & captures** (activates a
+      new **Brainstorming** persona `p-brainstorm`, seed-created on demand if
+      missing; bundle ≤ 20 note excerpts into a persona-bound conversation);
+      **versioning for notes & captures** (snapshot every mutation at one
+      choke point — covers quick captures, promote, summarize, restore —
+      history + diff + undoable restore); **Discuss in Assets** (asset
+      discussion becomes a branch/thread of the same discussion — origin
+      conversation — or optionally **forks into a new discussion** via
+      `conversations.parent_id`/`source_asset_id` lineage); **Assets →
+      Export works in the Desktop app** (native save-dialog path in the
+      Tauri shell + blob fallback for browsers); **CSV assets render as
+      tables** (pure shared RFC-4180 parser + token-only table view). Schema
+      v13 → v14 (additive). *Exit: core + web + shared suites green ·
+      typechecks 0 · web build green (React Flow) · windows-build green ·
+      `ux_audit` green on new UI (light + dark) · manual walk (graph,
+      brainstorm persona auto-create, versions/restore, discuss + fork,
+      packaged export save dialog, CSV table) · HANDOFF refreshed.
+      *State: shared 51 · core 837 passed (2 encryptedDb cipher failures
+      pre-exist at HEAD — environment) · web 486 · typechecks 0 · web build
+      green (@xyflow/react) · ux_audit green. Box open: shell
+      windows-build (no local Rust; CI workflow) + the packaged live walk
+      are env-gated, matching M13/M15 precedent.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

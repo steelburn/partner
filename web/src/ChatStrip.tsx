@@ -62,6 +62,14 @@ export interface ChatStripProps {
   onToggleAssets?: () => void;
   /** M14: an asset was saved here while the pane is open — bump its list. */
   onAssetsChanged?: () => void;
+  /**
+   * M16 F4: an external surface (asset Discuss) wants this text quoted into
+   * the composer. Consumed when its conversationId matches the open one;
+   * bumped via nonce for repeated drafts into the same conversation.
+   */
+  externalDraft?: { conversationId: string | null; text: string; nonce: number } | null;
+  /** The external draft was appended (clear it in the shell). */
+  onDraftConsumed?: () => void;
 }
 
 interface ChatRow {
@@ -119,6 +127,8 @@ export default function ChatStrip({
   assetsOpen = false,
   onToggleAssets,
   onAssetsChanged,
+  externalDraft,
+  onDraftConsumed,
 }: ChatStripProps) {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [draft, setDraft] = useState('');
@@ -138,6 +148,20 @@ export default function ChatStrip({
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [queueErrors, setQueueErrors] = useState<Readonly<Record<string, string>>>({});
   const nextId = useRef(0);
+
+  // M16 F4: an asset Discuss draft lands in the composer of its target
+  // conversation (append keeps any text the user already typed).
+  useEffect(() => {
+    if (externalDraft === null || externalDraft === undefined) return;
+    if (externalDraft.conversationId !== conversationId) return;
+    const text = externalDraft.text;
+    if (text.length === 0) return;
+    setDraft((prev) => {
+      if (prev.includes(text)) return prev;
+      return prev.length === 0 ? text : `${prev}\n\n${text}`;
+    });
+    onDraftConsumed?.();
+  }, [externalDraft, conversationId, onDraftConsumed]);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   /** M11 F1 staged uploads awaiting the next turn + per-message chips. */

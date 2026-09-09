@@ -130,7 +130,7 @@ export function createAssetManager(options: AssetManagerOptions): AssetManager {
       content: `${provenance}${row.body}\n`,
       tags: toMeta(row).tags,
     };
-    const note = notes.create(input);
+    const note = notes.create(input, 'promote');
     audit.log('web', 'asset.promote', row.id, { noteId: note.id, conversationId });
     return { noteId: note.id };
   }

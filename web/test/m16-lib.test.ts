@@ -1,0 +1,154 @@
+/**
+ * M16 pure-logic unit tests (PLAN-M16.md): graph layout determinism,
+ * native-save bridge routing, and the asset discuss quote builder. No DOM —
+ * these run under the node environment like the rest of the web suite.
+ */
+import { describe, expect, it } from 'vitest';
+import { layOutGraph } from '../src/lib/graph-layout.js';
+import { isPartnerShell, saveTextFileNative } from '../src/lib/download.js';
+import { buildAssetDiscussQuote, DISCUSS_QUOTE_CHARS } from '../src/lib/asset-quote.js';
+import type { Asset } from '@partner/shared';
+import { ApiRequestError } from '../src/lib/api.js';
+import { browseDirectories, parseBrowseResult } from '../src/lib/tools.js';
+
+describe('M16 F7 filesystem browse client', () => {
+  it('normalizes a browse response (directories only, parent optional)', () => {
+    const parsed = parseBrowseResult({
+      path: '/home/me',
+      parent: '/home',
+      entries: [
+        { name: 'docs', isDir: true },
+        { name: 'code', isDir: true },
+      ],
+      truncated: false,
+    });
+    expect(parsed.path).toBe('/home/me');
+    expect(parsed.entries.map((entry) => entry.name)).toEqual(['docs', 'code']);
+  });
+
+  it('accepts a null parent (filesystem top) and rejects malformed shapes', () => {
+    const top = parseBrowseResult({ path: '/', parent: null, entries: [], truncated: false });
+    expect(top.parent).toBeNull();
+    expect(() => parseBrowseResult({ path: '/', entries: 'nope' })).toThrow(ApiRequestError);
+  });
+
+  it('calls GET /v1/files/browse with the encoded path', async () => {
+    let url = '';
+    const fetchImpl = async (input: string): Promise<Response> => {
+      url = input;
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({ path: '/tmp/x', parent: '/tmp', entries: [], truncated: false }),
+        text: async () => '',
+      } as unknown as Response;
+    };
+    const result = await browseDirectories('tok', '/tmp/x y', { fetchImpl });
+    expect(url).toBe('/v1/files/browse?path=%2Ftmp%2Fx%20y');
+    expect(result.path).toBe('/tmp/x');
+  });
+});
+
+describe('M16 F1 graph layout', () => {
+  it('ranks referencers before their targets (left to right flow)', () => {
+    const nodes = [
+      { id: 'a', title: 'Alpha', x: null, y: null },
+      { id: 'b', title: 'Beta', x: null, y: null },
+      { id: 'c', title: 'Gamma', x: null, y: null },
+    ];
+    const edges = [
+      { source: 'a', target: 'b' },
+      { source: 'b', target: 'c' },
+    ];
+    const layout = layOutGraph(nodes, edges);
+    const pos = new Map(layout.map((entry) => [entry.id, entry]));
+    expect(pos.get('a')!.x).toBeLessThan(pos.get('b')!.x);
+    expect(pos.get('b')!.x).toBeLessThan(pos.get('c')!.x);
+  });
+
+  it('is deterministic for identical input and folds mutual links', () => {
+    const nodes = [
+      { id: 'a', title: 'A', x: null, y: null },
+      { id: 'b', title: 'B', x: null, y: null },
+    ];
+    const edges = [
+      { source: 'a', target: 'b' },
+      { source: 'b', target: 'a' }, // mutual — cycle folds instead of diverging
+    ];
+    const first = layOutGraph(nodes, edges);
+    const second = layOutGraph(nodes, edges);
+    expect(first).toEqual(second);
+  });
+
+  it('honours stored user positions and only arranges the rest', () => {
+    const nodes = [
+      { id: 'fixed', title: 'Fixed', x: 500, y: -200 },
+      { id: 'loose', title: 'Loose', x: null, y: null },
+    ];
+    const layout = layOutGraph(nodes, []);
+    const fixed = layout.find((entry) => entry.id === 'fixed');
+    const loose = layout.find((entry) => entry.id === 'loose');
+    expect(fixed).toMatchObject({ x: 500, y: -200 });
+    expect(loose!.x).not.toBeNaN();
+  });
+});
+
+describe('M16 F5 native save bridge', () => {
+  it('detects the Tauri shell bridge only when invoke exists', () => {
+    expect(isPartnerShell({})).toBe(false);
+    expect(isPartnerShell({ __TAURI__: { core: {} } })).toBe(false);
+    expect(isPartnerShell({ __TAURI__: { core: { invoke: () => Promise.resolve({}) } } })).toBe(true);
+    expect(isPartnerShell(null)).toBe(false);
+  });
+
+  it('routes content through the native save command', async () => {
+    let called: { defaultName: string; content: string } | null = null;
+    const invoke = async (command: string, args: unknown): Promise<{ saved: boolean }> => {
+      expect(command).toBe('save_text_file');
+      called = args as { defaultName: string; content: string };
+      return { saved: true };
+    };
+    const saved = await saveTextFileNative('ideas.md', '# hi', { invoke });
+    expect(saved).toBe(true);
+    expect(called).toEqual({ defaultName: 'ideas.md', content: '# hi' });
+  });
+
+  it('reports cancellation (no path) as not saved', async () => {
+    const invoke = async (): Promise<{ saved: boolean }> => ({ saved: false });
+    await expect(saveTextFileNative('x.md', 'y', { invoke })).resolves.toBe(false);
+  });
+
+  it('refuses oversized payloads (kept out of the native dialog)', async () => {
+    const invoke = async (): Promise<{ saved: boolean }> => ({ saved: true });
+    const huge = 'x'.repeat(50 * 1024 * 1024 + 1);
+    await expect(saveTextFileNative('x.md', huge, { invoke })).rejects.toThrow(/browser path/);
+  });
+});
+
+describe('M16 F4 asset discuss quote', () => {
+  function asset(over: Partial<Asset>): Asset {
+    return {
+      id: 'a1',
+      conversationId: 'c1',
+      messageId: null,
+      kind: 'table',
+      title: 'Costs',
+      tags: [],
+      createdAt: 1,
+      body: 'a,b\n1,2',
+      ...over,
+    };
+  }
+
+  it('prepends provenance and keeps the full body when small', () => {
+    const quote = buildAssetDiscussQuote(asset({}));
+    expect(quote).toContain('Discussing asset “Costs” (table)');
+    expect(quote).toContain('a,b\n1,2');
+  });
+
+  it('truncates oversized bodies with an ellipsis', () => {
+    const quote = buildAssetDiscussQuote(asset({ body: 'z'.repeat(DISCUSS_QUOTE_CHARS + 500) }));
+    expect(quote.length).toBeLessThan(DISCUSS_QUOTE_CHARS + 400);
+    expect(quote.endsWith('…')).toBe(true);
+  });
+});

@@ -13,12 +13,16 @@ import {
   createAuditStore,
   createNoteLinkStore,
   createNoteStore,
+  createNoteVersionStore,
+  createNoteGraphStore,
   createNotesFtsStore,
   createPlanStore,
 } from '../../src/stores/db.js';
 import type {
+  NoteGraphStore,
   NoteLinkStore,
   NoteStore,
+  NoteVersionStore,
   NotesFtsStore,
   PlanStore,
 } from '../../src/stores/types.js';
@@ -37,6 +41,8 @@ export interface NotesTestEnv {
     links: NoteLinkStore;
     plans: PlanStore;
     fts: NotesFtsStore;
+    versions?: NoteVersionStore;
+    graph?: NoteGraphStore;
   };
   notes: NoteManager;
   plans: PlanManager;
@@ -50,6 +56,8 @@ export interface NotesTestOptions {
   now?: () => number;
   /** Resolver override (default: null => placeholder fallback). */
   providerResolver?: () => Promise<DailySummarizeTarget | null>;
+  /** M16 F1/F3: wire the version + graph stores (default false). */
+  m16?: boolean;
 }
 
 /** Fresh managers over ONE in-memory db with a shared audit + clock. */
@@ -64,9 +72,17 @@ export function makeNotesEnv(optionsIn: NotesTestOptions = {}): NotesTestEnv {
     links: createNoteLinkStore(db),
     plans: createPlanStore(db),
     fts: createNotesFtsStore(db),
+    versions: optionsIn.m16 === true ? createNoteVersionStore(db) : undefined,
+    graph: optionsIn.m16 === true ? createNoteGraphStore(db) : undefined,
   };
   const notes = createNoteManager({
-    stores: { notes: stores.notes, links: stores.links, fts: stores.fts },
+    stores: {
+      notes: stores.notes,
+      links: stores.links,
+      fts: stores.fts,
+      ...(stores.versions !== undefined ? { versions: stores.versions } : {}),
+      ...(stores.graph !== undefined ? { graph: stores.graph } : {}),
+    },
     audit,
     demo,
     providerResolver: optionsIn.providerResolver ?? null,

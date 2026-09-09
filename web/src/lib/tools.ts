@@ -36,6 +36,7 @@ import type {
 } from '@partner/shared/src/tools.js';
 
 const ROOTS_PATH = '/v1/roots';
+const BROWSE_PATH = '/v1/files/browse';
 const GRANTS_PATH = '/v1/grants';
 const TOOLS_EXEC_PATH = '/v1/tools/exec';
 const TOOLS_PENDING_PATH = '/v1/tools/pending';
@@ -377,4 +378,56 @@ export async function discardProposal(
     headers: { authorization: `Bearer ${token}` },
   });
   return expectNoContent(response, 'Discarding the proposal');
+}
+
+// ---------------------------------------------------------------------------
+// M16 F7: filesystem folder browser for the add-root "Absolute path" picker
+// (GET /v1/files/browse). Lists DIRECTORY names only — never file content.
+// ---------------------------------------------------------------------------
+
+export interface BrowseEntry {
+  name: string;
+  isDir: boolean;
+}
+
+export interface BrowseResult {
+  path: string;
+  parent: string | null;
+  entries: BrowseEntry[];
+  truncated: boolean;
+}
+
+/** Normalize a /v1/files/browse response (rejects wrong shapes loudly). */
+export function parseBrowseResult(value: unknown, status = 200): BrowseResult {
+  if (
+    isRecord(value) &&
+    typeof value.path === 'string' &&
+    (value.parent === null || typeof value.parent === 'string') &&
+    Array.isArray(value.entries)
+  ) {
+    const entries: BrowseEntry[] = [];
+    for (const entry of value.entries) {
+      if (!isRecord(entry) || typeof entry.name !== 'string') {
+        throw new ApiRequestError(status, 'The browse response had an unexpected shape.');
+      }
+      entries.push({ name: entry.name, isDir: entry.isDir !== false });
+    }
+    return { path: value.path, parent: value.parent, entries, truncated: value.truncated === true };
+  }
+  throw new ApiRequestError(status, 'The browse response had an unexpected shape.');
+}
+
+/** GET /v1/files/browse?path=… — folders under an absolute path ('' = start). */
+export async function browseDirectories(
+  token: string,
+  path = '',
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<BrowseResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const query = path === '' ? '' : `?path=${encodeURIComponent(path)}`;
+  const response = await fetchImpl(`${BROWSE_PATH}${query}`, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  return parseBrowseResult(await expectJson<unknown>(response), response.status);
 }

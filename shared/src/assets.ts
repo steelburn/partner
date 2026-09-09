@@ -65,3 +65,19 @@ export const ASSET_KINDS: readonly AssetKind[] = [
 export function isAssetKind(value: unknown): value is AssetKind {
   return typeof value === 'string' && (ASSET_KINDS as readonly string[]).includes(value);
 }
+
+/** M16 F4 (PLAN-M16.md): how a Discuss action relates to the asset's origin
+ *  conversation. 'continue' = open the same discussion (origin conversation)
+ *  with the asset in the composer; 'fork' = a new conversation that is a
+ *  child thread of the origin (when it still exists) carrying the asset. */
+export type AssetDiscussMode = 'continue' | 'fork';
+
+export interface AssetDiscussResult {
+  conversationId: string;
+  /** Which mode actually applied (continue degrades to fork when the origin
+   *  conversation no longer exists). */
+  mode: AssetDiscussMode;
+  assetId: string;
+  /** Origin conversation id when known (may equal conversationId). */
+  originConversationId: string | null;
+}

@@ -14,6 +14,8 @@ export interface NotesViewProps {
   active?: boolean;
   /** M11 F6: increments open the quick-capture composer (global action). */
   captureSignal?: number;
+  /** M16 F2: open a conversation (brainstorm kick-off lands in a chat). */
+  onOpenConversation?: (conversationId: string) => void;
 }
 
 /**
@@ -24,7 +26,7 @@ export interface NotesViewProps {
  * planner session survives switching between them; only the visible segment
  * loads data.
  */
-export default function NotesView({ personas, onUnpair, active, captureSignal }: NotesViewProps) {
+export default function NotesView({ personas, onUnpair, active, captureSignal, onOpenConversation }: NotesViewProps) {
   const [tab, setTab] = useState<NotesTab>('notes');
   const notesActive = active === true && tab === 'notes';
   const plansActive = active === true && tab === 'plans';
@@ -64,7 +66,12 @@ export default function NotesView({ personas, onUnpair, active, captureSignal }:
         </div>
 
         <div className={tab === 'notes' ? 'notes-seg notes-seg-active' : 'notes-seg'}>
-          <NotesSegment active={notesActive} onUnpair={onUnpair} captureSignal={captureSignal} />
+          <NotesSegment
+            active={notesActive}
+            onUnpair={onUnpair}
+            captureSignal={captureSignal}
+            onOpenConversation={onOpenConversation}
+          />
         </div>
         <div className={tab === 'plans' ? 'notes-seg notes-seg-active' : 'notes-seg'}>
           <PlansSegment active={plansActive} personas={personas} onUnpair={onUnpair} />

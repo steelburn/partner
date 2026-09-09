@@ -12,9 +12,20 @@
  * travel through this module untouched and render in the UI only.
  */
 
-import { ApiRequestError, expectJson, readErrorMessage, type FetchLike } from './api.js';
+import { ApiRequestError, expectJson, expectNoContent, readErrorMessage, type FetchLike } from './api.js';
 import { validateNotesExportBundle } from './note-helpers.js';
-import type { Note, NoteInput, NoteSummary, NotesExportBundle, TagCount } from '@partner/shared';
+import type {
+  BrainstormResult,
+  GraphPositionInput,
+  Note,
+  NoteGraph,
+  NoteInput,
+  NoteSummary,
+  NoteVersion,
+  NoteVersionSummary,
+  NotesExportBundle,
+  TagCount,
+} from '@partner/shared';
 
 const NOTES_PATH = '/v1/notes';
 const DAILY_PATH = '/v1/notes/daily';
@@ -457,4 +468,131 @@ export async function exportNotes(
     throw new ApiRequestError(response.status, `The notes export was invalid: ${error}`);
   }
   return bundle as unknown as NotesExportBundle;
+}
+
+// ---------------------------------------------------------------------------
+// M16 F1/F2/F3 clients (PLAN-M16.md): graph, versions/restore, brainstorm.
+// ---------------------------------------------------------------------------
+
+function isGraph(value: unknown): value is NoteGraph {
+  if (!isRecord(value)) return false;
+  if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) return false;
+  for (const node of value.nodes) {
+    if (!isRecord(node) || typeof node.id !== 'string' || typeof node.title !== 'string') return false;
+  }
+  for (const edge of value.edges) {
+    if (!isRecord(edge) || typeof edge.source !== 'string' || typeof edge.target !== 'string') return false;
+  }
+  return true;
+}
+
+/** GET /v1/notes/graph — the note relationship graph (nodes + edges). */
+export async function fetchNoteGraph(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<NoteGraph> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${NOTES_PATH}/graph`, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (isGraph(parsed)) return parsed;
+  throw new ApiRequestError(response.status, 'The notes graph response had an unexpected shape.');
+}
+
+/** PUT /v1/notes/graph/positions — persist dragged node positions. */
+export async function saveGraphPositions(
+  token: string,
+  positions: GraphPositionInput[],
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${NOTES_PATH}/graph/positions`, {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ positions }),
+  });
+  return expectNoContent(response, 'Saving graph positions');
+}
+
+/** GET /v1/notes/:id/versions — newest-first summaries (no bodies). */
+export async function fetchNoteVersions(
+  token: string,
+  noteId: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<NoteVersionSummary[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${NOTES_PATH}/${encodeURIComponent(noteId)}/versions`,
+    { method: 'GET', headers: { authorization: `Bearer ${token}`, accept: 'application/json' } },
+  );
+  const parsed = await expectJson<unknown>(response);
+  if (isRecord(parsed) && Array.isArray(parsed.versions)) {
+    return parsed.versions as unknown as NoteVersionSummary[];
+  }
+  throw new ApiRequestError(response.status, 'The versions response had an unexpected shape.');
+}
+
+/** GET /v1/notes/:id/versions/:versionId — one full snapshot. */
+export async function fetchNoteVersion(
+  token: string,
+  noteId: string,
+  versionId: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<NoteVersion> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${NOTES_PATH}/${encodeURIComponent(noteId)}/versions/${encodeURIComponent(versionId)}`,
+    { method: 'GET', headers: { authorization: `Bearer ${token}`, accept: 'application/json' } },
+  );
+  const parsed = await expectJson<unknown>(response);
+  if (isRecord(parsed) && isRecord(parsed.version)) {
+    return parsed.version as unknown as NoteVersion;
+  }
+  throw new ApiRequestError(response.status, 'The version response had an unexpected shape.');
+}
+
+/** POST /v1/notes/:id/restore — undoable restore of a version. */
+export async function restoreNoteVersion(
+  token: string,
+  noteId: string,
+  versionId: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<Note> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${NOTES_PATH}/${encodeURIComponent(noteId)}/restore`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ versionId }),
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (isRecord(parsed) && isRecord(parsed.note)) {
+    return parseNote(parsed.note, response.status);
+  }
+  throw new ApiRequestError(response.status, 'The restore response had an unexpected shape.');
+}
+
+/** POST /v1/notes/brainstorm — kick off a brainstorm over selected notes. */
+export async function brainstormNotes(
+  token: string,
+  noteIds: string[],
+  title?: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<BrainstormResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${NOTES_PATH}/brainstorm`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ noteIds, ...(title ? { title } : {}) }),
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (
+    isRecord(parsed) &&
+    typeof parsed.conversationId === 'string' &&
+    typeof parsed.personaId === 'string'
+  ) {
+    return parsed as unknown as BrainstormResult;
+  }
+  throw new ApiRequestError(response.status, 'The brainstorm response had an unexpected shape.');
 }

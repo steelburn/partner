@@ -246,6 +246,8 @@ export { buildTailoring } from './memory/tailor.js';
 
 // ---- M5 notes + plans (PLAN-M5.md) -----------------------------------------
 export { createNoteManager, parseWikiLinks, noteSearchText, stripDailySummarySection, demoDailySummary, createDailySummarizeResolver } from './notes/index.js';
+export { createBrainstormManager, buildBrainstormBundle, demoBrainstormReply, BRAINSTORM_PERSONA_ID, BRAINSTORM_MAX_NOTES, BrainstormError, brainstormError, brainstormErrorStatus } from './notes/index.js';
+export type { BrainstormManager, BrainstormManagerOptions, BrainstormErrorCode, BrainstormBundleResult } from './notes/index.js';
 export type { NoteManager, NoteManagerOptions, NotePatch } from './notes/index.js';
 export { NoteError, noteError, noteErrorStatus } from './notes/index.js';
 export type { NoteErrorCode } from './notes/index.js';
@@ -439,6 +441,8 @@ import type {
   MessageStore,
   NoteLinkStore,
   NoteStore,
+  NoteVersionStore,
+  NoteGraphStore,
   NotesFtsStore,
   PersonaStore,
   PlanStore,
@@ -486,8 +490,8 @@ import type { ProposalManager } from './files/proposals.js';
 import { createCoreApp } from './http/server.js';
 import { createMemoryBundle, createSummarizeResolver } from './memory/index.js';
 import type { MemoryBundle } from './memory/index.js';
-import { createNoteManager, createDailySummarizeResolver } from './notes/index.js';
-import type { NoteManager } from './notes/index.js';
+import { createNoteManager, createDailySummarizeResolver, createBrainstormManager } from './notes/index.js';
+import type { NoteManager, BrainstormManager } from './notes/index.js';
 import { createPlanManager } from './plans/index.js';
 import type { PlanManager } from './plans/index.js';
 import { createThemeManager } from './theming/index.js';
@@ -523,6 +527,8 @@ import type { ScheduleRunStore } from './stores/types.js';
 import {
   createNoteLinkStore,
   createNoteStore,
+  createNoteVersionStore,
+  createNoteGraphStore,
   createNotesFtsStore,
   createPlanStore,
 } from './stores/db.js';
@@ -569,6 +575,9 @@ export interface CoreBundle {
   plans: PlanManager;
   noteStore: NoteStore;
   noteLinkStore: NoteLinkStore;
+  /** M16 F1/F3 stores (PLAN-M16.md, schema v14). */
+  noteVersionStore: NoteVersionStore;
+  noteGraphStore: NoteGraphStore;
   planStore: PlanStore;
   notesFtsStore: NotesFtsStore;
   /** M6 theme manager + store + settings store (schema v7). */
@@ -591,6 +600,8 @@ export interface CoreBundle {
   /** M14 scheduled & autonomous work (PLAN-M14.md, schema v13). */
   schedules: ScheduleManager;
   scheduleRunStore: ScheduleRunStore;
+  /** M16 F2 brainstorm manager (PLAN-M16.md). */
+  brainstorm: BrainstormManager;
   /** Scheduler driver handle (start/stop/tick; tests drive tick()). */
   scheduler: {
     start(): void;
@@ -727,13 +738,23 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   // export live in the note manager; document validation + task status in the
   // plan manager; both share the notes_fts mirror. Daily summaries route
   // through the first enabled provider's default model when one is usable;
-  // demo mode always writes the deterministic placeholder.
+  // demo mode always writes the deterministic placeholder. M16 F1/F3 add the
+  // note_versions snapshot store + the note_graph position store (schema
+  // v14) — versioning hooks the manager's single mutation choke point.
   const noteStore = createNoteStore(db);
   const noteLinkStore = createNoteLinkStore(db);
+  const noteVersionStore = createNoteVersionStore(db);
+  const noteGraphStore = createNoteGraphStore(db);
   const planStore = createPlanStore(db);
   const notesFtsStore = createNotesFtsStore(db);
   const notes = createNoteManager({
-    stores: { notes: noteStore, links: noteLinkStore, fts: notesFtsStore },
+    stores: {
+      notes: noteStore,
+      links: noteLinkStore,
+      fts: notesFtsStore,
+      versions: noteVersionStore,
+      graph: noteGraphStore,
+    },
     audit,
     demo: config.demo,
     providerResolver: createDailySummarizeResolver({ providers: providerManager }),
@@ -890,6 +911,20 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     },
   };
 
+  // M16 F2: brainstorm orchestrator (PLAN-M16.md). Notes/captures bundle
+  // into a conversation bound to the Brainstorming persona (seeded on
+  // demand); the persona's first reply rides the same provider seam daily
+  // summaries use (deterministic placeholder in demo).
+  const brainstorm = createBrainstormManager({
+    personas: personaManager,
+    conversations: conversationManager,
+    notes,
+    folders,
+    audit,
+    demo: config.demo,
+    providerResolver: createDailySummarizeResolver({ providers: providerManager }),
+  });
+
   const app = createCoreApp({
     port: config.port,
     demo: config.demo,
@@ -922,6 +957,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     playbooks,
     deployProfiles,
     schedules,
+    brainstorm,
   });
 
   return {
@@ -957,6 +993,8 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     plans,
     noteStore,
     noteLinkStore,
+    noteVersionStore,
+    noteGraphStore,
     planStore,
     notesFtsStore,
     themes,
@@ -974,6 +1012,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     deployProfileStore,
     schedules,
     scheduleRunStore,
+    brainstorm,
     scheduler,
     app,
     close(): void {

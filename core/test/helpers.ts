@@ -43,8 +43,10 @@ import { createFileTools } from '../src/files/tools.js';
 import { createProposalManager } from '../src/files/proposals.js';
 import type { ProposalManager } from '../src/files/proposals.js';
 import type { EpisodeManager } from '../src/memory/episodes.js';
-import type { NoteManager } from '../src/notes/index.js';
+import type { NoteManager, DailySummarizeTarget } from '../src/notes/index.js';
 import { createNoteManager } from '../src/notes/index.js';
+import { createBrainstormManager } from '../src/notes/index.js';
+import type { BrainstormManager } from '../src/notes/index.js';
 import type { PlanManager } from '../src/plans/index.js';
 import { createPlanManager } from '../src/plans/index.js';
 import type { ProfileManager } from '../src/memory/profile.js';
@@ -99,6 +101,8 @@ import {
   createMessageStore,
   createNoteLinkStore,
   createNoteStore,
+  createNoteVersionStore,
+  createNoteGraphStore,
   createNotesFtsStore,
   createPairingStore,
   createPendingToolStore,
@@ -121,6 +125,8 @@ import {
 import type {
   AuditStore,
   ConversationStore,
+  NoteVersionStore,
+  NoteGraphStore,
   DeployProfileStore,
   EpisodeStore,
   FileProposalStore,
@@ -224,6 +230,12 @@ export interface HarnessOptions {
    * loop). Pass false for the 501 not_configured surface.
    */
   schedules?: boolean;
+  /**
+   * M16 F2 brainstorm manager (wired when personas + notes are wired). The
+   * demo harness writes the deterministic placeholder first reply; pass a
+   * resolver to script a real provider turn.
+   */
+  brainstormProvider?: () => Promise<DailySummarizeTarget | null> | DailySummarizeTarget | null;
 }
 
 export interface Harness {
@@ -278,10 +290,15 @@ export interface Harness {
   /** M5 notes + plans managers + stores over the SAME db (default on). */
   noteStore: NoteStore;
   noteLinkStore: NoteLinkStore;
+  /** M16 F1/F3 stores (PLAN-M16.md, schema v14). */
+  noteVersionStore: NoteVersionStore;
+  noteGraphStore: NoteGraphStore;
   planStore: PlanStore;
   notesFtsStore: NotesFtsStore;
   notes?: NoteManager;
   plans?: PlanManager;
+  /** M16 F2 brainstorm manager (demo placeholder first reply by default). */
+  brainstorm?: BrainstormManager;
   /** M6 theme manager + stores over the SAME db (default on). */
   themeStore: ThemeStore;
   settingsStore: SettingsStore;
@@ -427,13 +444,23 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   // makes daily summarize write the deterministic placeholder.
   const noteStore = createNoteStore(db);
   const noteLinkStore = createNoteLinkStore(db);
+  // M16 F1/F3 (schema v14): version snapshots + graph positions on every
+  // harness; the manager snapshots/reads them only when wired (below).
+  const noteVersionStore = createNoteVersionStore(db);
+  const noteGraphStore = createNoteGraphStore(db);
   const planStore = createPlanStore(db);
   const notesFtsStore = createNotesFtsStore(db);
   let notes: NoteManager | undefined;
   let plans: PlanManager | undefined;
   if (notesPlansEnabled) {
     notes = createNoteManager({
-      stores: { notes: noteStore, links: noteLinkStore, fts: notesFtsStore },
+      stores: {
+        notes: noteStore,
+        links: noteLinkStore,
+        fts: notesFtsStore,
+        versions: noteVersionStore,
+        graph: noteGraphStore,
+      },
       audit,
       demo,
     });
@@ -598,6 +625,22 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     });
   }
 
+  // M16 F2 (PLAN-M16.md): brainstorm manager over the same managers. Demo
+  // harness mode (default) writes the deterministic placeholder first reply;
+  // brainstormProvider can script a real provider turn.
+  let brainstorm: BrainstormManager | undefined;
+  if (notesPlansEnabled && personasEnabled) {
+    brainstorm = createBrainstormManager({
+      personas,
+      conversations,
+      notes: notes as NoteManager,
+      folders: folders as { get(id: string): unknown },
+      audit,
+      demo,
+      providerResolver: async () => (await options.brainstormProvider?.()) ?? null,
+    });
+  }
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -627,6 +670,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(playbooks !== undefined ? { playbooks } : {}),
     ...(deployProfiles !== undefined ? { deployProfiles } : {}),
     ...(schedules !== undefined ? { schedules } : {}),
+    ...(brainstorm !== undefined ? { brainstorm } : {}),
     spendLedger,
   });
 
@@ -671,10 +715,13 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     episodes,
     noteStore,
     noteLinkStore,
+    noteVersionStore,
+    noteGraphStore,
     planStore,
     notesFtsStore,
     notes,
     plans,
+    brainstorm,
     themeStore,
     settingsStore,
     themes,

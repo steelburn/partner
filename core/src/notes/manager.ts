@@ -21,9 +21,30 @@
  * titles-as-content, tags, or bodies.
  */
 import { randomUUID } from 'node:crypto';
-import type { Note, NoteInput, NoteLinkInfo, NotesExportBundle, NoteSummary, TagCount } from '@partner/shared';
+import type {
+  Note,
+  NoteGraph,
+  NoteInput,
+  NoteLinkInfo,
+  NoteVersion,
+  NoteVersionSummary,
+  NoteVersionWriter,
+  NotesExportBundle,
+  NoteSummary,
+  TagCount,
+} from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
-import type { NoteLinkStore, NoteRow, NoteRowPatch, NotesFtsStore, NoteStore } from '../stores/types.js';
+import type {
+  NoteGraphStore,
+  NoteLinkRow,
+  NoteLinkStore,
+  NoteRow,
+  NoteRowPatch,
+  NotesFtsStore,
+  NoteStore,
+  NoteVersionRow,
+  NoteVersionStore,
+} from '../stores/types.js';
 import { escapeFtsQuery } from '../memory/search.js';
 import { noteError } from './errors.js';
 
@@ -31,6 +52,8 @@ import { noteError } from './errors.js';
 export const CAPTURE_TITLE_CAP = 120;
 /** Notes search hit cap (mirrors M4 memory search). */
 export const NOTES_SEARCH_CAP = 50;
+/** M16 F3 (PLAN-M16.md): versions retained per note (oldest pruned). */
+export const NOTE_VERSION_KEEP = 100;
 /** Daily-summarize total content budget for the provider call. */
 export const DAILY_SUMMARIZE_CHAR_BUDGET = 20000;
 /** Marker for the replaceable summary section in the daily note body. */
@@ -80,7 +103,15 @@ export function utcDateString(at: number): string {
 }
 
 export interface NoteManagerOptions {
-  stores: { notes: NoteStore; links: NoteLinkStore; fts: NotesFtsStore };
+  stores: {
+    notes: NoteStore;
+    links: NoteLinkStore;
+    fts: NotesFtsStore;
+    /** M16 F3 version snapshots (optional — harnesses without them skip). */
+    versions?: NoteVersionStore;
+    /** M16 F1 canvas positions (optional — graph without drag persistence). */
+    graph?: NoteGraphStore;
+  };
   audit: AuditService;
   /** Demo mode writes the deterministic placeholder daily summary. */
   demo?: boolean;
@@ -108,9 +139,9 @@ export interface NoteManager {
   list(): NoteSummary[];
   get(id: string): Note | null;
   /** Create a note; wiki-links parsed + resolved at save time. */
-  create(input: NoteInput): Note;
+  create(input: NoteInput, writer?: NoteVersionWriter): Note;
   /** Update + re-parse/replace wiki-links and re-index FTS. */
-  update(id: string, patch: NotePatch): Note;
+  update(id: string, patch: NotePatch, writer?: NoteVersionWriter): Note;
   /** Remove a note + its links + its FTS row. Unknown id -> not_found. */
   remove(id: string): void;
   /** The note's outgoing wiki-links (resolved/dangling) — unknown id -> not_found. */
@@ -133,6 +164,22 @@ export interface NoteManager {
   exportAll(): NotesExportBundle;
   /** tag -> note count across every note, count desc then tag asc. */
   listTags(): TagCount[];
+  // -------------------------------------------------------------------------
+  // M16 F1/F3 (PLAN-M16.md): relationship graph + version history.
+  // -------------------------------------------------------------------------
+  /** M16 F3: version summaries, newest first (ids/seq/timestamps only). */
+  versions(noteId: string): NoteVersionSummary[];
+  /** M16 F3: one full version snapshot (for diff/read/restore). */
+  version(noteId: string, versionId: string): NoteVersion;
+  /** M16 F3: undoable restore — snapshots current state, then applies the
+   *  target version's title/content/tags to the live note. */
+  restore(noteId: string, versionId: string): Note;
+  /** M16 F1: nodes (all notes + persisted positions) and resolved edges with
+   *  direction (referencing note -> referenced note; mutual refs collapse to
+   *  one bidirectional edge). */
+  graph(): NoteGraph;
+  /** M16 F1: persist one dragged node position (no content timestamp bump). */
+  setPosition(noteId: string, x: number, y: number): void;
 }
 
 function toSummary(row: NoteRow): NoteSummary {
@@ -159,6 +206,23 @@ function parseTags(raw: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+/** M16 F3 writer-tag fallback: any stored writer string maps onto the wire
+ *  union; unknown (hand-edited) values read as 'user' rather than crash. */
+const VERSION_WRITERS: ReadonlySet<string> = new Set([
+  'user',
+  'capture',
+  'promote',
+  'playbook',
+  'schedule',
+  'summarize',
+  'restore',
+  'brainstorm',
+]);
+
+function toVersionWriter(raw: string): NoteVersionWriter {
+  return VERSION_WRITERS.has(raw) ? (raw as NoteVersionWriter) : 'user';
 }
 
 function serializeTags(tags: string[]): string {
@@ -281,26 +345,49 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
   const providerResolver = options.providerResolver ?? null;
   const now = options.now ?? Date.now;
 
-  /** The manager's own persist path (insert + links + FTS mirror). */
-  function persistNote(row: NoteRow): NoteRow {
+  /** M16 F3: snapshot the note's CURRENT state as a version row (writer
+   *  tagged). No-op when versioning is not wired (harness mode). */
+  function snapshotVersion(row: NoteRow, writer: NoteVersionWriter): void {
+    const versions = stores.versions;
+    if (!versions) return;
+    versions.insert({
+      id: randomUUID(),
+      noteId: row.id,
+      seq: versions.maxSeq(row.id) + 1,
+      title: row.title,
+      content: row.content,
+      tags: row.tags,
+      writer,
+      createdAt: now(),
+    });
+    versions.prune(row.id, NOTE_VERSION_KEEP);
+  }
+
+  /** The manager's own persist path (insert + links + FTS mirror + first
+   *  version snapshot). */
+  function persistNote(row: NoteRow, writer: NoteVersionWriter = 'user'): NoteRow {
     stores.notes.insert(row);
     stores.links.replaceForNote(row.id, resolveLinks(stores, parseWikiLinks(row.content)));
     stores.fts.upsertNote(row.id, noteSearchText(row));
+    snapshotVersion(row, writer);
     return row;
   }
 
-  function create(input: NoteInput): Note {
+  function create(input: NoteInput, writer: NoteVersionWriter = 'user'): Note {
     const { title, content, tags, isDaily } = parseBodyInput(input);
     const at = now();
-    const row = persistNote({
-      id: randomUUID(),
-      title,
-      content,
-      tags: serializeTags(tags),
-      isDaily: isDaily ? 1 : 0,
-      createdAt: at,
-      updatedAt: at,
-    });
+    const row = persistNote(
+      {
+        id: randomUUID(),
+        title,
+        content,
+        tags: serializeTags(tags),
+        isDaily: isDaily ? 1 : 0,
+        createdAt: at,
+        updatedAt: at,
+      },
+      writer,
+    );
     const note = toNote(row);
     audit.log('web', 'note.create', row.id, {
       titleLength: note.title.length,
@@ -316,7 +403,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     return row;
   }
 
-  function update(id: string, input: NotePatch): Note {
+  function update(id: string, input: NotePatch, writer: NoteVersionWriter = 'user'): Note {
     const row = requireRow(id);
     const patch = parsePatch(input);
     const title = patch.title !== undefined ? patch.title : row.title;
@@ -328,6 +415,9 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     stores.notes.update(id, rowPatch);
     stores.links.replaceForNote(id, resolveLinks(stores, parseWikiLinks(content)));
     stores.fts.upsertNote(id, noteSearchText({ title, content }));
+    // M16 F3: version the APPLIED state (history = the note as it was after
+    // each write; restore is undoable because restore snapshots first).
+    snapshotVersion(requireRow(id), writer);
     const updated = requireRow(id);
     audit.log('web', 'note.update', id, {
       titleLength: updated.title.length,
@@ -336,11 +426,33 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     return toNote(updated);
   }
 
+  /** M16 F3: overwrite a note's content/title/tags + mirrors WITHOUT a fresh
+   *  snapshot (used by restore after it snapshots current state). */
+  function writeContent(
+    id: string,
+    title: string,
+    content: string,
+    tags: string[],
+    at: number,
+  ): Note {
+    stores.notes.update(id, {
+      title,
+      content,
+      tags: serializeTags(tags),
+      updatedAt: at,
+    });
+    stores.links.replaceForNote(id, resolveLinks(stores, parseWikiLinks(content)));
+    stores.fts.upsertNote(id, noteSearchText({ title, content }));
+    return toNote(requireRow(id));
+  }
+
   function remove(id: string): void {
     const row = requireRow(id);
     stores.notes.remove(id);
     stores.links.removeForNote(id);
     stores.fts.deleteRef('note', id);
+    stores.versions?.removeForNote(id);
+    stores.graph?.remove(id);
     audit.log('web', 'note.delete', id, {
       titleLength: row.title.length,
       contentLength: row.content.length,
@@ -405,15 +517,18 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     const today = utcDateString(at);
     const existing = findTodayDaily(today);
     if (existing) return existing;
-    const row = persistNote({
-      id: randomUUID(),
-      title: today,
-      content: '',
-      tags: '[]',
-      isDaily: 1,
-      createdAt: at,
-      updatedAt: at,
-    });
+    const row = persistNote(
+      {
+        id: randomUUID(),
+        title: today,
+        content: '',
+        tags: '[]',
+        isDaily: 1,
+        createdAt: at,
+        updatedAt: at,
+      },
+      'user',
+    );
     audit.log('web', 'note.daily', row.id, {
       titleLength: row.title.length,
       contentLength: 0,
@@ -437,15 +552,18 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     const title = (lines[firstNonEmpty] ?? '').trim().slice(0, CAPTURE_TITLE_CAP);
     const body = lines.slice(firstNonEmpty + 1).join('\n');
     const at = now();
-    const row = persistNote({
-      id: randomUUID(),
-      title,
-      content: body,
-      tags: '[]',
-      isDaily: 0,
-      createdAt: at,
-      updatedAt: at,
-    });
+    const row = persistNote(
+      {
+        id: randomUUID(),
+        title,
+        content: body,
+        tags: '[]',
+        isDaily: 0,
+        createdAt: at,
+        updatedAt: at,
+      },
+      'capture',
+    );
     const note = toNote(row);
     audit.log('web', 'note.capture', row.id, {
       titleLength: note.title.length,
@@ -529,6 +647,8 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     const base = stripped === '' ? '' : `${stripped}\n\n`;
     const content = `${base}${DAILY_SUMMARY_HEADING}\n\n${summaryText}`;
     stores.notes.update(todayDaily.id, { content, updatedAt: at });
+    // M16 F3: version the APPLIED summarize state (writer 'summarize').
+    snapshotVersion(requireRow(todayDaily.id), 'summarize');
     // Keep the wiki-link/FTS mirror in sync with the new body (M5 review).
     stores.links.replaceForNote(todayDaily.id, resolveLinks(stores, parseWikiLinks(content)));
     stores.fts.upsertNote(todayDaily.id, noteSearchText({ title: todayDaily.title, content }));
@@ -561,7 +681,162 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       .sort((a, b) => b.count - a.count || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
   }
 
-  return { create, update, remove, list, get, links, backlinks, search, daily, capture, summarizeDaily, exportAll, listTags };
+  // -------------------------------------------------------------------------
+  // M16 F1/F3 — relationship graph, versions, restore.
+  // -------------------------------------------------------------------------
+
+  function versions(noteId: string): NoteVersionSummary[] {
+    requireRow(noteId);
+    const store = stores.versions;
+    if (!store) {
+      throw noteError('not_found', 'version history is unavailable (not wired)');
+    }
+    const rows = store.listForNote(noteId);
+    return rows.map((row, index) => {
+      const older = rows[index + 1];
+      return {
+        id: row.id,
+        noteId: row.noteId,
+        seq: row.seq,
+        createdAt: row.createdAt,
+        writer: toVersionWriter(row.writer),
+        titleChanged: older !== undefined && row.title !== older.title,
+      };
+    });
+  }
+
+  function version(noteId: string, versionId: string): NoteVersion {
+    requireRow(noteId);
+    const store = stores.versions;
+    if (!store) {
+      throw noteError('not_found', 'version history is unavailable (not wired)');
+    }
+    const row = store.find(noteId, versionId);
+    if (!row) {
+      throw noteError('not_found', 'note version not found');
+    }
+    const all = store.listForNote(noteId);
+    const index = all.findIndex((candidate) => candidate.id === row.id);
+    const older = index >= 0 ? all[index + 1] : undefined;
+    return {
+      id: row.id,
+      noteId: row.noteId,
+      seq: row.seq,
+      createdAt: row.createdAt,
+      writer: toVersionWriter(row.writer),
+      titleChanged: older !== undefined && row.title !== older.title,
+      title: row.title,
+      content: row.content,
+      tags: parseTags(row.tags),
+    };
+  }
+
+  function restore(noteId: string, versionId: string): Note {
+    const row = requireRow(noteId);
+    const store = stores.versions;
+    if (!store) {
+      throw noteError('not_found', 'version history is unavailable (not wired)');
+    }
+    const target = store.find(noteId, versionId);
+    if (!target) {
+      throw noteError('not_found', 'note version not found');
+    }
+    const at = now();
+    // Snapshot current state so the restore itself is undoable.
+    snapshotVersion(row, 'restore');
+    const updated = writeContent(noteId, target.title, target.content, parseTags(target.tags), at);
+    audit.log('web', 'note.restore', noteId, {
+      fromSeq: target.seq,
+      titleLength: updated.title.length,
+      contentLength: updated.content.length,
+    });
+    return updated;
+  }
+
+  function graph(): NoteGraph {
+    const rows = stores.notes
+      .list()
+      .sort((a, b) => a.createdAt - b.createdAt || a.updatedAt - b.updatedAt);
+    const positions = new Map(
+      (stores.graph?.listAll() ?? []).map((p) => [p.noteId, { x: p.x, y: p.y }]),
+    );
+    const nodes = rows.map((row) => {
+      const at = positions.get(row.id);
+      return {
+        id: row.id,
+        title: row.title,
+        tags: parseTags(row.tags),
+        isDaily: row.isDaily === 1,
+        x: at ? at.x : null,
+        y: at ? at.y : null,
+      };
+    });
+    const ids = new Set(rows.map((row) => row.id));
+    // Adjacency for bidirectional detection: target -> set of linking sources.
+    const adjacency = new Map<string, Set<string>>();
+    const outgoing = new Map<string, NoteLinkRow[]>();
+    for (const row of rows) {
+      const links = stores.links.listFrom(row.id).filter((l) => l.toNote !== null);
+      outgoing.set(row.id, links);
+      for (const link of links) {
+        if (link.toNote === null || link.toNote === row.id) continue;
+        if (!ids.has(link.toNote)) continue;
+        let sources = adjacency.get(link.toNote);
+        if (!sources) {
+          sources = new Set();
+          adjacency.set(link.toNote, sources);
+        }
+        sources.add(row.id);
+      }
+    }
+    const edges: NoteGraph['edges'] = [];
+    const seen = new Set<string>();
+    const key = (a: string, b: string): string => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
+    for (const row of rows) {
+      for (const link of outgoing.get(row.id) ?? []) {
+        if (link.toNote === null || link.toNote === row.id) continue;
+        if (!ids.has(link.toNote)) continue;
+        const pair = key(row.id, link.toNote);
+        if (seen.has(pair)) continue;
+        seen.add(pair);
+        const bidirectional = (adjacency.get(row.id) ?? new Set()).has(link.toNote);
+        edges.push({ source: row.id, target: link.toNote, bidirectional });
+      }
+    }
+    return { nodes, edges };
+  }
+
+  function setPosition(noteId: string, x: unknown, y: unknown): void {
+    requireRow(noteId);
+    if (typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y)) {
+      throw noteError('invalid_input', 'positions must be finite numbers');
+    }
+    if (!stores.graph) {
+      throw noteError('not_found', 'graph positions are unavailable (not wired)');
+    }
+    stores.graph.set(noteId, x, y);
+  }
+
+  return {
+    create,
+    update,
+    remove,
+    list,
+    get,
+    links,
+    backlinks,
+    search,
+    daily,
+    capture,
+    summarizeDaily,
+    exportAll,
+    listTags,
+    versions,
+    version,
+    restore,
+    graph,
+    setPosition,
+  };
 }
 
 /** First delta event text (the whole provider reply is usually one delta). */

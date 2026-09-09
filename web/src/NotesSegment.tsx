@@ -12,6 +12,7 @@ import {
   notesBundleToFile,
 } from './lib/note-helpers.js';
 import {
+  brainstormNotes,
   captureNote,
   exportNotes,
   getDailyNote,
@@ -21,6 +22,7 @@ import {
   summarizeDaily,
   type NoteSearchResult,
 } from './lib/notes.js';
+import NotesGraph from './NotesGraph.js';
 
 export interface NotesSegmentProps {
   /** True while this segment is the visible one (loads on first activation). */
@@ -29,7 +31,12 @@ export interface NotesSegmentProps {
   onUnpair: () => void;
   /** M11 F6: increments request opening the quick-capture composer. */
   captureSignal?: number;
+  /** M16 F2: open a conversation (a brainstorm kicks off its own chat). */
+  onOpenConversation?: (conversationId: string) => void;
 }
+
+/** Notes list vs relationship graph pane (M16 F1). */
+type NotesPane = 'list' | 'graph';
 
 /** Editor target: brand-new note (create) or an existing note. */
 type EditingState = { kind: 'new' } | { kind: 'edit'; note: Note } | null;
@@ -43,7 +50,7 @@ type EditingState = { kind: 'new' } | { kind: 'edit'; note: Note } | null;
  * errors and feedback in this view carry titles, counts and statuses, never
  * note bodies.
  */
-export default function NotesSegment({ active, onUnpair, captureSignal }: NotesSegmentProps) {
+export default function NotesSegment({ active, onUnpair, captureSignal, onOpenConversation }: NotesSegmentProps) {
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
@@ -69,6 +76,12 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchHits, setSearchHits] = useState<NoteSearchResult[] | null>(null);
+  // M16 F1/F2: list <-> graph pane, selection (checkbox mode / graph nodes)
+  // and the brainstorm kick-off that opens the persona-bound conversation.
+  const [pane, setPane] = useState<NotesPane>('list');
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [brainstormBusy, setBrainstormBusy] = useState(false);
 
   const load = async (quiet = false): Promise<void> => {
     const token = readStoredToken();
@@ -270,6 +283,42 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
   const sorted = notes ?? [];
   const knownTitles = sorted.map((row) => row.title);
   const busyTools = dailyBusy || summarizeBusy || exporting || captureBusy;
+  const notesActivePane = active && pane === 'graph';
+
+  /** M16 F2: bundle the selected notes/captures into a brainstorm chat. */
+  const brainstorm = async (noteIds: string[]): Promise<void> => {
+    const ids = [...new Set(noteIds)].filter((id) => sorted.some((row) => row.id === id));
+    if (ids.length === 0 || brainstormBusy) return;
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    setBrainstormBusy(true);
+    setFeedback(null);
+    setNotesError(null);
+    try {
+      const result = await brainstormNotes(token, ids);
+      setFeedback(
+        result.used > 0
+          ? `Brainstorm opened with ${result.used} note${result.used === 1 ? '' : 's'}${
+              result.truncated > 0 ? ` (${result.truncated} truncated)` : ''
+            } — the Brainstorming persona is answering in that chat.`
+          : 'Brainstorm opened.',
+      );
+      setSelected(new Set());
+      setMultiSelect(false);
+      onOpenConversation?.(result.conversationId);
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        handleSessionLost();
+        return;
+      }
+      setNotesError(cause instanceof Error ? cause.message : 'Could not start a brainstorm.');
+    } finally {
+      setBrainstormBusy(false);
+    }
+  };
 
   return (
     <div className="n-segment">
@@ -354,6 +403,48 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
               >
                 {exporting ? 'Exporting…' : 'Export notes'}
               </button>
+              <span className="n-toolbar-sep" aria-hidden="true" />
+              <button
+                type="button"
+                className={pane === 'list' ? 'btn btn-secondary btn-sm is-active' : 'btn btn-secondary btn-sm'}
+                disabled={busyTools}
+                onClick={() => setPane('list')}
+                aria-pressed={pane === 'list'}
+              >
+                List
+              </button>
+              <button
+                type="button"
+                className={pane === 'graph' ? 'btn btn-secondary btn-sm is-active' : 'btn btn-secondary btn-sm'}
+                disabled={busyTools}
+                onClick={() => setPane('graph')}
+                aria-pressed={pane === 'graph'}
+                title="View notes and how they link (M16)"
+              >
+                Graph
+              </button>
+              {pane === 'list' && !multiSelect ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={busyTools || sorted.length === 0}
+                  onClick={() => setMultiSelect(true)}
+                >
+                  Select
+                </button>
+              ) : null}
+              {pane === 'list' && multiSelect ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={brainstormBusy || selected.size === 0}
+                  onClick={() => void brainstorm([...selected])}
+                  aria-busy={brainstormBusy}
+                  title="Bundle the selected notes into a Brainstorming chat"
+                >
+                  {brainstormBusy ? 'Starting…' : `Brainstorm (${selected.size})`}
+                </button>
+              ) : null}
             </div>
             <div className="form-feedback" aria-live="polite">
               {feedback ? <p className="success-note">{feedback}</p> : null}
@@ -411,7 +502,16 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
             </section>
           ) : null}
 
-          {/* Note list */}
+          {pane === 'graph' ? (
+            <NotesGraph
+              active={notesActivePane}
+              reloadTick={reloadTick}
+              onOpenNote={(id) => void openNoteById(id)}
+              onBrainstorm={(ids) => void brainstorm(ids)}
+              onUnpair={onUnpair}
+            />
+          ) : (
+          <>
           <section className="card" aria-label="Notes">
             <div className="section-head">
               <h2 className="card-title">Notes</h2>
@@ -425,6 +525,24 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
               Your markdown notes, newest first. Search, capture and the daily note live above;
               open a note to edit it.
             </p>
+            {multiSelect ? (
+              <div className="n-select-hint">
+                Click notes to add them to the brainstorm selection.
+                <button type="button" className="btn-link" onClick={() => setSelected(new Set())}>
+                  Clear ({selected.size})
+                </button>
+                <button
+                  type="button"
+                  className="btn-link"
+                  onClick={() => {
+                    setMultiSelect(false);
+                    setSelected(new Set());
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            ) : null}
             {notes.length === 0 ? (
               <div className="empty-state empty-inline">
                 <p className="empty-state-title">No notes yet</p>
@@ -435,14 +553,35 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
               </div>
             ) : (
               <ul className="n-list">
-                {sorted.map((row) => (
+                {sorted.map((row) => {
+                  const isSel = multiSelect && selected.has(row.id);
+                  return (
                   <li key={row.id}>
                     <button
                       type="button"
-                      className="n-row"
-                      onClick={() => void openNoteById(row.id)}
-                      aria-label={`Open note ${row.title}`}
+                      className={isSel ? 'n-row is-selected' : 'n-row'}
+                      onClick={() => {
+                        if (multiSelect) {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(row.id)) next.delete(row.id);
+                            else next.add(row.id);
+                            return next;
+                          });
+                        } else {
+                          void openNoteById(row.id);
+                        }
+                      }}
+                      aria-label={
+                        multiSelect
+                          ? `${isSel ? 'Remove' : 'Add'} ${row.title} ${isSel ? 'from' : 'to'} the brainstorm selection`
+                          : `Open note ${row.title}`
+                      }
+                      aria-pressed={multiSelect ? isSel : undefined}
                     >
+                      {multiSelect ? (
+                        <span className={isSel ? 'n-check is-checked' : 'n-check'} aria-hidden="true" />
+                      ) : null}
                       <span className="n-row-title">{row.title}</span>
                       {row.isDaily ? (
                         <span className="chip chip-accent">Daily</span>
@@ -459,7 +598,8 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
                       <span className="n-row-meta">{timeAgo(row.updatedAt)}</span>
                     </button>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -541,7 +681,8 @@ export default function NotesSegment({ active, onUnpair, captureSignal }: NotesS
               )
             ) : null}
           </section>
-
+          </>
+          )}
           {/* Editor (create or edit) */}
           {editing !== null ? (
             <NoteEditor

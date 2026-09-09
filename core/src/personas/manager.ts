@@ -98,12 +98,17 @@ export interface PersonaManager {
   resume(id: string): Persona;
   /** True when the persona exists and is paused (false when absent). */
   isPaused(id: string): boolean;
+  /** M16 F2: seed ONE starter persona by id when it is missing (idempotent;
+   *  a user-edited/renamed copy is respected — only an absent id creates).
+   *  Returns the persona (existing or freshly seeded) or null for an unknown
+   *  starter id. */
+  ensureSeed(id: string): Persona | null;
 }
 
 // ---------------------------------------------------------------------------
-// Seed data — the EIGHT starter personas (PLAN-M3.md). Names/levels/defaults
-// come straight from the plan; character text is M3 starter content (no
-// secrets, no tool scopes — autoScopes are enforced from M9).
+// Seed data — the NINE starter personas (PLAN-M3.md + M16 F2). Names/levels/
+// defaults come straight from the plan; character text is M3 starter content
+// (no secrets, no tool scopes — autoScopes are enforced from M9).
 // ---------------------------------------------------------------------------
 
 const STARTER_SYSTEM_PROMPT =
@@ -174,6 +179,17 @@ const STARTER_SEEDS: StarterSeed[] = [
     tagline: 'Listens, summarizes and keeps your notes tidy.',
     level: 'assist',
     temperature: 0.3,
+    isDefault: false,
+  },
+  {
+    // M16 F2 (PLAN-M16.md): brainstorm sessions ride this persona — divergent
+    // by design, suggest-only autonomy, no default skills. Created for
+    // everyone via ensureSeed (the table is usually non-empty by M16).
+    id: 'p-brainstorm',
+    name: 'Brainstorming',
+    tagline: 'Divergent ideas, converging on what to keep.',
+    level: 'assist',
+    temperature: 0.9,
     isDefault: false,
   },
   {
@@ -702,35 +718,51 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     audit.log('web', 'persona.delete', id, { name: row.name, level: row.independenceLevel });
   }
 
-  function seedIfEmpty(): number {
-    if (store.count() > 0) return 0;
-    const base = now();
-    STARTER_SEEDS.forEach((seed, index) => {
-      const character: PersonaCharacter = {
-        voice: seed.level === 'auto' ? 'direct-engineer' : 'warm-professional',
-        language: 'en',
-        systemPrompt: STARTER_SYSTEM_PROMPT,
-        temperature: seed.temperature,
-      };
-      const at = base + index;
-      const persona: Persona = {
-        id: seed.id,
-        name: seed.name,
-        tagline: seed.tagline,
-        character,
-        model: { taskClasses: {} },
-        independence: { level: seed.level, requireHumanFor: ['high'] },
-        memory: { userProfile: 'none', episodes: 'none' },
-        isDefault: seed.isDefault,
-        paused: false,
-        createdAt: at,
-        updatedAt: at,
-      };
-      store.insert(personaToRow(persona));
-      auditPersona('persona.create', persona, { seed: true });
-    });
-    return STARTER_SEEDS.length;
-  }
+/** Build one seed persona row from a starter definition (shared by
+ *  seedIfEmpty and M16 F2 ensureSeed). */
+function makeSeedPersona(seed: StarterSeed, at: number): Persona {
+  const character: PersonaCharacter = {
+    voice: seed.level === 'auto' ? 'direct-engineer' : 'warm-professional',
+    language: 'en',
+    systemPrompt: STARTER_SYSTEM_PROMPT,
+    temperature: seed.temperature,
+  };
+  return {
+    id: seed.id,
+    name: seed.name,
+    tagline: seed.tagline,
+    character,
+    model: { taskClasses: {} },
+    independence: { level: seed.level, requireHumanFor: ['high'] },
+    memory: { userProfile: 'none', episodes: 'none' },
+    isDefault: seed.isDefault,
+    paused: false,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+function ensureSeed(id: string): Persona | null {
+  const existing = store.findById(id);
+  if (existing) return toPersona(existing);
+  const seed = STARTER_SEEDS.find((candidate) => candidate.id === id);
+  if (!seed) return null;
+  const persona = makeSeedPersona(seed, now());
+  store.insert(personaToRow(persona));
+  auditPersona('persona.create', persona, { seed: true });
+  return persona;
+}
+
+function seedIfEmpty(): number {
+  if (store.count() > 0) return 0;
+  const base = now();
+  STARTER_SEEDS.forEach((seed, index) => {
+    const persona = makeSeedPersona(seed, base + index);
+    store.insert(personaToRow(persona));
+    auditPersona('persona.create', persona, { seed: true });
+  });
+  return STARTER_SEEDS.length;
+}
 
   function setPaused(id: string, paused: boolean): Persona {
     const row = store.findById(id);
@@ -758,5 +790,5 @@ export function createPersonaManager(options: PersonaManagerOptions): PersonaMan
     return row ? row.paused === 1 : false;
   }
 
-  return { list, get, create, update, remove, seedIfEmpty, pause, resume, isPaused };
+  return { list, get, create, update, remove, seedIfEmpty, ensureSeed, pause, resume, isPaused };
 }
