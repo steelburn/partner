@@ -148,6 +148,10 @@ export default function ChatStrip({
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [queueErrors, setQueueErrors] = useState<Readonly<Record<string, string>>>({});
   const nextId = useRef(0);
+  /** Conversation whose usage/latency meta line is currently shown — the
+   *  line is cleared when the open conversation changes (never leaks across
+   *  chats; same-chat reloads keep it). */
+  const metaForRef = useRef<string | null>(null);
 
   // M16 F4: an asset Discuss draft lands in the composer of its target
   // conversation (append keeps any text the user already typed).
@@ -263,6 +267,9 @@ export default function ChatStrip({
     if (conversationId === null) {
       setRows([]);
       setHistoryError(null);
+      setUsage(null);
+      setModelLatency(null);
+      setTurnError(null);
       return;
     }
     const token = readStoredToken();
@@ -272,6 +279,17 @@ export default function ChatStrip({
     }
     setHistoryLoading(true);
     setHistoryError(null);
+    // The last turn's usage/latency meta belongs to whichever conversation
+    // produced it — a freshly opened chat (e.g. a forked discussion) must
+    // not inherit the previous conversation's "N tokens · model · ms" line
+    // under its composer (views stay mounted, so state would otherwise
+    // leak across chats). Same-conversation reloads keep the meta.
+    if (metaForRef.current !== conversationId) {
+      metaForRef.current = conversationId;
+      setUsage(null);
+      setModelLatency(null);
+      setTurnError(null);
+    }
     try {
       const detail = await getConversation(token, conversationId);
       // A fresh conversation may have no messages yet; history replaces the
@@ -546,6 +564,7 @@ export default function ChatStrip({
     const dropPlaceholder = (): void => {
       setRows((prev) => prev.filter((r) => r.key !== placeholder.key));
     };
+    metaForRef.current = conversationId;
     setUsage(null);
     setModelLatency(null);
     setTurnError(null);
@@ -657,6 +676,7 @@ export default function ChatStrip({
     setModelLatency(null);
     setTurnError(null);
     setHistoryError(null);
+    metaForRef.current = conversationId;
     setStreaming(true);
     onStreamingChange?.(true);
 

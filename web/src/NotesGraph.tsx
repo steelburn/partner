@@ -10,7 +10,9 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  Handle,
   MarkerType,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -65,6 +67,9 @@ function toFlow(graph: NoteGraph, layout: Map<string, { x: number; y: number }>)
     const at = layout.get(row.id);
     return {
       id: row.id,
+      // The 'note' type selects GraphNodeView below — without it React Flow
+      // falls back to its unstyled default node (empty box, no title).
+      type: 'note',
       position: { x: at?.x ?? 0, y: at?.y ?? 0 },
       data: { title: row.title, isDaily: row.isDaily, tags: row.tags },
     };
@@ -93,8 +98,14 @@ function toFlow(graph: NoteGraph, layout: Map<string, { x: number; y: number }>)
 function GraphNodeView({ data }: { data: GraphNodeData }): React.JSX.Element {
   return (
     <div className="n-graph-node" title={data.title}>
+      {/* Layout ranks left→right with the referencing note before its
+       * targets, so each note exposes its outgoing side (Right) and its
+       * incoming side (Left). React Flow only draws edges between nodes
+       * that declare Handles — without them the edges silently vanish. */}
+      <Handle type="target" position={Position.Left} className="n-graph-handle" />
       <span className="n-graph-node-title">{clampText(data.title, 46)}</span>
       {data.isDaily ? <span className="n-graph-node-daily">Daily</span> : null}
+      <Handle type="source" position={Position.Right} className="n-graph-handle" />
     </div>
   );
 }

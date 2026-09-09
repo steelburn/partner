@@ -7017,6 +7017,11 @@ select {
   font-size: var(--font-sm);
 }
 .n-graph-canvas {
+  /* Edge lines + arrowheads read from a token alias so the canvas stays
+   * token-only: the graph needs a stronger stroke than --border but the
+   * value follows the active theme (--text-faint passes non-text
+   * contrast on --surface in both modes). */
+  --n-graph-edge: var(--text-faint);
   position: relative;
   height: 460px;
   border: 1px solid var(--border);
@@ -7234,6 +7239,21 @@ select {
 }
 .n-graph-node {
   outline: none;
+}
+.n-graph-handle {
+  /* Endpoint dots: token-only, kept quiet so node labels stay the focus.
+   * Sized on the touch/pointer grid and tinted with the edge stroke. */
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  min-height: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--n-graph-edge);
+  border-radius: var(--radius-full);
+}
+.n-graph-handle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 /* ==========================================================================
