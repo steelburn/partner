@@ -9,8 +9,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { conversationUi } from './lib/conversation-ui.js';
 import type { Asset, AssetKind } from '@partner/shared';
+import { parseCsv, sniffCsv } from '@partner/shared';
 import { ApiRequestError } from './lib/api.js';
-import { deleteAsset, listAssets, promoteAsset } from './lib/assets.js';
+import { deleteAsset, discussAsset, listAssets, promoteAsset } from './lib/assets.js';
+import { buildAssetDiscussQuote } from './lib/asset-quote.js';
 import { exportAssetFile } from './lib/assets-export.js';
 import { readStoredToken } from './lib/token.js';
 import { timeAgo } from './lib/persona-helpers.js';
@@ -33,6 +35,9 @@ export interface AssetsLaneProps {
   /** Collapse the pane (the transcript regains the width). */
   onClose: () => void;
   onUnpair: () => void;
+  /** M16 F4: open a conversation and quote the asset draft into its
+   *  composer (called for both continue-in-place and fork). */
+  onDiscuss: (conversationId: string, quote: string) => void;
 }
 
 /** True when an ApiRequestError means the core session is gone. */
@@ -55,6 +60,7 @@ export function AssetsLane({
   onExpandedChange,
   onClose,
   onUnpair,
+  onDiscuss,
 }: AssetsLaneProps) {
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +68,12 @@ export function AssetsLane({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // M16 F4 discuss chooser (expanded while choosing, so the user picks one).
+  const [discussOpen, setDiscussOpen] = useState(false);
+  const [discussBusy, setDiscussBusy] = useState(false);
+  // M16 F6 CSV: per-asset view toggle (table vs raw markdown body).
+  const [csvView, setCsvView] = useState<'table' | 'raw'>('table');
+
 
   // M14 per-conversation memory: which asset row is open is keyed by the
   // conversation so switching chats and coming back restores the read view.
@@ -145,6 +157,7 @@ export function AssetsLane({
 
   const select = (id: string): void => {
     setOpenId(id);
+    setCsvView('table');
     conversationUi.setAssetOpen(conversationId, id);
     setNotice(null);
     setError(null);
@@ -186,6 +199,46 @@ export function AssetsLane({
       setBusyId(null);
     }
   };
+
+  /** M16 F4: continue the SAME discussion (this conversation's thread). */
+  const discussContinue = (asset: Asset): void => {
+    setDiscussOpen(false);
+    setDiscussBusy(false);
+    if (conversationId === null) return;
+    onDiscuss(conversationId, buildAssetDiscussQuote(asset));
+    setNotice('Quoted into this discussion — type your angle and send.');
+  };
+
+  /** M16 F4: fork a NEW discussion that branches off this conversation. */
+  const discussFork = async (asset: Asset): Promise<void> => {
+    if (conversationId === null || discussBusy) return;
+    setDiscussBusy(true);
+    setError(null);
+    try {
+      const result = await discussAsset(
+        readStoredToken() ?? '',
+        conversationId,
+        asset.id,
+        'fork',
+      );
+      setDiscussOpen(false);
+      setNotice('Forked — a new discussion opened with the asset quoted.');
+      onDiscuss(result.conversationId, buildAssetDiscussQuote(asset));
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : 'Could not fork the discussion.');
+    } finally {
+      setDiscussBusy(false);
+    }
+  };
+
+  const csvTable =
+    open !== null && sniffCsv(open.body) && csvView === 'table'
+      ? { rows: parseCsv(open.body) }
+      : null;
 
   const remove = async (asset: Asset): Promise<void> => {
     if (conversationId === null || busyId !== null) return;
@@ -300,6 +353,19 @@ export function AssetsLane({
             <button
               type="button"
               className="btn btn-secondary btn-sm"
+              disabled={busyId !== null}
+              onClick={() => {
+                setDiscussOpen((openNow) => !openNow);
+                setNotice(null);
+              }}
+              aria-expanded={discussOpen}
+              title="Discuss this asset in its discussion, or fork a new one"
+            >
+              Discuss…
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
               onClick={() => exportFile(open)}
               disabled={busyId !== null}
               title="Download as a .md file"
@@ -316,9 +382,85 @@ export function AssetsLane({
               {busyId === open.id ? '…' : 'To note'}
             </button>
           </div>
-          <div className="assets-lane-body">
-            <PartnerMarkdown text={open.body} />
-          </div>
+          {discussOpen ? (
+            <div className="assets-discuss" aria-label="Discuss this asset">
+              <p className="assets-discuss-copy">
+                A discussion of this asset becomes a thread of the same discussion — or fork a
+                new discussion that branches off it. Either way the asset is quoted into the
+                composer; nothing is sent until you write.
+              </p>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={discussBusy}
+                  onClick={() => discussContinue(open)}
+                >
+                  Continue in this discussion
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={discussBusy}
+                  onClick={() => void discussFork(open)}
+                  aria-busy={discussBusy}
+                  title="New conversation that branches off this one (shows under it in the rail)"
+                >
+                  {discussBusy ? 'Forking…' : 'Fork into a new discussion'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {csvTable ? (
+            <div className="assets-lane-body">
+              <div className="assets-csv-head">
+                <span className="chip chip-accent">CSV · {csvTable.rows.length - 1} rows</span>
+                <button
+                  type="button"
+                  className="btn-link btn-sm"
+                  onClick={() => setCsvView(csvView === 'table' ? 'raw' : 'table')}
+                  aria-pressed={csvView === 'table'}
+                >
+                  {csvView === 'table' ? 'View raw text' : 'View as table'}
+                </button>
+              </div>
+              {csvView === 'table' ? (
+                <div className="csv-scroll">
+                  <table className="csv-table">
+                    <thead>
+                      <tr>
+                        {csvTable.rows[0]?.map((header, index) => (
+                          <th key={index} scope="col">
+                            {header}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {csvTable.rows.slice(1, 501).map((cells, rowIndex) => (
+                        <tr key={rowIndex}>
+                          {cells.map((cell, colIndex) => (
+                            <td key={colIndex} className={/^-?\d+([.,]\d+)?$/.test(cell.trim()) ? 'csv-num' : undefined}>
+                              {cell}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {csvTable.rows.length > 501 ? (
+                    <p className="csv-cap">Showing the first 500 rows.</p>
+                  ) : null}
+                </div>
+              ) : (
+                <PartnerMarkdown text={open.body} />
+              )}
+            </div>
+          ) : (
+            <div className="assets-lane-body">
+              <PartnerMarkdown text={open.body} />
+            </div>
+          )}
         </div>
       ) : assets.length === 0 ? (
         <p className="assets-lane-note">
@@ -341,6 +483,9 @@ export function AssetsLane({
                   {asset.messageId !== null ? ' · from a message' : ''} ·{' '}
                   {timeAgo(asset.createdAt)}
                 </span>
+                {asset.body.length > 0 && sniffCsv(asset.body) ? (
+                  <span className="chip chip-accent">CSV</span>
+                ) : null}
               </button>
             </li>
           ))}

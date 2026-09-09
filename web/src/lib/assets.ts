@@ -2,7 +2,7 @@
  * M11 F10 asset API client (PLAN-M11.md).
  */
 import { ApiRequestError, expectJson, expectNoContent, type FetchLike } from './api.js';
-import type { Asset, AssetInput } from '@partner/shared';
+import type { Asset, AssetDiscussResult, AssetInput } from '@partner/shared';
 
 export type { FetchLike };
 
@@ -85,4 +85,36 @@ export async function promoteAsset(
     return { noteId: body.noteId };
   }
   throw new ApiRequestError(response.status, 'The promotion response had an unexpected shape.');
+}
+
+/**
+ * M16 F4 (PLAN-M16.md): discuss an asset — 'continue' opens the same
+ * discussion (the asset's origin conversation) with the asset quoted in the
+ * composer; 'fork' creates a child conversation with lineage to the origin.
+ */
+export async function discussAsset(
+  token: string,
+  originConversationId: string,
+  assetId: string,
+  mode: 'continue' | 'fork',
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<AssetDiscussResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${assetsPath(originConversationId)}/${encodeURIComponent(assetId)}/discuss`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({ mode }),
+    },
+  );
+  const body: unknown = await expectJson<unknown>(response);
+  if (isRecord(body) && typeof body.conversationId === 'string' && typeof body.assetId === 'string') {
+    return body as unknown as AssetDiscussResult;
+  }
+  throw new ApiRequestError(response.status, 'The discuss response had an unexpected shape.');
 }

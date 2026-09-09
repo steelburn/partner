@@ -1,6 +1,6 @@
 /**
  * M3 persona HTTP surface tests (PLAN-M3 wire spec): every route authed; GET
- * lists the eight seeded starters; POST/PUT CRUD with typed validation;
+ * lists the nine seeded starters; POST/PUT CRUD with typed validation;
  * DELETE of the default persona is refused (409 conflict); pause/resume.
  */
 import { describe, expect, it } from 'vitest';
@@ -44,14 +44,14 @@ describe('auth gate on the persona surface', () => {
 });
 
 describe('persona CRUD routes', () => {
-  it('GET lists the eight seeded starters with exactly one default', async () => {
+  it('GET lists the nine seeded starters with exactly one default', async () => {
     const h = demoHarness();
     try {
       const token = await pairToken(h);
       const res = await request(h.app).get('/v1/personas').set(authed(token));
       expect(res.status).toBe(200);
       const personas = res.body.personas as Array<{ name: string; isDefault: boolean; paused: boolean }>;
-      expect(personas).toHaveLength(8);
+      expect(personas).toHaveLength(9);
       expect(personas.map((p) => p.name)).toContain('Default partner');
       expect(personas.filter((p) => p.isDefault)).toHaveLength(1);
       expect(personas.every((p) => p.paused === false)).toBe(true);
@@ -86,7 +86,7 @@ describe('persona CRUD routes', () => {
         .set(authed(token))
         .send({ name: 'X', independence: { level: 'rogue' } });
       expect(badLevel.status).toBe(400);
-      expect(h.personas.list()).toHaveLength(9);
+      expect(h.personas.list()).toHaveLength(10);
     } finally {
       h.close();
     }

@@ -97,6 +97,9 @@ function toSummary(row: ConversationRow, messageCount: number): ConversationSumm
     personaId: row.personaId,
     title: row.title,
     folderId: row.folderId,
+    // M16 F4 lineage (null when absent — older rows read cleanly).
+    parentId: row.parentId ?? null,
+    sourceAssetId: row.sourceAssetId ?? null,
     messageCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -153,6 +156,15 @@ export function createConversationManager(
       body.folderId !== undefined && body.folderId !== null && body.folderId !== ''
         ? body.folderId
         : null;
+    // M16 F4 lineage: parent discussion + source asset (fork provenance).
+    const parentId =
+      body.parentId !== undefined && body.parentId !== null && body.parentId !== ''
+        ? body.parentId
+        : null;
+    const sourceAssetId =
+      body.sourceAssetId !== undefined && body.sourceAssetId !== null && body.sourceAssetId !== ''
+        ? body.sourceAssetId
+        : null;
     const at = now();
     const id = randomUUID();
     const row: ConversationRow = {
@@ -160,6 +172,8 @@ export function createConversationManager(
       personaId,
       title,
       folderId,
+      parentId,
+      sourceAssetId,
       createdAt: at,
       updatedAt: at,
     };

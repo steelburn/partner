@@ -6948,3 +6948,377 @@ select {
 .app {
   overflow-x: hidden;
 }
+
+/* ==========================================================================
+ * M16 knowledge workspace (PLAN-M16.md) — notes graph, versions, brainstorm,
+ * asset Discuss + CSV tables. Token-only: colours/surfaces/elevation all
+ * resolve through the theme variables; no magic values.
+ * ========================================================================== */
+
+/* Notes list: selection + pane controls -------------------------------- */
+.n-toolbar-sep {
+  align-self: center;
+  width: 1px;
+  height: 1.25rem;
+  background: var(--border);
+  margin-inline: 0.5rem;
+}
+.btn-sm.is-active {
+  background: var(--surface-2);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.n-select-hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+.n-check {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  margin-right: 0.5rem;
+  background: var(--surface);
+}
+.n-check.is-checked {
+  background: var(--accent-emphasis);
+  border-color: var(--accent-emphasis);
+  box-shadow: inset 0 0 0 2px var(--surface);
+}
+.n-row.is-selected {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Relationship graph (React Flow canvas) -------------------------------- */
+.n-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.n-graph-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.n-graph-hint {
+  flex: 1 1 14rem;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+.n-graph-canvas {
+  position: relative;
+  height: 460px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.n-graph-node {
+  max-width: 15rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: var(--elevation-sm);
+  cursor: grab;
+}
+.react-flow__node.selected .n-graph-node,
+.n-graph-node:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.n-graph-node-title {
+  display: block;
+  color: var(--text);
+  font-size: var(--font-sm);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.n-graph-node-daily {
+  display: inline-block;
+  margin-top: 0.25rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.n-graph-foot {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  margin: 0;
+}
+.react-flow__attribution {
+  display: none;
+}
+
+/* Note versions (history + diff) ---------------------------------------- */
+.n-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+.n-version {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0.375rem 0.5rem;
+  color: var(--text);
+}
+.n-version:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.n-version.is-active {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.n-version-seq {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  min-width: 2rem;
+}
+.n-version-meta {
+  flex: 1;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+.n-diff {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.n-diff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+.n-diff-body {
+  margin: 0;
+  padding: 0.5rem;
+  max-height: 16rem;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* The diff rows' colour washes sit on the page background so the semantic
+   * text tokens keep their tuned contrast (not the card well). */
+  background: var(--bg);
+}
+.n-diff-same { color: var(--text-muted); }
+.n-diff-rem { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.n-diff-add { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+
+/* Asset Discuss chooser -------------------------------------------------- */
+.assets-discuss {
+  margin-bottom: 0.75rem;
+  padding: 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.assets-discuss-copy {
+  margin: 0 0 0.5rem;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+/* CSV asset tables ------------------------------------------------------- */
+.assets-csv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.csv-scroll {
+  overflow: auto;
+  max-height: 24rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.csv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-sm);
+}
+.csv-table th,
+.csv-table td {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.csv-table thead th {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.csv-table tbody tr:hover {
+  background: var(--surface-2);
+}
+.csv-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.csv-cap {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  padding: 0.375rem 0.5rem;
+  margin: 0;
+}
+
+/* Conversation rail: forked discussions render as indented threads. ----- */
+.rail-item-thread {
+  padding-left: 1.25rem;
+}
+.rail-item-thread-title {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node,
+  .n-row,
+  .btn {
+    transition: none !important;
+  }
+}
+
+/* M16 interaction states (focus ring + disabled) — the shell's global
+ * :focus-visible rules cover .btn/.btn-link; these cover the M16-specific
+ * interactive rows/items. */
+.n-row:focus-visible,
+.n-version:focus-visible,
+.assets-lane-open:focus-visible,
+.rail-item-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.n-row:disabled,
+.n-version:disabled,
+.assets-lane-open:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.n-graph-node {
+  outline: none;
+}
+
+/* ==========================================================================
+ * M16 F7 Files folder browser (PLAN-M16.md) — pick the Absolute path by
+ * browsing. Token-only; directories listed by name, no file content.
+ * ========================================================================== */
+.path-field-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.path-field-row .field {
+  flex: 1;
+  min-width: 0;
+}
+.files-browse {
+  margin-top: 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 0.625rem;
+}
+.files-browse-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.files-browse-path-label {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+.files-browse-path-value {
+  flex: 1 1 10rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+}
+.files-browse-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 15rem;
+  overflow: auto;
+}
+.files-browse-folder {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--font-sm);
+}
+.files-browse-folder::before {
+  content: '›';
+  color: var(--text-muted);
+  margin-right: 0.5rem;
+  font-weight: 600;
+}
+.files-browse-folder:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.files-browse-folder:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.files-browse-folder:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .files-browse-folder {
+    transition: none !important;
+  }
+}

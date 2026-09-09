@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import type { Note } from '@partner/shared';
+import type { Note, NoteVersion, NoteVersionSummary } from '@partner/shared';
+import { diffLines } from '@partner/shared';
 import type { NoteBacklink } from './lib/notes.js';
 import { isSessionLost } from './lib/personas.js';
-import { getBacklinks, updateNote, createNote, deleteNote } from './lib/notes.js';
+import {
+  fetchNoteVersion,
+  fetchNoteVersions,
+  getBacklinks,
+  restoreNoteVersion,
+  updateNote,
+  createNote,
+  deleteNote,
+} from './lib/notes.js';
 import { parseTags } from './lib/note-helpers.js';
 import { readStoredToken } from './lib/token.js';
 import { timeAgo } from './lib/persona-helpers.js';
@@ -72,6 +81,15 @@ export default function NoteEditor({
   const [dismissed, setDismissed] = useState(false);
   const [backlinks, setBacklinks] = useState<NoteBacklink[] | null>(null);
   const [backlinksError, setBacklinksError] = useState<string | null>(null);
+  // M16 F3: version history (list -> selected snapshot -> diff vs current).
+  const [versions, setVersions] = useState<NoteVersionSummary[] | null>(null);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState<NoteVersion | null>(null);
+  const [restoreArm, setRestoreArm] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
+
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   const creating = note === null;
@@ -206,6 +224,88 @@ export default function NoteEditor({
     }
   };
 
+  /** M16 F3: load version summaries for the note under the editor. */
+  const loadVersions = async (): Promise<void> => {
+    if (creating || note === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setVersions(null);
+    setVersionsError(null);
+    setSelectedVersion(null);
+    setRestoreArm(false);
+    setHistoryNotice(null);
+    try {
+      setVersions(await fetchNoteVersions(token, note.id));
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setVersionsError(cause instanceof Error ? cause.message : 'Could not load history.');
+    }
+  };
+
+  const openVersion = async (versionId: string): Promise<void> => {
+    if (historyBusy || note === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setHistoryBusy(true);
+    setHistoryNotice(null);
+    setRestoreArm(false);
+    try {
+      setSelectedVersion(await fetchNoteVersion(token, note.id, versionId));
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setVersionsError(cause instanceof Error ? cause.message : 'Could not open that version.');
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const restore = async (): Promise<void> => {
+    if (creating || note === null || selectedVersion === null || historyBusy) return;
+    if (!restoreArm) {
+      setRestoreArm(true);
+      setHistoryNotice('Restoring rewrites the note to this version. Press again to confirm.');
+      return;
+    }
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setHistoryBusy(true);
+    setHistoryNotice(null);
+    try {
+      const restored = await restoreNoteVersion(token, note.id, selectedVersion.id);
+      // Refresh the editor fields + version list from the restored note.
+      setTitle(restored.title);
+      setContent(restored.content);
+      setTagsText((restored.tags ?? []).join(', '));
+      setHistoryNotice('Restored — the previous state is kept as a version, so this is undoable.');
+      onSaved(restored);
+      void loadVersions();
+    } catch (cause) {
+      setRestoreArm(false);
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setVersionsError(cause instanceof Error ? cause.message : 'Could not restore that version.');
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
   const remove = async (): Promise<void> => {
     if (busy !== null || creating) return;
     if (!deleteArmed) {
@@ -262,6 +362,20 @@ export default function NoteEditor({
           >
             {creating ? 'Discard' : 'Close'}
           </button>
+          {creating ? null : (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={busy !== null}
+              onClick={() => {
+                setHistoryOpen((open) => !open);
+                if (!historyOpen) void loadVersions();
+              }}
+              aria-expanded={historyOpen}
+            >
+              {historyOpen ? 'Close history' : 'History'}
+            </button>
+          )}
           {creating ? null : (
             <button
               type="button"
@@ -432,6 +546,114 @@ export default function NoteEditor({
                 </li>
               ))}
             </ul>
+          )}
+        </div>
+      )}
+      {creating ? null : (
+        <div className="sub-panel n-history">
+          <div className="sub-panel-title">History</div>
+          <p className="sub-panel-copy">
+            Every save and capture is versioned (M16). Open a version to diff it against the
+            current note; Restore rewrites the note and keeps an undo version.
+          </p>
+          {historyOpen ? (
+            versionsError ? (
+              <p className="row-error" role="alert">
+                {versionsError}
+              </p>
+            ) : versions === null ? (
+              <p className="n-muted-line" aria-busy="true">
+                Loading versions…
+              </p>
+            ) : versions.length === 0 ? (
+              <p className="n-muted-line">No versions yet — save once to start history.</p>
+            ) : (
+              <>
+                <ul className="n-version-list">
+                  {versions.map((entry) => (
+                    <li key={entry.id}>
+                      <button
+                        type="button"
+                        className={
+                          selectedVersion !== null && selectedVersion.id === entry.id
+                            ? 'n-version is-active'
+                            : 'n-version'
+                        }
+                        onClick={() => void openVersion(entry.id)}
+                        disabled={historyBusy}
+                        aria-pressed={selectedVersion?.id === entry.id}
+                      >
+                        <span className="n-version-seq">v{entry.seq}</span>
+                        <span className="n-version-meta">
+                          {timeAgo(entry.createdAt)}
+                          {entry.titleChanged ? ' · title changed' : ''}
+                        </span>
+                        <span className="chip">{entry.writer}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {historyNotice ? (
+                  <p className="form-hint" role="status">
+                    {historyNotice}
+                  </p>
+                ) : null}
+                {selectedVersion !== null ? (
+                  <div className="n-diff">
+                    <div className="n-diff-head">
+                      <span>
+                        v{selectedVersion.seq} vs current
+                        {selectedVersion.titleChanged ? ' — title differs too' : ''}
+                      </span>
+                      <button
+                        type="button"
+                        className={
+                          restoreArm ? 'btn btn-danger btn-sm' : 'btn btn-secondary btn-sm'
+                        }
+                        disabled={historyBusy}
+                        onClick={() => void restore()}
+                        aria-busy={historyBusy}
+                      >
+                        {restoreArm ? 'Confirm restore' : 'Restore this version'}
+                      </button>
+                    </div>
+                    <pre className="n-diff-body" aria-label="Version difference">
+                      {diffLines(selectedVersion.content, note.content).map((run, index) => (
+                        <code
+                          key={index}
+                          className={
+                            run.type === 'same'
+                              ? 'n-diff-same'
+                              : run.type === 'remove'
+                                ? 'n-diff-rem'
+                                : 'n-diff-add'
+                          }
+                        >
+                          {run.type === 'remove' ? '− ' : run.type === 'add' ? '+ ' : '  '}
+                          {run.text}
+                          {'\n'}
+                        </code>
+                      ))}
+                    </pre>
+                  </div>
+                ) : (
+                  <p className="n-muted-line">
+                    Choose a version above to see what changed. Unchanged notes show nothing.
+                  </p>
+                )}
+              </>
+            )
+          ) : (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                setHistoryOpen(true);
+                void loadVersions();
+              }}
+            >
+              Show history
+            </button>
           )}
         </div>
       )}

@@ -62,6 +62,7 @@ import type { SessionInfo, SessionManager } from './session.js';
 import type { AuditService } from '../services/redaction.js';
 import type { PendingToolRow } from '../stores/types.js';
 import type { ToolBroker } from '../broker/broker.js';
+import { browseDirectory, BrowseError } from '../files/browse.js';
 import type { ToolErrorCode } from '../broker/errors.js';
 import { ToolError, toolError, toolErrorStatus } from '../broker/errors.js';
 import type { ConversationManager, ConversationDetail } from '../conversations/manager.js';
@@ -73,6 +74,8 @@ import { buildTailoring } from '../memory/tailor.js';
 import { MemoryError, memoryErrorStatus } from '../memory/index.js';
 import type { NoteManager } from '../notes/index.js';
 import { NoteError, noteErrorStatus } from '../notes/index.js';
+import type { BrainstormManager } from '../notes/index.js';
+import { BrainstormError, brainstormErrorStatus } from '../notes/index.js';
 import type { PlanManager } from '../plans/index.js';
 import { PlanError, planErrorStatus } from '../plans/index.js';
 import type { ThemeManager } from '../theming/manager.js';
@@ -176,6 +179,12 @@ export interface CoreAppOptions {
    * absent the /v1/notes + /v1/tags surface responds 501 not_configured.
    */
   notes?: NoteManager;
+  /**
+   * M16 F2 brainstorm manager (optional so pre-M16 harnesses compile
+   * unchanged). When absent POST /v1/notes/brainstorm responds 501
+   * not_configured.
+   */
+  brainstorm?: BrainstormManager;
   /**
    * M5 plan manager (optional so M0-M4 harnesses compile unchanged). When
    * absent the /v1/plans surface responds 501 not_configured.
@@ -577,6 +586,15 @@ function sendNoteError(res: Response, err: unknown): boolean {
   return false;
 }
 
+/** Send a typed BrainstormError response; false when not one. */
+function sendBrainstormError(res: Response, err: unknown): boolean {
+  if (err instanceof BrainstormError) {
+    res.status(brainstormErrorStatus(err.code)).json({ error: err.code, message: err.message });
+    return true;
+  }
+  return false;
+}
+
 /** Send a typed PlanError response; false when not one. */
 function sendPlanError(res: Response, err: unknown): boolean {
   if (err instanceof PlanError) {
@@ -868,6 +886,16 @@ function requireNotes(options: CoreAppOptions, res: Response): NoteManager | nul
     return null;
   }
   return notes;
+}
+
+/** Guard: returns the M16 F2 brainstorm manager or 501s. */
+function requireBrainstorm(options: CoreAppOptions, res: Response): BrainstormManager | null {
+  const brainstorm = options.brainstorm;
+  if (!brainstorm) {
+    notConfigured(res, 'brainstorm manager');
+    return null;
+  }
+  return brainstorm;
 }
 
 /** Guard: returns the M5 plan manager or 501s. */
@@ -2449,7 +2477,13 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.post('/v1/conversations', requireSession(sessions), (req: Request, res: Response) => {
     const manager = requireConversationManager(options, res);
     if (!manager) return;
-    const body = (req.body ?? {}) as { personaId?: unknown; title?: unknown; folderId?: unknown };
+    const body = (req.body ?? {}) as {
+      personaId?: unknown;
+      title?: unknown;
+      folderId?: unknown;
+      parentId?: unknown;
+      sourceAssetId?: unknown;
+    };
     let folderId = optionalString(body.folderId);
     if (folderId !== undefined) {
       const folders = requireFolders(options, res);
@@ -2467,11 +2501,25 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         folderId = home;
       }
     }
+    // M16 F4 discuss lineage (PLAN-M16.md): a forked discussion points at its
+    // parent (must still exist) and the asset that sparked it.
+    const parentId = optionalString(body.parentId);
+    if (parentId !== undefined && parentId !== null) {
+      try {
+        manager.get(parentId);
+      } catch {
+        res.status(400).json({ error: 'parent_not_found', message: 'parent conversation not found' });
+        return;
+      }
+    }
     try {
+      const sourceAssetId = optionalString(body.sourceAssetId);
       const summary = manager.create({
         personaId: optionalString(body.personaId),
         title: optionalString(body.title),
         ...(folderId !== undefined ? { folderId } : {}),
+        ...(parentId !== undefined ? { parentId } : {}),
+        ...(sourceAssetId !== undefined ? { sourceAssetId } : {}),
       });
       res.status(201).json(summary);
     } catch (err) {
@@ -2791,6 +2839,90 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         if (sendAssetError(res, err)) return;
         throw err;
       }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // M16 F4 asset Discuss (PLAN-M16.md). :id = the asset's ORIGIN conversation
+  // (the discussion the asset was born in). 'continue' = open that same
+  // discussion (the asset stays in its thread); 'fork' = a NEW conversation
+  // that is a child thread of the origin, carrying the asset as provenance
+  // (lineage columns parent_id + source_asset_id). The UI composes the first
+  // user turn with the asset body quoted; nothing is sent implicitly.
+  // -------------------------------------------------------------------------
+
+  api.post(
+    '/v1/conversations/:id/assets/:assetId/discuss',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const assets = requireAssets(options, res);
+      if (!assets) return;
+      const originConversationId = String(req.params.id ?? '');
+      const assetId = String(req.params.assetId ?? '');
+      const body = (req.body ?? {}) as { mode?: unknown };
+      const mode: 'continue' | 'fork' =
+        body.mode === 'fork' ? 'fork' : 'continue';
+      const asset = assets.list(originConversationId).find((entry) => entry.id === assetId);
+      if (!asset) {
+        res.status(404).json({ error: 'not_found', message: 'asset not found' });
+        return;
+      }
+      if (mode === 'fork') {
+        const manager = requireConversationManager(options, res);
+        if (!manager) return;
+        let personaId: string | undefined;
+        try {
+          personaId = manager.get(originConversationId).summary.personaId ?? undefined;
+        } catch {
+          // Origin conversation gone (orphan asset row) — fork stands alone.
+        }
+        if (personaId === undefined && options.personaManager) {
+          const fallback = options.personaManager.list().find((persona) => persona.isDefault);
+          personaId = fallback?.id;
+        }
+        let folderId: string | undefined;
+        try {
+          folderId = manager.get(originConversationId).summary.folderId ?? undefined;
+        } catch {
+          folderId = undefined;
+        }
+        const title = `Discuss — ${asset.title}`.slice(0, 120);
+        try {
+          const summary = manager.create({
+            personaId,
+            title,
+            ...(folderId !== undefined ? { folderId } : {}),
+            parentId: originConversationId,
+            sourceAssetId: assetId,
+          });
+          audit.log('web', 'asset.discuss', assetId, {
+            conversationId: summary.id,
+            originConversationId,
+            mode: 'fork',
+          });
+          res.status(201).json({
+            conversationId: summary.id,
+            mode: 'fork' as const,
+            assetId,
+            originConversationId,
+          });
+        } catch (err) {
+          if (sendConversationError(res, err)) return;
+          throw err;
+        }
+        return;
+      }
+      audit.log('web', 'asset.discuss', assetId, {
+        conversationId: originConversationId,
+        originConversationId,
+        mode: 'continue',
+      });
+      res.status(200).json({
+        conversationId: originConversationId,
+        mode: 'continue' as const,
+        assetId,
+        originConversationId,
+      });
     },
   );
 
@@ -3158,6 +3290,100 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json(notes.exportAll());
   });
 
+  // -------------------------------------------------------------------------
+  // M16 F1/F2/F3 notes graph, brainstorm + version history (PLAN-M16.md).
+  // Literal segments sit before GET /v1/notes/:id so 'graph'/'brainstorm'
+  // are never swallowed by the :id param route.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/notes/graph', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    res.json(notes.graph());
+  });
+
+  api.put('/v1/notes/graph/positions', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const body = (req.body ?? {}) as { positions?: unknown };
+    if (!Array.isArray(body.positions) || body.positions.length === 0) {
+      res.status(400).json({ error: 'invalid_input', message: 'positions must be a non-empty array' });
+      return;
+    }
+    try {
+      for (const entry of body.positions) {
+        const item = entry as { noteId?: unknown; x?: unknown; y?: unknown };
+        if (typeof item.noteId !== 'string' || item.noteId === '') {
+          res.status(400).json({ error: 'invalid_input', message: 'each position needs a noteId' });
+          return;
+        }
+        notes.setPosition(item.noteId, item.x as number, item.y as number);
+      }
+      res.status(204).end();
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post('/v1/notes/brainstorm', requireSession(sessions), async (req: Request, res: Response) => {
+    const brainstorm = requireBrainstorm(options, res);
+    if (!brainstorm) return;
+    try {
+      const result = await brainstorm.start((req.body ?? {}) as never);
+      res.status(201).json(result);
+    } catch (err) {
+      if (sendBrainstormError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get('/v1/notes/:id/versions', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const id = String(req.params.id ?? '');
+    try {
+      res.json({ versions: notes.versions(id) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.get(
+    '/v1/notes/:id/versions/:versionId',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const notes = requireNotes(options, res);
+      if (!notes) return;
+      const id = String(req.params.id ?? '');
+      const versionId = String(req.params.versionId ?? '');
+      try {
+        res.json({ version: notes.version(id, versionId) });
+      } catch (err) {
+        if (sendNoteError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.post('/v1/notes/:id/restore', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as { versionId?: unknown };
+    if (typeof body.versionId !== 'string' || body.versionId === '') {
+      res.status(400).json({ error: 'invalid_input', message: 'versionId is required' });
+      return;
+    }
+    try {
+      res.json({ note: notes.restore(id, body.versionId) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
   api.get('/v1/tags', requireSession(sessions), (req: Request, res: Response) => {
     const notes = requireNotes(options, res);
     if (!notes) return;
@@ -3472,6 +3698,33 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // filenames. Shallow sync walk (depth <= 5), dot/trash/node_modules
   // skipped. The client turns a pick into a partner-file:// link.
   // -----------------------------------------------------------------------
+
+  api.get('/v1/files/browse', requireSession(sessions), (req: Request, res: Response) => {
+    const queryPath = typeof req.query.path === 'string' ? req.query.path : '';
+    const actor = actorOf(res.locals.session as SessionInfo);
+    try {
+      const result = browseDirectory(queryPath);
+      audit.log(actor, 'files.browse', result.path === '' ? '(drives)' : result.path, {
+        entries: result.entries.length,
+        truncated: result.truncated,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof BrowseError) {
+        const status =
+          err.code === 'invalid_path'
+            ? 400
+            : err.code === 'not_found'
+              ? 404
+              : err.code === 'denied'
+                ? 403
+                : 500;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
 
   api.get('/v1/files/refs', requireSession(sessions), (req: Request, res: Response) => {
     const broker = options.broker;

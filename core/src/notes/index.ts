@@ -38,6 +38,27 @@ export type {
   NotePatch,
 } from './manager.js';
 
+export {
+  // M16 F2 brainstorm orchestrator (PLAN-M16.md).
+  createBrainstormManager,
+  buildBrainstormBundle,
+  demoBrainstormReply,
+  BrainstormError,
+  brainstormError,
+  brainstormErrorStatus,
+  BRAINSTORM_PERSONA_ID,
+  BRAINSTORM_MAX_NOTES,
+  BRAINSTORM_EXCERPT_CHARS,
+  BRAINSTORM_TOTAL_CHARS,
+  BRAINSTORM_SYSTEM_PROMPT,
+} from './brainstorm.js';
+export type {
+  BrainstormManager,
+  BrainstormManagerOptions,
+  BrainstormBundleResult,
+  BrainstormErrorCode,
+} from './brainstorm.js';
+
 /**
  * Build the daily-summarize resolver: first enabled provider's default
  * model, mirroring M1's resolveChatProvider fallback. Returns null when

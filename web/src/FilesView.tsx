@@ -21,11 +21,13 @@ import {
 import {
   addGrant,
   addRoot,
+  browseDirectories,
   decidePending,
   listGrants,
   listRoots,
   removeGrant,
   removeRoot,
+  type BrowseResult,
 } from './lib/tools.js';
 import { readStoredToken } from './lib/token.js';
 import EditPreviewPanel from './RootEditor.js';
@@ -679,6 +681,8 @@ function AddRootCard({ disabled, onAdded, onSessionLost }: AddRootCardProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // M16 F7: filesystem folder browser for the Absolute path picker.
+  const [browseOpen, setBrowseOpen] = useState(false);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -756,20 +760,45 @@ function AddRootCard({ disabled, onAdded, onSessionLost }: AddRootCardProps) {
           <label className="label" htmlFor="root-path">
             Absolute path
           </label>
-          <input
-            id="root-path"
-            className="field"
-            type="text"
-            value={path}
-            disabled={formDisabled}
-            onChange={(event) => {
-              setPath(event.target.value);
-              setError(null);
-            }}
-            placeholder="/home/you/projects/foo"
-            aria-required="true"
-            spellCheck={false}
-          />
+          <div className="path-field-row">
+            <input
+              id="root-path"
+              className="field"
+              type="text"
+              value={path}
+              disabled={formDisabled}
+              onChange={(event) => {
+                setPath(event.target.value);
+                setError(null);
+              }}
+              placeholder="/home/you/projects/foo"
+              aria-required="true"
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={formDisabled}
+              onClick={() => {
+                setBrowseOpen((open) => !open);
+                setError(null);
+              }}
+              aria-expanded={browseOpen}
+            >
+              {browseOpen ? 'Close browser' : 'Browse…'}
+            </button>
+          </div>
+          {browseOpen ? (
+            <FilesBrowser
+              onPick={(picked) => {
+                setPath(picked);
+                setBrowseOpen(false);
+                setError(null);
+              }}
+              onSessionLost={onSessionLost}
+              disabled={busy}
+            />
+          ) : null}
         </div>
       </div>
       <label className="check-label">
@@ -801,5 +830,127 @@ function AddRootCard({ disabled, onAdded, onSessionLost }: AddRootCardProps) {
         ) : null}
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// M16 F7: in-form filesystem folder browser (pick the Absolute path by
+// browsing instead of typing). Shows directories only, one level at a time,
+// with Up navigation; "Use this folder" fills the path field.
+// ---------------------------------------------------------------------------
+
+interface FilesBrowserProps {
+  /** Called with the chosen absolute directory path. */
+  onPick: (path: string) => void;
+  /** The core session is gone — forget the token. */
+  onSessionLost: () => void;
+  /** Disabled while the root-add request is in flight. */
+  disabled: boolean;
+}
+
+function FilesBrowser({ onPick, onSessionLost, disabled }: FilesBrowserProps): React.JSX.Element {
+  const [browse, setBrowse] = useState<BrowseResult | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [browseBusy, setBrowseBusy] = useState(false);
+
+  const go = async (target: string): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setBrowseBusy(true);
+    setBrowseError(null);
+    try {
+      setBrowse(await browseDirectories(token, target));
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setBrowse(null);
+      setBrowseError(cause instanceof Error ? cause.message : 'Could not browse that folder.');
+    } finally {
+      setBrowseBusy(false);
+    }
+  };
+
+  // Open at the platform start ('' = '/' on POSIX, drives on Windows).
+  useEffect(() => {
+    void go('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const current = browse?.path ?? '';
+  return (
+    <div className="files-browse" aria-label="Browse the filesystem for the root path">
+      <div className="files-browse-path">
+        <span className="files-browse-path-label">Browsing</span>
+        <code className="files-browse-path-value">
+          {current === '' ? (navigator.platform.includes('Win') ? 'Drives' : '/') : current}
+        </code>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={browseBusy || browse?.parent === null || browse?.parent === undefined || disabled}
+          onClick={() => {
+            if (browse?.parent) void go(browse.parent);
+          }}
+          title={browse?.parent ?? 'Already at the top'}
+        >
+          Up
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={browseBusy || disabled || current === ''}
+          onClick={() => onPick(current)}
+          title="Use the folder shown above as the Absolute path"
+        >
+          Use this folder
+        </button>
+      </div>
+      {browseError !== null ? (
+        <p className="row-error" role="alert">
+          {browseError}
+        </p>
+      ) : browse === null ? (
+        <p className="n-muted-line" aria-busy="true">
+          Loading folders…
+        </p>
+      ) : browse.entries.length === 0 ? (
+        <p className="n-muted-line">No subfolders here — “Use this folder” picks this one.</p>
+      ) : (
+        <>
+          <ul className="files-browse-list" role="list">
+            {browse.entries.map((entry) => (
+              <li key={entry.name}>
+                <button
+                  type="button"
+                  className="files-browse-folder"
+                  disabled={browseBusy || disabled}
+                  onClick={() => {
+                    // Drive-list entries already carry their own root path.
+                    if (current === '') {
+                      void go(entry.name);
+                      return;
+                    }
+                    const sep = current.includes('\\\\') ? '\\\\' : '/';
+                    const base = current.replace(/[\\\\/]+$/, '');
+                    void go(`${base}${sep}${entry.name}`);
+                  }}
+                  title={`Open ${entry.name}`}
+                >
+                  <span className="files-browse-folder-name">{entry.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {browse.truncated ? (
+            <p className="n-muted-line">Showing the first 500 folders.</p>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }

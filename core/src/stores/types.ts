@@ -363,6 +363,10 @@ export interface ConversationRow {
   title: string | null;
   /** M11 folder (Projects/Folders) this conversation belongs to; null = Inbox. */
   folderId: string | null;
+  /** M16 F4 discuss lineage: parent discussion this thread branches from. */
+  parentId?: string | null;
+  /** M16 F4 discuss lineage: asset id that sparked this forked discussion. */
+  sourceAssetId?: string | null;
   createdAt: number;
   /** Bumped on every message append (list = recent activity first). */
   updatedAt: number;
@@ -370,7 +374,7 @@ export interface ConversationRow {
 
 /** Writable fields for a conversation (append bumps updated_at). */
 export type ConversationRowPatch = Partial<
-  Pick<ConversationRow, 'title' | 'personaId' | 'folderId'>
+  Pick<ConversationRow, 'title' | 'personaId' | 'folderId' | 'parentId' | 'sourceAssetId'>
 > & {
   updatedAt: number;
 };
@@ -641,6 +645,56 @@ export interface NotesFtsStore {
    * limit. The caller has already escaped the query.
    */
   match(query: string, limit: number): NotesFtsHit[];
+}
+
+// ---------------------------------------------------------------------------
+// M16 F1/F3 (PLAN-M16.md — additive schema v14). `note_versions` snapshots
+// every note mutation at the manager's single choke point (covers captures,
+// promote, summarize, restore); `note_graph` persists canvas positions only
+// (nodes/edges derive from notes + note_links, never duplicated here).
+// ---------------------------------------------------------------------------
+
+export interface NoteVersionRow {
+  id: string;
+  noteId: string;
+  /** 1-based per-note sequence (never reused after delete). */
+  seq: number;
+  title: string;
+  content: string;
+  /** JSON string array of tags (mirrors notes.tags) or null. */
+  tags: string | null;
+  /** Origin writer tag: user|capture|promote|… (manager-owned vocabulary). */
+  writer: string;
+  createdAt: number;
+}
+
+export interface NoteVersionStore {
+  insert(row: NoteVersionRow): void;
+  /** Newest first (desc seq) — history list order. */
+  listForNote(noteId: string): NoteVersionRow[];
+  /** Highest seq for a note (0 = no versions yet). */
+  maxSeq(noteId: string): number;
+  find(noteId: string, versionId: string): NoteVersionRow | undefined;
+  /** Drop versions with seq <= (maxSeq - keep) — retention cap. */
+  prune(noteId: string, keep: number): void;
+  /** Remove a note's versions (note delete cascade). */
+  removeForNote(noteId: string): void;
+}
+
+export interface NoteGraphPosition {
+  noteId: string;
+  x: number;
+  y: number;
+}
+
+export interface NoteGraphStore {
+  /** Upsert one canvas position (REAL values validated by the manager). */
+  set(noteId: string, x: number, y: number): void;
+  get(noteId: string): NoteGraphPosition | undefined;
+  /** Every stored position (notes without one are absent). */
+  listAll(): NoteGraphPosition[];
+  /** Remove a note's position (note delete cascade). */
+  remove(noteId: string): void;
 }
 
 // ---------------------------------------------------------------------------

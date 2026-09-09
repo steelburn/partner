@@ -105,6 +105,10 @@ export interface ConversationSummary {
   title: string | null;
   /** M11 F11 folder (Projects/Folders) this chat lives in; null = Inbox. */
   folderId: string | null;
+  /** M16 F4 discuss lineage: parent discussion this conversation branched from. */
+  parentId?: string | null;
+  /** M16 F4 discuss lineage: the asset that sparked this forked discussion. */
+  sourceAssetId?: string | null;
   messageCount: number;
   createdAt: number;
   updatedAt: number;
@@ -126,4 +130,8 @@ export interface CreateConversationInput {
   title?: string;
   /** M11 F11: folder to create the chat in (null/absent = Inbox). */
   folderId?: string;
+  /** M16 F4 discuss lineage: parent discussion (thread) this branches from. */
+  parentId?: string;
+  /** M16 F4 discuss lineage: originating asset id (fork provenance). */
+  sourceAssetId?: string;
 }

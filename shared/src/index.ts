@@ -23,5 +23,7 @@ export * from './structured.js';
 export * from './attachments.js';
 export * from './assets.js';
 export * from './vision.js';
+export * from './csv.js';
+export * from './diff.js';
 export * from './mcp.js';
 export * from './search.js';

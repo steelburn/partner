@@ -69,6 +69,10 @@ import type {
   NotesFtsHit,
   NotesFtsKind,
   NotesFtsStore,
+  NoteVersionRow,
+  NoteVersionStore,
+  NoteGraphPosition,
+  NoteGraphStore,
   PlanRow,
   PlanRowPatch,
   PlanStore,
@@ -518,6 +522,31 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE INDEX IF NOT EXISTS idx_assets_conversation
   ON assets(conversation_id, created_at);
 
+-- M16 F3 note versions (PLAN-M16.md, additive schema v14): one snapshot row
+-- per note mutation (seq 1-based per note). Owner content — never audit.
+CREATE TABLE IF NOT EXISTS note_versions (
+  id TEXT PRIMARY KEY,
+  note_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT,
+  writer TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (note_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_note_versions_note
+  ON note_versions(note_id, seq DESC);
+
+-- M16 F1 graph canvas positions (PLAN-M16.md, additive schema v14): nodes +
+-- edges derive from notes + note_links; this table stores only the user's
+-- dragged/auto-arranged x/y per note.
+CREATE TABLE IF NOT EXISTS note_graph (
+  note_id TEXT PRIMARY KEY,
+  x REAL NOT NULL,
+  y REAL NOT NULL
+);
+
 -- M11 F2 MCP servers (PLAN-M11.md, additive schema v12): configured stdio
 -- MCP clients. Command/args only; OFF by default. No secrets in this slice.
 CREATE TABLE IF NOT EXISTS mcp_servers (
@@ -579,6 +608,7 @@ const PERSONA_COLUMNS = `
 
 const CONVERSATION_COLUMNS = `
   id, persona_id AS personaId, title, folder_id AS folderId,
+  parent_id AS parentId, source_asset_id AS sourceAssetId,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 const MESSAGE_COLUMNS = `
@@ -675,6 +705,9 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   ['providers', 'purpose', "purpose TEXT NOT NULL DEFAULT 'general'"],
   // Chat folder binding (F11); NULL = Inbox.
   ['conversations', 'folder_id', 'folder_id TEXT'],
+  // M16 F4 discuss lineage (PLAN-M16.md); NULL = top-level discussion.
+  ['conversations', 'parent_id', 'parent_id TEXT'],
+  ['conversations', 'source_asset_id', 'source_asset_id TEXT'],
   // Message payload kind (C2): 'text' | 'parts'. Legacy rows read as 'text'.
   ['messages', 'content_type', "content_type TEXT NOT NULL DEFAULT 'text'"],
   // M12 search approvals: external-tool (web search) queue rows carry the
@@ -1213,8 +1246,9 @@ export function createPersonaStore(db: Database.Database): PersonaStore {
 
 export function createConversationStore(db: Database.Database): ConversationStore {
   const insert = db.prepare(
-    `INSERT INTO conversations (id, persona_id, title, folder_id, created_at, updated_at)
-     VALUES (@id, @personaId, @title, @folderId, @createdAt, @updatedAt)`,
+    `INSERT INTO conversations
+       (id, persona_id, title, folder_id, parent_id, source_asset_id, created_at, updated_at)
+     VALUES (@id, @personaId, @title, @folderId, @parentId, @sourceAssetId, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${CONVERSATION_COLUMNS} FROM conversations WHERE id = ?`);
   const listAll = db.prepare(
@@ -1225,7 +1259,16 @@ export function createConversationStore(db: Database.Database): ConversationStor
 
   return {
     insert(row: ConversationRow): void {
-      insert.run({ ...row });
+      insert.run({
+        id: row.id,
+        personaId: row.personaId,
+        title: row.title,
+        folderId: row.folderId,
+        parentId: row.parentId ?? null,
+        sourceAssetId: row.sourceAssetId ?? null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      });
     },
     findById(id: string): ConversationRow | undefined {
       return findById.get(id) as ConversationRow | undefined;
@@ -1247,6 +1290,14 @@ export function createConversationStore(db: Database.Database): ConversationStor
       if (patch.folderId !== undefined) {
         sets.push('folder_id = @folderId');
         params.folderId = patch.folderId;
+      }
+      if (patch.parentId !== undefined) {
+        sets.push('parent_id = @parentId');
+        params.parentId = patch.parentId;
+      }
+      if (patch.sourceAssetId !== undefined) {
+        sets.push('source_asset_id = @sourceAssetId');
+        params.sourceAssetId = patch.sourceAssetId;
       }
       if (sets.length === 0) {
         db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
@@ -1474,6 +1525,10 @@ const NOTE_COLUMNS = `
 const NOTE_LINK_COLUMNS = `
   from_note AS fromNote, to_note AS toNote, to_title AS toTitle`;
 
+const NOTE_VERSION_COLUMNS = `
+  id, note_id AS noteId, seq, title, content, tags, writer,
+  created_at AS createdAt`;
+
 const PLAN_COLUMNS = `
   id, title, description, document,
   created_at AS createdAt, updated_at AS updatedAt`;
@@ -1581,6 +1636,75 @@ export function createNoteLinkStore(db: Database.Database): NoteLinkStore {
     listLinkingTo(noteId: string, title: string): string[] {
       const rows = linkingTo.all(noteId, title) as Array<{ fromNote: string }>;
       return rows.map((r) => r.fromNote);
+    },
+  };
+}
+
+export function createNoteVersionStore(db: Database.Database): NoteVersionStore {
+  const insert = db.prepare(
+    `INSERT INTO note_versions (id, note_id, seq, title, content, tags, writer, created_at)
+     VALUES (@id, @noteId, @seq, @title, @content, @tags, @writer, @createdAt)`,
+  );
+  const listForNote = db.prepare(
+    `SELECT ${NOTE_VERSION_COLUMNS} FROM note_versions
+     WHERE note_id = ? ORDER BY seq DESC, rowid DESC`,
+  );
+  const maxSeq = db.prepare(
+    'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM note_versions WHERE note_id = ?',
+  );
+  const find = db.prepare(
+    `SELECT ${NOTE_VERSION_COLUMNS} FROM note_versions WHERE note_id = ? AND id = ?`,
+  );
+  const prune = db.prepare(
+    `DELETE FROM note_versions WHERE note_id = ? AND seq <= ?`,
+  );
+  const removeForNote = db.prepare('DELETE FROM note_versions WHERE note_id = ?');
+
+  return {
+    insert(row: NoteVersionRow): void {
+      insert.run({ ...row });
+    },
+    listForNote(noteId: string): NoteVersionRow[] {
+      return listForNote.all(noteId) as NoteVersionRow[];
+    },
+    maxSeq(noteId: string): number {
+      const row = maxSeq.get(noteId) as { maxSeq: number };
+      return row.maxSeq;
+    },
+    find(noteId: string, versionId: string): NoteVersionRow | undefined {
+      return find.get(noteId, versionId) as NoteVersionRow | undefined;
+    },
+    prune(noteId: string, keep: number): void {
+      const max = maxSeq.get(noteId) as { maxSeq: number };
+      if (max.maxSeq > keep) prune.run(noteId, max.maxSeq - keep);
+    },
+    removeForNote(noteId: string): void {
+      removeForNote.run(noteId);
+    },
+  };
+}
+
+export function createNoteGraphStore(db: Database.Database): NoteGraphStore {
+  const set = db.prepare(
+    `INSERT INTO note_graph (note_id, x, y) VALUES (@noteId, @x, @y)
+     ON CONFLICT(note_id) DO UPDATE SET x = excluded.x, y = excluded.y`,
+  );
+  const get = db.prepare(`SELECT note_id AS noteId, x, y FROM note_graph WHERE note_id = ?`);
+  const listAll = db.prepare(`SELECT note_id AS noteId, x, y FROM note_graph`);
+  const remove = db.prepare('DELETE FROM note_graph WHERE note_id = ?');
+
+  return {
+    set(noteId: string, x: number, y: number): void {
+      set.run({ noteId, x, y });
+    },
+    get(noteId: string): NoteGraphPosition | undefined {
+      return get.get(noteId) as NoteGraphPosition | undefined;
+    },
+    listAll(): NoteGraphPosition[] {
+      return listAll.all() as NoteGraphPosition[];
+    },
+    remove(noteId: string): void {
+      remove.run(noteId);
     },
   };
 }

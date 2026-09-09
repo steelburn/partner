@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type ReactNode } from 'react';
 import type { ConversationSummary, Folder } from '@partner/shared';
 import { conversationTitle, sortConversations, timeAgo } from './lib/persona-helpers.js';
 
@@ -210,6 +210,40 @@ export default function ConversationRail({
   const inboxChats = chatByFolder.get(null) ?? [];
   const totalFolderChats = flat.length - inboxChats.length;
 
+  // M16 F4 discuss lineage: forked discussions (parentId set) render as
+  // one-level threads indented under their parent conversation.
+  const threadChildren = new Map<string, ConversationSummary[]>();
+  for (const chatRow of flat) {
+    if (chatRow.parentId === null || chatRow.parentId === undefined) continue;
+    const list = threadChildren.get(chatRow.parentId) ?? [];
+    list.push(chatRow);
+    threadChildren.set(chatRow.parentId, list);
+  }
+  const renderThread = (child: ConversationSummary): ReactNode => (
+    <li key={child.id} className={child.id === activeConversationId ? 'rail-item rail-item-thread rail-item-active' : 'rail-item rail-item-thread'}>
+      <button
+        type="button"
+        className="rail-item-open"
+        onClick={() => onOpen(child.id)}
+        disabled={disabled}
+        aria-current={child.id === activeConversationId ? 'true' : undefined}
+        title="Forked discussion — opens in its own chat"
+      >
+        <span className="rail-item-title rail-item-thread-title">↳ {conversationTitle(child)}</span>
+        <span className="rail-item-meta">fork · {timeAgo(child.updatedAt)}</span>
+      </button>
+    </li>
+  );
+  const renderChatWithThreads = (chat: ConversationSummary): ReactNode => {
+    const children = threadChildren.get(chat.id) ?? [];
+    return (
+      <Fragment key={chat.id}>
+        {renderChat(chat)}
+        {children.map(renderThread)}
+      </Fragment>
+    );
+  };
+
   const renderChat = (chat: ConversationSummary): ReactNode => {
     const isActive = chat.id === activeConversationId;
     const isConfirming = confirmingId === chat.id;
@@ -412,7 +446,7 @@ export default function ConversationRail({
         {!isCollapsed ? (
           <ul className="folder-group">
             {folder.children.map((child) => renderFolder(child, depth + 1))}
-            {folder.chats.map(renderChat)}
+            {folder.chats.map(renderChatWithThreads)}
           </ul>
         ) : null}
       </li>
@@ -464,7 +498,7 @@ export default function ConversationRail({
                   <span className="folder-name folder-name-inbox">Inbox</span>
                   <span className="folder-count">{inboxChats.length}</span>
                 </div>
-                <ul className="folder-group">{inboxChats.map(renderChat)}</ul>
+                <ul className="folder-group">{inboxChats.map(renderChatWithThreads)}</ul>
               </li>
             ) : null}
             {roots.map((root) => renderFolder(root, 0))}

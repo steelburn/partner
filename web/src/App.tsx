@@ -211,6 +211,13 @@ export default function App() {
    * Notes page Quick capture) — no global nonce plumbing. */
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // M16 F4: an asset Discuss quote waiting for its target conversation's
+  // composer (the ChatStrip consumes it when the conversation matches).
+  const [externalDraft, setExternalDraft] = useState<{
+    conversationId: string | null;
+    text: string;
+    nonce: number;
+  } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [creatingChat, setCreatingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -495,6 +502,12 @@ export default function App() {
     setChatError(null);
     setActiveConversationId(id);
     setView('chat');
+  };
+
+  /** M16 F4: open a conversation with a composer draft (asset Discuss). */
+  const openWithDraft = (conversationId: string, text: string): void => {
+    setExternalDraft({ conversationId, text, nonce: Date.now() });
+    handleOpenConversation(conversationId);
   };
 
   const handleDeleteConversation = async (id: string): Promise<void> => {
@@ -960,6 +973,8 @@ function ColumnDivider({
                   assetsOpen={assetsLaneOpen}
                   onToggleAssets={toggleAssetsLane}
                   onAssetsChanged={handleAssetsChanged}
+                  externalDraft={externalDraft}
+                  onDraftConsumed={() => setExternalDraft(null)}
                 />
                 {assetsLaneOpen ? (
                   <>
@@ -984,6 +999,7 @@ function ColumnDivider({
                         setAssetsExpanded(false);
                       }}
                       onUnpair={handleSessionLost}
+                      onDiscuss={openWithDraft}
                     />
                   </>
                 ) : null}
@@ -1064,6 +1080,7 @@ function ColumnDivider({
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'notes'}
+                onOpenConversation={handleOpenConversation}
               />
             </div>
             <div className={view === 'skills' ? 'app-view app-view-active' : 'app-view'}>
