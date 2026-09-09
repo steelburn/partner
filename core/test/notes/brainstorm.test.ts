@@ -109,6 +109,36 @@ describe('M16 F2 brainstorm (demo harness)', () => {
     }
   });
 
+  it('joins a streamed reply across many deltas (real providers emit one delta per token)', async () => {
+    // A realistic provider emits per-token deltas — the stored assistant
+    // reply must be the FULL concatenated text, not the first chunk.
+    const deltas = ['Direction A — ', 'the local stack ', 'wins on privacy.\n\n', 'Direction B — device-native.'];
+    const streamClient = {
+      async *chatStream() {
+        for (const part of deltas) {
+          yield { type: 'delta', text: part } as import('@partner/shared').ChatEvent;
+        }
+      },
+    };
+    const h = demoHarness({
+      demo: false,
+      brainstormProvider: async () => ({
+        client: streamClient as never,
+        model: 'gemma-local',
+      }),
+    });
+    try {
+      const ids = await seedNotes(h, 1);
+      const result = await h.brainstorm!.start({ noteIds: ids });
+      const detail = h.conversations!.get(result.conversationId);
+      const assistant = detail.messages.find((m) => m.role === 'assistant');
+      expect(assistant?.model).toBe('gemma-local');
+      expect(assistant?.content).toBe(deltas.join(''));
+    } finally {
+      h.close();
+    }
+  });
+
   it('501s without a resolvable provider (live harness, no provider)', async () => {
     const h = demoHarness({ demo: false });
     try {

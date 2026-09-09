@@ -110,16 +110,21 @@ export function episodeSearchText(episode: { title: string; summary: string }): 
   return episode.title !== '' ? `${episode.title} ${episode.summary}` : episode.summary;
 }
 
-/** First delta event text (the whole provider reply is usually one delta). */
+/** Whole provider reply: the JOIN of every delta until the stream ends
+ *  (real streaming providers emit one delta per token/chunk — returning
+ *  just the first delta would truncate the summary to a single word). */
 function firstDeltaText(events: AsyncIterable<ChatEvent>): Promise<string | null> {
   return (async () => {
+    let parts: string[] = [];
     for await (const event of events) {
-      if (event.type === 'delta') return event.text;
-      if (event.type === 'error') {
+      if (event.type === 'delta') {
+        parts.push(event.text);
+      } else if (event.type === 'error') {
         throw memoryError('upstream', 'summary provider stream failed');
       }
     }
-    return null;
+    const text = parts.join('');
+    return text === '' ? null : text;
   })();
 }
 

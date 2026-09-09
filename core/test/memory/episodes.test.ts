@@ -83,6 +83,33 @@ describe('episode manager — provider summarize (fake double)', () => {
     }
   });
 
+  it('joins a chunked provider reply across deltas instead of keeping one token', async () => {
+    // Real streaming providers emit one delta per token — the stored
+    // summary must be the concatenation of every delta until stream end.
+    const fake = fakeProvider('');
+    fake.target.client.chatStream = async function* chatStreamChunked(
+      req: ChatRequest,
+    ): AsyncGenerator<ChatEvent> {
+      fake.requests.push(req);
+      yield { type: 'delta', text: 'summary' } as ChatEvent;
+      yield { type: 'delta', text: ' of the ' } as ChatEvent;
+      yield { type: 'delta', text: 'chunked reply' } as ChatEvent;
+      yield { type: 'done', model: 'fake-model', latencyMs: 2 };
+    };
+    const env = makeMemoryEnv({
+      demo: false,
+      providerResolver: () => fake.target,
+    });
+    try {
+      const conv = env.conversations.create({ personaId: 'p-builder' });
+      env.conversations.append(conv.id, 'user', { content: 'x' });
+      const { episode } = await summarizeFirst(env, conv.id);
+      expect(episode.summary).toBe('summary of the chunked reply');
+    } finally {
+      env.close();
+    }
+  });
+
   it('windows the transcript to the last 30 messages', async () => {
     const fake = fakeProvider('windowed summary');
     const env = makeMemoryEnv({ demo: false, providerResolver: () => fake.target });

@@ -841,11 +841,19 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
 
 /** First delta event text (the whole provider reply is usually one delta). */
 export async function firstDeltaText(events: AsyncIterable<import('@partner/shared').ChatEvent>): Promise<string | null> {
+  // Headless flows (daily summary, brainstorm, episodes, native analyze)
+  // capture the assistant reply from the provider stream. Real streaming
+  // providers emit ONE delta per token/chunk, so the reply is the JOIN of
+  // every delta until the stream ends — never just the first chunk (which
+  // would truncate the reply to a single token).
+  let parts: string[] = [];
   for await (const event of events) {
-    if (event.type === 'delta') return event.text;
-    if (event.type === 'error') {
+    if (event.type === 'delta') {
+      parts.push(event.text);
+    } else if (event.type === 'error') {
       throw noteError('upstream', 'daily summary provider stream failed');
     }
   }
-  return null;
+  const text = parts.join('');
+  return text === '' ? null : text;
 }
