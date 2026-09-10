@@ -380,6 +380,12 @@ describe('M11 F2 chat search tool (route)', () => {
       const note = detail.messages.find((m) => m.content.includes('[tool search result]'));
       expect(note).toBeDefined();
       expect(note?.content).toContain('found.example'); // snippet kept in the note
+      // The result is ALSO streamed live (tool_note) and the route asks the
+      // client for one continuation round (tool_continue) so the persona
+      // answers against it in the same interaction.
+      expect(chat.text).toContain('"type":"tool_note"');
+      expect(chat.text).toContain('found.example');
+      expect(chat.text).toContain('"type":"tool_continue"');
       const audit = h.audit.query({ limit: 20, action: 'chat.tool' });
       expect(audit.some((r) => r.target === 'search' && r.details.includes('executed'))).toBe(true);
     } finally {
@@ -424,6 +430,9 @@ describe('M11 F2 chat search tool (route)', () => {
       const note = detail.messages.find((m) => m.content.includes('is disabled'));
       expect(note).toBeDefined();
       expect(note?.content).toContain('enable it');
+      // The refusal is streamed and the persona gets a round to recover.
+      expect(chat.text).toContain('"type":"tool_note"');
+      expect(chat.text).toContain('"type":"tool_continue"');
     } finally {
       h.close();
     }
@@ -434,7 +443,7 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
   /** Fake Tavily POST backend + suggest-routed Default partner + directive
    *  upstream; returns a chat driver and backend hit counting. */
   async function setup(h: Harness, token: string): Promise<{
-    chat: () => Promise<{ conversationId: string }>;
+    chat: () => Promise<{ conversationId: string; text: string }>;
     hits: () => number;
     queries: () => string[];
   }> {
@@ -503,7 +512,7 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
     });
     await h.providerManager.setKey(provider.id, 'sk-approval-chat-12345678');
 
-    const chat = async (): Promise<{ conversationId: string }> => {
+    const chat = async (): Promise<{ conversationId: string; text: string }> => {
       const res = await request(h.app)
         .post('/v1/chat')
         .set(authed(token))
@@ -511,7 +520,7 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
       expect(res.status).toBe(200);
       const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(res.text);
       expect(meta).not.toBeNull();
-      return { conversationId: meta?.[1] ?? '' };
+      return { conversationId: meta?.[1] ?? '', text: res.text };
     };
     return { chat, hits: () => hits, queries: () => queries };
   }
@@ -521,8 +530,10 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
     try {
       const token = await pairToken(h);
       const app = await setup(h, token);
-      const { conversationId } = await app.chat();
+      const { conversationId, text } = await app.chat();
       expect(conversationId).not.toBe('');
+      // A queued approval is the user's move: the turn must NOT auto-continue.
+      expect(text).not.toContain('"type":"tool_continue"');
 
       // The turn queued an approval row, tagged with the persona.
       const list = await request(h.app).get('/v1/tools/pending').set(authed(token));

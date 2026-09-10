@@ -250,6 +250,13 @@ export function asChatEvent(value: unknown): ChatEvent | null {
         : null;
     case 'error':
       return typeof v.message === 'string' ? { type: 'error', message: v.message } : null;
+    case 'tool_note':
+      // Tool-pass outcome note streamed after `done` (search result/refusal).
+      return typeof v.content === 'string' ? { type: 'tool_note', content: v.content } : null;
+    case 'tool_continue':
+      // Ask the client for one continuation round so the persona answers
+      // against the tool outcome in the same interaction.
+      return { type: 'tool_continue' };
     case 'budget_reached': {
       // Ignore-safe: any malformed member drops the whole event (frame skipped).
       const message = v.message;

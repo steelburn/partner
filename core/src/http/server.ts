@@ -103,6 +103,7 @@ import {
 } from '../chat/instructions.js';
 import { SEARCH_MANIFEST } from '../search/tool.js';
 import { runChatToolPass, runNativeToolCalls } from '../chat/toolPass.js';
+import type { ChatToolDecision } from '../chat/toolPass.js';
 import { searchToolExternal } from '../search/tool.js';
 import { mcpToolExternal } from '../mcp/tool.js';
 import { summarizeToolResult } from '../playbooks/loop.js';
@@ -1884,7 +1885,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         // M11 F2 (slice 1): chat-directive tool pass. When the finished
         // persona reply carried [[partner:tool …]] directives, authorize +
         // broker each one; outcome notes persist as system messages so the
-        // next turn's history carries them. No auto-continuation model round.
+        // next turn's history carries them. The note is ALSO streamed live
+        // and, when a tool actually ran (or was refused), a `tool_continue`
+        // event asks the client for one continuation round so the persona
+        // answers against the result in the same interaction — otherwise the
+        // promise ("let me look that up") is followed by silence.
         if (
           !over &&
           sawDone &&
@@ -1914,8 +1919,17 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               } catch (noteErr) {
                 logPersistenceFailure('tool note', noteErr);
               }
+              // Live transcript: the note exists in the DB either way, but the
+              // SPA must render it without a reload (see tool_note contract).
+              // Guard the socket: a client that left mid-turn must not break
+              // the pass (the note is persisted above regardless).
+              try {
+                if (!res.writableEnded) writeSse(res, { type: 'tool_note', content });
+              } catch (sseErr) {
+                logPersistenceFailure('tool note sse', sseErr);
+              }
             };
-            await runChatToolPass(deltaText, {
+            const directivePass = await runChatToolPass(deltaText, {
               persona: routingPersona,
               broker: options.broker,
               external: externalTools,
@@ -1924,8 +1938,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               appendSystemNote,
             });
             // M11 F2 native function calls (same gate/broker, same notes).
+            let nativePass: { decisions: ChatToolDecision[] } = { decisions: [] };
             if (nativeCalls.length > 0) {
-              await runNativeToolCalls(nativeCalls, {
+              nativePass = await runNativeToolCalls(nativeCalls, {
                 persona: routingPersona,
                 broker: options.broker,
                 external: externalTools,
@@ -1933,6 +1948,14 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 conversationId: activeConversationId,
                 appendSystemNote,
               });
+            }
+            const decisions = [...directivePass.decisions, ...nativePass.decisions];
+            // Continue when the model has something new to answer against: a
+            // tool ran, or it was refused for a reason it should react to.
+            // `queued` is excluded — that approval is the user's move, and
+            // the approval flow runs its own continuation after the decision.
+            if (decisions.some((decision) => decision.decision !== 'queued')) {
+              if (!res.writableEnded) writeSse(res, { type: 'tool_continue' });
             }
           } catch (toolErr) {
             // A tool-pass failure must never break the turn that finished.

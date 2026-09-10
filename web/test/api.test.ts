@@ -134,6 +134,8 @@ describe('asChatEvent', () => {
       { type: 'usage', promptTokens: 1, completionTokens: 2, totalTokens: 3 },
       { type: 'done', model: 'demo', latencyMs: 4 },
       { type: 'error', message: 'boom' },
+      { type: 'tool_note', content: '[tool search result]\nfound' },
+      { type: 'tool_continue' },
     ];
     for (const value of valid) expect(asChatEvent(value)).not.toBeNull();
     for (const value of [
@@ -143,6 +145,8 @@ describe('asChatEvent', () => {
       { type: 'usage', promptTokens: '1', completionTokens: 2, totalTokens: 3 },
       { type: 'unknown', text: 'x' },
       { type: 'done', model: 'demo' },
+      { type: 'tool_note' },
+      { type: 'tool_note', content: 7 },
     ]) {
       expect(asChatEvent(value)).toBeNull();
     }

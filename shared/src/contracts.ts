@@ -50,6 +50,25 @@ export type ChatEvent =
        */
       type: 'tool_calls';
       calls: ToolCall[];
+    }
+  | {
+      /**
+       * Tool-pass outcome note (server -> client, emitted AFTER `done`): the
+       * pass persisted this as a system message AND streams it so the
+       * transcript shows a search result / refusal immediately instead of
+       * only after a history reload.
+       */
+      type: 'tool_note';
+      content: string;
+    }
+  | {
+      /**
+       * The tool pass executed (or refused) a tool and the persona should
+       * answer against the outcome now — the client runs ONE continuation
+       * round (`continueTurn`) so the reply lands in the same interaction.
+       * Never emitted for a `queued` approval (the user decides that first).
+       */
+      type: 'tool_continue';
     };
 
 /** One aggregated native function call (arguments as a JSON string). */

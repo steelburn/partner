@@ -113,6 +113,10 @@ interface TurnError {
 const EMPTY_STATE = 'Say hello to your partner.';
 const EMPTY_CONVERSATION_STATE = 'A new conversation — say hello.';
 
+/** Cap on automatic tool-continuation rounds per user turn (a safety bound so
+ *  a model that keeps calling tools cannot loop forever / bill unbounded). */
+const MAX_TOOL_CONTINUATIONS = 3;
+
 function isSessionLost(cause: unknown): boolean {
   return cause instanceof ApiRequestError && (cause.status === 401 || cause.status === 403);
 }
@@ -199,6 +203,13 @@ export default function ChatStrip({
     onDraftConsumed?.();
   }, [externalDraft, conversationId, onDraftConsumed]);
   const abortRef = useRef<AbortController | null>(null);
+  /** M11 F2 tool continuation: the last turn's tool pass executed (or
+   *  refused) a tool, so one more round should answer against the outcome. */
+  const wantsToolContinueRef = useRef(false);
+  /** Conversation id for the queued continuation (set once the turn ends). */
+  const pendingToolContinueRef = useRef<string | null>(null);
+  /** Automatic continuation rounds already spent on the current user turn. */
+  const toolContinueDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   /** M11 F1 staged uploads awaiting the next turn + per-message chips. */
   const [staged, setStaged] = useState<AttachmentMeta[]>([]);
@@ -656,6 +667,18 @@ export default function ChatStrip({
       case 'tool_calls':
         // Turn machinery — never forwarded to the client stream.
         break;
+      case 'tool_note':
+        // Tool-pass outcome note streamed after `done`: render it immediately
+        // (it is also persisted, so a later history reload is idempotent).
+        setRows((prev) => [
+          ...prev,
+          { key: `note-${++nextId.current}`, role: 'system', text: event.content },
+        ]);
+        break;
+      case 'tool_continue':
+        // The core executed/refused a tool — answer against it next round.
+        wantsToolContinueRef.current = true;
+        break;
     }
   };
 
@@ -669,10 +692,24 @@ export default function ChatStrip({
 
   const approvalBusy = decidingId !== null || streaming;
 
-  /** After a decision: drop the row locally and continue the turn so the
-   *  assistant answers against the outcome note the core just posted. */
-  const runContinue = async (): Promise<void> => {
-    if (conversationId === null || streaming || personaPaused) return;
+  /** Stage a continuation when the core's tool pass asked for one. Called
+   *  from the turn's `finally` (after `finishTurn` cleared streaming) so the
+   *  effect below can start the round from a settled state. */
+  const queueToolContinue = (meta: StreamDoneMeta | null): void => {
+    if (!wantsToolContinueRef.current) return;
+    wantsToolContinueRef.current = false;
+    const target =
+      meta !== null && meta.conversationId !== '' ? meta.conversationId : conversationId;
+    if (target === null || target === '') return;
+    pendingToolContinueRef.current = target;
+  };
+
+  /** After a decision (or a tool outcome): continue the turn so the
+   *  assistant answers against the note the core just posted. */
+  const runContinue = async (
+    targetConversationId: string | null = conversationId,
+  ): Promise<void> => {
+    if (targetConversationId === null || streaming || personaPaused) return;
     const token = readStoredToken();
     if (!token) {
       setTurnError({ message: 'Not paired with the Partner core.', canRepair: true });
@@ -683,7 +720,7 @@ export default function ChatStrip({
     const dropPlaceholder = (): void => {
       setRows((prev) => prev.filter((r) => r.key !== placeholder.key));
     };
-    metaForRef.current = conversationId;
+    metaForRef.current = targetConversationId;
     setUsage(null);
     setModelLatency(null);
     setTurnError(null);
@@ -699,7 +736,7 @@ export default function ChatStrip({
         token,
         content: '',
         continueTurn: true,
-        conversationId,
+        conversationId: targetConversationId,
         personaId: personaId ?? undefined,
         signal: controller.signal,
         onEvent: handleStreamEvent,
@@ -726,8 +763,27 @@ export default function ChatStrip({
     } finally {
       finishTurn(doneMeta);
       if (doneMeta) onDone?.(doneMeta);
+      // A continuation turn may itself have run a tool — allow it to chain
+      // (bounded by MAX_TOOL_CONTINUATIONS per user turn).
+      queueToolContinue(doneMeta);
     }
   };
+
+  // M11 F2: the core's tool pass ends with `tool_continue` when a tool ran (or
+  // was refused) — the persona should answer against the outcome now. Run the
+  // continuation once streaming has settled, capped per user turn so a
+  // tool-happy model cannot loop forever. Approval-queued tools never land
+  // here (the user decides those first).
+  useEffect(() => {
+    if (streaming) return;
+    const target = pendingToolContinueRef.current;
+    if (target === null) return;
+    pendingToolContinueRef.current = null;
+    if (toolContinueDepthRef.current >= MAX_TOOL_CONTINUATIONS) return;
+    toolContinueDepthRef.current += 1;
+    void runContinue(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming]);
 
   /** Approve/deny one in-chat row: decide it once, then continue the turn. */
   const decideChatApproval = async (
@@ -785,6 +841,10 @@ export default function ChatStrip({
     const userRow: ChatRow = { key: `local-${++nextId.current}`, role: 'user', text: content };
     const placeholder: ChatRow = { key: `local-${++nextId.current}`, role: 'assistant', text: '' };
     setRows((prev) => [...prev, userRow, placeholder]);
+    // A new user turn resets the tool-continuation budget.
+    toolContinueDepthRef.current = 0;
+    pendingToolContinueRef.current = null;
+    wantsToolContinueRef.current = false;
     // A failed turn is never persisted server-side: drop the optimistic rows
     // so a later history reload cannot silently remove a visible ghost.
     const dropLocals = (): void => {
@@ -836,6 +896,10 @@ export default function ChatStrip({
     } finally {
       finishTurn(doneMeta);
       if (doneMeta) onDone?.(doneMeta);
+      // The tool pass streams `tool_continue` AFTER `done`; stage the
+      // continuation so the persona answers against the search result now
+      // instead of leaving the promise hanging until the user nudges it.
+      queueToolContinue(doneMeta);
     }
   };
 
