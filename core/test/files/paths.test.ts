@@ -4,7 +4,7 @@
  * intermediate directories are all rejected with typed ToolErrors.
  */
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { canonicalize, resolveInRoot } from '../../src/files/paths.js';
 import type { ToolError } from '../../src/broker/errors.js';
@@ -128,7 +128,9 @@ describe('resolveInRoot rejections', () => {
     symlinkSync(join(root, 'real'), join(root, 'alias'));
     const resolved = resolveInRoot(root, 'alias/ok.txt');
     // The caller sees the (in-root) joined path; its REAL path is inside root.
-    expect(resolved.absolute.startsWith(root + '/')).toBe(true);
+    // Containment uses the platform separator (`\` on Windows, not `/`).
+    expect(resolved.absolute).toBe(join(root, 'alias', 'ok.txt'));
+    expect(resolved.absolute.startsWith(root + sep)).toBe(true);
     expect(realpathSync(resolved.absolute)).toBe(join(root, 'real', 'ok.txt'));
   });
 });
