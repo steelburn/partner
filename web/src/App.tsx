@@ -47,6 +47,7 @@ import SkillsView from './SkillsView.js';
 import ThemeStudio from './ThemeStudio.js';
 import { revokeSession } from './lib/api.js';
 import { createConversation, deleteConversation, listConversations } from './lib/conversations.js';
+import { conversationOpenAction } from './lib/conversation-open.js';
 import {
   createFolder,
   deleteFolder,
@@ -530,14 +531,17 @@ export default function App() {
   };
 
   const handleOpenConversation = (id: string): void => {
-    if (streaming || id === activeConversationId) return;
-    // Continuity: opening a persona-bound conversation adopts that persona.
-    const target = conversations?.find((c) => c.id === id);
-    if (target?.personaId && personas?.some((p) => p.id === target.personaId)) {
-      setActivePersonaId(target.personaId);
+    const action = conversationOpenAction(id, activeConversationId, streaming);
+    if (action === 'ignore') return;
+    if (action === 'adopt') {
+      // Continuity: opening a persona-bound conversation adopts that persona.
+      const target = conversations?.find((c) => c.id === id);
+      if (target?.personaId && personas?.some((p) => p.id === target.personaId)) {
+        setActivePersonaId(target.personaId);
+      }
+      setActiveConversationId(id);
     }
     setChatError(null);
-    setActiveConversationId(id);
     setView('chat');
   };
 
