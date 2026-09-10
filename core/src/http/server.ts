@@ -3299,7 +3299,19 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/notes/graph', requireSession(sessions), (req: Request, res: Response) => {
     const notes = requireNotes(options, res);
     if (!notes) return;
-    res.json(notes.graph());
+    const graph = notes.graph();
+    // M16 follow-up: link brainstorm sessions back to their source nodes so
+    // the graph can badge notes and resolve "open the existing brainstorm".
+    // Best-effort — a linkage failure must never break the graph read.
+    if (options.brainstorm) {
+      try {
+        const list = options.brainstorm.sessions();
+        if (list.length > 0) graph.brainstorms = list;
+      } catch {
+        /* linkage is advisory */
+      }
+    }
+    res.json(graph);
   });
 
   api.put('/v1/notes/graph/positions', requireSession(sessions), (req: Request, res: Response) => {
@@ -3337,6 +3349,63 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       throw err;
     }
   });
+
+  // M16 follow-up: list linked brainstorms (optionally for one note) and flip
+  // a session between concluded and reopenable. Owner actions; ids only.
+  api.get('/v1/notes/brainstorm', requireSession(sessions), (req: Request, res: Response) => {
+    const brainstorm = requireBrainstorm(options, res);
+    if (!brainstorm) return;
+    const noteId = typeof req.query.noteId === 'string' && req.query.noteId !== '' ? req.query.noteId : null;
+    const conversationId =
+      typeof req.query.conversationId === 'string' && req.query.conversationId !== ''
+        ? req.query.conversationId
+        : null;
+    try {
+      if (conversationId !== null) {
+        // One conversation's linked brainstorm (or null) — the chat header.
+        res.json({ session: brainstorm.byConversation(conversationId) });
+        return;
+      }
+      res.json({
+        sessions: noteId === null ? brainstorm.sessions() : brainstorm.sessionsForNote(noteId),
+      });
+    } catch (err) {
+      if (sendBrainstormError(res, err)) return;
+      throw err;
+    }
+  });
+
+  api.post(
+    '/v1/notes/brainstorm/:conversationId/conclude',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const brainstorm = requireBrainstorm(options, res);
+      if (!brainstorm) return;
+      const conversationId = String(req.params.conversationId ?? '');
+      try {
+        res.json({ session: brainstorm.conclude(conversationId) });
+      } catch (err) {
+        if (sendBrainstormError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.post(
+    '/v1/notes/brainstorm/:conversationId/reopen',
+    requireSession(sessions),
+    (req: Request, res: Response) => {
+      const brainstorm = requireBrainstorm(options, res);
+      if (!brainstorm) return;
+      const conversationId = String(req.params.conversationId ?? '');
+      try {
+        res.json({ session: brainstorm.reopen(conversationId) });
+      } catch (err) {
+        if (sendBrainstormError(res, err)) return;
+        throw err;
+      }
+    },
+  );
 
   api.get('/v1/notes/:id/versions', requireSession(sessions), (req: Request, res: Response) => {
     const notes = requireNotes(options, res);

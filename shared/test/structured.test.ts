@@ -55,6 +55,17 @@ describe('partner structured containers (C3)', () => {
     }
   });
 
+  it('normalizes the asset kind token (case/whitespace, never prose)', () => {
+    const upper = findStructuredBlock(':::partner.asset kind=Code\nconst x = 1;\n:::');
+    if (upper?.block.kind === 'asset') expect(upper.block.assetKind).toBe('code');
+    const quoted = findStructuredBlock(':::partner.asset kind=" Decision "\nDone.\n:::');
+    if (quoted?.block.kind === 'asset') expect(quoted.block.assetKind).toBe('decision');
+    const missing = findStructuredBlock(':::partner.asset\nBody.\n:::');
+    if (missing?.block.kind === 'asset') expect(missing.block.assetKind).toBe('custom');
+    const blank = findStructuredBlock(':::partner.asset kind="  "\nBody.\n:::');
+    if (blank?.block.kind === 'asset') expect(blank.block.assetKind).toBe('custom');
+  });
+
   it('multiple blocks are found left to right with correct offsets', () => {
     const text =
       'lead\n:::partner.choice\n- one\n:::\nmiddle\n:::partner.asset kind=code\nx();\n:::\ntail';

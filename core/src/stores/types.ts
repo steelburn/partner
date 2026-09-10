@@ -698,6 +698,44 @@ export interface NoteGraphStore {
 }
 
 // ---------------------------------------------------------------------------
+// M16 follow-up brainstorm linkage (additive schema v15). `brainstorm_sessions`
+// keys a brainstorm conversation by the deterministic set of its source note
+// ids; `brainstorm_sources` is the note<->conversation join. `concluded` is
+// owner state — only an explicit reopen flips it back.
+// ---------------------------------------------------------------------------
+
+export interface BrainstormSessionRow {
+  conversationId: string;
+  /** Deterministic key over the sorted source note ids. */
+  setKey: string;
+  concluded: boolean;
+  used: number;
+  truncated: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BrainstormSessionStore {
+  insert(row: BrainstormSessionRow): void;
+  /** Set/replace the source note ids for a session (delete-then-insert). */
+  setSources(conversationId: string, noteIds: readonly string[]): void;
+  findByConversation(conversationId: string): BrainstormSessionRow | undefined;
+  /** Newest-first sessions for one set key (active + concluded). */
+  listBySetKey(setKey: string): BrainstormSessionRow[];
+  /** Every session, most recently updated first. */
+  list(): BrainstormSessionRow[];
+  /** Source note ids for one session (ordered as inserted). */
+  listSourceIds(conversationId: string): string[];
+  /** Conversation ids linked to a note (both active and concluded). */
+  listConversationIdsForNote(noteId: string): string[];
+  setConcluded(conversationId: string, concluded: boolean, updatedAt: number): void;
+  /** Remove one session + its source rows (conversation delete cascade). */
+  remove(conversationId: string): void;
+  /** Remove a NOTE from every session's source set (note delete cascade). */
+  removeNote(noteId: string): void;
+}
+
+// ---------------------------------------------------------------------------
 // M6 themes table (PLAN-M6.md — additive schema v7). Row profile only; the
 // theme manager (core/src/theming/*) owns lint/contrast gating, preset
 // seeding, activation and persona binding. Each row holds BOTH modes of the

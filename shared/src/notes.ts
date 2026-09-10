@@ -118,6 +118,10 @@ export interface NoteGraphEdge {
 export interface NoteGraph {
   nodes: NoteGraphNode[];
   edges: NoteGraphEdge[];
+  /** Brainstorm sessions linked to the graph's notes (newest first). Each
+   *  carries its source note ids so the canvas can badge nodes and resolve
+   *  "open the brainstorm for this selection" without a second request. */
+  brainstorms?: BrainstormSessionSummary[];
 }
 
 export type NoteVersionWriter =
@@ -166,4 +170,30 @@ export interface BrainstormResult {
   used: number;
   /** Note ids truncated to the per-note excerpt cap. */
   truncated: number;
+  /** True when an existing ACTIVE brainstorm for the same note set was
+   *  reopened instead of a new conversation being created (M16 follow-up). */
+  reused: boolean;
+}
+
+/**
+ * M16 follow-up: a brainstorm conversation linked back to the note/capture
+ * nodes it was started from. Sessions are keyed by the exact source-id set:
+ * starting a brainstorm over the same set reopens the ACTIVE session; once it
+ * is concluded a fresh session is created and the concluded one stays
+ * reopenable from the graph. Owner data — note ids and titles only, never
+ * note bodies (which live in the conversation).
+ */
+export interface BrainstormSessionSummary {
+  conversationId: string;
+  title: string | null;
+  personaId: string;
+  /** Source note/capture ids this session was started from. */
+  noteIds: string[];
+  /** True once the owner has concluded the path (further clicks start new). */
+  concluded: boolean;
+  /** Bundle counts from the original run (0 when unknown/legacy). */
+  used: number;
+  truncated: number;
+  createdAt: number;
+  updatedAt: number;
 }

@@ -16,6 +16,7 @@ import { ApiRequestError, expectJson, expectNoContent, readErrorMessage, type Fe
 import { validateNotesExportBundle } from './note-helpers.js';
 import type {
   BrainstormResult,
+  BrainstormSessionSummary,
   GraphPositionInput,
   Note,
   NoteGraph,
@@ -595,4 +596,81 @@ export async function brainstormNotes(
     return parsed as unknown as BrainstormResult;
   }
   throw new ApiRequestError(response.status, 'The brainstorm response had an unexpected shape.');
+}
+
+/** GET /v1/notes/brainstorm — linked brainstorm sessions (optionally a note's). */
+export async function fetchBrainstormSessions(
+  token: string,
+  noteId?: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<BrainstormSessionSummary[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const query = noteId !== undefined && noteId !== '' ? `?noteId=${encodeURIComponent(noteId)}` : '';
+  const response = await fetchImpl(`${NOTES_PATH}/brainstorm${query}`, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (isRecord(parsed) && Array.isArray(parsed.sessions)) {
+    return parsed.sessions as unknown as BrainstormSessionSummary[];
+  }
+  throw new ApiRequestError(response.status, 'The brainstorm list had an unexpected shape.');
+}
+
+/** GET /v1/notes/brainstorm?conversationId= — one conversation's brainstorm. */
+export async function fetchBrainstormSession(
+  token: string,
+  conversationId: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<BrainstormSessionSummary | null> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${NOTES_PATH}/brainstorm?conversationId=${encodeURIComponent(conversationId)}`,
+    { method: 'GET', headers: { authorization: `Bearer ${token}`, accept: 'application/json' } },
+  );
+  const parsed = await expectJson<unknown>(response);
+  if (isRecord(parsed) && parsed.session === null) return null;
+  if (isRecord(parsed) && isRecord(parsed.session)) {
+    return parsed.session as unknown as BrainstormSessionSummary;
+  }
+  throw new ApiRequestError(response.status, 'The brainstorm session had an unexpected shape.');
+}
+
+async function setBrainstormConcluded(
+  token: string,
+  conversationId: string,
+  action: 'conclude' | 'reopen',
+  options: { fetchImpl?: FetchLike },
+): Promise<BrainstormSessionSummary> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${NOTES_PATH}/brainstorm/${encodeURIComponent(conversationId)}/${action}`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    },
+  );
+  const parsed = await expectJson<unknown>(response);
+  if (isRecord(parsed) && isRecord(parsed.session)) {
+    return parsed.session as unknown as BrainstormSessionSummary;
+  }
+  throw new ApiRequestError(response.status, `Could not ${action} the brainstorm.`);
+}
+
+/** POST /v1/notes/brainstorm/:id/conclude — close that brainstorm path. */
+export async function concludeBrainstorm(
+  token: string,
+  conversationId: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<BrainstormSessionSummary> {
+  return setBrainstormConcluded(token, conversationId, 'conclude', options);
+}
+
+/** POST /v1/notes/brainstorm/:id/reopen — continue a concluded path. */
+export async function reopenBrainstorm(
+  token: string,
+  conversationId: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<BrainstormSessionSummary> {
+  return setBrainstormConcluded(token, conversationId, 'reopen', options);
 }

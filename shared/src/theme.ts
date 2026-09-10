@@ -101,6 +101,9 @@ export const SHARED_TOKENS = {
   tracking: { label: '0.08em', head: '-0.01em' },
   fontFamily:
     "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif",
+  /** Fixed-width family for code, paths and diffs (structural, never prose). */
+  fontFamilyMono:
+    "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
   radius: { sm: '6px', md: '10px', lg: '14px', full: '999px' },
   /** Named elevation levels only — never invent blur/opacity. */
   elevation: {
@@ -141,6 +144,7 @@ export function cssVars(mode: ThemeMode): Record<string, string> {
     '--elevation-md': SHARED_TOKENS.elevation.md,
     '--elevation-lg': SHARED_TOKENS.elevation.lg,
     '--font-family': SHARED_TOKENS.fontFamily,
+    '--font-mono': SHARED_TOKENS.fontFamilyMono,
     '--track-label': SHARED_TOKENS.tracking.label,
     '--track-head': SHARED_TOKENS.tracking.head,
     '--motion-fast': SHARED_TOKENS.motion.fast,

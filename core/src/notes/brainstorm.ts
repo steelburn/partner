@@ -15,14 +15,28 @@
  * Privacy invariant: the bundle is conversation content (owner data). The
  * audit row here carries ids and counts only — never note bodies.
  */
-import type { BrainstormRequest, BrainstormResult } from '@partner/shared';
+import type {
+  BrainstormRequest,
+  BrainstormResult,
+  BrainstormSessionSummary,
+} from '@partner/shared';
 import type { ConversationManager } from '../conversations/manager.js';
 import type { PersonaManager } from '../personas/manager.js';
 import type { AuditService } from '../services/redaction.js';
+import type { BrainstormSessionRow, BrainstormSessionStore } from '../stores/types.js';
 import { firstDeltaText } from './manager.js';
 import type { DailySummarizeTarget, NoteManager } from './manager.js';
 
 export const BRAINSTORM_PERSONA_ID = 'p-brainstorm';
+
+/**
+ * Deterministic identity of a brainstorm's source set: unique note ids sorted
+ * asc and joined with NUL. Same set (order/duplicates ignored) → same key, so
+ * a second click reopens the session instead of starting a duplicate.
+ */
+export function brainstormSetKey(noteIds: readonly string[]): string {
+  return [...new Set(noteIds)].sort().join('\u0000');
+}
 /** Cap on bundled note/capture ids per brainstorm. */
 export const BRAINSTORM_MAX_NOTES = 20;
 /** Per-note excerpt cap (content beyond is truncated + counted). */
@@ -147,21 +161,129 @@ export interface BrainstormManagerOptions {
   /** Optional folder manager: a persona home folder that no longer exists is
    *  dropped silently (chat lands in Inbox). */
   folders?: FoldersLike;
+  /** M16 follow-up: persists the note-set → conversation linkage so a repeat
+   *  brainstorm reopens the active session instead of duplicating it. When
+   *  absent, linkage + find-or-create are skipped (legacy harnesses). */
+  sessions?: BrainstormSessionStore;
   audit: AuditService;
   demo?: boolean;
   now?: () => number;
 }
 
 export interface BrainstormManager {
-  /** Kick off a brainstorm over the selected notes/captures. Returns the new
-   *  conversation bound to the Brainstorming persona with the bundle seeded
-   *  as its first user turn and the persona's first reply appended. */
+  /** Kick off (or reopen the active) brainstorm over the selected notes.
+   *  Returns the conversation bound to the Brainstorming persona with the
+   *  bundle seeded as its first user turn and the persona's first reply
+   *  appended. `reused` is true when an existing ACTIVE session was reopened. */
   start(request: BrainstormRequest): Promise<BrainstormResult>;
+  /** Every linked brainstorm, most recently updated first (dangling
+   *  conversations pruned). */
+  sessions(): BrainstormSessionSummary[];
+  /** Linked brainstorms that include one note (newest first). */
+  sessionsForNote(noteId: string): BrainstormSessionSummary[];
+  /** The linked brainstorm for one conversation, or null (not a brainstorm /
+   *  conversation gone). */
+  byConversation(conversationId: string): BrainstormSessionSummary | null;
+  /** Mark a brainstorm path concluded (further clicks start a fresh one). */
+  conclude(conversationId: string): BrainstormSessionSummary;
+  /** Reopen a concluded brainstorm so it can be continued in place. */
+  reopen(conversationId: string): BrainstormSessionSummary;
 }
 
 export function createBrainstormManager(options: BrainstormManagerOptions): BrainstormManager {
   const { personas, conversations, notes, audit } = options;
   const demo = options.demo ?? false;
+  const now = options.now ?? Date.now;
+  const sessionStore = options.sessions;
+
+  /** True when the session's conversation still exists (lifecycle guard). */
+  function conversationAlive(conversationId: string): boolean {
+    try {
+      conversations.get(conversationId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Row → wire summary. Callers guarantee the conversation exists. */
+  function toSummary(row: BrainstormSessionRow): BrainstormSessionSummary {
+    let title: string | null = null;
+    try {
+      title = conversations.get(row.conversationId).summary.title;
+    } catch {
+      title = null;
+    }
+    return {
+      conversationId: row.conversationId,
+      title,
+      personaId: BRAINSTORM_PERSONA_ID,
+      noteIds: sessionStore?.listSourceIds(row.conversationId) ?? [],
+      concluded: row.concluded,
+      used: row.used,
+      truncated: row.truncated,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  function sessions(): BrainstormSessionSummary[] {
+    if (!sessionStore) return [];
+    const out: BrainstormSessionSummary[] = [];
+    for (const row of sessionStore.list()) {
+      if (!conversationAlive(row.conversationId)) {
+        // Conversation deleted through another surface — drop the dangling link.
+        sessionStore.remove(row.conversationId);
+        continue;
+      }
+      out.push(toSummary(row));
+    }
+    return out;
+  }
+
+  function sessionsForNote(noteId: string): BrainstormSessionSummary[] {
+    if (!sessionStore) return [];
+    const ids = new Set(sessionStore.listConversationIdsForNote(noteId));
+    return sessions().filter((session) => ids.has(session.conversationId));
+  }
+
+  function byConversation(conversationId: string): BrainstormSessionSummary | null {
+    if (!sessionStore) return null;
+    const row = sessionStore.findByConversation(conversationId);
+    if (!row) return null;
+    if (!conversationAlive(conversationId)) {
+      sessionStore.remove(conversationId);
+      return null;
+    }
+    return toSummary(row);
+  }
+
+  function setConcluded(conversationId: string, concluded: boolean): BrainstormSessionSummary {
+    if (!sessionStore) {
+      throw brainstormError('not_found', 'brainstorm linkage is unavailable (not wired)');
+    }
+    const row = sessionStore.findByConversation(conversationId);
+    if (!row) throw brainstormError('not_found', `brainstorm ${conversationId} not found`);
+    if (!conversationAlive(conversationId)) {
+      sessionStore.remove(conversationId);
+      throw brainstormError('not_found', `brainstorm ${conversationId} not found`);
+    }
+    if (row.concluded !== concluded) {
+      sessionStore.setConcluded(conversationId, concluded, now());
+      audit.log('web', concluded ? 'brainstorm.conclude' : 'brainstorm.reopen', conversationId, {
+        concluded,
+      });
+    }
+    return toSummary(sessionStore.findByConversation(conversationId) as BrainstormSessionRow);
+  }
+
+  function conclude(conversationId: string): BrainstormSessionSummary {
+    return setConcluded(conversationId, true);
+  }
+
+  function reopen(conversationId: string): BrainstormSessionSummary {
+    return setConcluded(conversationId, false);
+  }
 
   async function start(request: BrainstormRequest): Promise<BrainstormResult> {
     const body = (request ?? {}) as BrainstormRequest;
@@ -178,6 +300,34 @@ export function createBrainstormManager(options: BrainstormManagerOptions): Brai
         `noteIds are capped at ${BRAINSTORM_MAX_NOTES} notes per brainstorm`,
       );
     }
+    const setKey = brainstormSetKey(noteIds);
+    // Every source must exist BEFORE a reuse can short-circuit: a stale
+    // session whose note was deleted must not resurrect a 200.
+    for (const noteId of noteIds) {
+      if (!notes.get(noteId)) throw brainstormError('not_found', `note ${noteId} not found`);
+    }
+    // M16 follow-up: an ACTIVE session for exactly this note set is reopened
+    // as-is — no new conversation, no duplicate provider call. A concluded
+    // session never blocks a fresh start (it stays reopenable from the graph).
+    if (sessionStore) {
+      const active = sessionStore
+        .listBySetKey(setKey)
+        .find((row) => !row.concluded && conversationAlive(row.conversationId));
+      if (active) {
+        audit.log('web', 'brainstorm.reuse', active.conversationId, {
+          used: active.used,
+          truncated: active.truncated,
+        });
+        return {
+          conversationId: active.conversationId,
+          personaId: BRAINSTORM_PERSONA_ID,
+          used: active.used,
+          truncated: active.truncated,
+          reused: true,
+        };
+      }
+    }
+
     // M16 F2: create the persona on demand (idempotent; respects edits).
     const persona = personas.ensureSeed(BRAINSTORM_PERSONA_ID);
     if (!persona) {
@@ -256,6 +406,20 @@ export function createBrainstormManager(options: BrainstormManagerOptions): Brai
       personaId: persona.id,
       ...(model !== null ? { model } : {}),
     });
+    // M16 follow-up: link the conversation back to its source nodes.
+    if (sessionStore) {
+      const at = now();
+      sessionStore.insert({
+        conversationId: conversation.id,
+        setKey,
+        concluded: false,
+        used: bundle.used,
+        truncated: bundle.truncated,
+        createdAt: at,
+        updatedAt: at,
+      });
+      sessionStore.setSources(conversation.id, noteIds);
+    }
     audit.log('web', 'brainstorm.start', conversation.id, {
       personaId: persona.id,
       used: bundle.used,
@@ -266,8 +430,9 @@ export function createBrainstormManager(options: BrainstormManagerOptions): Brai
       personaId: persona.id,
       used: bundle.used,
       truncated: bundle.truncated,
+      reused: false,
     };
   }
 
-  return { start };
+  return { start, sessions, sessionsForNote, byConversation, conclude, reopen };
 }

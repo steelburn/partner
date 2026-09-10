@@ -30,6 +30,23 @@ describe('singleFencedCode', () => {
   it('keeps inner code verbatim, including nested fence-like text', () => {
     expect(singleFencedCode('```md\ncode ``` inside\n```')?.code).toBe('code ``` inside');
   });
+
+  it('accepts tilde fences', () => {
+    expect(singleFencedCode('~~~python\nx = 1\n~~~')).toEqual({ lang: 'python', code: 'x = 1' });
+  });
+
+  it('accepts a fence with an info string after the language', () => {
+    expect(singleFencedCode('```js title="swap"\nconst x = 1;\n```')).toEqual({
+      lang: 'js',
+      code: 'const x = 1;',
+    });
+  });
+
+  it('requires a closing fence of the same character and length', () => {
+    expect(singleFencedCode('```js\na\n~~~')).toBeNull();
+    expect(singleFencedCode('````js\na\n```')).toBeNull();
+    expect(singleFencedCode('````js\na\n````')).toEqual({ lang: 'js', code: 'a' });
+  });
 });
 
 describe('codeAssetBody (display)', () => {
@@ -52,6 +69,13 @@ describe('codeAssetPreview (F12 sandboxed viewer)', () => {
 
   it('offers css fenced code', () => {
     expect(codeAssetPreview('```css\np { color: red }\n```')?.lang).toBe('css');
+  });
+
+  it('offers a tilde-fenced html block', () => {
+    expect(codeAssetPreview('~~~html\n<h1>Hi</h1>\n~~~')).toEqual({
+      lang: 'html',
+      source: '<h1>Hi</h1>',
+    });
   });
 
   it('offers an unfenced HTML fragment', () => {

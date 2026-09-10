@@ -78,6 +78,17 @@ into a new one — schema v14 adds `conversations.parent_id` +
 Root suites: shared 51 · core 837 (2 pre-existing env cipher failures) ·
 web 486 · typechecks 0 · web build green · `ux_audit` green.
 
+**M16 follow-up — linked, reopenable brainstorms (schema v14 → v15).** A
+brainstorm conversation is linked back to its source note/capture nodes
+(`brainstorm_sessions` keyed by the deterministic source set + a
+`brainstorm_sources` join); the graph badges those nodes and lists their
+sessions. Clicking **Brainstorm (N)** over a set that already has an ACTIVE
+session reopens it instead of starting a duplicate; once a path is
+**concluded** a fresh brainstorm starts, and the concluded one stays listed in
+the graph with **Reopen** to continue it. The open brainstorm chat also
+carries a `Brainstorm active|concluded` chip with **Conclude**/**Reopen** in
+its action bar. Owner actions, ids/counts only.
+
 ### M14 — scheduled & autonomous work (2026-09-06, core engine green)
 
 Personas carry **schedule definitions** inside their independence bundle

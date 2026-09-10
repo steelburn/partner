@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import type { Note, NoteSummary } from '@partner/shared';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { BrainstormSessionSummary, Note, NoteSummary } from '@partner/shared';
 import NoteEditor from './NoteEditor.js';
 import { isSessionLost } from './lib/personas.js';
 import { readStoredToken } from './lib/token.js';
@@ -15,6 +15,7 @@ import {
   brainstormNotes,
   captureNote,
   exportNotes,
+  fetchBrainstormSessions,
   getDailyNote,
   getNote,
   listNotes,
@@ -31,6 +32,8 @@ export interface NotesSegmentProps {
   onUnpair: () => void;
   /** M11 F6: increments request opening the quick-capture composer. */
   captureSignal?: number;
+  /** M16 wiki-links: open this note once the segment is visible. */
+  focusNote?: { id: string; nonce: number } | null;
   /** M16 F2: open a conversation (a brainstorm kicks off its own chat). */
   onOpenConversation?: (conversationId: string) => void;
 }
@@ -50,7 +53,7 @@ type EditingState = { kind: 'new' } | { kind: 'edit'; note: Note } | null;
  * errors and feedback in this view carry titles, counts and statuses, never
  * note bodies.
  */
-export default function NotesSegment({ active, onUnpair, captureSignal, onOpenConversation }: NotesSegmentProps) {
+export default function NotesSegment({ active, onUnpair, captureSignal, focusNote, onOpenConversation }: NotesSegmentProps) {
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
@@ -82,6 +85,7 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [brainstormBusy, setBrainstormBusy] = useState(false);
+  const [brainstormSessions, setBrainstormSessions] = useState<BrainstormSessionSummary[]>([]);
 
   const load = async (quiet = false): Promise<void> => {
     const token = readStoredToken();
@@ -113,6 +117,26 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
   const handleSessionLost = (): void => setSessionLost(true);
   const quietRefresh = (): void => setReloadTick((tick) => tick + 1);
 
+  /** M16 follow-up: refresh the linked-brainstorm list for the selection label. */
+  const loadBrainstormSessions = async (): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) return;
+    try {
+      setBrainstormSessions(await fetchBrainstormSessions(token));
+    } catch (cause) {
+      if (isSessionLost(cause)) setSessionLost(true);
+      // Non-fatal: the button falls back to the plain Brainstorm label.
+    }
+  };
+
+  // Entering multi-select (the only place the label matters) refreshes the
+  // linked sessions so an existing path shows "Open brainstorm" up front.
+  useEffect(() => {
+    if (!active || sessionLost || !multiSelect) return;
+    void loadBrainstormSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, sessionLost, multiSelect]);
+
   // -------------------------------------------------------------------------
   // Note opening / saving
   // -------------------------------------------------------------------------
@@ -136,6 +160,18 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
       setNotesError(cause instanceof Error ? cause.message : 'Could not open the note.');
     }
   };
+
+  // M16 wiki-links: a chat `[[Title]]` chip asked for a note. Run once per
+  // nonce, and only while this segment is visible (the Notes view may be on
+  // the Plans tab — NotesView flips tabs, so `active` follows shortly).
+  const handledFocusRef = useRef(0);
+  useEffect(() => {
+    if (!active || focusNote === undefined || focusNote === null) return;
+    if (handledFocusRef.current === focusNote.nonce) return;
+    handledFocusRef.current = focusNote.nonce;
+    void openNoteById(focusNote.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, focusNote]);
 
   const openDaily = async (): Promise<void> => {
     if (dailyBusy) return;
@@ -285,6 +321,18 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
   const busyTools = dailyBusy || summarizeBusy || exporting || captureBusy;
   const notesActivePane = active && pane === 'graph';
 
+  // M16 follow-up: does this exact selection already have an ACTIVE brainstorm?
+  // Same deterministic set key the core uses (order/duplicates ignored).
+  const matchingActive = useMemo(() => {
+    if (selected.size === 0) return null;
+    const key = [...selected].sort().join('\u0000');
+    return (
+      brainstormSessions.find(
+        (session) => !session.concluded && [...session.noteIds].sort().join('\u0000') === key,
+      ) ?? null
+    );
+  }, [brainstormSessions, selected]);
+
   /** M16 F2: bundle the selected notes/captures into a brainstorm chat. */
   const brainstorm = async (noteIds: string[]): Promise<void> => {
     const ids = [...new Set(noteIds)].filter((id) => sorted.some((row) => row.id === id));
@@ -300,14 +348,19 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
     try {
       const result = await brainstormNotes(token, ids);
       setFeedback(
-        result.used > 0
-          ? `Brainstorm opened with ${result.used} note${result.used === 1 ? '' : 's'}${
-              result.truncated > 0 ? ` (${result.truncated} truncated)` : ''
-            } — the Brainstorming persona is answering in that chat.`
-          : 'Brainstorm opened.',
+        result.reused
+          ? 'Reopened the existing brainstorm for this selection — the Brainstorming persona is in that chat.'
+          : result.used > 0
+            ? `Brainstorm opened with ${result.used} note${result.used === 1 ? '' : 's'}${
+                result.truncated > 0 ? ` (${result.truncated} truncated)` : ''
+              } — the Brainstorming persona is answering in that chat.`
+            : 'Brainstorm opened.',
       );
       setSelected(new Set());
       setMultiSelect(false);
+      // Refresh so a graph badge / linked-session row reflects the new link.
+      quietRefresh();
+      void loadBrainstormSessions();
       onOpenConversation?.(result.conversationId);
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -438,11 +491,22 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
                   type="button"
                   className="btn btn-primary btn-sm"
                   disabled={brainstormBusy || selected.size === 0}
-                  onClick={() => void brainstorm([...selected])}
+                  onClick={() => {
+                    if (matchingActive !== null) onOpenConversation?.(matchingActive.conversationId);
+                    else void brainstorm([...selected]);
+                  }}
                   aria-busy={brainstormBusy}
-                  title="Bundle the selected notes into a Brainstorming chat"
+                  title={
+                    matchingActive !== null
+                      ? 'Open the existing brainstorm for this selection'
+                      : 'Bundle the selected notes into a Brainstorming chat'
+                  }
                 >
-                  {brainstormBusy ? 'Starting…' : `Brainstorm (${selected.size})`}
+                  {brainstormBusy
+                    ? 'Starting…'
+                    : matchingActive !== null
+                      ? `Open brainstorm (${selected.size})`
+                      : `Brainstorm (${selected.size})`}
                 </button>
               ) : null}
             </div>
@@ -508,6 +572,7 @@ export default function NotesSegment({ active, onUnpair, captureSignal, onOpenCo
               reloadTick={reloadTick}
               onOpenNote={(id) => void openNoteById(id)}
               onBrainstorm={(ids) => void brainstorm(ids)}
+              onOpenConversation={onOpenConversation}
               onUnpair={onUnpair}
             />
           ) : (

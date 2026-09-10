@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import type { AttachmentMeta, ChatEvent, ConversationMessage, ProviderSummary, ThemeProfile } from '@partner/shared';
+import type {
+  AttachmentMeta,
+  BrainstormSessionSummary,
+  ChatEvent,
+  ConversationMessage,
+  ProviderSummary,
+  ThemeProfile,
+} from '@partner/shared';
 import { isImageCapableModel } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import { ApiRequestError, listProviders, streamChat, type StreamDoneMeta } from './lib/api.js';
@@ -15,7 +22,11 @@ import {
   uploadAttachment,
 } from './lib/attachments.js';
 import { readStoredToken } from './lib/token.js';
+import { concludeBrainstorm, getNote, listNotes, reopenBrainstorm } from './lib/notes.js';
+import { extractWikiLinks } from './lib/note-helpers.js';
+import { noteSnippet } from './lib/wiki-links.js';
 import { PartnerMarkdown } from './Markdown.js';
+import type { WikiNoteTarget } from './WikiLinkChip.js';
 import { ChoiceMemoryContext } from './ChoiceMemory.js';
 import { conversationUi } from './lib/conversation-ui.js';
 import { IconSave, IconSend } from './icons.js';
@@ -70,6 +81,15 @@ export interface ChatStripProps {
   externalDraft?: { conversationId: string | null; text: string; nonce: number } | null;
   /** The external draft was appended (clear it in the shell). */
   onDraftConsumed?: () => void;
+  /**
+   * M16 follow-up: when the open conversation IS a linked brainstorm, its
+   * session state (active/concluded) drives a header Conclude/Reopen action.
+   */
+  brainstormSession?: BrainstormSessionSummary | null;
+  /** The session was concluded/reopened — the shell stores the fresh state. */
+  onBrainstormSessionChange?: (session: BrainstormSessionSummary) => void;
+  /** Open a `[[Note Title]]` citation in the shell's Notes view. */
+  onOpenNote?: (id: string) => void;
 }
 
 interface ChatRow {
@@ -129,6 +149,9 @@ export default function ChatStrip({
   onAssetsChanged,
   externalDraft,
   onDraftConsumed,
+  brainstormSession = null,
+  onBrainstormSessionChange,
+  onOpenNote,
 }: ChatStripProps) {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [draft, setDraft] = useState('');
@@ -147,11 +170,20 @@ export default function ChatStrip({
   const [decidedIds, setDecidedIds] = useState<ReadonlySet<string>>(new Set());
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [queueErrors, setQueueErrors] = useState<Readonly<Record<string, string>>>({});
+  const [brainstormBusy, setBrainstormBusy] = useState(false);
+  const [brainstormError, setBrainstormError] = useState<string | null>(null);
   const nextId = useRef(0);
   /** Conversation whose usage/latency meta line is currently shown — the
    *  line is cleared when the open conversation changes (never leaks across
    *  chats; same-chat reloads keep it). */
   const metaForRef = useRef<string | null>(null);
+  /** M16 wiki-links: notes by lowercased title, plus a small plain-text
+   *  snippet so a `[[Title]]` chip can hint at the cited content. Reloaded
+   *  when the view becomes active so a just-created note resolves. */
+  const [noteTargets, setNoteTargets] = useState<ReadonlyMap<string, WikiNoteTarget>>(
+    () => new Map(),
+  );
+  const snippetLoadedRef = useRef<Set<string>>(new Set());
 
   // M16 F4: an asset Discuss draft lands in the composer of its target
   // conversation (append keeps any text the user already typed).
@@ -318,6 +350,93 @@ export default function ChatStrip({
     }
     void loadHistory();
   }, [conversationId, loadHistory, reloadToken]);
+
+  // M16 wiki-links: index note titles so `[[Title]]` citations render as
+  // chips. Reloaded whenever the Chat view becomes active (a note created
+  // elsewhere then resolves) and after a history reload. Failure is silent —
+  // citations simply render as dangling chips.
+  useEffect(() => {
+    if (!viewActive) return;
+    const token = readStoredToken();
+    if (!token) return;
+    let cancelled = false;
+    void listNotes(token)
+      .then((rows) => {
+        if (cancelled) return;
+        setNoteTargets((prev) => {
+          const next = new Map<string, WikiNoteTarget>();
+          for (const row of rows) {
+            const key = row.title.toLocaleLowerCase();
+            const existing = prev.get(key);
+            next.set(key, { id: row.id, title: row.title, snippet: existing?.snippet ?? null });
+          }
+          return next;
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [viewActive, reloadToken]);
+
+  // Fetch a body preview for cited notes that are visible in the transcript
+  // (bounded per pass) so a chip's hint can show real content, not just the
+  // title. Already-loaded notes are skipped.
+  useEffect(() => {
+    const token = readStoredToken();
+    if (!token) return;
+    const wanted: WikiNoteTarget[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (row.role === 'user') continue;
+      for (const title of extractWikiLinks(row.text)) {
+        const target = noteTargets.get(title.toLocaleLowerCase());
+        if (target === undefined || target.snippet != null) continue;
+        if (snippetLoadedRef.current.has(target.id) || seen.has(target.id)) continue;
+        seen.add(target.id);
+        wanted.push(target);
+        if (wanted.length >= 12) break;
+      }
+      if (wanted.length >= 12) break;
+    }
+    if (wanted.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      wanted.map(async (target) => {
+        try {
+          const note = await getNote(token, target.id);
+          return { id: target.id, snippet: noteSnippet(note.content, 240) };
+        } catch {
+          return null;
+        }
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      const snippets = new Map<string, string>();
+      for (const result of results) {
+        if (result !== null) snippets.set(result.id, result.snippet);
+      }
+      if (snippets.size === 0) return;
+      for (const target of wanted) snippetLoadedRef.current.add(target.id);
+      setNoteTargets((prev) => {
+        const next = new Map(prev);
+        for (const [key, target] of next) {
+          const snippet = snippets.get(target.id);
+          if (snippet !== undefined) next.set(key, { ...target, snippet });
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rows, noteTargets]);
+
+  const resolveNote = useCallback(
+    (title: string): WikiNoteTarget | null =>
+      noteTargets.get(title.trim().toLocaleLowerCase()) ?? null,
+    [noteTargets],
+  );
 
   // M12.5: forget local “decided” markers as soon as the shell's poll no
   // longer carries those rows — the row really closed, the marker can go.
@@ -933,6 +1052,39 @@ export default function ChatStrip({
     }
   };
 
+  /** M16 follow-up: conclude/reopen the linked brainstorm from the header. */
+  // Never leak a previous conversation's brainstorm error into the next chat.
+  useEffect(() => {
+    setBrainstormError(null);
+  }, [conversationId]);
+
+  const flipBrainstorm = async (): Promise<void> => {
+    if (brainstormSession === null || brainstormBusy) return;
+    const token = readStoredToken();
+    if (!token) {
+      onUnpair();
+      return;
+    }
+    setBrainstormBusy(true);
+    setBrainstormError(null);
+    try {
+      const next = brainstormSession.concluded
+        ? await reopenBrainstorm(token, brainstormSession.conversationId)
+        : await concludeBrainstorm(token, brainstormSession.conversationId);
+      onBrainstormSessionChange?.(next);
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setBrainstormError(
+        cause instanceof Error ? cause.message : 'Could not update the brainstorm.',
+      );
+    } finally {
+      setBrainstormBusy(false);
+    }
+  };
+
   const metaParts: string[] = [];
   if (personaName) metaParts.push(personaName);
   if (usage) metaParts.push(`${usage.totalTokens} tokens`);
@@ -975,7 +1127,7 @@ export default function ChatStrip({
               </div>
             ) : row.role === 'system' ? (
               <div key={row.key} className="msg msg-system">
-                <PartnerMarkdown text={row.text} />
+                <PartnerMarkdown text={row.text} resolveNote={resolveNote} onOpenNote={onOpenNote} />
               </div>
             ) : (
               <div key={row.key} className="msg msg-assistant">
@@ -988,6 +1140,8 @@ export default function ChatStrip({
                       busy={streaming}
                       onAnswer={handleAnswer}
                       onPreviewCode={({ title, source }) => setPreview({ title, source })}
+                      resolveNote={resolveNote}
+                      onOpenNote={onOpenNote}
                     />
                   </ChoiceMemoryContext.Provider>
                 )}
@@ -1084,6 +1238,37 @@ export default function ChatStrip({
               ))}
             </select>
           </label>
+        ) : null}
+        {brainstormSession !== null && brainstormSession.conversationId === conversationId ? (
+          <span
+            className={
+              brainstormSession.concluded
+                ? 'chat-brainstorm is-concluded'
+                : 'chat-brainstorm'
+            }
+          >
+            <span className="chat-brainstorm-state">
+              Brainstorm {brainstormSession.concluded ? 'concluded' : 'active'}
+            </span>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={brainstormBusy}
+              aria-busy={brainstormBusy}
+              onClick={() => void flipBrainstorm()}
+            >
+              {brainstormBusy
+                ? 'Saving…'
+                : brainstormSession.concluded
+                  ? 'Reopen'
+                  : 'Conclude'}
+            </button>
+          </span>
+        ) : null}
+        {brainstormError !== null ? (
+          <span className="chat-brainstorm-error" role="alert">
+            {brainstormError}
+          </span>
         ) : null}
         {assetsFlash !== null ? (
           <span className="chat-assets-flash" role="status">

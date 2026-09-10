@@ -4,7 +4,13 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
-import type { ConversationSummary, Folder, Persona, ThemeMode } from '@partner/shared';
+import type {
+  BrainstormSessionSummary,
+  ConversationSummary,
+  Folder,
+  Persona,
+  ThemeMode,
+} from '@partner/shared';
 import type { ActiveTheme, ThemeProfile } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import type { StreamDoneMeta } from './lib/api.js';
@@ -49,6 +55,7 @@ import {
   updateFolder,
 } from './lib/folders.js';
 import { isSessionLost, listPersonas } from './lib/personas.js';
+import { fetchBrainstormSession } from './lib/notes.js';
 import { bindConversationTheme, getActiveTheme, listThemes } from './lib/themes.js';
 import { listPending } from './lib/tools.js';
 import { clearStoredToken, readStoredToken } from './lib/token.js';
@@ -218,6 +225,12 @@ export default function App() {
     text: string;
     nonce: number;
   } | null>(null);
+  // M16 follow-up: the active conversation's linked brainstorm session (null
+  // when the chat is not a brainstorm) — drives the header Conclude/Reopen.
+  const [brainstormSession, setBrainstormSession] = useState<BrainstormSessionSummary | null>(null);
+  // M16 wiki-links: a `[[Note Title]]` chip in chat asks the Notes view to
+  // open a note. Nonce forces a repeat click on the same id to re-focus.
+  const [noteFocus, setNoteFocus] = useState<{ id: string; nonce: number } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [creatingChat, setCreatingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -360,6 +373,30 @@ export default function App() {
       }
     }
   }, [activePersonaId, activeConversationId]);
+
+  /** M16 follow-up: resolve the active conversation's linked brainstorm. */
+  const refreshBrainstormSession = useCallback(async (): Promise<void> => {
+    if (activeConversationId === null) {
+      setBrainstormSession(null);
+      return;
+    }
+    const token = readStoredToken();
+    if (!token) return;
+    try {
+      setBrainstormSession(await fetchBrainstormSession(token, activeConversationId));
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        handleSessionLost();
+        return;
+      }
+      // Non-fatal: the chat simply shows no brainstorm action.
+      setBrainstormSession(null);
+    }
+  }, [activeConversationId, handleSessionLost]);
+
+  useEffect(() => {
+    void refreshBrainstormSession();
+  }, [refreshBrainstormSession]);
 
   /** Themes mutated inside the studio (create/update/delete/activate/import). */
   const handleThemesChanged = useCallback((): void => {
@@ -508,6 +545,12 @@ export default function App() {
   const openWithDraft = (conversationId: string, text: string): void => {
     setExternalDraft({ conversationId, text, nonce: Date.now() });
     handleOpenConversation(conversationId);
+  };
+
+  /** M16 wiki-links: follow a chat `[[Note Title]]` chip into the note. */
+  const openNoteFromChat = (id: string): void => {
+    setNoteFocus({ id, nonce: Date.now() });
+    setView('notes');
   };
 
   const handleDeleteConversation = async (id: string): Promise<void> => {
@@ -975,6 +1018,9 @@ function ColumnDivider({
                   onAssetsChanged={handleAssetsChanged}
                   externalDraft={externalDraft}
                   onDraftConsumed={() => setExternalDraft(null)}
+                  brainstormSession={brainstormSession}
+                  onBrainstormSessionChange={setBrainstormSession}
+                  onOpenNote={openNoteFromChat}
                 />
                 {assetsLaneOpen ? (
                   <>
@@ -1080,6 +1126,7 @@ function ColumnDivider({
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'notes'}
+                focusNote={noteFocus}
                 onOpenConversation={handleOpenConversation}
               />
             </div>

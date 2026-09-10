@@ -246,7 +246,7 @@ export { buildTailoring } from './memory/tailor.js';
 
 // ---- M5 notes + plans (PLAN-M5.md) -----------------------------------------
 export { createNoteManager, parseWikiLinks, noteSearchText, stripDailySummarySection, demoDailySummary, createDailySummarizeResolver } from './notes/index.js';
-export { createBrainstormManager, buildBrainstormBundle, demoBrainstormReply, BRAINSTORM_PERSONA_ID, BRAINSTORM_MAX_NOTES, BrainstormError, brainstormError, brainstormErrorStatus } from './notes/index.js';
+export { createBrainstormManager, buildBrainstormBundle, demoBrainstormReply, brainstormSetKey, BRAINSTORM_PERSONA_ID, BRAINSTORM_MAX_NOTES, BrainstormError, brainstormError, brainstormErrorStatus } from './notes/index.js';
 export type { BrainstormManager, BrainstormManagerOptions, BrainstormErrorCode, BrainstormBundleResult } from './notes/index.js';
 export type { NoteManager, NoteManagerOptions, NotePatch } from './notes/index.js';
 export { NoteError, noteError, noteErrorStatus } from './notes/index.js';
@@ -443,6 +443,7 @@ import type {
   NoteStore,
   NoteVersionStore,
   NoteGraphStore,
+  BrainstormSessionStore,
   NotesFtsStore,
   PersonaStore,
   PlanStore,
@@ -525,6 +526,7 @@ import { createScheduleManager } from './schedules/index.js';
 import type { ScheduleManager } from './schedules/index.js';
 import type { ScheduleRunStore } from './stores/types.js';
 import {
+  createBrainstormSessionStore,
   createNoteLinkStore,
   createNoteStore,
   createNoteVersionStore,
@@ -578,6 +580,8 @@ export interface CoreBundle {
   /** M16 F1/F3 stores (PLAN-M16.md, schema v14). */
   noteVersionStore: NoteVersionStore;
   noteGraphStore: NoteGraphStore;
+  /** M16 follow-up brainstorm linkage store (schema v15). */
+  brainstormSessionStore: BrainstormSessionStore;
   planStore: PlanStore;
   notesFtsStore: NotesFtsStore;
   /** M6 theme manager + store + settings store (schema v7). */
@@ -745,6 +749,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   const noteLinkStore = createNoteLinkStore(db);
   const noteVersionStore = createNoteVersionStore(db);
   const noteGraphStore = createNoteGraphStore(db);
+  const brainstormSessionStore = createBrainstormSessionStore(db);
   const planStore = createPlanStore(db);
   const notesFtsStore = createNotesFtsStore(db);
   const notes = createNoteManager({
@@ -920,6 +925,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     conversations: conversationManager,
     notes,
     folders,
+    sessions: brainstormSessionStore,
     audit,
     demo: config.demo,
     providerResolver: createDailySummarizeResolver({ providers: providerManager }),
@@ -995,6 +1001,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     noteLinkStore,
     noteVersionStore,
     noteGraphStore,
+    brainstormSessionStore,
     planStore,
     notesFtsStore,
     themes,

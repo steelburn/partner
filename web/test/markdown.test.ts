@@ -17,6 +17,8 @@ function render(props: {
   busy?: boolean;
   onAnswer?: (message: string) => void;
   onPreviewCode?: (preview: { title: string; source: string }) => void;
+  resolveNote?: (title: string) => { id: string; title: string; snippet?: string | null } | null;
+  onOpenNote?: (id: string) => void;
 }): string {
   return renderToStaticMarkup(
     h(PartnerMarkdown, {
@@ -24,6 +26,8 @@ function render(props: {
       busy: props.busy,
       onAnswer: props.onAnswer,
       onPreviewCode: props.onPreviewCode,
+      resolveNote: props.resolveNote,
+      onOpenNote: props.onOpenNote,
     }),
   );
 }
@@ -194,5 +198,46 @@ describe('M11 F2 tool-directive display filter', () => {
     expect(html).not.toContain('partner:tool');
     expect(html).toContain('Let me check.');
     expect(html).toContain('Found it.');
+  });
+});
+
+describe('M16 chat wiki-links', () => {
+  it('renders a resolved citation as a note button with a content hint', () => {
+    const html = render({
+      text: 'See [[Alpha Note]] and continue.',
+      resolveNote: (title) =>
+        title === 'Alpha Note' ? { id: 'n1', title, snippet: 'Alpha body text.' } : null,
+      onOpenNote: () => undefined,
+    });
+    expect(html).not.toContain('[[');
+    expect(html).toContain('md-wiki-link');
+    expect(html).toContain('Alpha Note');
+    expect(html).toContain('<button');
+    expect(html).toContain('Alpha body text.');
+    expect(html).toContain('See ');
+    expect(html).toContain('and continue.');
+  });
+
+  it('renders a citation with no matching note as an inert dangling chip', () => {
+    const html = render({
+      text: 'See [[Ghost Note]].',
+      resolveNote: () => null,
+      onOpenNote: () => undefined,
+    });
+    expect(html).toContain('md-wiki-link');
+    expect(html).toContain('is-dangling');
+    expect(html).toContain('Ghost Note');
+    expect(html).not.toContain('<button');
+  });
+
+  it('leaves [[…]] inside a code fence as literal code', () => {
+    const html = render({
+      text: '```ts\nconst t = "[[Literal]]";\n```',
+      resolveNote: () => ({ id: 'n1', title: 'Literal' }),
+      onOpenNote: () => undefined,
+    });
+    expect(html).toContain('md-pre');
+    expect(html).toContain('[[Literal]]');
+    expect(html).not.toContain('md-wiki-link');
   });
 });

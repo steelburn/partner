@@ -16,14 +16,16 @@
  * itself carries no colors or sizes. Links open in a new tab; partner-file
  * links (F1) are intercepted by the consumer via onFileLink.
  */
-import { memo, useMemo } from 'react';
+import { createContext, memo, useContext, useMemo } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
 import type { ChoiceMode } from '@partner/shared';
 import { ChoiceCard } from './ChoiceCard.js';
+import { WikiLinkChip, type WikiNoteTarget } from './WikiLinkChip.js';
 import { codeAssetBody, codeAssetPreview } from './lib/code-assets.js';
+import { linkifyWikiLinks, wikiTitleFromHref } from './lib/wiki-links.js';
 
 export interface PartnerMarkdownProps {
   text: string;
@@ -35,20 +37,48 @@ export interface PartnerMarkdownProps {
   onFileLink?: (href: string) => void;
   /** F12: an html/css code asset asked for a sandboxed preview. */
   onPreviewCode?: (preview: { title: string; source: string }) => void;
+  /** Resolve a `[[Note Title]]` citation to the note it names (null = dangling). */
+  resolveNote?: (title: string) => WikiNoteTarget | null;
+  /** Open a resolved citation in the Notes view. */
+  onOpenNote?: (id: string) => void;
+}
+
+/** Note-link handlers shared with the `a` renderer (context keeps the
+ *  memoized markdown fragments stable while the note index loads). */
+interface NoteLinkContextValue {
+  resolveNote?: (title: string) => WikiNoteTarget | null;
+  onOpenNote?: (id: string) => void;
+  busy: boolean;
+}
+
+const NoteLinkContext = createContext<NoteLinkContextValue>({ busy: false });
+
+function MarkdownLink(props: React.ComponentProps<'a'>) {
+  const { resolveNote, onOpenNote, busy } = useContext(NoteLinkContext);
+  const href = props.href ?? '';
+  const title = wikiTitleFromHref(href);
+  if (title !== null) {
+    return (
+      <WikiLinkChip
+        title={title}
+        target={resolveNote?.(title) ?? null}
+        onOpen={onOpenNote}
+        busy={busy}
+      />
+    );
+  }
+  if (href.startsWith('partner-file://')) {
+    return <span className="md-file-chip">{props.children}</span>;
+  }
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {props.children}
+    </a>
+  );
 }
 
 const COMPONENTS: Components = {
-  a: (props) => {
-    const href = props.href ?? '';
-    if (href.startsWith('partner-file://')) {
-      return <span className="md-file-chip">{props.children}</span>;
-    }
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer">
-        {props.children}
-      </a>
-    );
-  },
+  a: MarkdownLink,
   pre: (props) => <pre className="md-pre">{props.children}</pre>,
   code: (props) => <code className="md-code">{props.children}</code>,
   table: (props) => (
@@ -60,28 +90,32 @@ const COMPONENTS: Components = {
 };
 
 /**
- * Allow the F1 partner-file: scheme through react-markdown's URL filter;
- * every other URL goes through the library default (http(s)/mailto only).
+ * Allow the F1 partner-file: and the wiki-link partner-note: schemes through
+ * react-markdown's URL filter; every other URL goes through the library
+ * default (http(s)/mailto only).
  */
 function urlTransform(url: string): string {
-  if (url.startsWith('partner-file:')) return url;
+  if (url.startsWith('partner-file:') || url.startsWith('partner-note:')) return url;
   return defaultUrlTransform(url);
 }
 
-/** Sanitizer schema: the default, plus the partner-file: href protocol. */
+/** Sanitizer schema: the default, plus the partner-file:/partner-note: href
+ *  protocols. */
 const SANITIZE_SCHEMA = {
   ...defaultSchema,
   protocols: {
     ...(defaultSchema.protocols ?? {}),
-    href: [...(defaultSchema.protocols?.href ?? []), 'partner-file'],
+    href: [...(defaultSchema.protocols?.href ?? []), 'partner-file', 'partner-note'],
   },
 };
 
 /**
  * Render one markdown fragment that contains NO partner containers. `code`
  * is stable so memoization is effective while a stream is appending.
+ * `[[Title]]` citations are rewritten to partner-note: links outside code.
  */
 const MarkdownFragment = memo(function MarkdownFragment({ text }: { text: string }) {
+  const linked = useMemo(() => linkifyWikiLinks(text), [text]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -89,7 +123,7 @@ const MarkdownFragment = memo(function MarkdownFragment({ text }: { text: string
       urlTransform={urlTransform}
       components={COMPONENTS}
     >
-      {text}
+      {linked}
     </ReactMarkdown>
   );
 });
@@ -115,11 +149,21 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   onAnswer,
   busy,
   onPreviewCode,
+  resolveNote,
+  onOpenNote,
 }: PartnerMarkdownProps) {
   const visibleText = useMemo(() => filterToolDirectives(text), [text]);
   const hits = useMemo(() => parseStructuredBlocks(visibleText), [visibleText]);
+  const noteLink = useMemo<NoteLinkContextValue>(
+    () => ({ resolveNote, onOpenNote, busy: busy === true }),
+    [resolveNote, onOpenNote, busy],
+  );
   if (hits.length === 0) {
-    return <MarkdownFragment text={visibleText} />;
+    return (
+      <NoteLinkContext.Provider value={noteLink}>
+        <MarkdownFragment text={visibleText} />
+      </NoteLinkContext.Provider>
+    );
   }
   const segments: React.ReactNode[] = [];
   let cursor = 0;
@@ -207,5 +251,9 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   if (!isBlank(after)) {
     segments.push(<MarkdownFragment key="md-after" text={after} />);
   }
-  return <div className="md-blocks">{segments}</div>;
+  return (
+    <NoteLinkContext.Provider value={noteLink}>
+      <div className="md-blocks">{segments}</div>
+    </NoteLinkContext.Provider>
+  );
 });

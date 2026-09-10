@@ -61,6 +61,8 @@ import type {
 const META_SCHEMA_VERSION_KEY = 'schema_version';
 
 import type {
+  BrainstormSessionRow,
+  BrainstormSessionStore,
   NoteLinkRow,
   NoteLinkStore,
   NoteRow,
@@ -546,6 +548,31 @@ CREATE TABLE IF NOT EXISTS note_graph (
   x REAL NOT NULL,
   y REAL NOT NULL
 );
+
+-- M16 follow-up brainstorm linkage (additive schema v15): one row per
+-- brainstorm conversation, keyed by the deterministic set_key of its sorted
+-- source note ids, plus the source join table. concluded is owner state:
+-- a concluded session is reopened explicitly, never reused implicitly.
+-- Owner data (ids/counts only) — never audit.
+CREATE TABLE IF NOT EXISTS brainstorm_sessions (
+  conversation_id TEXT PRIMARY KEY,
+  set_key TEXT NOT NULL,
+  concluded INTEGER NOT NULL DEFAULT 0,
+  used INTEGER NOT NULL DEFAULT 0,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brainstorm_sessions_set
+  ON brainstorm_sessions(set_key, concluded);
+
+CREATE TABLE IF NOT EXISTS brainstorm_sources (
+  conversation_id TEXT NOT NULL,
+  note_id TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, note_id)
+);
+CREATE INDEX IF NOT EXISTS idx_brainstorm_sources_note
+  ON brainstorm_sources(note_id);
 
 -- M11 F2 MCP servers (PLAN-M11.md, additive schema v12): configured stdio
 -- MCP clients. Command/args only; OFF by default. No secrets in this slice.
@@ -1680,6 +1707,98 @@ export function createNoteVersionStore(db: Database.Database): NoteVersionStore 
     },
     removeForNote(noteId: string): void {
       removeForNote.run(noteId);
+    },
+  };
+}
+
+export function createBrainstormSessionStore(db: Database.Database): BrainstormSessionStore {
+  const insertSession = db.prepare(
+    `INSERT INTO brainstorm_sessions
+       (conversation_id, set_key, concluded, used, truncated, created_at, updated_at)
+     VALUES
+       (@conversationId, @setKey, @concluded, @used, @truncated, @createdAt, @updatedAt)`,
+  );
+  const insertSource = db.prepare(
+    'INSERT OR IGNORE INTO brainstorm_sources (conversation_id, note_id) VALUES (?, ?)',
+  );
+  const deleteSources = db.prepare('DELETE FROM brainstorm_sources WHERE conversation_id = ?');
+  const findSession = db.prepare(
+    `SELECT conversation_id AS conversationId, set_key AS setKey, concluded, used, truncated,
+            created_at AS createdAt, updated_at AS updatedAt
+     FROM brainstorm_sessions WHERE conversation_id = ?`,
+  );
+  const listBySetKey = db.prepare(
+    `SELECT conversation_id AS conversationId, set_key AS setKey, concluded, used, truncated,
+            created_at AS createdAt, updated_at AS updatedAt
+     FROM brainstorm_sessions WHERE set_key = ? ORDER BY updated_at DESC, rowid DESC`,
+  );
+  const listSessions = db.prepare(
+    `SELECT conversation_id AS conversationId, set_key AS setKey, concluded, used, truncated,
+            created_at AS createdAt, updated_at AS updatedAt
+     FROM brainstorm_sessions ORDER BY updated_at DESC, rowid DESC`,
+  );
+  const listSources = db.prepare(
+    'SELECT note_id AS noteId FROM brainstorm_sources WHERE conversation_id = ? ORDER BY rowid ASC',
+  );
+  const listConversationsForNote = db.prepare(
+    'SELECT conversation_id AS conversationId FROM brainstorm_sources WHERE note_id = ?',
+  );
+  const setConcluded = db.prepare(
+    'UPDATE brainstorm_sessions SET concluded = ?, updated_at = ? WHERE conversation_id = ?',
+  );
+  const removeSession = db.prepare('DELETE FROM brainstorm_sessions WHERE conversation_id = ?');
+  const removeNoteSource = db.prepare('DELETE FROM brainstorm_sources WHERE note_id = ?');
+
+  /** SQLite stores booleans as 0/1 — normalize at the row boundary. */
+  function normalize(row: Record<string, unknown> | undefined): BrainstormSessionRow | undefined {
+    if (row === undefined) return undefined;
+    return { ...(row as unknown as BrainstormSessionRow), concluded: row.concluded === 1 };
+  }
+
+  return {
+    insert(row: BrainstormSessionRow): void {
+      insertSession.run({ ...row, concluded: row.concluded ? 1 : 0 });
+    },
+    setSources(conversationId: string, noteIds: readonly string[]): void {
+      const tx = db.transaction(() => {
+        deleteSources.run(conversationId);
+        for (const noteId of noteIds) insertSource.run(conversationId, noteId);
+      });
+      tx();
+    },
+    findByConversation(conversationId: string): BrainstormSessionRow | undefined {
+      return normalize(findSession.get(conversationId) as Record<string, unknown> | undefined);
+    },
+    listBySetKey(setKey: string): BrainstormSessionRow[] {
+      return (listBySetKey.all(setKey) as Array<Record<string, unknown>>).map(
+        (row) => normalize(row) as BrainstormSessionRow,
+      );
+    },
+    list(): BrainstormSessionRow[] {
+      return (listSessions.all() as Array<Record<string, unknown>>).map(
+        (row) => normalize(row) as BrainstormSessionRow,
+      );
+    },
+    listSourceIds(conversationId: string): string[] {
+      return (listSources.all(conversationId) as Array<{ noteId: string }>).map((r) => r.noteId);
+    },
+    listConversationIdsForNote(noteId: string): string[] {
+      return (listConversationsForNote.all(noteId) as Array<{ conversationId: string }>).map(
+        (r) => r.conversationId,
+      );
+    },
+    setConcluded(conversationId: string, concluded: boolean, updatedAt: number): void {
+      setConcluded.run(concluded ? 1 : 0, updatedAt, conversationId);
+    },
+    remove(conversationId: string): void {
+      const tx = db.transaction(() => {
+        deleteSources.run(conversationId);
+        removeSession.run(conversationId);
+      });
+      tx();
+    },
+    removeNote(noteId: string): void {
+      removeNoteSource.run(noteId);
     },
   };
 }

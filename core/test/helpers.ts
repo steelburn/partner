@@ -103,6 +103,7 @@ import {
   createNoteStore,
   createNoteVersionStore,
   createNoteGraphStore,
+  createBrainstormSessionStore,
   createNotesFtsStore,
   createPairingStore,
   createPendingToolStore,
@@ -127,6 +128,7 @@ import type {
   ConversationStore,
   NoteVersionStore,
   NoteGraphStore,
+  BrainstormSessionStore,
   DeployProfileStore,
   EpisodeStore,
   FileProposalStore,
@@ -293,6 +295,8 @@ export interface Harness {
   /** M16 F1/F3 stores (PLAN-M16.md, schema v14). */
   noteVersionStore: NoteVersionStore;
   noteGraphStore: NoteGraphStore;
+  /** M16 follow-up brainstorm linkage store (schema v15). */
+  brainstormSessionStore: BrainstormSessionStore;
   planStore: PlanStore;
   notesFtsStore: NotesFtsStore;
   notes?: NoteManager;
@@ -448,6 +452,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   // harness; the manager snapshots/reads them only when wired (below).
   const noteVersionStore = createNoteVersionStore(db);
   const noteGraphStore = createNoteGraphStore(db);
+  const brainstormSessionStore = createBrainstormSessionStore(db);
   const planStore = createPlanStore(db);
   const notesFtsStore = createNotesFtsStore(db);
   let notes: NoteManager | undefined;
@@ -635,6 +640,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       conversations,
       notes: notes as NoteManager,
       folders: folders as { get(id: string): unknown },
+      sessions: brainstormSessionStore,
       audit,
       demo,
       providerResolver: async () => (await options.brainstormProvider?.()) ?? null,
@@ -717,6 +723,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     noteLinkStore,
     noteVersionStore,
     noteGraphStore,
+    brainstormSessionStore,
     planStore,
     notesFtsStore,
     notes,

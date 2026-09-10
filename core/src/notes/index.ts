@@ -43,6 +43,7 @@ export {
   createBrainstormManager,
   buildBrainstormBundle,
   demoBrainstormReply,
+  brainstormSetKey,
   BrainstormError,
   brainstormError,
   brainstormErrorStatus,

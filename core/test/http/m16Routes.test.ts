@@ -155,6 +155,77 @@ describe('M16 brainstorm route', () => {
       h.close();
     }
   });
+
+  it('reopens the active session, lists it, then conclude → new + reopen route', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const n1 = await request(h.app).post('/v1/notes').set(authed(token)).send({ title: 'Seed A', content: 'a' });
+      const n2 = await request(h.app).post('/v1/notes').set(authed(token)).send({ title: 'Seed B', content: 'b' });
+      const ids = [n1.body.id as string, n2.body.id as string];
+
+      const first = await request(h.app).post('/v1/notes/brainstorm').set(authed(token)).send({ noteIds: ids });
+      expect(first.status).toBe(201);
+      expect(first.body.reused).toBe(false);
+
+      // Same set (reversed) reuses — no new conversation.
+      const again = await request(h.app)
+        .post('/v1/notes/brainstorm')
+        .set(authed(token))
+        .send({ noteIds: [...ids].reverse() });
+      expect(again.body).toMatchObject({ conversationId: first.body.conversationId, reused: true });
+
+      // Graph carries the linkage back to the nodes.
+      const graph = await request(h.app).get('/v1/notes/graph').set(authed(token));
+      expect(graph.body.brainstorms).toHaveLength(1);
+      expect(graph.body.brainstorms[0]).toMatchObject({
+        conversationId: first.body.conversationId,
+        concluded: false,
+      });
+
+      const listed = await request(h.app).get('/v1/notes/brainstorm').set(authed(token));
+      expect(listed.body.sessions).toHaveLength(1);
+      const byNote = await request(h.app)
+        .get(`/v1/notes/brainstorm?noteId=${ids[0] as string}`)
+        .set(authed(token));
+      expect(byNote.body.sessions).toHaveLength(1);
+
+      // One conversation's session (the chat header) + null for a non-brainstorm.
+      const byConversation = await request(h.app)
+        .get(`/v1/notes/brainstorm?conversationId=${first.body.conversationId as string}`)
+        .set(authed(token));
+      expect(byConversation.body.session).toMatchObject({
+        conversationId: first.body.conversationId,
+        concluded: false,
+      });
+      const noSession = await request(h.app)
+        .get('/v1/notes/brainstorm?conversationId=nope')
+        .set(authed(token));
+      expect(noSession.body.session).toBeNull();
+
+      const concluded = await request(h.app)
+        .post(`/v1/notes/brainstorm/${first.body.conversationId as string}/conclude`)
+        .set(authed(token));
+      expect(concluded.status).toBe(200);
+      expect(concluded.body.session.concluded).toBe(true);
+
+      const fresh = await request(h.app).post('/v1/notes/brainstorm').set(authed(token)).send({ noteIds: ids });
+      expect(fresh.body.reused).toBe(false);
+      expect(fresh.body.conversationId).not.toBe(first.body.conversationId);
+
+      const reopened = await request(h.app)
+        .post(`/v1/notes/brainstorm/${first.body.conversationId as string}/reopen`)
+        .set(authed(token));
+      expect(reopened.body.session.concluded).toBe(false);
+
+      const missing = await request(h.app)
+        .post('/v1/notes/brainstorm/nope/reopen')
+        .set(authed(token));
+      expect(missing.status).toBe(404);
+    } finally {
+      h.close();
+    }
+  });
 });
 
 describe('M16 asset Discuss + conversation lineage', () => {

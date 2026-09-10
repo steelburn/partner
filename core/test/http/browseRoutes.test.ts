@@ -4,6 +4,7 @@
  * action — session-gated, audited, no broker/roots required.
  */
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { demoHarness, ALLOWED_HOST } from '../helpers.js';
@@ -70,7 +71,9 @@ describe('M16 F7 /v1/files/browse', () => {
       const missing = await request(h.app)
         .get('/v1/files/browse')
         .set(authed(token))
-        .query({ path: '/definitely-not-a-partner-folder-9f8e7d6c' });
+        // Platform-agnostic ABSOLUTE path (a POSIX `/…` path is rejected as
+        // invalid on Windows before the filesystem is touched).
+        .query({ path: join(homedir(), 'definitely-not-a-partner-folder-9f8e7d6c') });
       expect(missing.status).toBe(404);
 
       const unauthed = await request(h.app).get('/v1/files/browse');

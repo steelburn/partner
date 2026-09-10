@@ -519,3 +519,44 @@ path is exercised on the Windows CI build.
   re-staged from `core/src/index.ts` by the windows-build workflow, so the
   packaged app picks up the new routes on the next CI build; local
   `PARTNER_CORE_BUNDLE`/dev mode already run the live source.
+
+## 16. Follow-up — linked, reopenable brainstorms (2026-09-10, schema v15)
+
+**Requirement.** A brainstorm is linked back to the nodes it came from and is
+viewable in the graph; clicking **Brainstorm (N)** over a set that already has
+a session opens that session instead of starting a new one — unless the
+session was **concluded**, in which case a fresh one starts and the concluded
+one can be **reopened** to continue that path.
+
+**Design.**
+
+1. **Linkage tables (schema v14 → v15).** `brainstorm_sessions(conversation_id
+   PK, set_key, concluded, used, truncated, created_at, updated_at)` +
+   `brainstorm_sources(conversation_id, note_id)` (PK both, index on note_id).
+   `set_key` = `brainstormSetKey(noteIds)` (unique ids sorted asc, NUL-joined)
+   so order/duplicates never fork a session. Additive `CREATE TABLE IF NOT
+   EXISTS`; no guarded columns.
+2. **Find-or-create.** `POST /v1/notes/brainstorm` validates every source
+   first, then returns the newest **active** session for the exact set
+   (`reused: true`) or creates a new conversation/provider reply and links it
+   (`reused: false`). A concluded session never short-circuits a start.
+3. **Conclude / reopen.** `POST /v1/notes/brainstorm/:id/conclude` and
+   `.../reopen` flip owner state (audited `brainstorm.conclude` /
+   `brainstorm.reopen`); `GET /v1/notes/brainstorm[?noteId=]` lists sessions.
+4. **Graph linkage.** `GET /v1/notes/graph` carries `brainstorms` (sessions
+   with their source ids); the canvas badges each linked node, lists the
+   selected note's sessions, and opens/concludes/reopens them. The
+   Brainstorm button reads **Open brainstorm (N)** when the selection already
+   has an active session in both the graph and list multi-select.
+5. **Chat header.** `GET /v1/notes/brainstorm?conversationId=` resolves one
+   open conversation's session; the chat bar shows
+   `Brainstorm active|concluded` with **Conclude**/**Reopen** in place
+   (toggled, audited, busy/error states).
+6. **Lifecycle.** Deleting a conversation prunes its session lazily on the
+   next read. Owner data: ids, titles, counts only — note bodies stay in the
+   conversation, never in audit.
+
+**Tests.** `core/test/notes/brainstorm.test.ts` (reuse, conclude→new,
+reopen, 404, dangling prune, byConversation) · `core/test/http/m16Routes.test.ts`
+(reuse + graph passthrough + list + by-conversation + conclude/reopen 404) ·
+db-migrate asserts v15 + both tables · web `m16-lib.test.ts` client cases.

@@ -89,7 +89,8 @@ wells.
 ## Typography
 
 - Family: Inter with system fallbacks (`--font-family`); UI and content share
-  the family.
+  the family. Code, file paths and diffs use the fixed-width family
+  (`--font-mono`) so artifacts read as machine text, never prose.
 - Scale (modular, snapped): 12 / 14 / 16 / 20 / 25 / 32 px
   (`--fs-xs…xxl`); body default 16. Weights 400/500/600/700 (`--fw-*`).
   Line-height ~1.5 body, 1.25 headings. Flush-left text; no justified text,

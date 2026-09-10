@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Persona } from '@partner/shared';
 import NotesSegment from './NotesSegment.js';
 import PlansSegment from './PlansSegment.js';
@@ -14,6 +14,8 @@ export interface NotesViewProps {
   active?: boolean;
   /** M11 F6: increments open the quick-capture composer (global action). */
   captureSignal?: number;
+  /** M16 wiki-links: open a note requested from chat (nonce = repeat clicks). */
+  focusNote?: { id: string; nonce: number } | null;
   /** M16 F2: open a conversation (brainstorm kick-off lands in a chat). */
   onOpenConversation?: (conversationId: string) => void;
 }
@@ -26,10 +28,16 @@ export interface NotesViewProps {
  * planner session survives switching between them; only the visible segment
  * loads data.
  */
-export default function NotesView({ personas, onUnpair, active, captureSignal, onOpenConversation }: NotesViewProps) {
+export default function NotesView({ personas, onUnpair, active, captureSignal, focusNote, onOpenConversation }: NotesViewProps) {
   const [tab, setTab] = useState<NotesTab>('notes');
   const notesActive = active === true && tab === 'notes';
   const plansActive = active === true && tab === 'plans';
+
+  // A chat wiki-link must land in the editor even if the user last left the
+  // view on the Plans tab.
+  useEffect(() => {
+    if (focusNote !== undefined && focusNote !== null) setTab('notes');
+  }, [focusNote]);
 
   return (
     <section className="notes" aria-label="Notes and plans">
@@ -70,6 +78,7 @@ export default function NotesView({ personas, onUnpair, active, captureSignal, o
             active={notesActive}
             onUnpair={onUnpair}
             captureSignal={captureSignal}
+            focusNote={focusNote}
             onOpenConversation={onOpenConversation}
           />
         </div>

@@ -10,6 +10,19 @@ import { buildAssetDiscussQuote, DISCUSS_QUOTE_CHARS } from '../src/lib/asset-qu
 import type { Asset } from '@partner/shared';
 import { ApiRequestError } from '../src/lib/api.js';
 import { browseDirectories, parseBrowseResult } from '../src/lib/tools.js';
+import {
+  concludeBrainstorm,
+  fetchBrainstormSession,
+  fetchBrainstormSessions,
+  reopenBrainstorm,
+} from '../src/lib/notes.js';
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
 
 describe('M16 F7 filesystem browse client', () => {
   it('normalizes a browse response (directories only, parent optional)', () => {
@@ -122,6 +135,53 @@ describe('M16 F5 native save bridge', () => {
     const invoke = async (): Promise<{ saved: boolean }> => ({ saved: true });
     const huge = 'x'.repeat(50 * 1024 * 1024 + 1);
     await expect(saveTextFileNative('x.md', huge, { invoke })).rejects.toThrow(/browser path/);
+  });
+});
+
+describe('M16 follow-up brainstorm session clients', () => {
+  it('lists sessions (optionally for one note) with the bearer token', async () => {
+    const calls: Array<{ url: string; auth: string | undefined }> = [];
+    const fetchImpl = async (input: string, init?: RequestInit): Promise<Response> => {
+      calls.push({ url: input, auth: (init?.headers as Record<string, string> | undefined)?.authorization });
+      return jsonResponse({ sessions: [] });
+    };
+    await fetchBrainstormSessions('tok', undefined, { fetchImpl });
+    await fetchBrainstormSessions('tok', 'note 1/x', { fetchImpl });
+    expect(calls[0]!.url).toBe('/v1/notes/brainstorm');
+    expect(calls[1]!.url).toBe('/v1/notes/brainstorm?noteId=note%201%2Fx');
+    expect(calls[0]!.auth).toBe('Bearer tok');
+  });
+
+  it('fetches one conversation\'s session and tolerates null', async () => {
+    const calls: string[] = [];
+    const fetchImpl = async (input: string): Promise<Response> => {
+      calls.push(input);
+      return input.includes('nope')
+        ? jsonResponse({ session: null })
+        : jsonResponse({ session: { conversationId: 'c1', concluded: true } });
+    };
+    const found = await fetchBrainstormSession('tok', 'c1', { fetchImpl });
+    const missing = await fetchBrainstormSession('tok', 'nope', { fetchImpl });
+    expect(calls).toEqual([
+      '/v1/notes/brainstorm?conversationId=c1',
+      '/v1/notes/brainstorm?conversationId=nope',
+    ]);
+    expect(found).toMatchObject({ conversationId: 'c1', concluded: true });
+    expect(missing).toBeNull();
+  });
+
+  it('concludes and reopens with POST and unwraps the session', async () => {
+    const calls: Array<{ url: string; method: string | undefined }> = [];
+    const fetchImpl = async (input: string, init?: RequestInit): Promise<Response> => {
+      calls.push({ url: input, method: init?.method });
+      return jsonResponse({ session: { conversationId: 'c1', concluded: true } });
+    };
+    const concluded = await concludeBrainstorm('tok', 'c1', { fetchImpl });
+    const reopened = await reopenBrainstorm('tok', 'c1', { fetchImpl });
+    expect(calls[0]).toEqual({ url: '/v1/notes/brainstorm/c1/conclude', method: 'POST' });
+    expect(calls[1]).toEqual({ url: '/v1/notes/brainstorm/c1/reopen', method: 'POST' });
+    expect(concluded.conversationId).toBe('c1');
+    expect(reopened.conversationId).toBe('c1');
   });
 });
 

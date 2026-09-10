@@ -145,9 +145,12 @@ export function findStructuredBlock(text: string): StructuredBlockHit | null {
       };
     } else if (kind === 'asset') {
       const attrs = parseFenceAttrs(tail);
+      // Kind values are machine tokens, not prose: normalize case + spacing so
+      // `kind=Code` / `kind=" decision "` still render with the typed surface.
+      const rawKind = (attrs.get('kind') ?? 'custom').trim().toLowerCase();
       block = {
         kind: 'asset',
-        assetKind: attrs.get('kind') ?? 'custom',
+        assetKind: rawKind === '' ? 'custom' : rawKind,
         title: attrs.get('title') ?? fenceTailTitle(tail),
         body: bodyText.trim(),
       };

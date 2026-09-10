@@ -150,6 +150,98 @@ describe('M16 F2 brainstorm (demo harness)', () => {
   });
 });
 
+describe('M16 follow-up brainstorm linkage (demo harness)', () => {
+  it('reopens the ACTIVE session for the same note set (order/dupes ignored)', async () => {
+    const h = demoHarness();
+    try {
+      const [a, b] = await seedNotes(h, 2) as [string, string];
+      const first = await h.brainstorm!.start({ noteIds: [a, b] });
+      expect(first.reused).toBe(false);
+
+      const second = await h.brainstorm!.start({ noteIds: [b, a, a] });
+      expect(second).toMatchObject({
+        conversationId: first.conversationId,
+        reused: true,
+        used: 2,
+        truncated: 0,
+      });
+      // No duplicate conversation was created.
+      expect(h.conversations!.list().filter((c) => c.personaId === BRAINSTORM_PERSONA_ID)).toHaveLength(1);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('a concluded path starts fresh, stays listed, and can be reopened', async () => {
+    const h = demoHarness();
+    try {
+      const [a, b] = await seedNotes(h, 2) as [string, string];
+      const first = await h.brainstorm!.start({ noteIds: [a, b] });
+
+      const concluded = h.brainstorm!.conclude(first.conversationId);
+      expect(concluded.concluded).toBe(true);
+      expect(h.brainstorm!.sessions()[0]).toMatchObject({
+        conversationId: first.conversationId,
+        concluded: true,
+        noteIds: expect.arrayContaining([a, b]),
+      });
+
+      // Concluded → a click starts a NEW conversation (the old one is kept).
+      const second = await h.brainstorm!.start({ noteIds: [a, b] });
+      expect(second.reused).toBe(false);
+      expect(second.conversationId).not.toBe(first.conversationId);
+      expect(h.brainstorm!.sessions()).toHaveLength(2);
+
+      // Reopening the concluded one makes it eligible for reuse again (and
+      // the newer one then loses the reuse slot to the most recent active).
+      const reopened = h.brainstorm!.reopen(first.conversationId);
+      expect(reopened.concluded).toBe(false);
+      expect(h.brainstorm!.sessionsForNote(a)).toHaveLength(2);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('404s conclude/reopen for an unknown brainstorm', () => {
+    const h = demoHarness();
+    try {
+      expect(() => h.brainstorm!.conclude('nope')).toThrowError(/not found/);
+      expect(() => h.brainstorm!.reopen('nope')).toThrowError(/not found/);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('resolves one conversation\'s session and returns null otherwise', async () => {
+    const h = demoHarness();
+    try {
+      const ids = await seedNotes(h, 1);
+      const started = await h.brainstorm!.start({ noteIds: ids });
+      const found = h.brainstorm!.byConversation(started.conversationId);
+      expect(found).toMatchObject({
+        conversationId: started.conversationId,
+        concluded: false,
+        noteIds: ids,
+      });
+      expect(h.brainstorm!.byConversation('nope')).toBeNull();
+    } finally {
+      h.close();
+    }
+  });
+
+  it('prunes the linkage when the conversation was deleted', async () => {
+    const h = demoHarness();
+    try {
+      const ids = await seedNotes(h, 1);
+      const started = await h.brainstorm!.start({ noteIds: ids });
+      h.conversations!.remove(started.conversationId);
+      expect(h.brainstorm!.sessions()).toHaveLength(0);
+    } finally {
+      h.close();
+    }
+  });
+});
+
 describe('M16 F2 bundle composer (pure)', () => {
   it('caps per-note excerpts and counts truncation', () => {
     const notes = [

@@ -16,23 +16,30 @@ export interface FencedCodeBody {
   code: string;
 }
 
-/** A fence-open line: ```lang — the body's first line when fenced. */
-const FENCE_OPEN = /^```([A-Za-z0-9_+.-]*)[ \t]*$/;
+/** A fence-open line: ```lang / ~~~lang, optionally with extra info text
+ *  (```js title="a"). Info strings never contain the fence character. */
+const FENCE_OPEN = /^(`{3,}|~{3,})[ \t]*([A-Za-z0-9_+.#-]*)(?:[ \t]+[^`~]*)?$/;
 
 /**
  * Inner code when the whole body is exactly one fenced block: a first line
- * ```lang, a last line ```, and no fence line in between (so multiple
- * blocks or a trailing prose paragraph never match). Else null.
+ * ```lang (or ~~~lang), a closing fence of the same character and at least
+ * the same length, and no fence line in between (so multiple blocks or a
+ * trailing prose paragraph never match). Else null.
  */
 export function singleFencedCode(body: string): FencedCodeBody | null {
   const lines = body.trim().split(/\r?\n/);
   if (lines.length < 3) return null;
   const open = FENCE_OPEN.exec(lines[0]?.trim() ?? '');
-  const close = (lines[lines.length - 1]?.trim() ?? '') === '```';
-  if (open === null || !close) return null;
+  if (open === null) return null;
+  const marker = open[1] ?? '';
+  const fenceChar = marker[0] ?? '`';
+  const close = lines[lines.length - 1]?.trim() ?? '';
+  const closeRe = new RegExp(`^\\${fenceChar}{${marker.length},}$`);
+  if (!closeRe.test(close)) return null;
+  const innerRe = new RegExp(`^\\s*\\${fenceChar}{3,}`);
   const inner = lines.slice(1, -1);
-  if (inner.some((line) => line.trimStart().startsWith('```'))) return null;
-  const lang = (open[1] ?? '').trim().toLowerCase();
+  if (inner.some((line) => innerRe.test(line))) return null;
+  const lang = (open[2] ?? '').trim().toLowerCase();
   return { code: inner.join('\n').trim(), lang: lang === '' ? null : lang };
 }
 
@@ -63,7 +70,11 @@ export function codeAssetPreview(body: string): CodePreviewSource | null {
     return { source: fenced.code, lang: fenced.lang as 'html' | 'css' };
   }
   const trimmed = body.trim();
-  const raw = trimmed !== '' && !trimmed.includes('```') && RAW_HTML_START.test(trimmed);
+  const raw =
+    trimmed !== '' &&
+    !trimmed.includes('```') &&
+    !trimmed.includes('~~~') &&
+    RAW_HTML_START.test(trimmed);
   if (raw) return { source: trimmed, lang: 'html' };
   return null;
 }
