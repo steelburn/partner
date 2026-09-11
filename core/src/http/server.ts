@@ -359,8 +359,9 @@ function assembleRequestMessages(input: {
         : systemPrompt;
     out.push({ role: 'system', content: personaIdentity });
     // M11 C3: teach capable personas the :::partner.* container grammar for
-    // clickable choices (F9) and assets (F10). Deterministic, opt-in per
-    // conversation feature set (default on for persisted persona chat).
+    // clickable choices (F9), multi-question forms and assets (F10).
+    // Deterministic, opt-in per conversation feature set (default on for
+    // persisted persona chat).
     if (input.persona !== null) {
       applyStructuredGuidance(out, systemIndex);
       // M11 F3: a persona's DEFAULT skills are announced so the model can

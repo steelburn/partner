@@ -5,7 +5,8 @@
  * HTML (react-markdown + remark-gfm + rehype-sanitize; raw HTML never
  * renders). `:::partner.*` containers (C3) are sliced out before markdown
  * parsing and rendered by typed components — choices (F9) become clickable
- * single/multi option cards; asset containers (F10) keep their body visible
+ * single/multi option cards; forms become multi-question cards that submit a
+ * single labelled answer message; asset containers (F10) keep their body visible
  * in the transcript: a kind+title header followed by the artifact rendered
  * inline (prose assets read as markdown, `kind=code` reads as a code well;
  * html/css code assets offer the F12 sandboxed Preview via onPreviewCode).
@@ -23,6 +24,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
 import type { ChoiceMode } from '@partner/shared';
 import { ChoiceCard } from './ChoiceCard.js';
+import { FormCard } from './FormCard.js';
 import { WikiLinkChip, type WikiNoteTarget } from './WikiLinkChip.js';
 import { codeAssetBody, codeAssetPreview } from './lib/code-assets.js';
 import { linkifyWikiLinks, wikiTitleFromHref } from './lib/wiki-links.js';
@@ -186,6 +188,17 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
             const message = mode === 'multi' ? labels.join('; ') : (labels[0] ?? '');
             onAnswer?.(message);
           }}
+        />,
+      );
+    } else if (block.kind === 'form') {
+      // Multiple open-ended questions: one input per question, submit once.
+      segments.push(
+        <FormCard
+          key={`form-${index}`}
+          title={block.title}
+          questions={block.questions}
+          busy={busy === true}
+          onConfirm={(message) => onAnswer?.(message)}
         />,
       );
     } else {

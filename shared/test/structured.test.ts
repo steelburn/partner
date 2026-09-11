@@ -66,6 +66,35 @@ describe('partner structured containers (C3)', () => {
     if (blank?.block.kind === 'asset') expect(blank.block.assetKind).toBe('custom');
   });
 
+  it('parses form containers with one question per bullet', () => {
+    const text =
+      'A couple of things:\n\n:::partner.form title="Kickoff"\n- What problem are you solving?\n- Who is the primary user?\n:::\n\nThanks.';
+    const hit = findStructuredBlock(text);
+    expect(hit?.block.kind).toBe('form');
+    if (hit?.block.kind === 'form') {
+      expect(hit.block.title).toBe('Kickoff');
+      expect(hit.block.questions).toEqual([
+        'What problem are you solving?',
+        'Who is the primary user?',
+      ]);
+    }
+    // The prose around the container survives the slice.
+    expect(text.slice(0, hit?.start ?? 0)).toContain('A couple of things:');
+    expect(text.slice(hit?.end ?? 0)).toContain('Thanks.');
+  });
+
+  it('takes a form title from the fence tail or body lead line', () => {
+    const tail = findStructuredBlock(':::partner.form Kickoff questions\n- a?\n- b?\n::: ');
+    if (tail?.block.kind === 'form') expect(tail.block.title).toBe('Kickoff questions');
+    const lead = findStructuredBlock(':::partner.form\nKickoff questions\n- a?\n- b?\n::: ');
+    if (lead?.block.kind === 'form') expect(lead.block.title).toBe('Kickoff questions');
+  });
+
+  it('ignores a form with no questions and one left unclosed', () => {
+    expect(findStructuredBlock(':::partner.form title="x"\njust prose\n:::')).toBeNull();
+    expect(findStructuredBlock(':::partner.form\n- a?\n- b?')).toBeNull();
+  });
+
   it('multiple blocks are found left to right with correct offsets', () => {
     const text =
       'lead\n:::partner.choice\n- one\n:::\nmiddle\n:::partner.asset kind=code\nx();\n:::\ntail';

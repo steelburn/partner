@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement as h } from 'react';
 import { PartnerMarkdown } from '../src/Markdown.js';
 import { ChoiceCard } from '../src/ChoiceCard.js';
+import { FormCard, formatFormAnswers } from '../src/FormCard.js';
 
 function render(props: {
   text: string;
@@ -112,6 +113,59 @@ describe('ChoiceCard (F9)', () => {
     // Server rendering cannot click; assert the wiring contract instead:
     expect(card).toBeTruthy();
     void answer;
+  });
+});
+
+describe('PartnerMarkdown form containers (multi-question)', () => {
+  it('renders one input per question and a single submit, keeping prose', () => {
+    const html = render({
+      text:
+        'Before I draft it:\n\n:::partner.form title="A few questions"\n- What problem are you solving?\n- Who is the primary user?\n:::\n\nThanks!',
+    });
+    expect(html).not.toContain(':::partner.form');
+    expect(html).not.toContain(':::');
+    expect(html).toContain('form-card');
+    expect(html).toContain('A few questions');
+    expect(html).toContain('What problem are you solving?');
+    expect(html).toContain('Who is the primary user?');
+    // Two separate fields, but only one submit action.
+    expect(html.match(/<textarea/g)?.length).toBe(2);
+    expect(html.match(/Submit answers/g)?.length).toBe(1);
+    expect(html).toContain('Before I draft it:');
+    expect(html).toContain('Thanks!');
+  });
+
+  it('keeps an unclosed form container as visible text (never materialized)', () => {
+    const html = render({ text: ':::partner.form\n- a?\n- b?' });
+    expect(html).toContain(':::partner.form');
+  });
+
+  it('busy forms disable every field and the submit', () => {
+    const html = renderToStaticMarkup(
+      h(FormCard, {
+        title: 'T',
+        questions: ['a?', 'b?'],
+        busy: true,
+        onConfirm: () => undefined,
+      }),
+    );
+    expect(html).toMatch(/disabled/);
+  });
+});
+
+describe('formatFormAnswers', () => {
+  it('labels each non-empty answer with its question and joins them once', () => {
+    const message = formatFormAnswers(
+      ['What problem?', 'Who benefits?', 'Deadline?'],
+      ['Slow onboarding', '  ', 'Friday'],
+    );
+    expect(message).toBe(
+      'Q: What problem?\nA: Slow onboarding\n\nQ: Deadline?\nA: Friday',
+    );
+  });
+
+  it('returns an empty string when nothing was answered', () => {
+    expect(formatFormAnswers(['a?'], ['  '])).toBe('');
   });
 });
 

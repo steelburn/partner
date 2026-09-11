@@ -37,6 +37,24 @@ const INSTRUCTIONS: ReadonlyArray<readonly [string, string]> = [
     ].join('\n'),
   ],
   [
+    'forms',
+    [
+      'When you need to ask the user MORE THAN ONE open-ended question (their answers ',
+      'are free text, not a fixed set of options), ask them together as a single form ',
+      'so the user answers each in its own field and submits once:',
+      '',
+      ':::partner.form title="A few questions"',
+      '- What problem are you solving?',
+      '- Who is the primary user?',
+      ':::',
+      '',
+      'Rules: one open-ended question per bullet line; use a form when there are two ',
+      'or more such questions; keep any surrounding explanation as normal text above ',
+      'the container; do not mix fixed-choice options into a form (use a choice ',
+      'container instead).',
+    ].join('\n'),
+  ],
+  [
     'assets',
     [
       'When you produce a deliberate artifact the user may want to keep (a decision, a ',
@@ -55,8 +73,8 @@ const INSTRUCTIONS: ReadonlyArray<readonly [string, string]> = [
 
 /**
  * The full guidance suffix for a turn. `enabled` lists the feature ids the
- * conversation has opted into (both by default). Deterministic — same input,
- * same string — so tests can assert it verbatim.
+ * conversation has opted into (choices, forms and assets by default).
+ * Deterministic — same input, same string — so tests can assert it verbatim.
  */
 export function structuredInstructions(enabled: ReadonlySet<string>): string {
   const blocks: string[] = [];
@@ -76,6 +94,7 @@ export function structuredInstructions(enabled: ReadonlySet<string>): string {
 /** Default opt-in set for persisted persona chat turns. */
 export const DEFAULT_STRUCTURED_FEATURES: ReadonlySet<string> = new Set([
   'choices',
+  'forms',
   'assets',
 ]);
 

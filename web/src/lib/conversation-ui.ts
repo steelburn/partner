@@ -23,8 +23,14 @@ export interface ChoiceSelection {
   multi: string[];
 }
 
+/** Multi-question form drafts hold one free-text answer per question. */
+export interface FormDraft {
+  answers: string[];
+}
+
 const modelPicks = new Map<string, ModelPick>();
 const choiceSelections = new Map<string, Map<string, ChoiceSelection>>();
+const formDrafts = new Map<string, Map<string, FormDraft>>();
 const assetOpens = new Map<string, string | null>();
 
 export const conversationUi = {
@@ -70,6 +76,30 @@ export const conversationUi = {
     }
     cards.set(key, selection);
   },
+  // ---- multi-question forms (:::partner.form) ---------------------------
+  /** Stable per-form key: the form's own identity (title + questions). */
+  getFormKey(title: string | null, questions: string[]): string {
+    return `${title ?? ''}\u001f${questions.join('\u001f')}`;
+  },
+  getForm(conversationId: string | null, key: string): FormDraft | null {
+    if (conversationId === null) return null;
+    return formDrafts.get(conversationId)?.get(key) ?? null;
+  },
+  setForm(conversationId: string | null, key: string, draft: FormDraft | null): void {
+    if (conversationId === null) return;
+    if (draft === null) {
+      const forms = formDrafts.get(conversationId);
+      forms?.delete(key);
+      if (forms !== undefined && forms.size === 0) formDrafts.delete(conversationId);
+      return;
+    }
+    let forms = formDrafts.get(conversationId);
+    if (forms === undefined) {
+      forms = new Map<string, FormDraft>();
+      formDrafts.set(conversationId, forms);
+    }
+    forms.set(key, draft);
+  },
   // ---- assets lane open row ---------------------------------------------
   getAssetOpen(conversationId: string | null): string | null {
     if (conversationId === null) return null;
@@ -85,6 +115,7 @@ export const conversationUi = {
     if (conversationId === null) return;
     modelPicks.delete(conversationId);
     choiceSelections.delete(conversationId);
+    formDrafts.delete(conversationId);
     assetOpens.delete(conversationId);
   },
 };

@@ -15,11 +15,16 @@
  *   - Option B
  *   :::
  *
+ *   :::partner.form title="A few questions"
+ *   - What problem are you solving?
+ *   - Who is the primary user?
+ *   :::
+ *
  *   :::partner.asset kind=code title="Swap two numbers"
  *   ...raw markdown body (verbatim, trimmed at both ends)...
  *   :::
  *
- * Both parsers are strict about the fence (`:::` on its own line) and
+ * Every parser is strict about the fence (`:::` on its own line) and
  * tolerant of everything else; malformed containers are ignored and their
  * text simply renders as markdown prose.
  */
@@ -37,6 +42,17 @@ export interface ChoiceBlock {
   options: string[];
 }
 
+/**
+ * M18 multi-question form container: several open-ended questions the user
+ * answers one by one in separate fields and submits once. One question per
+ * bullet line; a form must carry at least one question to materialize.
+ */
+export interface FormBlock {
+  kind: 'form';
+  title: string | null;
+  questions: string[];
+}
+
 /** M11 F10 asset container (reserved grammar; consumers land in F10). */
 export interface AssetBlock {
   kind: 'asset';
@@ -45,7 +61,7 @@ export interface AssetBlock {
   body: string;
 }
 
-export type StructuredBlock = ChoiceBlock | AssetBlock;
+export type StructuredBlock = ChoiceBlock | FormBlock | AssetBlock;
 
 /** One complete container: the block + its absolute text range [start, end). */
 export interface StructuredBlockHit<T extends StructuredBlock = StructuredBlock> {
@@ -103,7 +119,7 @@ export function findStructuredBlock(text: string): StructuredBlockHit | null {
     const open = OPEN_FENCE.exec(lines[index] ?? '');
     if (!open) continue;
     const kind = (open[1] ?? '').toLowerCase();
-    if (kind !== 'choice' && kind !== 'asset') continue;
+    if (kind !== 'choice' && kind !== 'asset' && kind !== 'form') continue;
 
     // Find the closing fence; unclosed containers are invisible to parsers.
     let endLine = -1;
@@ -142,6 +158,26 @@ export function findStructuredBlock(text: string): StructuredBlockHit | null {
         mode,
         title: attrs.get('title') ?? title ?? fallbackTitle,
         options,
+      };
+    } else if (kind === 'form') {
+      const attrs = parseFenceAttrs(tail);
+      const questions: string[] = [];
+      let fallbackTitle: string | null = null;
+      for (const line of body) {
+        const bullet = BULLET.exec(line ?? '');
+        if (bullet) {
+          const question = (bullet[1] ?? '').trim();
+          if (question !== '') questions.push(question);
+          continue;
+        }
+        const trimmed = (line ?? '').trim();
+        if (trimmed !== '' && fallbackTitle === null) fallbackTitle = trimmed;
+      }
+      if (questions.length === 0) continue; // not a usable form — leave as text
+      block = {
+        kind: 'form',
+        title: attrs.get('title') ?? fenceTailTitle(tail) ?? fallbackTitle,
+        questions,
       };
     } else if (kind === 'asset') {
       const attrs = parseFenceAttrs(tail);

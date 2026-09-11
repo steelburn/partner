@@ -14,10 +14,12 @@ describe('M11 C3 structured guidance', () => {
     const b = structuredInstructions(DEFAULT_STRUCTURED_FEATURES);
     expect(a).toBe(b);
     expect(a).toContain(':::partner.choice');
+    expect(a).toContain(':::partner.form');
     expect(a).toContain(':::partner.asset');
     expect(a).toContain('mode=single');
     expect(a).toContain('mode=multi');
     expect(structuredInstructions(new Set(['choices']))).not.toContain('partner.asset');
+    expect(structuredInstructions(new Set(['choices']))).not.toContain('partner.form');
     expect(structuredInstructions(new Set())).toBe('');
   });
 
