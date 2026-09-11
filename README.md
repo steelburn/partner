@@ -41,6 +41,14 @@ npm run dev:core     # core on http://127.0.0.1:4390 (demo mode by default)
 npm run dev:web      # SPA dev server on :5173 (standalone dev)
 ```
 
+`dev:core` binds the desktop's own port. A packaged Partner window is now
+owned by its core: it mints a per-boot nonce, hands it to the sidecar it
+spawns, and requires the listener on :4390 to echo it (`GET /v1/boot`) before
+the window treats it as its own. So a leftover dev core no longer hijacks the
+app invisibly — the desktop reports the conflict and refuses to use it. Stop
+the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
+“already serving …”, something else still holds :4390.
+
 ## Status (2026-09-07)
 
 M0–M15 implemented and verified (PLAN.md §15): schema v13; current root

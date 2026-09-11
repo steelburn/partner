@@ -939,6 +939,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     hostAllowlist: config.hostAllowlist,
     staticDir: config.staticDir,
     deviceSecret: config.deviceSecret,
+    bootNonce: config.bootNonce,
     pairing,
     sessions,
     audit,

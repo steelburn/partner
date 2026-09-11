@@ -15,6 +15,22 @@
 // the old in-memory demo boot (dev/CI/webapp container). Tray = Show pairing
 // code / Open Partner / Quit.
 //
+// M15 hardening (boot identity): a bare TCP connect to :4390 proves only that
+// SOMETHING is bound there. A leftover `npm run dev:core` (or any local
+// process) answered that probe, so the shell logged "core is up" while its own
+// sidecar never served a request — and the webview rendered against the
+// stranger, silently in the wrong mode with the wrong database.
+//
+// Observed on Windows, where it is worse than a lost bind: two Node listeners
+// BOTH bind 127.0.0.1:4390 (SO_REUSEADDR) and the stray wins every connection
+// while the shell's own sidecar stays alive and logs that it is serving. So
+// there is no EADDRINUSE to notice and no dying child to mourn — only the
+// nonce check below can tell the two apart.
+//
+// So the shell mints a per-boot nonce, hands it to the sidecar it spawns, and
+// requires the listener to echo it at GET /v1/boot before the core counts as
+// its own. A conflict is now reported instead of half-hidden.
+//
 // Not-yet-implemented (future milestones): autostart, updater, and
 // restart/recovery policy when the core dies.
 
@@ -57,18 +73,150 @@ fn normalize_win_path(p: std::path::PathBuf) -> std::path::PathBuf {
     p
 }
 
-/// Polls the loopback port until the core accepts connections.
-fn wait_for_core(timeout: Duration) -> std::io::Result<()> {
+/// What GET /v1/boot told us about whatever holds the core port.
+enum BootProbe {
+    /// A Partner core answered.
+    Core(CoreBootReply),
+    /// Something is listening and speaking HTTP, but it is not a Partner core
+    /// (or it predates the boot-identity route) — it must never back the window.
+    Impostor(String),
+    /// Nothing is listening yet (connection refused / reset).
+    Absent(String),
+}
+
+/// The core's answer to GET /v1/boot (core/src/http/server.ts). Every field is
+/// optional so a future core that drops or renames one degrades into
+/// "unrecognised" rather than failing to parse.
+#[derive(serde::Deserialize)]
+struct CoreBootReply {
+    #[serde(rename = "bootNonce")]
+    boot_nonce: Option<String>,
+    version: Option<String>,
+    demo: Option<bool>,
+}
+
+impl CoreBootReply {
+    /// Why this listener is not ours — a complete sentence with the remedy,
+    /// because the fix differs by cause (a squatter must be quit).
+    fn reject_reason(&self) -> String {
+        let version = self.version.as_deref().unwrap_or("unknown version");
+        let mode = match self.demo {
+            Some(true) => "demo mode",
+            Some(false) => "live mode",
+            None => "unknown mode",
+        };
+        let origin = match self.boot_nonce {
+            Some(_) => "belongs to a different Partner shell",
+            None => "was started outside the shell (e.g. `npm run dev:core`)",
+        };
+        format!(
+            "a Partner core {version} ({mode}) that {origin} is already serving \
+             {CORE_URL}. Quit that core (or the other Partner window) and relaunch."
+        )
+    }
+}
+
+/// :4390 is held by something that is NOT a shell-spawned Partner core.
+///
+/// The commonest cause in a dev tree is a bundled core built before
+/// GET /v1/boot existed: the shell and its bundle ship as one artifact set, so
+/// skew there is a build problem, and saying so beats "a process is squatting"
+/// (which would send the user hunting for a process that does not exist).
+fn foreign_listener(reason: &str) -> String {
+    format!(
+        "something else is already serving {CORE_URL} ({reason}). Quit it and \
+         relaunch; if this Partner was built from a dev tree, rebuild its \
+         bundled core (`core-bundle.cjs`) so the core answers GET /v1/boot."
+    )
+}
+
+/// Why the shell could not reach its own core.
+enum CoreWait {
+    /// The core this shell spawned is serving the port.
+    Ready,
+    /// Another process holds the port. Carries a complete user-facing reason.
+    Foreign(String),
+    /// Nothing answered within the timeout.
+    Timeout { timeout: Duration, last: String },
+}
+
+impl CoreWait {
+    /// Log/dialog text describing the outcome.
+    fn message(&self) -> String {
+        match self {
+            CoreWait::Ready => format!("core is up at {CORE_URL}"),
+            CoreWait::Foreign(reason) => format!("Cannot start the Partner core: {reason}"),
+            CoreWait::Timeout { timeout, last } => format!(
+                "The Partner core did not answer on {CORE_URL} within {timeout:?} \
+                 (last error: {last})."
+            ),
+        }
+    }
+}
+
+/// Does the core that answered on the port belong to THIS shell?
+///
+/// `nonce` is the shell's own boot nonce, or `None` when it spawned no sidecar
+/// (PARTNER_NO_SIDECAR / unstaged bundle) — there is then nothing to match, and
+/// any Partner core on the port is by definition the intended one. When the
+/// shell DID spawn a sidecar, a listener reporting a different nonce — or none
+/// at all, like a leftover `npm run dev:core` — is not ours.
+fn core_is_ours(reply_nonce: Option<&str>, nonce: Option<&str>) -> bool {
+    match nonce {
+        None => true,
+        Some(expected) => reply_nonce == Some(expected),
+    }
+}
+
+/// Probes GET /v1/boot — the only way to tell the shell's own sidecar from
+/// whatever else might be holding the port.
+fn probe_core_boot() -> BootProbe {
+    let request = ureq::get(&format!("{CORE_URL}/v1/boot")).timeout(Duration::from_millis(750));
+    match request.call() {
+        Ok(response) => {
+            let body = match response.into_string() {
+                Ok(body) => body,
+                Err(err) => return BootProbe::Impostor(format!("unreadable response ({err})")),
+            };
+            match serde_json::from_str::<CoreBootReply>(&body) {
+                Ok(reply) => BootProbe::Core(reply),
+                Err(err) => BootProbe::Impostor(format!("unexpected response ({err})")),
+            }
+        }
+        // An HTTP status means a server IS there — just not one of ours.
+        Err(ureq::Error::Status(code, _)) => {
+            BootProbe::Impostor(format!("answered /v1/boot with HTTP {code}"))
+        }
+        Err(err) => BootProbe::Absent(err.to_string()),
+    }
+}
+
+/// Waits for the core THIS shell spawned to serve the port.
+///
+/// A bare TCP connect proves nothing: any process already bound to :4390
+/// accepts it. So the wait also requires the listener to echo the per-boot
+/// nonce handed to the sidecar. `nonce` is `None` when the shell spawned no
+/// sidecar at all (PARTNER_NO_SIDECAR, or an unstaged bundle that expects an
+/// out-of-band core) — there is then nothing to match, and any core on the
+/// port is by definition the intended one.
+fn wait_for_core(timeout: Duration, nonce: Option<&str>) -> CoreWait {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if std::net::TcpStream::connect((CORE_HOST, CORE_PORT)).is_ok() {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("core sidecar did not listen on {CORE_URL} within {timeout:?}"),
-            ));
+        match probe_core_boot() {
+            BootProbe::Core(reply) => {
+                if core_is_ours(reply.boot_nonce.as_deref(), nonce) {
+                    return CoreWait::Ready;
+                }
+                return CoreWait::Foreign(reply.reject_reason());
+            }
+            BootProbe::Impostor(detail) => return CoreWait::Foreign(foreign_listener(&detail)),
+            // The only state that keeps us waiting, so the deadline (and the
+            // transport error worth reporting) lives here.
+            BootProbe::Absent(detail) => {
+                if std::time::Instant::now() >= deadline {
+                    return CoreWait::Timeout { timeout, last: detail };
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -104,6 +252,10 @@ impl Drop for CoreChild {
 /// host-side bundle + web dist when the resources were not staged;
 /// PARTNER_NO_SIDECAR skips the spawn entirely (headless gate smoke).
 ///
+/// Returns the boot nonce of the sidecar it spawned, or `None` when it
+/// did not spawn one (unstaged bundle — an out-of-band core is expected on
+/// :4390 and there is no nonce to match it against).
+///
 /// M15 env policy:
 ///  - LIVE (default): DEMO_MODE=0, DB_PATH + SKILLS_DIR under the per-user
 ///    app-local data dir (created here), PARTNER_DEVICE_SECRET set. The OS
@@ -111,7 +263,7 @@ impl Drop for CoreChild {
 ///  - DEMO (PARTNER_DEMO_MODE=1): the historical env-free boot — in-memory
 ///    DB, fake keychain, /v1/dev/pair-code seam; skills stay under the
 ///    staged resources dir (throwaway).
-fn spawn_core(app: &tauri::App, demo: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn spawn_core(app: &tauri::App, demo: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let res_dir = app.path().resource_dir()?;
     // tauri returns verbatim (`\\?\`-prefixed) paths on Windows; node cannot
     // load a `\\?\C:\...` main script (its loader lstat's `C:` and dies), so
@@ -139,7 +291,8 @@ fn spawn_core(app: &tauri::App, demo: bool) -> Result<(), Box<dyn std::error::Er
             "[shell] core bundle not staged under resources — start the core \
              separately on :4390 or set PARTNER_CORE_BUNDLE"
         );
-        return Ok(());
+        // No sidecar, so no nonce: whoever holds :4390 is the intended core.
+        return Ok(None);
     };
     let web: Option<std::path::PathBuf> = if staged_web.is_dir() {
         Some(staged_web)
@@ -161,6 +314,12 @@ fn spawn_core(app: &tauri::App, demo: bool) -> Result<(), Box<dyn std::error::Er
     // exits itself if the shell dies by ANY path (graceful quit, crash,
     // force-kill) — no orphan core ever holds :4390 or the DB lock.
     envs.push(("PARTNER_PARENT_WATCH".to_string(), "1".to_string()));
+    // M15 hardening: mint the boot nonce HERE, where the sidecar is actually
+    // spawned, so the shell only ever demands a nonce from a core it started
+    // itself. The value is never logged (it is the ownership proof) and never
+    // leaves the loopback channel.
+    let boot_nonce = uuid::Uuid::new_v4().to_string();
+    envs.push(("PARTNER_CORE_NONCE".to_string(), boot_nonce.clone()));
     if demo {
         // Historical demo boot (PARTNER_DEMO_MODE=1): in-memory + fake keychain.
         envs.push(("DEMO_MODE".to_string(), "1".to_string()));
@@ -222,7 +381,7 @@ fn spawn_core(app: &tauri::App, demo: bool) -> Result<(), Box<dyn std::error::Er
             }
         }
     });
-    Ok(())
+    Ok(Some(boot_nonce))
 }
 
 /// M15: ask the core (over the header-guarded loopback device channel) for a
@@ -275,6 +434,23 @@ fn show_pairing_code(app: &tauri::AppHandle) {
             .message(message)
             .title(title)
             .kind(kind)
+            .buttons(MessageDialogButtons::Ok)
+            .blocking_show();
+    });
+}
+
+/// M15 hardening: tells the user why the window has no core behind it. The old
+/// behaviour — log, then let the webview show its error page — hid a stale dev
+/// core holding :4390, which is the exact failure the boot-nonce check detects.
+fn show_boot_failure(app: &tauri::AppHandle, message: &str) {
+    let handle = app.clone();
+    let message = message.to_string();
+    std::thread::spawn(move || {
+        let _ = handle
+            .dialog()
+            .message(message)
+            .title("Partner could not start")
+            .kind(MessageDialogKind::Error)
             .buttons(MessageDialogButtons::Ok)
             .blocking_show();
     });
@@ -380,19 +556,27 @@ pub fn run() {
             // PARTNER_NO_SIDECAR (headless gate / CI smoke): the artifact core
             // is started out-of-band on :4390, so the shell must not double-
             // spawn a sidecar. Normal desktop runs keep the default spawn.
-            if std::env::var_os("PARTNER_NO_SIDECAR").is_none() {
-                spawn_core(app, demo)?;
+            // The nonce is Some only when a sidecar was really spawned — an
+            // out-of-band core has nothing to match, so the identity check is
+            // skipped for it.
+            let sidecar_nonce = if std::env::var_os("PARTNER_NO_SIDECAR").is_none() {
+                spawn_core(app, demo)?
             } else {
                 println!("[shell] PARTNER_NO_SIDECAR set — skipping core sidecar spawn");
-            }
+                None
+            };
             // Give the core a moment to bind before the webview (declared
             // in tauri.conf.json at CORE_URL) finishes its first navigation.
-            match wait_for_core(Duration::from_secs(10)) {
-                Ok(()) => println!("[shell] core is up at {CORE_URL}"),
-                Err(err) => {
-                    // Skeleton behaviour: log and let the webview show its
-                    // error page. Real impl: retry policy + dialog.
-                    eprintln!("[shell] {err}");
+            // M15 hardening: readiness means "the core I spawned is
+            // serving", NOT "the port accepts connections" — a foreign
+            // listener must fail loudly instead of silently backing the window.
+            let outcome = wait_for_core(Duration::from_secs(10), sidecar_nonce.as_deref());
+            match &outcome {
+                CoreWait::Ready => println!("[shell] core is up at {CORE_URL}"),
+                _ => {
+                    let message = outcome.message();
+                    eprintln!("[shell] {message}");
+                    show_boot_failure(app.handle(), &message);
                 }
             }
             // The tray is the live pairing surface (code dialog) + window/quit
@@ -407,4 +591,38 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![save_text_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M15 hardening: the exact regression this check exists for. A leftover
+    /// dev core holds :4390 and reports no nonce; before this check the shell
+    /// accepted it, logged "core is up", and pointed the webview at it while
+    /// the real sidecar died with EADDRINUSE.
+    ///
+    /// On Windows the sidecar does not even die: both listeners bind and the
+    /// stray serves every request while the shell's own core logs that it is
+    /// up. Verified by launching the shell against a stray demo core on :4390
+    /// — the shell reported the conflict, and netstat showed only the stray.
+    #[test]
+    fn a_foreign_listener_is_not_our_core() {
+        assert!(!core_is_ours(None, Some("our-nonce")));
+        assert!(!core_is_ours(Some("another-shell-nonce"), Some("our-nonce")));
+    }
+
+    #[test]
+    fn our_own_sidecar_is_ours() {
+        assert!(core_is_ours(Some("our-nonce"), Some("our-nonce")));
+    }
+
+    /// PARTNER_NO_SIDECAR (headless gate) and the unstaged-bundle dev flow
+    /// both expect an out-of-band core: no nonce was minted, so nothing may be
+    /// demanded of the listener.
+    #[test]
+    fn without_a_spawned_sidecar_any_core_is_accepted() {
+        assert!(core_is_ours(Some("whatever"), None));
+        assert!(core_is_ours(None, None));
+    }
 }

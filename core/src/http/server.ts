@@ -4,7 +4,8 @@
  * Layering, in order:
  *  1. Loopback Host guard — 403 before any routing when the Host header is
  *     not on the allowlist (default `127.0.0.1:<port>` / `localhost:<port>`).
- *  2. Public surface — /v1/health and (demo only) /v1/dev/pair-code.
+ *  2. Public surface — /v1/health, /v1/boot (shell boot identity) and
+ *     (demo only) /v1/dev/pair-code.
  *  3. Pairing exchange — POST /v1/pair drives the 6-digit single-use manager
  *     and mints a `web` session bound to the caller's (allowlisted) origin.
  *  4. Authed group (Bearer + origin) — POST /v1/chat (SSE), GET /v1/audit,
@@ -129,6 +130,17 @@ export interface CoreAppOptions {
    * demo-only).
    */
   deviceSecret?: string;
+  /**
+   * M15 hardening (boot identity): the nonce the desktop shell minted for the
+   * sidecar it spawned (PARTNER_CORE_NONCE), echoed by GET /v1/boot so the
+   * shell can prove the listener on its port is the child it started. Without
+   * it, a stale core (or any local process) already holding :4390 answers the
+   * shell's bare TCP probe and the desktop silently renders against a foreign
+   * core while the real sidecar never served a request (POSIX: EADDRINUSE;
+   * Windows: both bind and the stray wins). NOT a credential: it grants no
+   * authority and guards no data. Absent in dev/CI/container runs.
+   */
+  bootNonce?: string;
   /** Optional built SPA directory served at / (stub at M0; the packaged shell wires the real path). */
   staticDir?: string;
   pairing: PairingManager;
@@ -1177,6 +1189,24 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       demo: options.demo,
       version: options.version,
       schemaVersion: options.schemaVersion,
+    });
+  });
+
+  // M15 hardening (boot identity): the shell refuses to treat a listener on
+  // its port as "its" core unless it echoes the nonce the shell handed this
+  // process, so a stale dev core squatting :4390 can no longer masquerade as
+  // the sidecar.
+  // UNLIKE the device channel below this route is always mounted — its whole
+  // job is diagnostics, and the shell must be able to tell "my sidecar has not
+  // bound yet" from "something else owns the port"; a missing route would
+  // read as the former. It discloses nothing new: version/demo are already
+  // public on /v1/health, and the nonce is a boot correlation id, so `null`
+  // only means no shell spawned this core (dev/CI/container).
+  app.get('/v1/boot', (_req: Request, res: Response) => {
+    res.json({
+      bootNonce: options.bootNonce ?? null,
+      version: options.version,
+      demo: options.demo,
     });
   });
 

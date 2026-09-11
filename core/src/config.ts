@@ -47,6 +47,19 @@ export interface CoreConfig {
    * code surface (the demo seam stays demo-only).
    */
   deviceSecret?: string;
+  /**
+   * M15 hardening (boot identity): the per-boot nonce the desktop shell
+   * minted for the sidecar it spawned (PARTNER_CORE_NONCE), echoed back at
+   * GET /v1/boot so the shell can prove the listener on its port is the
+   * child it started. A stray core — or any local process — already holding
+   * the port would otherwise answer the shell's bare TCP probe, and the
+   * desktop would render against a foreign core while the shell's own
+   * sidecar never served a request (POSIX: it dies with EADDRINUSE;
+   * Windows: both listeners bind and the stray wins every connection).
+   * NOT a credential: a boot correlation id that unlocks nothing. Absent in
+   * dev/CI/container runs, where no shell spawned this core.
+   */
+  bootNonce?: string;
   /** Host header allowlist (loopback only), derived from the port. */
   hostAllowlist: string[];
   codeTtlMs: number;
@@ -127,6 +140,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     staticDir: env.STATIC_DIR?.trim() || undefined,
     // M15: trim so a stray empty value behaves like unset (route hidden).
     deviceSecret: env.PARTNER_DEVICE_SECRET?.trim() || undefined,
+    // M15 hardening: same trimming rule — an empty nonce reads as "no shell
+    // spawned this core", and /v1/boot then reports null, not an empty string.
+    bootNonce: env.PARTNER_CORE_NONCE?.trim() || undefined,
     hostAllowlist: [`127.0.0.1:${port}`, `localhost:${port}`],
     codeTtlMs: readInt(env.PAIR_CODE_TTL_MS, 120_000, 1, Number.MAX_SAFE_INTEGER),
     maxAttempts: readInt(env.PAIR_MAX_ATTEMPTS, 3, 1, 100),
