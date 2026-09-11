@@ -560,3 +560,39 @@ one can be **reopened** to continue that path.
 reopen, 404, dangling prune, byConversation) · `core/test/http/m16Routes.test.ts`
 (reuse + graph passthrough + list + by-conversation + conclude/reopen 404) ·
 db-migrate asserts v15 + both tables · web `m16-lib.test.ts` client cases.
+
+## 17. Follow-up — graph connectors create note links (2026-09-11)
+
+**Requirement.** Drag a connector between two nodes on the Notes graph to
+establish a relationship: the drag writes it and the edge appears (and
+survives a reload).
+
+**Design.**
+
+1. **No new edge store.** Edges are note wiki-links (D1.1), so a connector
+   writes `[[Target title]]` into the note the drag started from — source =
+   the referencing note, matching the arrow. Backlinks, search, export and
+   the canvas all follow from the one write; removing a relationship stays
+   "edit the link out of the note" (or restore a version).
+2. **Pure edit helpers** (`web/src/lib/note-relate.ts`): `isLinkableTitle`
+   (non-empty, no `]`), `hasWikiLink` (case-insensitive, idempotent),
+   `appendWikiLink` (own trailing paragraph, empty body handled) and
+   `isLinkedAlready` (same arrow OR a bidirectional edge = already linked;
+   a lone reverse arrow is a real edit, rendered mutually by the core).
+3. **Canvas.** `onConnect` optimistically draws the edge, then GETs the live
+   source body, PUTs the augmented content and reloads the graph from core —
+   a failed write reverts instead of leaving a phantom arrow. Refusals
+   (self-loop, unlinkable title, duplicate) surface in a status/error line;
+   `nodesConnectable` is off while a write is in flight, and edge
+   reconnect/delete are disabled because an edge is derived data.
+4. **Refresh.** `onNoteMutated` bumps the NotesSegment reload tick so the
+   list freshness and any open editor refresh from the same write.
+5. **Affordance.** Handles get a crosshair cursor and an accent fill on
+   hover/connect; the in-flight connection line rides `--accent`; hint and
+   foot copy state that the link lands in the source note. Token-only, no
+   new dependency.
+
+**Verification.** `web/test/m16-lib.test.ts` (append / idempotence /
+linkability / already-linked) · live browser run: pair → two notes → Graph →
+drag Alpha → Beta → edge drawn + confirmation → opening Alpha shows
+`Alpha body text.` then `[[Beta research]]`.

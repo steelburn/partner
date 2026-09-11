@@ -7383,7 +7383,8 @@ select {
 }
 .n-graph-handle {
   /* Endpoint dots: token-only, kept quiet so node labels stay the focus.
-   * Sized on the touch/pointer grid and tinted with the edge stroke. */
+   * Sized on the touch/pointer grid and tinted with the edge stroke. The
+   * crosshair is the only hint that the dot starts a link. */
   width: 8px;
   height: 8px;
   min-width: 8px;
@@ -7391,10 +7392,26 @@ select {
   background: var(--surface-2);
   border: 1px solid var(--n-graph-edge);
   border-radius: var(--radius-full);
+  cursor: crosshair;
+}
+.n-graph-handle:hover,
+.n-graph-handle.connectingfrom,
+.n-graph-handle.connectingto {
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .n-graph-handle:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+.react-flow__connection-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.n-graph-notice {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 
 /* ==========================================================================

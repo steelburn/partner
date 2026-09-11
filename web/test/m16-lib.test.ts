@@ -16,6 +16,12 @@ import {
   fetchBrainstormSessions,
   reopenBrainstorm,
 } from '../src/lib/notes.js';
+import {
+  appendWikiLink,
+  hasWikiLink,
+  isLinkedAlready,
+  isLinkableTitle,
+} from '../src/lib/note-relate.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -210,5 +216,35 @@ describe('M16 F4 asset discuss quote', () => {
     const quote = buildAssetDiscussQuote(asset({ body: 'z'.repeat(DISCUSS_QUOTE_CHARS + 500) }));
     expect(quote.length).toBeLessThan(DISCUSS_QUOTE_CHARS + 400);
     expect(quote.endsWith('…')).toBe(true);
+  });
+});
+
+describe('M16 F1 graph connectors (wiki-link writes)', () => {
+  it('appends the link as its own trailing paragraph', () => {
+    expect(appendWikiLink('Body text', 'Beta')).toBe('Body text\n\n[[Beta]]');
+  });
+
+  it('links an empty body and trims the title', () => {
+    expect(appendWikiLink('   ', '  Beta  ')).toBe('[[Beta]]');
+  });
+
+  it('detects an existing link case-insensitively', () => {
+    expect(hasWikiLink('see [[beta]] here', 'Beta')).toBe(true);
+    expect(hasWikiLink('see [[Gamma]] here', 'Beta')).toBe(false);
+    expect(hasWikiLink('[[Beta prime]]', 'Beta')).toBe(false);
+  });
+
+  it('refuses titles the wiki-link grammar cannot resolve', () => {
+    expect(isLinkableTitle('Beta')).toBe(true);
+    expect(isLinkableTitle('  ')).toBe(false);
+    expect(isLinkableTitle('Broken] title')).toBe(false);
+  });
+
+  it('treats the same arrow or a bidirectional edge as already linked', () => {
+    const edges = [{ source: 'a', target: 'b', bidirectional: false }];
+    expect(isLinkedAlready(edges, 'a', 'b')).toBe(true);
+    expect(isLinkedAlready(edges, 'b', 'a')).toBe(false); // reverse arrow = a real edit
+    expect(isLinkedAlready([{ source: 'a', target: 'b', bidirectional: true }], 'b', 'a')).toBe(true);
+    expect(isLinkedAlready([], 'a', 'b')).toBe(false);
   });
 });

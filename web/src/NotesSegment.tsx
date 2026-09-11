@@ -574,6 +574,7 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
               onBrainstorm={(ids) => void brainstorm(ids)}
               onOpenConversation={onOpenConversation}
               onUnpair={onUnpair}
+              onNoteMutated={quietRefresh}
             />
           ) : (
           <>

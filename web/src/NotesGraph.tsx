@@ -3,7 +3,9 @@
  * relationship graph. Edge direction = who references whom (referencing note
  * → referenced note); mutual references render as ONE bidirectional edge.
  * Nodes open on double-click, drag positions persist, Auto-arrange runs the
- * deterministic layered layout, and node selection feeds the brainstorm flow.
+ * deterministic layered layout, node selection feeds the brainstorm flow,
+ * and dragging a connector between two nodes writes a wiki-link into the
+ * source note (the graph's edges ARE note links — see note-relate.ts).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -15,8 +17,10 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  addEdge,
   useEdgesState,
   useNodesState,
+  type Connection,
   type Edge,
   type Node,
   type NodeMouseHandler,
@@ -28,10 +32,18 @@ import { isSessionLost } from './lib/personas.js';
 import {
   concludeBrainstorm,
   fetchNoteGraph,
+  getNote,
   reopenBrainstorm,
   saveGraphPositions,
+  updateNote,
 } from './lib/notes.js';
 import { layOutGraph } from './lib/graph-layout.js';
+import {
+  appendWikiLink,
+  hasWikiLink,
+  isLinkedAlready,
+  isLinkableTitle,
+} from './lib/note-relate.js';
 import { readStoredToken } from './lib/token.js';
 import { clampText } from './lib/memory-helpers.js';
 import { timeAgo } from './lib/persona-helpers.js';
@@ -49,6 +61,8 @@ export interface NotesGraphProps {
   onOpenConversation?: (conversationId: string) => void;
   /** Forget the session and return to the pairing gate. */
   onUnpair: () => void;
+  /** A connector drag wrote into a note — refresh the notes list/editor. */
+  onNoteMutated?: () => void;
 }
 
 /** Deterministic note-set identity — mirrors core brainstormSetKey. */
@@ -96,6 +110,27 @@ function brainstormInfoByNote(
   return byNote;
 }
 
+/** One edge recipe for both the graph load and an optimistically drawn
+ *  connector, so a fresh drag looks identical to the persisted edge. */
+const EDGE_ARROW = {
+  type: MarkerType.ArrowClosed,
+  width: 16,
+  height: 16,
+  color: 'var(--n-graph-edge)',
+};
+
+function flowEdge(source: string, target: string, bidirectional: boolean): FlowEdge {
+  return {
+    id: `e:${source}:${target}`,
+    source,
+    target,
+    data: { bidirectional },
+    markerEnd: EDGE_ARROW,
+    ...(bidirectional ? { markerStart: EDGE_ARROW } : {}),
+    style: { stroke: 'var(--n-graph-edge)' },
+  };
+}
+
 function toFlow(graph: NoteGraph, layout: Map<string, { x: number; y: number }>): {
   nodes: FlowNode[];
   edges: FlowEdge[];
@@ -119,24 +154,9 @@ function toFlow(graph: NoteGraph, layout: Map<string, { x: number; y: number }>)
       },
     };
   });
-  const edges: FlowEdge[] = graph.edges.map((edge) => {
-    const edgeColor = 'var(--n-graph-edge)';
-    const arrow = {
-      type: MarkerType.ArrowClosed,
-      width: 16,
-      height: 16,
-      color: edgeColor,
-    };
-    return {
-      id: `e:${edge.source}:${edge.target}`,
-      source: edge.source,
-      target: edge.target,
-      data: { bidirectional: edge.bidirectional },
-      markerEnd: arrow,
-      ...(edge.bidirectional ? { markerStart: arrow } : {}),
-      style: { stroke: edgeColor },
-    };
-  });
+  const edges: FlowEdge[] = graph.edges.map((edge) =>
+    flowEdge(edge.source, edge.target, edge.bidirectional),
+  );
   return { nodes, edges };
 }
 
@@ -180,6 +200,7 @@ function NotesGraphInner({
   onBrainstorm,
   onOpenConversation,
   onUnpair,
+  onNoteMutated,
 }: NotesGraphProps): React.JSX.Element {
   const [graph, setGraph] = useState<NoteGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -189,6 +210,10 @@ function NotesGraphInner({
   const [persistBusy, setPersistBusy] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  // M16 follow-up: connector drags (link write busy/notice/error).
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     const token = readStoredToken();
@@ -294,6 +319,107 @@ function NotesGraphInner({
     [],
   );
 
+  // -------------------------------------------------------------------------
+  // Connector drags: an edge is a wiki-link, so the write lands in the note
+  // the drag started from (source = referencing note, matching the arrows).
+  // -------------------------------------------------------------------------
+
+  /** Write `[[target title]]` into the source note, then refresh from core. */
+  const linkNotes = useCallback(
+    async (
+      sourceId: string,
+      sourceTitle: string,
+      targetTitle: string,
+    ): Promise<void> => {
+      const token = readStoredToken();
+      if (!token) {
+        onUnpair();
+        return;
+      }
+      const shortSource = clampText(sourceTitle, 40);
+      const shortTarget = clampText(targetTitle, 40);
+      setLinkBusy(true);
+      setLinkError(null);
+      setLinkNotice(null);
+      let sessionLost = false;
+      try {
+        // Read the live body first: the canvas never carries note content.
+        const source = await getNote(token, sourceId);
+        if (hasWikiLink(source.content, targetTitle)) {
+          setLinkNotice(`“${shortSource}” already links “${shortTarget}”.`);
+        } else {
+          await updateNote(token, sourceId, {
+            title: source.title,
+            content: appendWikiLink(source.content, targetTitle),
+            tags: source.tags,
+            isDaily: source.isDaily,
+          });
+          setLinkNotice(
+            `Linked “${shortSource}” → “${shortTarget}” — a [[link]] was added to “${shortSource}”.`,
+          );
+        }
+      } catch (cause) {
+        if (isSessionLost(cause)) {
+          sessionLost = true;
+          onUnpair();
+        } else {
+          setLinkError(cause instanceof Error ? cause.message : 'Could not link the notes.');
+        }
+      } finally {
+        setLinkBusy(false);
+      }
+      if (sessionLost) return;
+      // Refresh either way: it draws the persisted edge, or reverts the
+      // optimistic one when the write failed.
+      if (onNoteMutated !== undefined) onNoteMutated();
+      else await load();
+    },
+    [load, onNoteMutated, onUnpair],
+  );
+
+  /** Refuse self-loops, unknown nodes, unlinkable titles and existing edges. */
+  const isValidConnection = useCallback(
+    (connection: FlowEdge | Connection): boolean => {
+      if (graph === null) return false;
+      const sourceId = connection.source;
+      const targetId = connection.target;
+      if (sourceId === null || targetId === null || sourceId === targetId) return false;
+      if (!graph.nodes.some((row) => row.id === sourceId)) return false;
+      const target = graph.nodes.find((row) => row.id === targetId);
+      if (target === undefined) return false;
+      return isLinkableTitle(target.title) && !isLinkedAlready(graph.edges, sourceId, targetId);
+    },
+    [graph],
+  );
+
+  const onConnect = useCallback(
+    (connection: Connection): void => {
+      if (graph === null || linkBusy) return;
+      const sourceId = connection.source;
+      const targetId = connection.target;
+      if (sourceId === null || targetId === null || sourceId === targetId) return;
+      const source = graph.nodes.find((row) => row.id === sourceId);
+      const target = graph.nodes.find((row) => row.id === targetId);
+      if (source === undefined || target === undefined) return;
+      if (!isLinkableTitle(target.title)) {
+        setLinkError(
+          `“${clampText(target.title, 40)}” can’t be linked — its title contains “]”. Rename it first.`,
+        );
+        return;
+      }
+      if (isLinkedAlready(graph.edges, sourceId, targetId)) {
+        setLinkNotice(
+          `“${clampText(source.title, 40)}” already links “${clampText(target.title, 40)}”.`,
+        );
+        return;
+      }
+      // Draw immediately; the reload below replaces it with core's truth.
+      setEdges((current) => addEdge(flowEdge(source.id, target.id, false), current));
+      void linkNotes(source.id, source.title, target.title);
+    },
+    [graph, linkBusy, linkNotes, setEdges],
+  );
+
   const selectedList = useMemo(() => [...selected], [selected]);
   const brainstorms = useMemo(() => graph?.brainstorms ?? [], [graph]);
 
@@ -347,7 +473,8 @@ function NotesGraphInner({
     <div className="n-graph" aria-label="Notes relationship graph">
       <div className="n-graph-toolbar">
         <span className="n-graph-hint">
-          Edges point at the note being referenced — double arrows mean the notes link each other.
+          Drag from a note’s right dot to another note’s left dot to link them — the link is
+          written into the note you dragged from. Double arrows mean the notes link each other.
         </span>
         <button
           type="button"
@@ -454,6 +581,16 @@ function NotesGraphInner({
           ) : null}
         </div>
       ) : null}
+      {linkNotice !== null ? (
+        <p className="n-graph-notice" role="status">
+          {linkNotice}
+        </p>
+      ) : null}
+      {linkError !== null ? (
+        <p className="row-error" role="alert">
+          {linkError}
+        </p>
+      ) : null}
       {error !== null ? (
         <p className="row-error" role="alert">
           {error}
@@ -464,7 +601,7 @@ function NotesGraphInner({
         </p>
       ) : (
         <>
-          <div className="n-graph-canvas">
+          <div className="n-graph-canvas" aria-busy={linkBusy}>
             <ReactFlow<FlowNode, FlowEdge>
               nodes={nodes}
               edges={edges}
@@ -474,7 +611,12 @@ function NotesGraphInner({
               onNodeClick={onNodeClick}
               onNodeDoubleClick={onNodeDoubleClick}
               onNodeDragStop={onNodeDragStop}
+              onConnect={onConnect}
+              isValidConnection={isValidConnection}
               nodesDraggable
+              nodesConnectable={!linkBusy}
+              edgesReconnectable={false}
+              deleteKeyCode={null}
               fitView
               minZoom={0.2}
               maxZoom={2.5}
@@ -485,9 +627,11 @@ function NotesGraphInner({
             </ReactFlow>
           </div>
           <p className="n-graph-foot">
-            Double-click a node to open the note. Click to select; selected notes feed
-            Brainstorm. A linked brainstorm reopens on the same selection until it is
-            concluded. Daily notes are marked.
+            Double-click a node to open the note. Drag between nodes to add a [[link]] to the
+            source note — edges here are your notes&apos; wiki-links, so remove one by editing that
+            link out of the note. Click to select; selected notes feed Brainstorm. A linked
+            brainstorm reopens on the same selection until it is concluded. Daily notes are
+            marked.
           </p>
         </>
       )}
