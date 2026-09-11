@@ -49,11 +49,11 @@ app invisibly — the desktop reports the conflict and refuses to use it. Stop
 the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 “already serving …”, something else still holds :4390.
 
-## Status (2026-09-07)
+## Status (2026-09-11)
 
-M0–M15 implemented and verified (PLAN.md §15): schema v13; current root
-suite **773 passed · 5 env-gated skips** (+ M15 e2e parent-watch) ·
-typechecks 0 · web build green.
+M0–M18 implemented and verified (PLAN.md §15): schema v16; current root
+suite **877 passed** (1 pre-existing, platform-specific MCP spawn case on
+Linux) · web **539 passed** · typechecks 0 · web build green.
 
 **M15 — Live desktop mode (exit demo).** The packaged shell now boots the
 core LIVE by default: persistent whole-file-encrypted DB + OS-keychain key
@@ -69,6 +69,36 @@ PLAN-M15; per-surface theme walkthrough (`docs/theme-conformance.md`); the
 `docs/VERIFY-M10.md` live-mode walk details; browser-actuator research
 capture; S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
+
+### M18 — chat multi-question forms (2026-09-11, implemented)
+
+When a persona has **more than one open-ended question**, it now emits a
+`:::partner.form` container instead of a prose list. Each question renders in
+its own textarea and the user submits **once**; the answers become a single
+labelled user turn through the normal chat path (nothing client-only, the
+persisted text is unchanged). The parser shares the `:::partner.*` grammar
+(`shared/src/structured.ts`): one question per bullet line, a title from the
+`title=` attr / fence tail / lead line, closed-container-only materialization
+so streaming stays safe, and malformed or unclosed blocks degrade to plain
+prose. Pending drafts survive switching conversations (client-side
+per-conversation UI memory). The `forms` guidance ships in the default
+structured feature set alongside choices and assets; styles are token-only.
+
+### M17 — note projects (2026-09-11, implemented)
+
+Notes gain an organizational layer on the existing Projects/Folders tree
+(shared with chats; many-to-many, no membership = Inbox). A single membership
+write path (`setFolders`) backs both create-time `folderIds` and re-filing;
+`list()`/`graph()` scope by folder subtree or Inbox; a scoped graph returns
+one-hop, both-direction **ghost** nodes for out-of-scope references (marked
+external, never persisted). Deleting a folder clears membership (notes
+survive); deleting a note cascades its membership rows. New routes:
+`GET /v1/notes?folderId=<id|none>`, `GET /v1/notes/graph?folderId=…`,
+`PUT /v1/notes/:id/folders` (501 when folders are unwired). The Notes list
+and graph get project scope selectors, project chips, an editor Projects
+multi-select, dimmed ghost nodes + an "other projects" toggle, drag-to-ghost
+and a "Link to note…" picker. Schema v15 → v16 (`note_folders`); audit stays
+membership counts only.
 
 ### M16 — knowledge workspace (2026-09-09, implemented)
 

@@ -141,6 +141,7 @@ v1 inventory (built from M3 onward; states are part of every component):
 | Modal / popover | elevation-lg, scrim from a named overlay token, focus trapped. |
 | Toast | surface + elevation-md + semantic left edge. |
 | Toggle / checkbox / radio | accent when on, surface-2 when off; disabled = faint. |
+| Choice / form card | transcript controls from `:::partner.*` containers: a choice is a radio/checkbox set, a form is one textarea per open-ended question with a **single** submit. Confirm sends one labelled user turn; inert while a turn streams. Surface fill + `--radius-lg`, no border. |
 | List rows | separators: space → surface shift → border (last resort). |
 
 Empty/loading states: skeletons are surface-2 blocks (no spinners-only).
