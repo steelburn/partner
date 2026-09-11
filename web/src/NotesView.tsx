@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Persona } from '@partner/shared';
+import type { Folder, Persona } from '@partner/shared';
 import NotesSegment from './NotesSegment.js';
 import PlansSegment from './PlansSegment.js';
 
@@ -18,6 +18,10 @@ export interface NotesViewProps {
   focusNote?: { id: string; nonce: number } | null;
   /** M16 F2: open a conversation (brainstorm kick-off lands in a chat). */
   onOpenConversation?: (conversationId: string) => void;
+  /** M17: the shared Projects/Folders tree (notes scoped to a project). */
+  folders?: Folder[] | null;
+  /** M17: create a project for the Notes scope selector. */
+  onCreateFolder?: (name: string, parentId: string | null) => Promise<void> | void;
 }
 
 /**
@@ -28,7 +32,7 @@ export interface NotesViewProps {
  * planner session survives switching between them; only the visible segment
  * loads data.
  */
-export default function NotesView({ personas, onUnpair, active, captureSignal, focusNote, onOpenConversation }: NotesViewProps) {
+export default function NotesView({ personas, onUnpair, active, captureSignal, focusNote, onOpenConversation, folders, onCreateFolder }: NotesViewProps) {
   const [tab, setTab] = useState<NotesTab>('notes');
   const notesActive = active === true && tab === 'notes';
   const plansActive = active === true && tab === 'plans';
@@ -80,6 +84,8 @@ export default function NotesView({ personas, onUnpair, active, captureSignal, f
             captureSignal={captureSignal}
             focusNote={focusNote}
             onOpenConversation={onOpenConversation}
+            folders={folders}
+            onCreateFolder={onCreateFolder}
           />
         </div>
         <div className={tab === 'plans' ? 'notes-seg notes-seg-active' : 'notes-seg'}>

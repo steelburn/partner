@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import type { Note, NoteSummary, NotesExportBundle, Plan, PlanSummary } from '@partner/shared';
+import type { Folder, Note, NoteSummary, NotesExportBundle, Plan, PlanSummary } from '@partner/shared';
 import {
   extractWikiLinks,
   flattenPlanTasks,
+  folderSubtreeIds,
+  folderTreeRows,
   linkTitleToSearch,
+  noteFolderNames,
   noteListSort,
   notesBundleToFile,
+  notesInScope,
   parseTags,
   planBundleToFile,
   planProgress,
   planToExportFileName,
+  scopeLabel,
   validateNotesExportBundle,
   validateTaskStatusInput,
 } from '../src/lib/note-helpers.js';
@@ -326,5 +331,85 @@ describe('export serialization + validation', () => {
   it('planBundleToFile serializes the canonical export bundle', () => {
     const text = planBundleToFile({ schema: 'plan/v1', exportedAt: 9, plan: fullPlan() });
     expect(JSON.parse(text)).toMatchObject({ schema: 'plan/v1', exportedAt: 9 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M17 note projects — scope resolution helpers
+// ---------------------------------------------------------------------------
+
+function folder(id: string, overrides: Partial<Folder> = {}): Folder {
+  return {
+    id,
+    name: `Folder ${id}`,
+    parentId: null,
+    position: 0,
+    chatCount: 0,
+    noteCount: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
+function noteIn(id: string, folderIds: string[]): NoteSummary {
+  return { ...summary(id), folderIds };
+}
+
+describe('M17 project scope helpers', () => {
+  it('folderSubtreeIds returns the folder + descendants; unknown -> []', () => {
+    const tree = [
+      folder('root'),
+      folder('child', { parentId: 'root' }),
+      folder('grand', { parentId: 'child' }),
+      folder('other'),
+    ];
+    expect(folderSubtreeIds(tree, 'root').sort()).toEqual(['root', 'child', 'grand'].sort());
+    expect(folderSubtreeIds(tree, 'child').sort()).toEqual(['child', 'grand'].sort());
+    expect(folderSubtreeIds(tree, 'ghost')).toEqual([]);
+  });
+
+  it('folderTreeRows flattens in tree order with depth', () => {
+    const tree = [
+      folder('b', { position: 1 }),
+      folder('a', { position: 0 }),
+      folder('a1', { parentId: 'a' }),
+    ];
+    expect(folderTreeRows(tree).map((row) => [row.folder.id, row.depth])).toEqual([
+      ['a', 0],
+      ['a1', 1],
+      ['b', 0],
+    ]);
+  });
+
+  it('notesInScope filters by subtree, Inbox, or passes all through', () => {
+    const tree = [folder('p'), folder('sub', { parentId: 'p' }), folder('q')];
+    const list = [
+      noteIn('n-p', ['p']),
+      noteIn('n-sub', ['sub']),
+      noteIn('n-q', ['q']),
+      noteIn('n-both', ['p', 'q']),
+      noteIn('n-inbox', []),
+    ];
+    expect(notesInScope(list, tree, { kind: 'all' })).toHaveLength(5);
+    expect(notesInScope(list, tree, { kind: 'inbox' }).map((n) => n.id)).toEqual(['n-inbox']);
+    expect(
+      notesInScope(list, tree, { kind: 'folder', folderId: 'p' })
+        .map((n) => n.id)
+        .sort(),
+    ).toEqual(['n-both', 'n-p', 'n-sub'].sort());
+    expect(
+      notesInScope(list, tree, { kind: 'folder', folderId: 'q' }).map((n) => n.id).sort(),
+    ).toEqual(['n-both', 'n-q'].sort());
+  });
+
+  it('scopeLabel names the scope and noteFolderNames lists chips in tree order', () => {
+    const tree = [folder('p', { name: 'Projects', position: 0 }), folder('q', { name: 'Personal', position: 1 })];
+    expect(scopeLabel({ kind: 'all' }, tree)).toBe('All notes');
+    expect(scopeLabel({ kind: 'inbox' }, tree)).toBe('Inbox');
+    expect(scopeLabel({ kind: 'folder', folderId: 'p' }, tree)).toBe('Projects');
+    expect(scopeLabel({ kind: 'folder', folderId: 'ghost' }, tree)).toBe('Project');
+    expect(noteFolderNames(noteIn('n', ['q', 'p']), tree)).toEqual(['Projects', 'Personal']);
+    expect(noteFolderNames(noteIn('n', []), tree)).toEqual([]);
   });
 });

@@ -90,6 +90,7 @@ import {
   createConversationStore,
   createDeployProfileStore,
   createFolderStore,
+  createNoteFolderStore,
   createAttachmentStore,
   createAssetStore,
   createChatBlobStore,
@@ -133,6 +134,7 @@ import type {
   EpisodeStore,
   FileProposalStore,
   FolderStore,
+  NoteFolderStore,
   GrantStore,
   MemoryFtsStore,
   MessageStore,
@@ -273,6 +275,8 @@ export interface Harness {
   conversations: ConversationManager;
   /** M11 F11 folder manager + store over the SAME db (folders for chats). */
   folderStore: FolderStore;
+  /** M17 note<->folder membership store over the SAME tree (schema v16). */
+  noteFolderStore: NoteFolderStore;
   folders?: FolderManager;
   /** M11 F1 chat-attachment manager (uploads + content) over the SAME db. */
   attachments?: AttachmentManager;
@@ -403,10 +407,16 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   // conversations table is the edge owner, so the manager gets the
   // conversation manager for counts + delete reassignment.
   const folderStore = createFolderStore(db);
+  const noteFolderStore = createNoteFolderStore(db);
   let folders: FolderManager | undefined;
   let attachments: AttachmentManager | undefined;
   if (personasEnabled) {
-    folders = createFolderManager({ store: folderStore, conversations, audit });
+    folders = createFolderManager({
+      store: folderStore,
+      conversations,
+      noteFolders: noteFolderStore,
+      audit,
+    });
     attachments = createAttachmentManager({
       blobs: createChatBlobStore(db),
       attachments: createAttachmentStore(db),
@@ -465,7 +475,9 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
         fts: notesFtsStore,
         versions: noteVersionStore,
         graph: noteGraphStore,
+        folders: noteFolderStore,
       },
+      ...(folders !== undefined ? { folderLookup: folders } : {}),
       audit,
       demo,
     });
@@ -708,6 +720,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     messageStore,
     conversations,
     folderStore,
+    noteFolderStore,
     folders,
     attachments,
     assets,

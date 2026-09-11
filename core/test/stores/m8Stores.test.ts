@@ -20,7 +20,7 @@ describe('M8 skills stores (schema v9 tables)', () => {
     const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as {
       value: string;
     };
-    expect(SCHEMA_VERSION).toBe(15);
+    expect(SCHEMA_VERSION).toBe(16);
     expect(meta.value).toBe(String(SCHEMA_VERSION));
     db.close();
   });

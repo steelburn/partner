@@ -12,6 +12,11 @@ export interface NoteSummary {
   title: string;
   tags: string[];
   isDaily: boolean;
+  /**
+   * M17: projects/folders this note belongs to (many-to-many). `[]` =
+   * unfiled ("Inbox"). Ordering follows the folder tree order.
+   */
+  folderIds: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -25,6 +30,16 @@ export interface NoteInput {
   content?: string;
   tags?: string[];
   isDaily?: boolean;
+  /**
+   * M17: create-time project membership. Ignored by update (`PUT
+   * /v1/notes/:id` never touches membership — use the folders route).
+   */
+  folderIds?: string[];
+}
+
+/** M17: body for `PUT /v1/notes/:id/folders` — replaces membership. */
+export interface NoteFoldersInput {
+  folderIds: string[];
 }
 
 export interface NoteLinkInfo {
@@ -100,6 +115,14 @@ export interface NoteGraphNode {
   title: string;
   tags: string[];
   isDaily: boolean;
+  /** M17: projects this note belongs to ([] = unfiled). */
+  folderIds: string[];
+  /**
+   * M17: true for a one-hop "ghost" — a note outside the requested project
+   * scope that is linked to/from an in-scope note. Ghosts are display-only:
+   * never persisted in note_graph. Absent/false for in-scope nodes.
+   */
+  external?: boolean;
   /** Last persisted canvas position (null = never dragged/auto-arranged). */
   x: number | null;
   y: number | null;
@@ -118,6 +141,13 @@ export interface NoteGraphEdge {
 export interface NoteGraph {
   nodes: NoteGraphNode[];
   edges: NoteGraphEdge[];
+  /**
+   * M17: one-hop notes outside the requested project scope that are linked
+   * to/from an in-scope note (both directions). Present (possibly empty) on
+   * scoped reads only — absent on unscoped reads, which keeps the M16 shape
+   * backward compatible. Each ghost carries `external: true` and `x/y: null`.
+   */
+  externalNodes?: NoteGraphNode[];
   /** Brainstorm sessions linked to the graph's notes (newest first). Each
    *  carries its source note ids so the canvas can badge nodes and resolve
    *  "open the brainstorm for this selection" without a second request. */

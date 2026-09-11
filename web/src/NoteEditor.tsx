@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import type { Note, NoteVersion, NoteVersionSummary } from '@partner/shared';
+import type { Folder, Note, NoteVersion, NoteVersionSummary } from '@partner/shared';
 import { diffLines } from '@partner/shared';
 import type { NoteBacklink } from './lib/notes.js';
 import { isSessionLost } from './lib/personas.js';
@@ -8,11 +8,12 @@ import {
   fetchNoteVersions,
   getBacklinks,
   restoreNoteVersion,
+  setNoteFolders,
   updateNote,
   createNote,
   deleteNote,
 } from './lib/notes.js';
-import { parseTags } from './lib/note-helpers.js';
+import { folderTreeRows, parseTags } from './lib/note-helpers.js';
 import { readStoredToken } from './lib/token.js';
 import { timeAgo } from './lib/persona-helpers.js';
 
@@ -44,6 +45,10 @@ export interface NoteEditorProps {
   note: Note | null;
   /** Titles of existing notes, newest first — the [[ suggestion source. */
   knownTitles: readonly string[];
+  /** M17: the shared project tree (membership checkboxes). */
+  folders?: readonly Folder[];
+  /** M17: memberships a NEW note starts with (the active scope). */
+  defaultFolderIds?: readonly string[];
   /** Called after a successful create/update with the persisted note. */
   onSaved: (note: Note) => void;
   /** Called after a successful delete. */
@@ -66,6 +71,8 @@ export interface NoteEditorProps {
 export default function NoteEditor({
   note,
   knownTitles,
+  folders,
+  defaultFolderIds,
   onSaved,
   onDeleted,
   onClosed,
@@ -75,6 +82,10 @@ export default function NoteEditor({
   const [title, setTitle] = useState(note?.title ?? '');
   const [content, setContent] = useState(note?.content ?? '');
   const [tagsText, setTagsText] = useState((note?.tags ?? []).join(', '));
+  // M17: memberships. Create starts from the active scope; editing starts
+  // from the note's current projects.
+  const initialFolderIds = note?.folderIds ?? defaultFolderIds ?? [];
+  const [folderIds, setFolderIds] = useState<string[]>(() => [...initialFolderIds]);
   const [busy, setBusy] = useState<'save' | 'delete' | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +105,13 @@ export default function NoteEditor({
 
   const creating = note === null;
   const tagPreview = useMemo(() => parseTags(tagsText), [tagsText]);
+  const projectRows = useMemo(() => folderTreeRows(folders ?? []), [folders]);
+  const originalFolderIds = useMemo(
+    () => [...(note?.folderIds ?? [])].sort(),
+    [note?.folderIds],
+  );
+  const folderIdsChanged =
+    originalFolderIds.join('\u0000') !== [...folderIds].sort().join('\u0000');
 
   // Backlinks for the note under the editor (fetch once per open note).
   useEffect(() => {
@@ -201,17 +219,26 @@ export default function NoteEditor({
     setError(null);
     try {
       const tags = tagPreview;
-      const saved = creating
-        ? await createNote(token, {
-            title: trimmedTitle,
-            content,
-            ...(tags.length > 0 ? { tags } : {}),
-          })
-        : await updateNote(token, note.id, {
-            title: trimmedTitle,
-            content,
-            ...(tags.length > 0 ? { tags } : {}),
-          });
+      if (creating) {
+        const created = await createNote(token, {
+          title: trimmedTitle,
+          content,
+          ...(tags.length > 0 ? { tags } : {}),
+          ...(folderIds.length > 0 ? { folderIds } : {}),
+        });
+        onSaved(created);
+        return;
+      }
+      // Content first, then membership via its own route (M17: membership
+      // never rides the update payload).
+      let saved = await updateNote(token, note.id, {
+        title: trimmedTitle,
+        content,
+        ...(tags.length > 0 ? { tags } : {}),
+      });
+      if (folderIdsChanged) {
+        saved = await setNoteFolders(token, note.id, folderIds);
+      }
       onSaved(saved);
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -291,6 +318,7 @@ export default function NoteEditor({
       setTitle(restored.title);
       setContent(restored.content);
       setTagsText((restored.tags ?? []).join(', '));
+      setFolderIds([...(restored.folderIds ?? [])]);
       setHistoryNotice('Restored — the previous state is kept as a version, so this is undoable.');
       onSaved(restored);
       void loadVersions();
@@ -343,6 +371,11 @@ export default function NoteEditor({
   };
 
   const dailyLabel = creating || !note.isDaily ? null : 'Daily';
+
+  const toggleFolder = (id: string): void => {
+    setFolderIds((prev) => (prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id]));
+    setError(null);
+  };
 
   return (
     <section className="card n-editor" aria-label={creating ? 'New note' : 'Edit note'}>
@@ -500,6 +533,42 @@ export default function NoteEditor({
               ))}
             </span>
           ) : null}
+        </div>
+        <div className="form-field">
+          <span className="label">
+            Projects <span className="label-optional">(optional)</span>
+          </span>
+          {projectRows.length === 0 ? (
+            <p className="form-hint">
+              No projects yet — create one from the Notes list scope selector and it will show
+              up here.
+            </p>
+          ) : (
+            <div className="n-project-picker" role="group" aria-label="Projects for this note">
+              {projectRows.map(({ folder, depth }) => {
+                const checked = folderIds.includes(folder.id);
+                return (
+                  <label
+                    key={folder.id}
+                    className={checked ? 'n-project-option is-checked' : 'n-project-option'}
+                    style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={busy !== null}
+                      onChange={() => toggleFolder(folder.id)}
+                    />
+                    <span>{folder.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          <p className="form-hint">
+            A note can sit in several projects at once. Leave them all unchecked to keep it in
+            Inbox.
+          </p>
         </div>
         <div className="form-feedback" aria-live="polite">
           {error ? (

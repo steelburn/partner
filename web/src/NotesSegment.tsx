@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { BrainstormSessionSummary, Note, NoteSummary } from '@partner/shared';
+import type { BrainstormSessionSummary, Folder, Note, NoteSummary } from '@partner/shared';
 import NoteEditor from './NoteEditor.js';
 import { isSessionLost } from './lib/personas.js';
 import { readStoredToken } from './lib/token.js';
@@ -7,9 +7,14 @@ import { timeAgo } from './lib/persona-helpers.js';
 import { clampText } from './lib/memory-helpers.js';
 import { downloadTextFile } from './lib/download.js';
 import {
+  ALL_NOTES_SCOPE,
   NOTES_BUNDLE_FILE,
+  folderTreeRows,
+  noteFolderNames,
   noteListSort,
   notesBundleToFile,
+  scopeLabel,
+  type NotesScope,
 } from './lib/note-helpers.js';
 import {
   brainstormNotes,
@@ -36,6 +41,10 @@ export interface NotesSegmentProps {
   focusNote?: { id: string; nonce: number } | null;
   /** M16 F2: open a conversation (a brainstorm kicks off its own chat). */
   onOpenConversation?: (conversationId: string) => void;
+  /** M17: the shared Projects/Folders tree (chats AND notes), null while loading. */
+  folders?: Folder[] | null;
+  /** M17: create a project (reuses the App's folder creation). */
+  onCreateFolder?: (name: string, parentId: string | null) => Promise<void> | void;
 }
 
 /** Notes list vs relationship graph pane (M16 F1). */
@@ -43,6 +52,13 @@ type NotesPane = 'list' | 'graph';
 
 /** Editor target: brand-new note (create) or an existing note. */
 type EditingState = { kind: 'new' } | { kind: 'edit'; note: Note } | null;
+
+/** M17: scope -> /v1/notes query params. */
+function scopeFilter(scope: NotesScope): { folderId?: string; unfiled?: boolean } {
+  if (scope.kind === 'inbox') return { unfiled: true };
+  if (scope.kind === 'folder') return { folderId: scope.folderId };
+  return {};
+}
 
 /**
  * M5 Notes segment (PLAN-M5.md): note list (title, tag chips, freshness),
@@ -53,7 +69,7 @@ type EditingState = { kind: 'new' } | { kind: 'edit'; note: Note } | null;
  * errors and feedback in this view carry titles, counts and statuses, never
  * note bodies.
  */
-export default function NotesSegment({ active, onUnpair, captureSignal, focusNote, onOpenConversation }: NotesSegmentProps) {
+export default function NotesSegment({ active, onUnpair, captureSignal, focusNote, onOpenConversation, folders, onCreateFolder }: NotesSegmentProps) {
   const [notes, setNotes] = useState<NoteSummary[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
@@ -86,6 +102,11 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [brainstormBusy, setBrainstormBusy] = useState(false);
   const [brainstormSessions, setBrainstormSessions] = useState<BrainstormSessionSummary[]>([]);
+  // M17: project scope + the inline "new project" composer.
+  const [scope, setScope] = useState<NotesScope>(ALL_NOTES_SCOPE);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectBusy, setNewProjectBusy] = useState(false);
 
   const load = async (quiet = false): Promise<void> => {
     const token = readStoredToken();
@@ -95,7 +116,7 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
     }
     if (!quiet) setNotesError(null);
     try {
-      setNotes(noteListSort(await listNotes(token)));
+      setNotes(noteListSort(await listNotes(token, scopeFilter(scope))));
     } catch (cause) {
       if (isSessionLost(cause)) {
         setSessionLost(true);
@@ -107,12 +128,22 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
     }
   };
 
-  // Load when the segment becomes visible (and after each mutation tick).
+  // Load when the segment becomes visible (and after each mutation tick or
+  // scope change).
   useEffect(() => {
     if (!active || sessionLost) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, sessionLost, reloadTick]);
+  }, [active, sessionLost, reloadTick, scope]);
+
+  // M17: if the active project disappears (deleted elsewhere), fall back to
+  // All notes rather than querying a folder that no longer exists.
+  useEffect(() => {
+    if (scope.kind !== 'folder') return;
+    if (folders === undefined || folders === null) return;
+    if (!folders.some((folder) => folder.id === scope.folderId)) setScope(ALL_NOTES_SCOPE);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folders, scope]);
 
   const handleSessionLost = (): void => setSessionLost(true);
   const quietRefresh = (): void => setReloadTick((tick) => tick + 1);
@@ -320,6 +351,30 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
   const knownTitles = sorted.map((row) => row.title);
   const busyTools = dailyBusy || summarizeBusy || exporting || captureBusy;
   const notesActivePane = active && pane === 'graph';
+
+  // M17: the shared project tree for the scope selector + row chips.
+  const allFolders = folders ?? [];
+  const treeRows = useMemo(() => folderTreeRows(allFolders), [allFolders]);
+  const activeScopeLabel = scopeLabel(scope, allFolders);
+  const defaultFolderIds = scope.kind === 'folder' ? [scope.folderId] : [];
+
+  /** M17: create a project under the active project (or at the root). */
+  const createProject = async (): Promise<void> => {
+    const name = newProjectName.trim();
+    if (name.length === 0 || newProjectBusy) return;
+    if (onCreateFolder === undefined) {
+      setNewProjectOpen(false);
+      return;
+    }
+    setNewProjectBusy(true);
+    try {
+      await onCreateFolder(name, scope.kind === 'folder' ? scope.folderId : null);
+      setNewProjectName('');
+      setNewProjectOpen(false);
+    } finally {
+      setNewProjectBusy(false);
+    }
+  };
 
   // M16 follow-up: does this exact selection already have an ACTIVE brainstorm?
   // Same deterministic set key the core uses (order/duplicates ignored).
@@ -575,6 +630,16 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
               onOpenConversation={onOpenConversation}
               onUnpair={onUnpair}
               onNoteMutated={quietRefresh}
+              folders={allFolders}
+              scope={scope}
+              onScopeChange={setScope}
+              onCreateProject={
+                onCreateFolder === undefined
+                  ? undefined
+                  : async (name: string) => {
+                      await onCreateFolder(name, scope.kind === 'folder' ? scope.folderId : null);
+                    }
+              }
             />
           ) : (
           <>
@@ -591,6 +656,78 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
               Your markdown notes, newest first. Search, capture and the daily note live above;
               open a note to edit it.
             </p>
+            <div className="n-scope-bar" aria-label="Project scope">
+              <label className="label n-scope-label" htmlFor="n-scope">
+                Project
+              </label>
+              <select
+                id="n-scope"
+                className="field n-scope-select"
+                value={scope.kind === 'folder' ? `folder:${scope.folderId}` : scope.kind}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value === 'all') setScope(ALL_NOTES_SCOPE);
+                  else if (value === 'inbox') setScope({ kind: 'inbox' });
+                  else if (value.startsWith('folder:')) {
+                    setScope({ kind: 'folder', folderId: value.slice('folder:'.length) });
+                  }
+                }}
+                aria-label={`Filter notes by project — now ${activeScopeLabel}`}
+              >
+                <option value="all">All notes</option>
+                <option value="inbox">Inbox</option>
+                {treeRows.map(({ folder, depth }) => (
+                  <option key={folder.id} value={`folder:${folder.id}`}>
+                    {`${'— '.repeat(depth)}${folder.name}`}
+                  </option>
+                ))}
+              </select>
+              {onCreateFolder !== undefined ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    setNewProjectOpen((open) => !open);
+                    setNewProjectName('');
+                  }}
+                  aria-expanded={newProjectOpen}
+                >
+                  {newProjectOpen ? 'Cancel project' : 'New project'}
+                </button>
+              ) : null}
+            </div>
+            {newProjectOpen ? (
+              <form
+                className="n-scope-new"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void createProject();
+                }}
+              >
+                <input
+                  className="field"
+                  type="text"
+                  value={newProjectName}
+                  disabled={newProjectBusy}
+                  onChange={(event) => setNewProjectName(event.target.value)}
+                  placeholder={
+                    scope.kind === 'folder'
+                      ? `Sub-project of ${activeScopeLabel}`
+                      : 'Project name'
+                  }
+                  aria-label="New project name"
+                  spellCheck={false}
+                />
+                <button
+                  type="submit"
+                  className="btn btn-primary btn-sm"
+                  disabled={newProjectBusy || newProjectName.trim().length === 0}
+                  aria-busy={newProjectBusy}
+                >
+                  {newProjectBusy ? 'Creating…' : 'Create project'}
+                </button>
+              </form>
+            ) : null}
             {multiSelect ? (
               <div className="n-select-hint">
                 Click notes to add them to the brainstorm selection.
@@ -651,6 +788,15 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
                       <span className="n-row-title">{row.title}</span>
                       {row.isDaily ? (
                         <span className="chip chip-accent">Daily</span>
+                      ) : null}
+                      {noteFolderNames(row, allFolders).length > 0 ? (
+                        <span className="n-tags n-projects" aria-label="Projects">
+                          {noteFolderNames(row, allFolders).map((name) => (
+                            <span key={name} className="chip chip-project">
+                              {name}
+                            </span>
+                          ))}
+                        </span>
                       ) : null}
                       {row.tags.length > 0 ? (
                         <span className="n-tags">
@@ -755,6 +901,8 @@ export default function NotesSegment({ active, onUnpair, captureSignal, focusNot
               key={editing.kind === 'new' ? 'new' : editing.note.id}
               note={editing.kind === 'new' ? null : editing.note}
               knownTitles={knownTitles}
+              folders={allFolders}
+              defaultFolderIds={defaultFolderIds}
               onSaved={(note) => {
                 setEditing({ kind: 'edit', note });
                 quietRefresh();

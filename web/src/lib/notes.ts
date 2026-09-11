@@ -70,6 +70,12 @@ function readTags(value: unknown): string[] {
   return value.filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
 }
 
+/** M17: folderIds field: absent/garbage normalizes to [] (unfiled). */
+function readFolderIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === 'string' && id.length > 0);
+}
+
 /**
  * Normalize one note response into a full Note. Tolerates a bare note or
  * `{note: …}` / `{daily: …}` envelopes. Identity fields (id, title,
@@ -103,6 +109,7 @@ export function parseNote(value: unknown, status = 200): Note {
     content: note.content,
     tags: readTags(note.tags),
     isDaily: note.isDaily === true,
+    folderIds: readFolderIds(note.folderIds),
     createdAt: epoch(note.createdAt) as number,
     updatedAt: epoch(note.updatedAt) as number,
   };
@@ -140,6 +147,7 @@ function summaryFromRow(row: unknown, status: number, label: string): NoteSummar
     title: row.title,
     tags: readTags(row.tags),
     isDaily: row.isDaily === true,
+    folderIds: readFolderIds(row.folderIds),
     createdAt: epoch(row.createdAt) as number,
     updatedAt: epoch(row.updatedAt) as number,
   };
@@ -190,6 +198,7 @@ export function parseSearchResults(value: unknown, status = 200): NoteSearchResu
       title,
       tags: readTags(row.tags),
       isDaily: row.isDaily === true,
+      folderIds: readFolderIds(row.folderIds),
       createdAt,
       updatedAt,
       snippet,
@@ -260,17 +269,27 @@ export function parseTags(value: unknown, status = 200): TagCount[] {
   });
 }
 
-/** GET /v1/notes -> note summaries (never bodies). */
+/** GET /v1/notes -> note summaries (never bodies). M17: optional scope. */
 export async function listNotes(
   token: string,
-  options: { fetchImpl?: FetchLike } = {},
+  options: { folderId?: string; unfiled?: boolean; fetchImpl?: FetchLike } = {},
 ): Promise<NoteSummary[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(NOTES_PATH, {
+  const query = noteScopeQuery(options);
+  const response = await fetchImpl(`${NOTES_PATH}${query}`, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
   return parseNoteList(await expectJson<unknown>(response), response.status);
+}
+
+/** M17: build `?folderId=<id>` / `?folderId=none` for scoped note reads. */
+function noteScopeQuery(options: { folderId?: string; unfiled?: boolean }): string {
+  if (options.unfiled === true) return '?folderId=none';
+  if (options.folderId !== undefined && options.folderId !== '') {
+    return `?folderId=${encodeURIComponent(options.folderId)}`;
+  }
+  return '';
 }
 
 /** POST /v1/notes -> the created note (wiki-links parsed server-side). */
@@ -487,19 +506,43 @@ function isGraph(value: unknown): value is NoteGraph {
   return true;
 }
 
-/** GET /v1/notes/graph — the note relationship graph (nodes + edges). */
+/** GET /v1/notes/graph — the note relationship graph (nodes + edges).
+ *  M17: optional folder scope returns in-scope nodes + externalNodes. */
 export async function fetchNoteGraph(
   token: string,
-  options: { fetchImpl?: FetchLike } = {},
+  options: { folderId?: string; unfiled?: boolean; fetchImpl?: FetchLike } = {},
 ): Promise<NoteGraph> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(`${NOTES_PATH}/graph`, {
+  const response = await fetchImpl(`${NOTES_PATH}/graph${noteScopeQuery(options)}`, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
   const parsed = await expectJson<unknown>(response);
   if (isGraph(parsed)) return parsed;
   throw new ApiRequestError(response.status, 'The notes graph response had an unexpected shape.');
+}
+
+/**
+ * M17 PUT /v1/notes/:id/folders — replace a note's project memberships
+ * ([] = Inbox). Membership never rides the content update payload.
+ */
+export async function setNoteFolders(
+  token: string,
+  id: string,
+  folderIds: string[],
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<Note> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${NOTES_PATH}/${encodeURIComponent(id)}/folders`, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({ folderIds }),
+  });
+  return parseNote(await expectJson<unknown>(response), response.status);
 }
 
 /** PUT /v1/notes/graph/positions — persist dragged node positions. */

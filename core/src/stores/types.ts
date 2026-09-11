@@ -1058,6 +1058,42 @@ export interface FolderStore {
 }
 
 // ---------------------------------------------------------------------------
+// M17 note<->folder membership store (additive schema v16). A note may sit in
+// zero or more folders (many-to-many); no row = unfiled ("Inbox"). Folders
+// stay one shared tree for chats AND notes — notes never get their own tree.
+// Membership writes are transactional replace-for-note; the note manager owns
+// validation and audit (ids/counts only).
+// ---------------------------------------------------------------------------
+
+/** `note_folders` row — one membership edge. */
+export interface NoteFolderRow {
+  noteId: string;
+  folderId: string;
+  createdAt: number;
+}
+
+export interface NoteFolderStore {
+  /**
+   * Replace a note's memberships in ONE transaction (delete-then-insert).
+   * Duplicate folder ids collapse; empty clears to unfiled. `at` stamps
+   * createdAt on the newly inserted rows only.
+   */
+  setForNote(noteId: string, folderIds: readonly string[], at: number): void;
+  /** Folder ids for one note, oldest membership first (deterministic). */
+  listFolderIdsForNote(noteId: string): string[];
+  /** Note ids directly in one folder, note-id ascending (deterministic). */
+  listNoteIdsInFolder(folderId: string): string[];
+  /** Union of note ids across the given folders (subtree reads), ascending. */
+  listNoteIdsInFolders(folderIds: readonly string[]): string[];
+  /** Direct membership count per folder id (folders with none are absent). */
+  countByFolder(): Map<string, number>;
+  /** Remove a note's memberships (note delete cascade). */
+  removeForNote(noteId: string): void;
+  /** Remove a folder's memberships (folder delete cascade; notes survive). */
+  removeForFolder(folderId: string): void;
+}
+
+// ---------------------------------------------------------------------------
 // M11 F1 chat attachments + blobs stores (PLAN-M11.md — additive schema
 // v12). A conversation owns staged uploads (`message_id NULL`) until the
 // next turn binds them to the persisted user message. Payload bytes live in

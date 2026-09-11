@@ -33,6 +33,8 @@ export {
 } from './manager.js';
 export type {
   DailySummarizeTarget,
+  NoteGraphFilter,
+  NoteListFilter,
   NoteManager,
   NoteManagerOptions,
   NotePatch,

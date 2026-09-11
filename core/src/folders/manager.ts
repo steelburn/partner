@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type { Folder, FolderInput, FolderUpdate } from '@partner/shared';
 import type { ConversationManager } from '../conversations/manager.js';
 import type { AuditService } from '../services/redaction.js';
-import type { FolderRow, FolderStore } from '../stores/types.js';
+import type { FolderRow, FolderStore, NoteFolderStore } from '../stores/types.js';
 import { FolderError, folderError } from './errors.js';
 
 /** Depth bound so a runaway tree can never be built (arbitrary but bounded). */
@@ -26,6 +26,8 @@ export interface FolderManagerOptions {
   store: FolderStore;
   /** Conversation manager — chat counts + reassignment on folder delete. */
   conversations: ConversationManager;
+  /** M17: note membership store — note counts + cleanup on delete (optional). */
+  noteFolders?: NoteFolderStore;
   audit: AuditService;
   /** Injectable clock (epoch ms). */
   now?: () => number;
@@ -41,15 +43,21 @@ export interface FolderManager {
   update(id: string, patch: FolderUpdate): Folder;
   /** Remove; children reparent to the removed folder's parent, chats to it too. */
   remove(id: string): void;
+  /**
+   * M17: the folder id plus every descendant id (subtree scope). Unknown id
+   * -> not_found. Used for note filtering/counting and graph scoping.
+   */
+  subtreeIds(id: string): string[];
 }
 
-function toFolder(row: FolderRow, chatCount: number): Folder {
+function toFolder(row: FolderRow, chatCount: number, noteCount: number): Folder {
   return {
     id: row.id,
     name: row.name,
     parentId: row.parentId,
     position: row.position,
     chatCount,
+    noteCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -63,6 +71,7 @@ function normalizeName(raw: unknown): string {
 
 export function createFolderManager(options: FolderManagerOptions): FolderManager {
   const { store, conversations, audit } = options;
+  const noteFolders = options.noteFolders;
   const now = options.now ?? Date.now;
 
   /** Direct chat counts per folder id (conversations with folder_id NULL are Inbox). */
@@ -101,16 +110,25 @@ export function createFolderManager(options: FolderManagerOptions): FolderManage
     return max + 1;
   }
 
+  /** M17: direct note membership counts per folder (empty map when unwired). */
+  function noteCounts(): Map<string, number> {
+    return noteFolders?.countByFolder() ?? new Map<string, number>();
+  }
+
   function list(): Folder[] {
     const counts = chatCounts();
-    return store.list().map((row) => toFolder(row, counts.get(row.id) ?? 0));
+    const notes = noteCounts();
+    return store
+      .list()
+      .map((row) => toFolder(row, counts.get(row.id) ?? 0, notes.get(row.id) ?? 0));
   }
 
   function get(id: string): Folder | null {
     const row = store.findById(id);
     if (!row) return null;
     const counts = chatCounts();
-    return toFolder(row, counts.get(id) ?? 0);
+    const notes = noteCounts();
+    return toFolder(row, counts.get(id) ?? 0, notes.get(id) ?? 0);
   }
 
   function create(input: FolderInput): Folder {
@@ -126,7 +144,7 @@ export function createFolderManager(options: FolderManagerOptions): FolderManage
     const row: FolderRow = { id, name, parentId, position, createdAt: at, updatedAt: at };
     store.insert(row);
     audit.log('web', 'folder.create', id, { name, parentId, position });
-    return toFolder(row, 0);
+    return toFolder(row, 0, 0);
   }
 
   function update(id: string, patch: FolderUpdate): Folder {
@@ -172,7 +190,31 @@ export function createFolderManager(options: FolderManagerOptions): FolderManage
     }
     store.update(id, patchRow);
     audit.log('web', 'folder.update', id, { name: nextName, parentId });
-    return toFolder({ ...existing, name: nextName, parentId, updatedAt: at }, 0);
+    return toFolder(
+      { ...existing, name: nextName, parentId, updatedAt: at },
+      0,
+      noteFolders?.countByFolder().get(id) ?? 0,
+    );
+  }
+
+  /** M17: the folder + all descendants (breadth-first, deterministic). */
+  function subtreeIds(id: string): string[] {
+    if (!store.findById(id)) throw folderError('not_found', 'folder not found');
+    const all = store.list();
+    const out: string[] = [id];
+    const queue: string[] = [id];
+    const guard = new Set<string>([id]);
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      for (const row of all) {
+        if (row.parentId === current && !guard.has(row.id)) {
+          guard.add(row.id);
+          out.push(row.id);
+          queue.push(row.id);
+        }
+      }
+    }
+    return out;
   }
 
   function remove(id: string): void {
@@ -197,13 +239,19 @@ export function createFolderManager(options: FolderManagerOptions): FolderManage
       }
     }
 
+    // M17: notes are NOT deleted — they only lose THIS membership (they stay
+    // in any other project, else become unfiled/Inbox).
+    const removedNotes = noteFolders?.listNoteIdsInFolder(id).length ?? 0;
+    noteFolders?.removeForFolder(id);
+
     store.remove(id);
     audit.log('web', 'folder.delete', id, {
       name: existing.name,
       children: children.length,
+      notes: removedNotes,
       parentId,
     });
   }
 
-  return { list, get, create, update, remove };
+  return { list, get, create, update, remove, subtreeIds };
 }

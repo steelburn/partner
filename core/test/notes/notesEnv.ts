@@ -11,6 +11,8 @@ import type { AuditService } from '../../src/services/redaction.js';
 import type { AuditStore } from '../../src/stores/types.js';
 import {
   createAuditStore,
+  createFolderStore,
+  createNoteFolderStore,
   createNoteLinkStore,
   createNoteStore,
   createNoteVersionStore,
@@ -19,6 +21,8 @@ import {
   createPlanStore,
 } from '../../src/stores/db.js';
 import type {
+  FolderStore,
+  NoteFolderStore,
   NoteGraphStore,
   NoteLinkStore,
   NoteStore,
@@ -43,6 +47,8 @@ export interface NotesTestEnv {
     fts: NotesFtsStore;
     versions?: NoteVersionStore;
     graph?: NoteGraphStore;
+    folders?: NoteFolderStore;
+    folderTree?: FolderStore;
   };
   notes: NoteManager;
   plans: PlanManager;
@@ -58,6 +64,8 @@ export interface NotesTestOptions {
   providerResolver?: () => Promise<DailySummarizeTarget | null>;
   /** M16 F1/F3: wire the version + graph stores (default false). */
   m16?: boolean;
+  /** M17: wire the folder tree + note<->folder membership (default false). */
+  m17?: boolean;
 }
 
 /** Fresh managers over ONE in-memory db with a shared audit + clock. */
@@ -74,7 +82,36 @@ export function makeNotesEnv(optionsIn: NotesTestOptions = {}): NotesTestEnv {
     fts: createNotesFtsStore(db),
     versions: optionsIn.m16 === true ? createNoteVersionStore(db) : undefined,
     graph: optionsIn.m16 === true ? createNoteGraphStore(db) : undefined,
+    folders: optionsIn.m17 === true ? createNoteFolderStore(db) : undefined,
+    folderTree: optionsIn.m17 === true ? createFolderStore(db) : undefined,
   };
+  // M17: a narrow structural folder lookup over the same tree (get +
+  // subtreeIds) — enough for the note manager's scope resolution without
+  // pulling the full folder manager (which owns chat counts) into this env.
+  const folderTree = stores.folderTree;
+  const folderLookup = folderTree
+    ? {
+        get: (id: string): unknown | null => folderTree.findById(id) ?? null,
+        subtreeIds: (id: string): string[] => {
+          if (!folderTree.findById(id)) throw new Error('folder not found');
+          const all = folderTree.list();
+          const out: string[] = [id];
+          const queue: string[] = [id];
+          const guard = new Set<string>([id]);
+          while (queue.length > 0) {
+            const current = queue.shift() as string;
+            for (const row of all) {
+              if (row.parentId === current && !guard.has(row.id)) {
+                guard.add(row.id);
+                out.push(row.id);
+                queue.push(row.id);
+              }
+            }
+          }
+          return out;
+        },
+      }
+    : undefined;
   const notes = createNoteManager({
     stores: {
       notes: stores.notes,
@@ -82,7 +119,9 @@ export function makeNotesEnv(optionsIn: NotesTestOptions = {}): NotesTestEnv {
       fts: stores.fts,
       ...(stores.versions !== undefined ? { versions: stores.versions } : {}),
       ...(stores.graph !== undefined ? { graph: stores.graph } : {}),
+      ...(stores.folders !== undefined ? { folders: stores.folders } : {}),
     },
+    ...(folderLookup !== undefined ? { folderLookup } : {}),
     audit,
     demo,
     providerResolver: optionsIn.providerResolver ?? null,

@@ -6,6 +6,7 @@ import {
   createNote,
   deleteNote,
   exportNotes,
+  fetchNoteGraph,
   getBacklinks,
   getDailyNote,
   getNote,
@@ -17,6 +18,7 @@ import {
   parseSearchResults,
   parseTags,
   searchNotes,
+  setNoteFolders,
   summarizeDaily,
   updateNote,
 } from '../src/lib/notes.js';
@@ -322,5 +324,57 @@ describe('export API client', () => {
       name: 'ApiRequestError',
       message: /invalid/i,
     });
+  });
+});
+
+describe('M17 project scope + membership client', () => {
+  it('parseNote/parseNoteList read folderIds, defaulting missing to []', () => {
+    const withFolders = parseNote({ ...fullNote(), folderIds: ['f1', 'f2', 7] });
+    expect(withFolders.folderIds).toEqual(['f1', 'f2']);
+    expect(parseNote(fullNote()).folderIds).toEqual([]);
+    const rows = parseNoteList([
+      { id: 'n-1', title: 'A', createdAt: 1, updatedAt: 2, folderIds: ['f1'] },
+      { id: 'n-2', title: 'B', createdAt: 1, updatedAt: 2 },
+    ]);
+    expect(rows[0]?.folderIds).toEqual(['f1']);
+    expect(rows[1]?.folderIds).toEqual([]);
+  });
+
+  it('listNotes appends folderId / none query params', async () => {
+    const { fetchImpl, calls } = recordFetch(() => jsonResponse({ notes: [] }));
+    await listNotes(TOKEN, { folderId: 'f 1/x', fetchImpl });
+    await listNotes(TOKEN, { unfiled: true, fetchImpl });
+    await listNotes(TOKEN, { fetchImpl });
+    expect(calls[0]?.input).toBe('/v1/notes?folderId=f%201%2Fx');
+    expect(calls[1]?.input).toBe('/v1/notes?folderId=none');
+    expect(calls[2]?.input).toBe('/v1/notes');
+  });
+
+  it('fetchNoteGraph scopes the request and returns externalNodes', async () => {
+    const payload = {
+      nodes: [{ id: 'n-1', title: 'A', x: null, y: null, folderIds: ['f1'] }],
+      edges: [],
+      externalNodes: [
+        { id: 'n-2', title: 'B', x: null, y: null, folderIds: ['f2'], external: true },
+      ],
+    };
+    const { fetchImpl, calls } = recordFetch(() => jsonResponse(payload));
+    const graph = await fetchNoteGraph(TOKEN, { folderId: 'f1', fetchImpl });
+    expect(calls[0]?.input).toBe('/v1/notes/graph?folderId=f1');
+    expect(graph.externalNodes?.[0]?.external).toBe(true);
+    await fetchNoteGraph(TOKEN, { unfiled: true, fetchImpl });
+    expect(calls[1]?.input).toBe('/v1/notes/graph?folderId=none');
+  });
+
+  it('setNoteFolders PUTs {folderIds} to the folders route and returns the note', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ ...fullNote(), folderIds: ['f1', 'f2'] }),
+    );
+    const note = await setNoteFolders(TOKEN, 'n 1', ['f1', 'f2'], { fetchImpl });
+    expect(calls[0]?.input).toBe('/v1/notes/n%201/folders');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect(calls[0]?.init?.headers).toMatchObject(AUTH);
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ folderIds: ['f1', 'f2'] });
+    expect(note.folderIds).toEqual(['f1', 'f2']);
   });
 });

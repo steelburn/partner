@@ -35,6 +35,7 @@ import type {
 } from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
 import type {
+  NoteFolderStore,
   NoteGraphStore,
   NoteLinkRow,
   NoteLinkStore,
@@ -111,8 +112,19 @@ export interface NoteManagerOptions {
     versions?: NoteVersionStore;
     /** M16 F1 canvas positions (optional — graph without drag persistence). */
     graph?: NoteGraphStore;
+    /** M17 note<->folder membership (optional — notes stay unfiled). */
+    folders?: NoteFolderStore;
   };
   audit: AuditService;
+  /**
+   * M17: narrow structural view of the folder manager — existence checks and
+   * subtree resolution. Kept structural so the notes module never imports the
+   * folder manager (and harnesses can wire a stub).
+   */
+  folderLookup?: {
+    get(id: string): unknown | null;
+    subtreeIds(id: string): string[];
+  };
   /** Demo mode writes the deterministic placeholder daily summary. */
   demo?: boolean;
   /**
@@ -125,6 +137,17 @@ export interface NoteManagerOptions {
   now?: () => number;
 }
 
+/** M17: note-list scope — a folder subtree, the unfiled "Inbox", or all. */
+export interface NoteListFilter {
+  /** Project/folder scope; the manager resolves the descendant subtree. */
+  folderId?: string;
+  /** True = notes with no membership (Inbox). Ignored when folderId is set. */
+  unfiled?: boolean;
+}
+
+/** M17: graph scope — same shape as the list filter. */
+export type NoteGraphFilter = NoteListFilter;
+
 /** Partial note edit; every field validates like create. */
 export type NotePatch = Partial<Pick<NoteInput, 'title' | 'content' | 'tags' | 'isDaily'>>;
 
@@ -135,13 +158,18 @@ export interface DailySummarizeTarget {
 }
 
 export interface NoteManager {
-  /** Newest updated first, tags parsed. */
-  list(): NoteSummary[];
+  /** Newest updated first, tags parsed. Optionally scoped by folder/Inbox. */
+  list(filter?: NoteListFilter): NoteSummary[];
   get(id: string): Note | null;
   /** Create a note; wiki-links parsed + resolved at save time. */
   create(input: NoteInput, writer?: NoteVersionWriter): Note;
   /** Update + re-parse/replace wiki-links and re-index FTS. */
   update(id: string, patch: NotePatch, writer?: NoteVersionWriter): Note;
+  /**
+   * M17: replace a note's project memberships ([] = Inbox). Unknown note ->
+   * not_found; unknown folder -> folder_not_found. Content is never touched.
+   */
+  setFolders(id: string, folderIds: unknown): Note;
   /** Remove a note + its links + its FTS row. Unknown id -> not_found. */
   remove(id: string): void;
   /** The note's outgoing wiki-links (resolved/dangling) — unknown id -> not_found. */
@@ -176,25 +204,27 @@ export interface NoteManager {
   restore(noteId: string, versionId: string): Note;
   /** M16 F1: nodes (all notes + persisted positions) and resolved edges with
    *  direction (referencing note -> referenced note; mutual refs collapse to
-   *  one bidirectional edge). */
-  graph(): NoteGraph;
+   *  one bidirectional edge). M17: an optional folder/Inbox scope returns the
+   *  in-scope subgraph plus one-hop externalNodes (ghosts). */
+  graph(filter?: NoteGraphFilter): NoteGraph;
   /** M16 F1: persist one dragged node position (no content timestamp bump). */
   setPosition(noteId: string, x: number, y: number): void;
 }
 
-function toSummary(row: NoteRow): NoteSummary {
+function toSummary(row: NoteRow, folderIds: string[] = []): NoteSummary {
   return {
     id: row.id,
     title: row.title,
     tags: parseTags(row.tags),
     isDaily: row.isDaily === 1,
+    folderIds,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-function toNote(row: NoteRow): Note {
-  return { ...toSummary(row), content: row.content };
+function toNote(row: NoteRow, folderIds: string[] = []): Note {
+  return { ...toSummary(row, folderIds), content: row.content };
 }
 
 /** Row tags JSON -> string[] (''/null -> []). */
@@ -278,11 +308,18 @@ function parseBodyInput(input: unknown): {
   content: string;
   tags: string[];
   isDaily: boolean;
+  folderIds: string[] | undefined;
 } {
   if (input === null || typeof input !== 'object') {
     throw noteError('invalid_input', 'body must be an object');
   }
-  const maybe = input as { title?: unknown; content?: unknown; tags?: unknown; isDaily?: unknown };
+  const maybe = input as {
+    title?: unknown;
+    content?: unknown;
+    tags?: unknown;
+    isDaily?: unknown;
+    folderIds?: unknown;
+  };
   if (maybe.title === undefined) {
     throw noteError('invalid_input', 'title is required');
   }
@@ -290,7 +327,24 @@ function parseBodyInput(input: unknown): {
   const content = requireContent(maybe.content ?? '');
   const tags = requireTags(maybe.tags);
   const isDaily = requireIsDaily(maybe.isDaily);
-  return { title, content, tags, isDaily };
+  const folderIds =
+    maybe.folderIds === undefined ? undefined : requireFolderIds(maybe.folderIds);
+  return { title, content, tags, isDaily, folderIds };
+}
+
+/** M17: parse + de-duplicate a folder-id array (existence checked by caller). */
+function requireFolderIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    throw noteError('invalid_input', 'folderIds must be an array of strings');
+  }
+  const ids: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      throw noteError('invalid_input', 'folderIds must be an array of strings');
+    }
+    if (!ids.includes(entry)) ids.push(entry);
+  }
+  return ids;
 }
 
 function parsePatch(input: unknown): NotePatch {
@@ -344,6 +398,84 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
   const demo = options.demo ?? false;
   const providerResolver = options.providerResolver ?? null;
   const now = options.now ?? Date.now;
+  const folderLookup = options.folderLookup ?? null;
+
+  // -------------------------------------------------------------------------
+  // M17 project membership helpers. When the membership store is not wired
+  // every note reads as unfiled (`folderIds: []`) and scope resolution
+  // degrades to "all notes" — existing harnesses keep booting unchanged.
+  // -------------------------------------------------------------------------
+
+  /** Folder ids for one note ([] when membership is not wired). */
+  function folderIdsFor(noteId: string): string[] {
+    return stores.folders?.listFolderIdsForNote(noteId) ?? [];
+  }
+
+  /** Validate + de-duplicate requested folder ids against the shared tree. */
+  function validateFolderIds(folderIds: readonly string[]): string[] {
+    const out: string[] = [];
+    for (const folderId of folderIds) {
+      if (out.includes(folderId)) continue;
+      if (folderLookup === null || folderLookup.get(folderId) === null) {
+        throw noteError('folder_not_found', 'folder not found');
+      }
+      out.push(folderId);
+    }
+    return out;
+  }
+
+  /** Resolve a folder id to its full subtree (folder + descendants). */
+  function resolveSubtree(folderId: string): string[] {
+    if (folderLookup === null || folderLookup.get(folderId) === null) {
+      throw noteError('folder_not_found', 'folder not found');
+    }
+    try {
+      return folderLookup.subtreeIds(folderId);
+    } catch {
+      throw noteError('folder_not_found', 'folder not found');
+    }
+  }
+
+  /**
+   * Resolve a list/graph scope to the set of note ids it covers, or null for
+   * "all notes" (no filter). Unknown folder -> folder_not_found.
+   */
+  function scopeSet(filter?: NoteListFilter): Set<string> | null {
+    if (!filter) return null;
+    if (filter.folderId !== undefined) {
+      const folderIds = resolveSubtree(filter.folderId);
+      if (!stores.folders) return new Set();
+      return new Set(stores.folders.listNoteIdsInFolders(folderIds));
+    }
+    if (filter.unfiled === true) {
+      // Without a membership store no note has a membership -> all unfiled.
+      if (!stores.folders) return null;
+      const filed = new Set<string>();
+      for (const row of stores.notes.list()) {
+        if (stores.folders.listFolderIdsForNote(row.id).length > 0) filed.add(row.id);
+      }
+      const all = new Set(stores.notes.list().map((row) => row.id));
+      for (const id of filed) all.delete(id);
+      return all;
+    }
+    return null;
+  }
+
+  /** note id -> folder ids for every note (one pass over the store). */
+  function membershipMap(): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+    if (!stores.folders) return map;
+    for (const row of stores.notes.list()) map.set(row.id, folderIdsFor(row.id));
+    return map;
+  }
+
+  /** Wire shape for one row, membership included. */
+  function summaryOf(row: NoteRow): NoteSummary {
+    return toSummary(row, folderIdsFor(row.id));
+  }
+  function noteOf(row: NoteRow): Note {
+    return toNote(row, folderIdsFor(row.id));
+  }
 
   /** M16 F3: snapshot the note's CURRENT state as a version row (writer
    *  tagged). No-op when versioning is not wired (harness mode). */
@@ -374,7 +506,10 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
   }
 
   function create(input: NoteInput, writer: NoteVersionWriter = 'user'): Note {
-    const { title, content, tags, isDaily } = parseBodyInput(input);
+    const { title, content, tags, isDaily, folderIds } = parseBodyInput(input);
+    // M17: validate create-time membership BEFORE the note is persisted so a
+    // rejected folder leaves nothing behind.
+    const assigned = folderIds !== undefined ? validateFolderIds(folderIds) : [];
     const at = now();
     const row = persistNote(
       {
@@ -388,13 +523,34 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       },
       writer,
     );
-    const note = toNote(row);
+    if (assigned.length > 0) stores.folders?.setForNote(row.id, assigned, at);
+    const note = toNote(row, assigned);
     audit.log('web', 'note.create', row.id, {
       titleLength: note.title.length,
       contentLength: note.content.length,
       isDaily: note.isDaily,
+      folders: note.folderIds.length,
     });
     return note;
+  }
+
+  /** M17: replace a note's project memberships ([] = Inbox). */
+  function setFolders(id: string, folderIds: unknown): Note {
+    const row = requireRow(id);
+    const store = stores.folders;
+    if (!store) {
+      throw noteError('not_found', 'note folders are unavailable (not wired)');
+    }
+    const requested = requireFolderIds(folderIds);
+    const validated = validateFolderIds(requested);
+    const at = now();
+    store.setForNote(id, validated, at);
+    audit.log('web', 'note.folders', id, {
+      folderIds: validated,
+      count: validated.length,
+      titleLength: row.title.length,
+    });
+    return toNote(requireRow(id), validated);
   }
 
   function requireRow(id: string): NoteRow {
@@ -423,7 +579,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       titleLength: updated.title.length,
       contentLength: updated.content.length,
     });
-    return toNote(updated);
+    return noteOf(updated);
   }
 
   /** M16 F3: overwrite a note's content/title/tags + mirrors WITHOUT a fresh
@@ -443,7 +599,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     });
     stores.links.replaceForNote(id, resolveLinks(stores, parseWikiLinks(content)));
     stores.fts.upsertNote(id, noteSearchText({ title, content }));
-    return toNote(requireRow(id));
+    return noteOf(requireRow(id));
   }
 
   function remove(id: string): void {
@@ -453,22 +609,28 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     stores.fts.deleteRef('note', id);
     stores.versions?.removeForNote(id);
     stores.graph?.remove(id);
+    // M17: drop membership edges (notes never own folders; folder delete
+    // handles the other direction).
+    stores.folders?.removeForNote(id);
     audit.log('web', 'note.delete', id, {
       titleLength: row.title.length,
       contentLength: row.content.length,
     });
   }
 
-  function list(): NoteSummary[] {
+  function list(filter?: NoteListFilter): NoteSummary[] {
+    const scope = scopeSet(filter);
+    const memberships = membershipMap();
     return stores.notes
       .list()
-      .map(toSummary)
+      .filter((row) => scope === null || scope.has(row.id))
+      .map((row) => toSummary(row, memberships.get(row.id) ?? []))
       .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
   }
 
   function get(id: string): Note | null {
     const row = stores.notes.findById(id);
-    return row ? toNote(row) : null;
+    return row ? noteOf(row) : null;
   }
 
   function links(id: string): NoteLinkInfo[] {
@@ -479,7 +641,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
   function backlinks(id: string): NoteSummary[] {
     const row = requireRow(id);
     const ids = stores.links.listLinkingTo(row.id, row.title).filter((from) => from !== row.id);
-    const byId = new Map(stores.notes.list().map((r) => [r.id, toSummary(r)]));
+    const byId = new Map(stores.notes.list().map((r) => [r.id, summaryOf(r)]));
     return ids
       .map((from) => byId.get(from))
       .filter((n): n is NoteSummary => n !== undefined)
@@ -498,7 +660,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     const out: Note[] = [];
     for (const hit of hits) {
       const row = stores.notes.findById(hit.refId);
-      if (row) out.push(toNote(row));
+      if (row) out.push(noteOf(row));
     }
     return out;
   }
@@ -564,7 +726,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       },
       'capture',
     );
-    const note = toNote(row);
+    const note = noteOf(row);
     audit.log('web', 'note.capture', row.id, {
       titleLength: note.title.length,
       contentLength: note.content.length,
@@ -642,7 +804,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       audit.log('web', 'note.summarize_skipped', todayDaily.id, {
         reason: 'content_below_summary',
       });
-      return toNote(requireRow(todayDaily.id));
+      return noteOf(requireRow(todayDaily.id));
     }
     const base = stripped === '' ? '' : `${stripped}\n\n`;
     const content = `${base}${DAILY_SUMMARY_HEADING}\n\n${summaryText}`;
@@ -658,13 +820,13 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       contentLength: updated.content.length,
       noteCount: sources.length,
     });
-    return toNote(updated);
+    return noteOf(updated);
   }
 
   function exportAll(): NotesExportBundle {
     const notes = stores.notes
       .list()
-      .map(toNote)
+      .map((row) => noteOf(row))
       .sort((a, b) => a.createdAt - b.createdAt || a.updatedAt - b.updatedAt);
     return { schema: 'notes/v1', exportedAt: now(), notes };
   }
@@ -753,24 +915,31 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
     return updated;
   }
 
-  function graph(): NoteGraph {
+  function graph(filter?: NoteGraphFilter): NoteGraph {
     const rows = stores.notes
       .list()
       .sort((a, b) => a.createdAt - b.createdAt || a.updatedAt - b.updatedAt);
+    // M17: resolve the requested project/Inbox scope. null = unscoped (the
+    // M16 shape, backward compatible: no externalNodes, no external flags).
+    const scope = scopeSet(filter);
+    const inScope = (id: string): boolean => scope === null || scope.has(id);
     const positions = new Map(
       (stores.graph?.listAll() ?? []).map((p) => [p.noteId, { x: p.x, y: p.y }]),
     );
-    const nodes = rows.map((row) => {
-      const at = positions.get(row.id);
+    const memberships = membershipMap();
+    const nodeFor = (row: NoteRow, external: boolean): NoteGraph['nodes'][number] => {
+      const at = external ? undefined : positions.get(row.id);
       return {
         id: row.id,
         title: row.title,
         tags: parseTags(row.tags),
         isDaily: row.isDaily === 1,
+        folderIds: memberships.get(row.id) ?? [],
+        ...(external ? { external: true } : {}),
         x: at ? at.x : null,
         y: at ? at.y : null,
       };
-    });
+    };
     const ids = new Set(rows.map((row) => row.id));
     // Adjacency for bidirectional detection: target -> set of linking sources.
     const adjacency = new Map<string, Set<string>>();
@@ -796,6 +965,9 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
       for (const link of outgoing.get(row.id) ?? []) {
         if (link.toNote === null || link.toNote === row.id) continue;
         if (!ids.has(link.toNote)) continue;
+        // M17 scoped reads: keep edges with AT LEAST one in-scope endpoint
+        // (internal + boundary); unscoped keeps every edge.
+        if (scope !== null && !inScope(row.id) && !inScope(link.toNote)) continue;
         const pair = key(row.id, link.toNote);
         if (seen.has(pair)) continue;
         seen.add(pair);
@@ -803,7 +975,24 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
         edges.push({ source: row.id, target: link.toNote, bidirectional });
       }
     }
-    return { nodes, edges };
+    const result: NoteGraph = {
+      nodes: scope === null
+        ? rows.map((row) => nodeFor(row, false))
+        : rows.filter((row) => inScope(row.id)).map((row) => nodeFor(row, false)),
+      edges,
+    };
+    if (scope !== null) {
+      // Ghosts: one hop, both directions, deduped. Never persisted.
+      const externalIds = new Set<string>();
+      for (const edge of edges) {
+        if (!inScope(edge.source)) externalIds.add(edge.source);
+        if (!inScope(edge.target)) externalIds.add(edge.target);
+      }
+      result.externalNodes = rows
+        .filter((row) => externalIds.has(row.id))
+        .map((row) => nodeFor(row, true));
+    }
+    return result;
   }
 
   function setPosition(noteId: string, x: unknown, y: unknown): void {
@@ -820,6 +1009,7 @@ export function createNoteManager(options: NoteManagerOptions): NoteManager {
   return {
     create,
     update,
+    setFolders,
     remove,
     list,
     get,

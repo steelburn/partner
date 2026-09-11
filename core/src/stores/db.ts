@@ -68,6 +68,8 @@ import type {
   NoteRow,
   NoteRowPatch,
   NoteStore,
+  NoteFolderRow,
+  NoteFolderStore,
   NotesFtsHit,
   NotesFtsKind,
   NotesFtsStore,
@@ -478,6 +480,18 @@ CREATE TABLE IF NOT EXISTS folders (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- M17 note<->folder membership (additive schema v16): notes share the SAME
+-- folder tree as chats. Many-to-many; no row = unfiled. Ids/edges only —
+-- note content never crosses this table.
+CREATE TABLE IF NOT EXISTS note_folders (
+  note_id TEXT NOT NULL,
+  folder_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (note_id, folder_id)
+);
+CREATE INDEX IF NOT EXISTS idx_note_folders_folder
+  ON note_folders(folder_id, note_id);
 
 -- M11 F1 chat attachments + blobs (PLAN-M11.md, additive schema v12).
 -- Payload bytes sit in chat_blobs (deduped by sha256); attachment rows are
@@ -2376,6 +2390,73 @@ export function createFolderStore(db: Database.Database): FolderStore {
     },
     remove(id: string): void {
       remove.run(id);
+    },
+  };
+}
+
+/**
+ * M17 note<->folder membership row store (additive schema v16). Plain typed
+ * CRUD: replace-for-note is transactional; reads are deterministic. The note
+ * manager owns folder validation + audit; stores never read the clock.
+ */
+export function createNoteFolderStore(db: Database.Database): NoteFolderStore {
+  const insertOne = db.prepare(
+    'INSERT OR IGNORE INTO note_folders (note_id, folder_id, created_at) VALUES (?, ?, ?)',
+  );
+  const deleteForNote = db.prepare('DELETE FROM note_folders WHERE note_id = ?');
+  const listForNote = db.prepare(
+    'SELECT folder_id AS folderId FROM note_folders WHERE note_id = ? ORDER BY created_at ASC, rowid ASC',
+  );
+  const listInFolder = db.prepare(
+    'SELECT note_id AS noteId FROM note_folders WHERE folder_id = ? ORDER BY note_id ASC',
+  );
+  const countAll = db.prepare(
+    'SELECT folder_id AS folderId, COUNT(*) AS n FROM note_folders GROUP BY folder_id',
+  );
+  const deleteForFolder = db.prepare('DELETE FROM note_folders WHERE folder_id = ?');
+
+  function listNoteIdsInFolder(folderId: string): string[] {
+    return (listInFolder.all(folderId) as Array<{ noteId: string }>).map((r) => r.noteId);
+  }
+
+  return {
+    setForNote(noteId: string, folderIds: readonly string[], at: number): void {
+      const tx = db.transaction(() => {
+        deleteForNote.run(noteId);
+        const seen = new Set<string>();
+        for (const folderId of folderIds) {
+          if (seen.has(folderId)) continue;
+          seen.add(folderId);
+          insertOne.run(noteId, folderId, at);
+        }
+      });
+      tx();
+    },
+    listFolderIdsForNote(noteId: string): string[] {
+      return (listForNote.all(noteId) as Array<{ folderId: string }>).map((r) => r.folderId);
+    },
+    listNoteIdsInFolder(folderId: string): string[] {
+      return listNoteIdsInFolder(folderId);
+    },
+    listNoteIdsInFolders(folderIds: readonly string[]): string[] {
+      const ids = new Set<string>();
+      for (const folderId of folderIds) {
+        for (const noteId of listNoteIdsInFolder(folderId)) ids.add(noteId);
+      }
+      return [...ids].sort();
+    },
+    countByFolder(): Map<string, number> {
+      const counts = new Map<string, number>();
+      for (const row of countAll.all() as Array<{ folderId: string; n: number }>) {
+        counts.set(row.folderId, row.n);
+      }
+      return counts;
+    },
+    removeForNote(noteId: string): void {
+      deleteForNote.run(noteId);
+    },
+    removeForFolder(folderId: string): void {
+      deleteForFolder.run(folderId);
     },
   };
 }

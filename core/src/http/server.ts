@@ -3279,7 +3279,25 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/notes', requireSession(sessions), (req: Request, res: Response) => {
     const notes = requireNotes(options, res);
     if (!notes) return;
-    res.json({ notes: notes.list() });
+    // M17: ?folderId=<id> scopes to that project subtree; ?folderId=none
+    // scopes to unfiled (Inbox). A scope needs the shared folder tree.
+    const folderParam = typeof req.query.folderId === 'string' ? req.query.folderId : undefined;
+    if (folderParam !== undefined) {
+      const folders = requireFolders(options, res);
+      if (!folders) return;
+    }
+    try {
+      const filter =
+        folderParam === undefined
+          ? undefined
+          : folderParam === 'none'
+            ? { unfiled: true }
+            : { folderId: folderParam };
+      res.json({ notes: notes.list(filter) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
   });
 
   api.post('/v1/notes', requireSession(sessions), (req: Request, res: Response) => {
@@ -3352,14 +3370,39 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/notes/graph', requireSession(sessions), (req: Request, res: Response) => {
     const notes = requireNotes(options, res);
     if (!notes) return;
-    const graph = notes.graph();
+    // M17: ?folderId=<id|none> scopes the graph to a project subtree (or
+    // unfiled) and returns one-hop externalNodes (ghosts) on both sides.
+    const folderParam = typeof req.query.folderId === 'string' ? req.query.folderId : undefined;
+    if (folderParam !== undefined) {
+      const folders = requireFolders(options, res);
+      if (!folders) return;
+    }
+    let graph: ReturnType<typeof notes.graph>;
+    try {
+      const filter =
+        folderParam === undefined
+          ? undefined
+          : folderParam === 'none'
+            ? { unfiled: true }
+            : { folderId: folderParam };
+      graph = notes.graph(filter);
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
     // M16 follow-up: link brainstorm sessions back to their source nodes so
     // the graph can badge notes and resolve "open the existing brainstorm".
-    // Best-effort — a linkage failure must never break the graph read.
+    // Best-effort — a linkage failure must never break the graph read. M17:
+    // a scoped read keeps only sessions touching an in-scope node.
     if (options.brainstorm) {
       try {
         const list = options.brainstorm.sessions();
-        if (list.length > 0) graph.brainstorms = list;
+        const scoped = folderParam !== undefined;
+        const inScope = new Set(graph.nodes.map((node) => node.id));
+        const relevant = scoped
+          ? list.filter((session) => session.noteIds.some((id) => inScope.has(id)))
+          : list;
+        if (relevant.length > 0) graph.brainstorms = relevant;
       } catch {
         /* linkage is advisory */
       }
@@ -3560,6 +3603,24 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const id = String(req.params.id ?? '');
     try {
       res.json({ backlinks: notes.backlinks(id) });
+    } catch (err) {
+      if (sendNoteError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // M17: replace a note's project memberships ([] = Inbox). Membership has
+  // exactly one write path; content edits never touch it. Every route authed;
+  // audit carries folder ids/counts only (never note content).
+  api.put('/v1/notes/:id/folders', requireSession(sessions), (req: Request, res: Response) => {
+    const notes = requireNotes(options, res);
+    if (!notes) return;
+    const folders = requireFolders(options, res);
+    if (!folders) return;
+    const id = String(req.params.id ?? '');
+    const body = (req.body ?? {}) as { folderIds?: unknown };
+    try {
+      res.json(notes.setFolders(id, body.folderIds));
     } catch (err) {
       if (sendNoteError(res, err)) return;
       throw err;

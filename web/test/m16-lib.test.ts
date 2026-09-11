@@ -248,3 +248,20 @@ describe('M16 F1 graph connectors (wiki-link writes)', () => {
     expect(isLinkedAlready([], 'a', 'b')).toBe(false);
   });
 });
+
+describe('M17 scoped graph layout (ghost nodes)', () => {
+  it('lays out external (null-position) nodes deterministically alongside in-scope nodes', () => {
+    const nodes = [
+      { id: 'a', title: 'Alpha', x: null, y: null },
+      { id: 'b', title: 'Ghost', x: null, y: null },
+    ];
+    const edges = [{ source: 'a', target: 'b' }];
+    const first = layOutGraph(nodes, edges);
+    const second = layOutGraph(nodes, edges);
+    expect(first).toEqual(second);
+    const pos = new Map(first.map((entry) => [entry.id, entry]));
+    // The ghost sits one rank right of its in-scope source.
+    expect(pos.get('a')!.x).toBeLessThan(pos.get('b')!.x);
+    expect(Number.isFinite(pos.get('b')!.y)).toBe(true);
+  });
+});

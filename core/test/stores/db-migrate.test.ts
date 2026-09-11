@@ -29,8 +29,8 @@ describe('M11 schema v12 (guarded columns)', () => {
       const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as
         | { value: string }
         | undefined;
-      expect(meta?.value).toBe('15');
-      expect(SCHEMA_VERSION).toBe(15);
+      expect(meta?.value).toBe('16');
+      expect(SCHEMA_VERSION).toBe(16);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');
@@ -47,6 +47,8 @@ describe('M11 schema v12 (guarded columns)', () => {
       // M16 follow-up v15: brainstorm linkage tables.
       expect(tables).toContain('brainstorm_sessions');
       expect(tables).toContain('brainstorm_sources');
+      // M17 v16: note<->folder membership (shared tree).
+      expect(tables).toContain('note_folders');
 
       // Existing tables still have every legacy column (guards are additive).
       const legacy = [

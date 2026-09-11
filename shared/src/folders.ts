@@ -17,6 +17,8 @@ export interface Folder {
   position: number;
   /** Conversations directly inside this folder (not descendants). */
   chatCount: number;
+  /** M17: notes directly in this folder (not descendants). */
+  noteCount: number;
   createdAt: number;
   updatedAt: number;
 }

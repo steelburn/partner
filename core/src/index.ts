@@ -439,6 +439,7 @@ import type {
   FolderStore,
   MemoryFtsStore,
   MessageStore,
+  NoteFolderStore,
   NoteLinkStore,
   NoteStore,
   NoteVersionStore,
@@ -531,6 +532,7 @@ import {
   createNoteStore,
   createNoteVersionStore,
   createNoteGraphStore,
+  createNoteFolderStore,
   createNotesFtsStore,
   createPlanStore,
 } from './stores/db.js';
@@ -559,6 +561,8 @@ export interface CoreBundle {
   /** M11 F11 folder manager + store (chats organized into folders). */
   folders: FolderManager;
   folderStore: FolderStore;
+  /** M17 note<->folder membership store (schema v16; shared tree). */
+  noteFolderStore: NoteFolderStore;
   /** M11 F1 chat-attachment manager (uploads + blob content). */
   attachments: AttachmentManager;
   /** M11 F10 asset manager (saved response artifacts + note promotion). */
@@ -706,10 +710,15 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   // M11 F11: folders over the SAME db (schema v12). Conversations are the
   // edge owner; the folder manager uses the conversation manager for chat
   // counts and folder-delete reassignment. No seed — Inbox is folder NULL.
+  // M17: the SAME tree also holds notes (note_folders membership, schema v16),
+  // so the membership store is created first and handed to the folder manager
+  // for noteCount + delete cleanup.
   const folderStore = createFolderStore(db);
+  const noteFolderStore = createNoteFolderStore(db);
   const folders = createFolderManager({
     store: folderStore,
     conversations: conversationManager,
+    noteFolders: noteFolderStore,
     audit,
   });
 
@@ -759,7 +768,9 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
       fts: notesFtsStore,
       versions: noteVersionStore,
       graph: noteGraphStore,
+      folders: noteFolderStore,
     },
+    folderLookup: folders,
     audit,
     demo: config.demo,
     providerResolver: createDailySummarizeResolver({ providers: providerManager }),
@@ -988,6 +999,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     messageStore,
     folders,
     folderStore,
+    noteFolderStore,
     attachments,
     assets,
     mcp,

@@ -1132,6 +1132,8 @@ function ColumnDivider({
                 active={view === 'notes'}
                 focusNote={noteFocus}
                 onOpenConversation={handleOpenConversation}
+                folders={folders}
+                onCreateFolder={(name, parentId) => void handleCreateFolder(name, parentId)}
               />
             </div>
             <div className={view === 'skills' ? 'app-view app-view-active' : 'app-view'}>

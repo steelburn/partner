@@ -134,5 +134,5 @@ export interface ProviderClient {
 // Versioning
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 export const WIRE_VERSION = 'v1';
