@@ -1976,16 +1976,56 @@ select {
   margin-bottom: var(--space-0);
 }
 
+.persona-models-hint {
+  margin-bottom: var(--space-1);
+}
+
 .persona-model-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
 
-.persona-model-label {
+/* The tick is the override switch; the select only exists while it is on. */
+.persona-model-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   flex: none;
-  width: 96px;
-  margin-bottom: 0;
+  width: 120px;
+  cursor: pointer;
+}
+
+.persona-model-toggle input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.persona-model-toggle input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.persona-model-toggle input[type='checkbox']:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.persona-model-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+
+.persona-model-auto {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
 .persona-model-row .field {
@@ -1998,6 +2038,10 @@ select {
     flex-direction: column;
     align-items: stretch;
     gap: var(--space-1);
+  }
+
+  .persona-model-toggle {
+    width: auto;
   }
 }
 

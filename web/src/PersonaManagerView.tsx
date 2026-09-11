@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { PersonaCompare } from './PersonaCompare.js';
+import { isImageCapableModel } from '@partner/shared';
 import type {
   Folder,
   IndependenceLevel,
   Persona,
   PersonaInput,
   PersonaSchedule,
+  ProviderSummary,
   TaskClass,
   ThemeProfile,
 } from '@partner/shared';
@@ -14,6 +16,7 @@ import {
   TASK_CLASS_OPTIONS,
   levelExplain,
   levelLabel,
+  modelChoicesForTaskClass,
   personaInitials,
 } from './lib/persona-helpers.js';
 import {
@@ -24,6 +27,7 @@ import {
   resumePersona,
   updatePersona,
 } from './lib/personas.js';
+import { listProviders } from './lib/api.js';
 import { bindPersonaTheme } from './lib/themes.js';
 import { listFolders } from './lib/folders.js';
 import { readStoredToken } from './lib/token.js';
@@ -536,6 +540,18 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
     vision: persona?.model.taskClasses.vision ?? '',
     cheap: persona?.model.taskClasses.cheap ?? '',
   });
+  // A task-class override is opt-in: unticked rows save nothing, so the
+  // persona keeps the provider's default routing for that class.
+  const [modelTicks, setModelTicks] = useState<Record<TaskClass, boolean>>(() => {
+    const initial = {} as Record<TaskClass, boolean>;
+    for (const option of TASK_CLASS_OPTIONS) {
+      initial[option.value] = (persona?.model.taskClasses[option.value] ?? '') !== '';
+    }
+    return initial;
+  });
+  // Enabled providers that reported models — the override selects' options.
+  // null while loading; [] when loading failed or nothing is configured.
+  const [providers, setProviders] = useState<ProviderSummary[] | null>(null);
   const [isDefault, setIsDefault] = useState(persona?.isDefault ?? false);
   // M14 schedules (drafts of independence.schedules[] — saved with the form).
   const [schedules, setSchedules] = useState<PersonaSchedule[]>(
@@ -552,6 +568,24 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
     const token = readStoredToken();
     if (!token) return;
     listFolders(token).then(setFolders).catch(() => undefined);
+  }, []);
+  // M13: the override selects only offer models an enabled provider actually
+  // reported, so a freeform typo can never be saved. A failed load leaves []
+  // (a saved override stays visible as "not in your providers").
+  useEffect(() => {
+    const token = readStoredToken();
+    if (!token) return;
+    let cancelled = false;
+    listProviders(token)
+      .then((rows) => {
+        if (!cancelled) setProviders(rows.filter((p) => p.enabled && p.defaultModels.length > 0));
+      })
+      .catch(() => {
+        if (!cancelled) setProviders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   // M11 F3 capability policy (comma-separated editor fields).
   const [defaultSkills, setDefaultSkills] = useState(persona?.policy?.skills?.default?.join(', ') ?? '');
@@ -583,10 +617,14 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
       return;
     }
 
+    const ticked = TASK_CLASS_OPTIONS.filter((option) => modelTicks[option.value]);
+    const unpicked = ticked.find((option) => taskClasses[option.value].trim() === '');
+    if (unpicked !== undefined) {
+      setError(`Pick a model for the ${unpicked.label} override, or untick it.`);
+      return;
+    }
     const taskClassMap = Object.fromEntries(
-      Object.entries(taskClasses)
-        .map(([taskClass, model]) => [taskClass, model.trim()] as const)
-        .filter(([, model]) => model.length > 0),
+      ticked.map((option) => [option.value, taskClasses[option.value].trim()] as const),
     ) as Partial<Record<TaskClass, string>>;
 
     const input: PersonaInput = {
@@ -760,28 +798,83 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
 
         <fieldset className="persona-models">
           <legend className="label persona-models-legend">Model overrides (optional)</legend>
-          {TASK_CLASS_OPTIONS.map((option) => (
-            <div className="persona-model-row" key={option.value}>
-              <label
-                className="label persona-model-label"
-                htmlFor={`${idPrefix}-model-${option.value}`}
-              >
-                {option.label}
-              </label>
-              <input
-                id={`${idPrefix}-model-${option.value}`}
-                className="field"
-                type="text"
-                value={taskClasses[option.value]}
-                onChange={(event) =>
-                  setTaskClasses((prev) => ({ ...prev, [option.value]: event.target.value }))
-                }
-                disabled={formDisabled}
-                placeholder={option.hint}
-                aria-label={`${option.label} model for this persona — ${option.hint}`}
-              />
-            </div>
-          ))}
+          <p className="form-hint persona-models-hint">
+            Tick a task class to pin it to one of your providers' models. Unticked classes keep the
+            provider's default routing.
+          </p>
+          {TASK_CLASS_OPTIONS.map((option) => {
+            const ticked = modelTicks[option.value];
+            const current = taskClasses[option.value];
+            const groups =
+              providers === null
+                ? []
+                : modelChoicesForTaskClass(option.value, providers, {
+                    pinnedProviderId: persona?.model.providerId,
+                  });
+            // A saved model id may no longer exist on any provider (provider
+            // removed, purpose re-pointed) — keep it selectable so editing
+            // another field never silently drops the override.
+            const currentListed =
+              current === '' || groups.some((group) => group.models.includes(current));
+            return (
+              <div className="persona-model-row" key={option.value}>
+                <label className="persona-model-toggle">
+                  <input
+                    type="checkbox"
+                    checked={ticked}
+                    disabled={formDisabled}
+                    onChange={(event) => {
+                      const on = event.target.checked;
+                      setModelTicks((prev) => ({ ...prev, [option.value]: on }));
+                    }}
+                    aria-label={`Override the ${option.label} model for this persona`}
+                  />
+                  <span className="persona-model-label">{option.label}</span>
+                </label>
+                {ticked ? (
+                  <select
+                    id={`${idPrefix}-model-${option.value}`}
+                    className="field"
+                    value={current}
+                    onChange={(event) =>
+                      setTaskClasses((prev) => ({ ...prev, [option.value]: event.target.value }))
+                    }
+                    disabled={formDisabled || providers === null}
+                    aria-label={`${option.label} model for this persona — ${option.hint}`}
+                  >
+                    <option value="">
+                      {providers === null
+                        ? 'Loading models…'
+                        : groups.length === 0
+                          ? 'No provider models available'
+                          : `Select a model — ${option.hint.toLowerCase()}`}
+                    </option>
+                    {currentListed ? null : (
+                      <option value={current}>{current} — saved, not in your providers</option>
+                    )}
+                    {groups.map((group) => (
+                      <optgroup key={group.providerId} label={group.label}>
+                        {group.models.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                            {isImageCapableModel(model) ? ' · vision' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="persona-model-auto">{option.hint}</span>
+                )}
+              </div>
+            );
+          })}
+          {providers !== null && providers.length === 0 ? (
+            <p className="form-hint">
+              No enabled provider has reported models yet — add or test a provider in Providers to
+              choose models here.
+            </p>
+          ) : null}
         </fieldset>
 
         <fieldset className="persona-policy">

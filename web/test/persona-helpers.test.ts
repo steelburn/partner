@@ -12,7 +12,8 @@ import {
   sortConversations,
   timeAgo,
 } from '../src/lib/persona-helpers.js';
-import type { ConversationSummary, Persona } from '@partner/shared';
+import type { ConversationSummary, Persona, ProviderSummary } from '@partner/shared';
+import { modelChoicesForTaskClass } from '../src/lib/persona-helpers.js';
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -95,6 +96,79 @@ describe('task class options', () => {
       expect(option.label.length).toBeGreaterThan(0);
       expect(option.hint.length).toBeGreaterThan(0);
     }
+  });
+});
+
+function providerSummary(
+  id: string,
+  purpose: ProviderSummary['purpose'],
+  defaultModels: string[],
+  overrides: Partial<ProviderSummary> = {},
+): ProviderSummary {
+  return {
+    id,
+    name: id,
+    kind: 'openai-compatible',
+    source: 'manual',
+    purpose,
+    endpoint: 'https://api.ne1.dev/v1',
+    defaultModels,
+    enabled: true,
+    budgetCents: null,
+    createdAt: 1,
+    updatedAt: 1,
+    health: { ok: true, latencyMs: 1, error: null, models: defaultModels, checkedAt: 1 },
+    ...overrides,
+  };
+}
+
+describe('modelChoicesForTaskClass', () => {
+  it('puts the task class\'s matching purpose first, then general', () => {
+    const providers = [
+      providerSummary('gen', 'general', ['gpt-4o']),
+      providerSummary('code', 'coding', ['qwen-coder']),
+    ];
+    expect(modelChoicesForTaskClass('coding', providers).map((g) => g.providerId)).toEqual([
+      'code',
+      'gen',
+    ]);
+    expect(modelChoicesForTaskClass('chat', providers).map((g) => g.providerId)).toEqual([
+      'gen',
+      'code',
+    ]);
+  });
+
+  it('skips disabled providers and providers with no models', () => {
+    const providers = [
+      providerSummary('off', 'general', ['m'], { enabled: false }),
+      providerSummary('empty', 'general', []),
+      providerSummary('on', 'general', ['m']),
+    ];
+    expect(modelChoicesForTaskClass('chat', providers).map((g) => g.providerId)).toEqual(['on']);
+  });
+
+  it('keeps a repeated model id once, on the group that would serve it', () => {
+    const providers = [
+      providerSummary('gen', 'general', ['shared']),
+      providerSummary('deep', 'deep', ['shared', 'reasoner']),
+    ];
+    const groups = modelChoicesForTaskClass('deep', providers);
+    expect(groups.map((g) => g.providerId)).toEqual(['deep']);
+    expect(groups[0]?.models).toEqual(['shared', 'reasoner']);
+  });
+
+  it('hoists the persona\'s pinned provider above purpose matches', () => {
+    const providers = [
+      providerSummary('code', 'coding', ['c']),
+      providerSummary('pin', 'general', ['p']),
+    ];
+    const groups = modelChoicesForTaskClass('coding', providers, { pinnedProviderId: 'pin' });
+    expect(groups.map((g) => g.providerId)).toEqual(['pin', 'code']);
+  });
+
+  it('labels each group with the provider name and purpose', () => {
+    const providers = [providerSummary('Coders', 'coding', ['c'])];
+    expect(modelChoicesForTaskClass('coding', providers)[0]?.label).toBe('Coders · Coding');
   });
 });
 

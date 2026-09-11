@@ -12,8 +12,11 @@ import type {
   ConversationSummary,
   IndependenceLevel,
   Persona,
+  ProviderPurpose,
+  ProviderSummary,
   TaskClass,
 } from '@partner/shared';
+import { purposeLabel } from './providers.js';
 import type { ToolRisk } from '@partner/shared/src/tools.js';
 
 // ---------------------------------------------------------------------------
@@ -88,6 +91,73 @@ export const TASK_CLASS_OPTIONS: readonly TaskClassOption[] = [
   { value: 'vision', label: 'Vision', hint: 'Image understanding' },
   { value: 'cheap', label: 'Cheap', hint: 'Fast, low-cost turns' },
 ];
+
+// ---------------------------------------------------------------------------
+// Persona model overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * Which provider purposes serve a task class, best first — mirrors the core
+ * router (`core/src/gateway/resolver.ts` `TASK_PURPOSE_ORDER`). 'general' is
+ * the universal fallback, so it is listed last for every non-chat class.
+ */
+const TASK_PURPOSE_ORDER: Record<TaskClass, readonly ProviderPurpose[]> = {
+  chat: ['general'],
+  cheap: ['cheap', 'general'],
+  deep: ['deep', 'general'],
+  coding: ['coding', 'general'],
+  vision: ['vision', 'general'],
+};
+
+/** One provider's pickable models for a task class (a `<optgroup>`). */
+export interface TaskClassModelGroup {
+  providerId: string;
+  /** Optgroup label: "Provider name · Purpose". */
+  label: string;
+  models: string[];
+}
+
+/**
+ * Models a persona may pin to a task class, grouped by the enabled provider
+ * that offers them (models on a disabled provider cannot be routed to). The
+ * persona's pinned provider comes first, then providers whose purpose matches
+ * the task class (best first); a repeated model id is kept once, on the group
+ * that would actually serve it — the router stores only the model id, so a
+ * second copy would be a dead duplicate option.
+ */
+export function modelChoicesForTaskClass(
+  taskClass: TaskClass,
+  providers: readonly ProviderSummary[],
+  options: { pinnedProviderId?: string | undefined } = {},
+): TaskClassModelGroup[] {
+  const preferences = TASK_PURPOSE_ORDER[taskClass] ?? ['general'];
+  const rank = (provider: ProviderSummary): number => {
+    if (provider.id === options.pinnedProviderId) return 0;
+    const index = preferences.indexOf(provider.purpose);
+    return index === -1 ? preferences.length + 1 : index + 1;
+  };
+  const eligible = providers
+    .filter((provider) => provider.enabled && provider.defaultModels.length > 0)
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => rank(a.provider) - rank(b.provider) || a.index - b.index);
+
+  const seen = new Set<string>();
+  const groups: TaskClassModelGroup[] = [];
+  for (const { provider } of eligible) {
+    const models = provider.defaultModels.filter((model) => {
+      if (model === '' || seen.has(model)) return false;
+      seen.add(model);
+      return true;
+    });
+    if (models.length === 0) continue;
+    groups.push({
+      providerId: provider.id,
+      label: `${provider.name} · ${purposeLabel(provider.purpose)}`,
+      models,
+    });
+  }
+  return groups;
+}
 
 // ---------------------------------------------------------------------------
 // Persona display
