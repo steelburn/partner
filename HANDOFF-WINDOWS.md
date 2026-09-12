@@ -2,22 +2,21 @@
 
 **Purpose:** everything an agent needs to continue from a **Windows machine,
 cloning `github.com/steelburn/partner`**, plus a full project status snapshot
-so no local-only context is lost. Refreshed 2026-09-07 (M13/M14 shipped; schema v13).
+so no local-only context is lost. Refreshed 2026-09-12 (M19 shipped; schema
+v16). `PLAN.md` §15 + `README.md` are authoritative for per-milestone state;
+this file is the Windows onboarding + history snapshot.
 
 ## TL;DR
 
-- Product milestones **M0–M13 are complete and verified** (fresh-context
-  reviews closed; exit checklists ticked). **M11 (Chat as the workspace),
-  M12 (readability & polish), M13 (purpose providers + per-message model
-  switch) and M14 (scheduled & autonomous work) are implemented and
-  verified**: schema v13 (additive: `personas.schedules` guarded column +
-  `scheduled_runs`). M14 ships the schedule engine/manager + headless
-  scheduler driver (run-now + runs API), decide-hook auto-resume after
-  queued approvals (e2e approve+deny), a web Schedules section + runs panel,
-  a web shell rework (left-hand sidebar nav, no horizontal-scrolling menu)
-  and a live walk executed 2026-09-07 against api.ne1.dev (deepseek-v4-
-  flash) + Brave search. Current root suite: **773 passed · 5 env-gated
-  skips** · typechecks 0 · web build green.
+- Product milestones **M0–M19 are complete and verified** (fresh-context
+  reviews closed; exit checklists ticked). Since the last refresh: **M15**
+  (live desktop mode, exit demo), **M16** (knowledge workspace — notes graph,
+  versioning, brainstorm, discuss, CSV tables), **M17** (note projects),
+  **M18** (chat multi-question forms) and **M19** (persona-scoped memory +
+  automatic remember) are implemented. Schema is **v16** (additive:
+  `note_folders` latest). Current root suite: **893 passed · 5 env-gated
+  skips** · web **541 passed** · typechecks 0 · web build green. Latest
+  release tag: **v0.1.7**.
 - **Windows desktop CI is GREEN.** `verify` runs on the self-hosted Linux +
   Windows runners (`win-intel-i5-core-ultra`, label `[self-hosted, Windows]`)
   and passes end-to-end on both. `windows-build` produces the NSIS installer;

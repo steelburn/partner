@@ -49,11 +49,12 @@ app invisibly — the desktop reports the conflict and refuses to use it. Stop
 the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 “already serving …”, something else still holds :4390.
 
-## Status (2026-09-11)
+## Status (2026-09-12)
 
-M0–M18 implemented and verified (PLAN.md §15): schema v16; current root
-suite **877 passed** (1 pre-existing, platform-specific MCP spawn case on
-Linux) · web **539 passed** · typechecks 0 · web build green.
+M0–M19 implemented and verified (PLAN.md §15): schema v16; current root
+suite **893 passed** (5 env-gated skips) · web **541 passed** · typechecks 0 ·
+web build green. Latest release: **v0.1.7** (persona-scoped memory +
+automatic remember; note projects; chat multi-question forms).
 
 **M15 — Live desktop mode (exit demo).** The packaged shell now boots the
 core LIVE by default: persistent whole-file-encrypted DB + OS-keychain key
@@ -69,6 +70,32 @@ PLAN-M15; per-surface theme walkthrough (`docs/theme-conformance.md`); the
 `docs/VERIFY-M10.md` live-mode walk details; browser-actuator research
 capture; S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
+
+### M19 — persona-scoped memory & automatic remember (2026-09-12, implemented)
+
+Personas gain **private memory**: a per-persona tick
+(`memory.personaMemory = on|off`, off by default) makes a persona keep its
+OWN facts about the user and recall them **only in chats with it** — the
+interactive `/v1/chat` route. A persona-scoped entry is never injected into a
+different persona's prelude, and the headless playbook/schedule/brainstorm
+loops never see it. Global confirmed facts still tailor every persona (M4).
+
+**Automatic remember.** When private memory is on, the core asks the
+persona's cheap-task-class model (out of band, AFTER the client's response has
+ended, so the turn never waits) whether the finished exchange holds anything
+durable about the user. Findings are filed as `partner_suggestion` /
+`suggested` entries scoped to that persona for the user to confirm, edit or
+reject in the Memory view — alongside the existing explicit add-a-fact path.
+The extractor prompt is fixed and never user-derived; parsing is defensive
+(fence/JSON guard, kind whitelist, caps, obvious-secret filter); dedupe covers
+global + same-scope entries, rejected included, so a rejected fact is never
+re-suggested; demo/no-provider turns skip; audit rows carry ids/counts/model
+only. No schema change (M4's `profile_entries.persona_scope`/`source` and the
+`personas.memory_flags` JSON were enough). Web: a Memory fieldset in the
+persona editor, a persona-aware “in use” marker, and an “Auto-detected”
+provenance chip. Suites after the pass: core **893 passed** (5 env-gated
+skips) · web **541 passed** · typechecks 0 · web build green · `ux_audit`
+green. Spec: `PLAN-M19.md`.
 
 ### M18 — chat multi-question forms (2026-09-11, implemented)
 

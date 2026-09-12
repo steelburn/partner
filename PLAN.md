@@ -137,7 +137,7 @@ product usable from a borrowed machine without weakening the security model.
   Extension ───────────►│  memory + plans  │   ├─ file tools (scoped roots)
   (native messaging)    │  skill sandbox   │   ├─ browser bridge
                         │  theme store     │   └─ audit log
-                        │  SQLite / sqlite-vec / keychain         │
+                        │  SQLite + FTS5 / keychain               │
                         └────────────────────────────────────────┘
 ```
 
@@ -281,7 +281,7 @@ skills+tools** so users can remix them. v1 depth:
 | **Emails** | profile (sender voice) + context → draft → send *via user's own mail app/browser compose* after review | Draft + handoff; sending = manual |
 | **Documents** | docgen skill → markdown/docx (pandoc) into a chosen folder | Full |
 | **Presentations** | outline → slide deck (pptx via templates, or HTML slides in the web UI) | Slides generated + editable |
-| **Analysis** | open CSV/Excel (local, read-only root) → pandas/sqlite-vec or chart render in UI | Columnar data + charts; no cloud |
+| **Analysis** | open CSV/Excel (local, read-only root) → pandas/FTS5 or chart render in UI | Columnar data + charts; no cloud |
 | **Plans & notes** | first-class stores (§7) the partner maintains and updates with the user | Full |
 
 Each playbook declares: inputs the user must supply (roots, folders, site
@@ -341,19 +341,29 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
 
 | Store | Contents | Written by | Notes |
 |---|---|---|---|
-| **Profile** | Facts & preferences: name, languages, timezone, tone/verbosity/format prefs, "do/don't" rules, writing style samples | Partner suggests entries; **user confirms each**; manual edits | Highest trust; drives tailoring |
-| **Episodes** | Summaries of past conversations/tasks with outcome | Partner, on conversation close | Namespaced per persona unless shared |
-| **Semantic** | Vector index over notes/plans/episodes for retrieval | Indexer | Local (sqlite-vec) |
+| **Profile** | Facts & preferences: name, languages, timezone, tone/verbosity/format prefs, "do/don't" rules, writing style samples | Partner **auto-detects** suggestions; **user confirms each**; manual edits | Highest trust; drives tailoring; `persona_scope` null = global, else one persona (M19) |
+| **Episodes** | Summaries of past conversations/tasks with outcome | Partner, on demand (per conversation) | Namespaced per persona unless shared |
+| **Retrieval** | FTS5 full-text over profile/episodes (and notes/plans) | Store writes | The semantic (vector) index is deferred until an embeddings provider is pinned (M4 deviation) |
 
 - **Tailoring loop:** the partner notices "you tend to want TL;DRs before
   detail" → proposes a Profile entry with evidence ("in 6 of your last 10
-  asks…") → user confirms/edits/declines → applied thereafter across personas
-  (per-persona overrides allowed).
+  asks…") → user confirms/edits/declines → applied thereafter. Confirmed GLOBAL
+  entries tailor every persona; **persona-scoped** entries (M19) are recalled
+  ONLY in chats with that persona, and only when its private-memory toggle is
+  on.
+- **Automatic remember (M19):** after a persisted persona turn whose private
+  memory is on, the core asks the persona's cheap-task-class model — out of
+  band, after the response has ended — whether the exchange holds a durable
+  user fact; findings land as `suggested` entries scoped to that persona. The
+  extractor prompt is fixed, parsing/caps/secret-filter are defensive, and
+  audit rows carry ids/counts only.
 - **Forgetting:** per-entry delete, per-store wipe, or "forget everything
-  before <date>". Memory exports as JSON/Markdown.
-- **Privacy defaults:** no memory of a conversation unless the conversation's
-  memory toggle is on; memory never includes the *content* of user files the
-  partner read unless explicitly saved into a note.
+  before <date>". Memory exports as JSON/Markdown. A rejected fact is never
+  re-suggested.
+- **Privacy defaults:** no memory of a conversation unless the persona's
+  private-memory toggle is on; memory never includes the *content* of user
+  files the partner read unless explicitly saved into a note; headless
+  (playbook/schedule/brainstorm) runs neither read nor write persona memory.
 
 ---
 
@@ -439,28 +449,40 @@ any Partner-owned server (there is none in v1).
 | Table | Purpose |
 |---|---|
 | `providers` | endpoint profile (no key material; `keyRef` only) |
-| `personas` | persona JSON (§5) |
-| `profiles` | user Profile entries (confirmed facts) |
+| `personas` | persona JSON (§5) + independence/schedules, capability policy |
+| `profile_entries` | user Profile facts (confirmed/suggested/rejected; `persona_scope` null = global) |
 | `episodes` | conversation summaries (persona namespace) |
-| `notes` / `plans` | markdown stores + structure |
-| `memory_vectors` | sqlite-vec index over notes/plans/episodes |
+| `memory_fts` / `notes_fts` | FTS5 indexes over memory + notes/plans (vectors deferred — see M4 deviation) |
+| `notes` / `plans` / `note_links` | markdown stores + wiki-link edges |
+| `note_versions` / `note_graph` | note/capture snapshots + graph node positions (M16) |
+| `note_folders` | note↔folder membership, many-to-many (M17; shared tree) |
+| `brainstorm_sessions` / `brainstorm_sources` | linked/reopenable brainstorm threads (M16 follow-up) |
 | `grants` | tool/scope grants with source + expiry |
-| `skills` | installed skill metadata + hashes |
-| `skill_audit` / `audit_log` | append-only activity |
+| `project_roots` | user-granted filesystem roots |
+| `pending_tools` / `file_proposals` | approval queue + write proposals |
+| `skills` / `skill_invocations` | installed skill metadata + hashes; invocation audit |
+| `playbook_runs` / `scheduled_runs` | playbook runs + scheduled-run state (M14) |
+| `spend_ledger` | rolling provider spend windows (M10) |
+| `deploy_profiles` | Ship/deploy targets (§6.1) |
+| `site_scopes` | browser capture scopes + sensitive-site blocklist |
 | `themes` | named theme JSON |
-| `settings` | key-value (budget caps, browser scopes, blocklists, active theme, per-conversation themes) |
-| `folders` | chat organization tree (conversations.folder_id = the edge) |
+| `settings` | key-value (budget caps, browser scopes, active theme, per-conversation themes) |
+| `folders` | chat + note organization tree (conversations.folder_id = the chat edge) |
 | `chat_blobs` / `attachments` | chat uploads: deduped payload bytes + per-message edges |
 | `assets` | typed saved artifacts (documents/tables/code/references/deductions…) |
 | `mcp_servers` | configured stdio MCP servers (default-deny OFF) |
-| `pairing` | device/origin session tokens |
+| `pairings` / `sessions` | device/origin pairing + session tokens |
+| `audit_log` | append-only activity |
 
-Schema is `v12` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
-`personas.policy`, `providers.purpose`, `conversations.folder_id`,
-`messages.content_type`, `personas.home_folder`).
+Schema is `v16` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+`personas.policy`/`home_folder`/`schedules`, `providers.purpose`,
+`conversations.folder_id`/`parent_id`/`source_asset_id`,
+`messages.content_type`, `pending_tools.conversation_id`/`persona_id`).
 
-`better-sqlite3` (same as llm-self-service) + `sqlite-vec` extension. A
-`data/` dir inside the core's app-data folder; per-OS-profile separation.
+`better-sqlite3` (same as llm-self-service). The semantic (vector) index is
+DEFERRED until an embeddings provider is pinned (M4 documented deviation);
+retrieval is SQLite **FTS5** over profile/episodes/notes/plans. A `data/` dir
+inside the core's app-data folder; per-OS-profile separation.
 
 ---
 
@@ -480,6 +502,17 @@ REST + SSE + WebSocket events, all behind pairing/session auth:
 ?personaId=&conversationId=` · `/v1/chat` also accepts `{tools:true}` (native
 function calls) and `{noPersist:true}` (A/B compare — streams, saves nothing)
 
+Later milestones extend this surface: providers by purpose
+(`/v1/providers/discover`, `/v1/providers/purposes` — M13); live desktop
+pairing (`/v1/pair/device`, `/v1/boot` — M15); notes knowledge workspace
+(`/v1/notes/graph` + `/graph/positions`, `/v1/notes/:id/versions` +
+`/restore`, `/v1/notes/brainstorm`, `/v1/conversations/:id/assets` +
+`/promote` — M16); note projects (`GET /v1/notes?folderId=…`,
+`PUT /v1/notes/:id/folders` — M17); and schedules (`POST
+/v1/personas/:id/schedules/:scheduleId/run-now`, `GET /v1/schedules/runs` +
+`/runs/:runId` — M14). M19 adds **no route**: automatic remember runs on the
+chat path and only widens `/v1/memory/profile` with persona-scoped entries.
+
 WS events: `turn.started`, `tool.request` (confirmation), `tool.executed`,
 `grant.revoked`, `skill.install`…, `persona.paused`, `budget.reached`.
 
@@ -489,8 +522,9 @@ WS events: `turn.started`, `tool.request` (confirmation), `tool.executed`,
 
 **Stack (all TypeScript / Node ≥ 22, matching llm-self-service conventions):**
 desktop shell: **Tauri v2** (tray, native window, autostart, updater,
-keyring). Core: Node 22 + better-sqlite3 + sqlite-vec + Fastify (or Express
-— decide at M0), shipped as a **Tauri sidecar** (packaging spike at M0 —
+keyring). Core: Node 22 + better-sqlite3 + FTS5 + Express (Express chosen at
+M0; the vector index stays deferred until an embeddings provider is pinned —
+§8 M4 deviation), shipped as a **Tauri sidecar** (packaging spike at M0 —
 §17.1). Web UI: Vite + React + TS, token-driven components. Extension: MV3 +
 TS. Tests: vitest + supertest + Playwright for the web UI, TDD milestones
 like llm-self-service.
@@ -511,6 +545,14 @@ apps/partner/
 ---
 
 ## 15. Milestones (TDD, red → green)
+
+> **Maintenance rule.** Detailed per-milestone specs live in `PLAN-M<N>.md`,
+> but this section is the master index: whenever a module/milestone is added,
+> changed, or completed, update its entry here (status, description, `*Exit:*`)
+> in the same change — plus the affected design sections (§8 memory, §12 data
+> model, §13 API surface, §14 stack) and `README.md`. `[x]` only when the full
+> exit is locally green; `[ ]` + a `*State:*` line when an env-gated walk
+> remains.
 
 - [ ] **S0 — Self-service companion API (in `~/apps/llm-self-service`).**
       JSON route `GET /api/me/key` behind the existing cookie session,
@@ -647,7 +689,11 @@ apps/partner/
       Export works in the Desktop app** (native save-dialog path in the
       Tauri shell + blob fallback for browsers); **CSV assets render as
       tables** (pure shared RFC-4180 parser + token-only table view). Schema
-      v13 → v14 (additive). *Exit: core + web + shared suites green ·
+      v13 → v14 (additive). **Follow-up (v14 → v15):** brainstorm
+      conversations link back to their source note/capture set
+      (`brainstorm_sessions` + `brainstorm_sources`); the graph badges those
+      nodes and reopens an ACTIVE session instead of duplicating it, while a
+      concluded session stays listed with **Reopen**. *Exit: core + web + shared suites green ·
       typechecks 0 · web build green (React Flow) · windows-build green ·
       `ux_audit` green on new UI (light + dark) · manual walk (graph,
       brainstorm persona auto-create, versions/restore, discuss + fork,
@@ -657,6 +703,61 @@ apps/partner/
       green (@xyflow/react) · ux_audit green. Box open: shell
       windows-build (no local Rust; CI workflow) + the packaged live walk
       are env-gated, matching M13/M15 precedent.*
+- [x] **M17 — Note projects (implemented + verified 2026-09-11).** An
+      organizational layer over the shared Projects/Folders tree: notes join
+      projects many-to-many, with **no membership = Inbox**. One membership
+      write path (`setFolders`) backs both create-time `folderIds` and
+      re-filing; `list()`/`graph()` scope by folder subtree or Inbox, and a
+      scoped graph returns one-hop **ghost** nodes for out-of-scope
+      references (marked external, never persisted). Deleting a folder clears
+      membership (notes survive); deleting a note cascades its membership
+      rows. Routes: `GET /v1/notes?folderId=<id|none>`,
+      `GET /v1/notes/graph?folderId=…`, `PUT /v1/notes/:id/folders` (501 when
+      folders are unwired). Notes list + graph gain project scope selectors,
+      project chips, an editor Projects multi-select, dimmed ghost nodes with
+      an “other projects” toggle, drag-to-ghost, and a “Link to note…” picker.
+      Schema v15 → v16 (`note_folders`); audit stays membership counts only.
+      *Exit: root + web suites green · typechecks 0 · web build green ·
+      `ux_audit` green on the new UI.*
+- [x] **M18 — Chat multi-question forms (implemented + verified
+      2026-09-11).** When a persona has **more than one open-ended question**
+      it emits a `:::partner.form` container instead of a prose list; each
+      question renders in its own textarea and the user submits **once**. The
+      answers become a single labelled user turn through the normal chat path
+      (nothing client-only; the persisted text is unchanged). The parser
+      shares the `:::partner.*` grammar (`shared/src/structured.ts`): one
+      question per bullet line, a title from the `title=` attr / fence tail /
+      lead line, closed-container-only materialization so streaming stays
+      safe, and malformed or unclosed blocks degrade to plain prose. Pending
+      drafts survive switching conversations (client-side per-conversation UI
+      memory). The `forms` guidance ships in the default structured feature
+      set alongside choices and assets; styles are token-only. *Exit: root
+      suite 877 passed (1 pre-existing platform-specific MCP spawn case) ·
+      web 539 passed · typechecks 0 · web build green · `ux_audit` green.*
+- [x] **M19 — Persona-scoped memory & automatic remember (implemented +
+      verified 2026-09-12; detailed spec: `PLAN-M19.md`).** Personas gain
+      **private memory**: a per-persona tick (`memory.personaMemory = on|off`,
+      off by default) makes a persona keep its OWN facts about the user and
+      recall them **only while chatting with it** (the interactive `/v1/chat`
+      route) — never in another persona's prelude, and never in the headless
+      playbook/schedule/brainstorm loops. Global confirmed facts still tailor
+      every persona (M4). **Automatic remember**: with private memory on, the
+      core asks the persona's cheap-task-class model — out of band, AFTER the
+      client's response has ended — whether the finished exchange holds
+      anything durable about the user, and files findings as
+      `partner_suggestion` / `suggested` entries **scoped to that persona**
+      for confirmation in the Memory view (alongside the existing explicit
+      add-a-fact path). The extractor prompt is fixed and never user-derived;
+      parsing is defensive (fence/JSON guard, kind whitelist, caps,
+      obvious-secret filter); dedupe covers global + same-scope entries,
+      rejected included, so a rejected fact is never re-suggested;
+      demo/no-provider turns skip; audit rows carry ids/counts/model only. Web:
+      a Memory fieldset in the persona editor, a persona-aware “in use”
+      marker, and an “Auto-detected” provenance chip. No schema change (M4's
+      `profile_entries.persona_scope`/`source` and the `personas.memory_flags`
+      JSON were enough). *Exit: core 893 passed (5 env-gated skips) · web 541
+      passed · typechecks 0 · web build green · `ux_audit` green (APCA
+      light + dark).*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
