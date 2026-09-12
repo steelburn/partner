@@ -19,7 +19,7 @@ export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_DB_PATH = './data/partner.db';
 
 /** Semantic version of the core sidecar (independent of the npm package). */
-export const CORE_VERSION = '0.1.6';
+export const CORE_VERSION = '0.1.7';
 
 export type KeychainKind = 'fake' | 'native';
 
