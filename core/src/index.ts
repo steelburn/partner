@@ -243,6 +243,25 @@ export { createMemoryForgetManager, parseBeforeCutoff } from './memory/forget.js
 export type { MemoryForgetManager, MemoryForgetResult } from './memory/forget.js';
 export { createMemoryTransferManager } from './memory/transfer.js';
 export { buildTailoring } from './memory/tailor.js';
+export type { TailoringPersona } from './memory/tailor.js';
+export {
+  createRememberManager,
+  parseRememberReply,
+  looksLikeSecret,
+  REMEMBER_SYSTEM_PROMPT,
+  REMEMBER_MAX_ITEMS,
+  REMEMBER_VALUE_CAP,
+  REMEMBER_EVIDENCE_CAP,
+  REMEMBER_INPUT_CAP,
+} from './memory/remember.js';
+export type {
+  RememberManager,
+  RememberManagerOptions,
+  RememberInput,
+  RememberOutcome,
+  RememberCandidate,
+  RememberTarget,
+} from './memory/remember.js';
 
 // ---- M5 notes + plans (PLAN-M5.md) -----------------------------------------
 export { createNoteManager, parseWikiLinks, noteSearchText, stripDailySummarySection, demoDailySummary, createDailySummarizeResolver } from './notes/index.js';
@@ -744,6 +763,13 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     providerResolver: createSummarizeResolver({
       personas: personaManager,
       providers: providerManager,
+    }),
+    // M19: automatic remember prefers the persona's cheap task class so
+    // extraction does not burn the chat model on every turn.
+    rememberResolver: createSummarizeResolver({
+      personas: personaManager,
+      providers: providerManager,
+      taskClass: 'cheap',
     }),
   });
 

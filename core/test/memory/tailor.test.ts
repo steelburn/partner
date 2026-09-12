@@ -74,4 +74,48 @@ describe('buildTailoring', () => {
       env.close();
     }
   });
+
+  it('M19: persona-scoped entries inject ONLY when the persona has private memory on', () => {
+    const env = makeMemoryEnv();
+    try {
+      env.profile.add({ kind: 'identity', value: 'global fact' });
+      env.profile.add({ kind: 'preference', value: 'studio secret', personaScope: 'p-studio' });
+      env.profile.add({ kind: 'preference', value: 'builder secret', personaScope: 'p-builder' });
+
+      const off = buildTailoring(env.profile, { id: 'p-studio', memory: { personaMemory: 'off' } });
+      expect(off).toBe('- identity: global fact');
+
+      const on = buildTailoring(env.profile, { id: 'p-studio', memory: { personaMemory: 'on' } });
+      expect(on).toContain('global fact');
+      expect(on).toContain('studio secret');
+      expect(on).not.toContain('builder secret');
+
+      // A bare id keeps the M4 global-only contract (never scoped).
+      expect(buildTailoring(env.profile, 'p-studio')).toBe('- identity: global fact');
+    } finally {
+      env.close();
+    }
+  });
+
+  it('M19: global + scoped share the single 8-entry cap, newest first', () => {
+    const clock = { t: 1_000 };
+    const env = makeMemoryEnv({ demo: false, now: () => clock.t });
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        env.profile.add({ kind: 'rule', value: `global ${i}` });
+        clock.t += 1;
+      }
+      for (let i = 0; i < 4; i += 1) {
+        env.profile.add({ kind: 'rule', value: `scoped ${i}`, personaScope: 'p-x' });
+        clock.t += 1;
+      }
+      const text = buildTailoring(env.profile, { id: 'p-x', memory: { personaMemory: 'on' } });
+      expect(text?.split('\n')).toHaveLength(TAILORING_MAX_ENTRIES);
+      // The four newest are the scoped facts.
+      expect(text?.split('\n')[0]).toContain('scoped 3');
+      expect(text).not.toContain('global 0');
+    } finally {
+      env.close();
+    }
+  });
 });

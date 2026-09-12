@@ -18,6 +18,7 @@ import {
   dateValueToForgetIso,
   episodeTitle,
   isEntryInUse,
+  isAutoDetected,
   kindLabel,
   kindTone,
   scopedLabel,
@@ -150,7 +151,7 @@ export default function MemoryView({ personas, onUnpair, active }: MemoryViewPro
   const handleSessionLost = (): void => setSessionLost(true);
 
   const list = personas ?? [];
-  const inUseCount = countEntriesInUse(entries ?? []);
+  const inUseCount = countEntriesInUse(entries ?? [], list);
   const suggested = (entries ?? []).filter((entry) => entry.status === 'suggested');
   const confirmed = (entries ?? []).filter((entry) => entry.status === 'confirmed');
 
@@ -218,8 +219,9 @@ export default function MemoryView({ personas, onUnpair, active }: MemoryViewPro
             <p className="mem-privacy">
               Memory is stored locally in the core on this machine — never on a Partner server.
               Entries show their provenance, and you can forget or export all of it at any time.
-              Only the profile entries you confirm are used to tailor replies, and they are
-              injected only when a persona is routed through a provider.
+              Only confirmed profile entries tailor replies, and only when a persona is routed
+              through a provider. A persona with private memory on remembers facts scoped to
+              itself and honors them only while you are chatting with it.
             </p>
           </>
         ) : null}
@@ -242,7 +244,7 @@ interface ProfileCardProps {
 }
 
 function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, onSessionLost }: ProfileCardProps) {
-  const inUseIds = useMemo(() => tailoringInUseIds(confirmed), [confirmed]);
+  const inUseIds = useMemo(() => tailoringInUseIds(confirmed, personas), [confirmed, personas]);
   return (
     <section className="card" aria-label="Profile">
       <div className="section-head">
@@ -259,8 +261,9 @@ function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, on
         ) : null}
       </div>
       <p className="card-copy">
-        Confirmed facts about you drive how the partner tailors replies. Entries marked “in use”
-        are injected into a persona&apos;s system prompt at chat time (global confirmed entries).
+        Confirmed facts about you drive how the partner tailors replies. Global entries marked
+        “in use” ride every persona&apos;s prompt at chat time; a persona with private memory on
+        also honors its own scoped entries — only in chats with it.
       </p>
 
       {confirmed.length === 0 ? (
@@ -293,7 +296,8 @@ function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, on
           <div className="sub-panel-title">Suggestions ({suggested.length})</div>
           <p className="sub-panel-copy">
             The partner noticed these and is waiting for your call — confirm what it got right,
-            edit it, or reject it. Nothing here is used until confirmed.
+            edit it, or reject it. Nothing here is used until confirmed, and a rejected fact is
+            never suggested again.
           </p>
           <ul className="mem-list">
             {suggested.map((entry) => (
@@ -350,7 +354,7 @@ function ProfileEntryRow({
   const [rowError, setRowError] = useState<string | null>(null);
 
   const tone = kindTone(entry.kind);
-  const inUse = inUseOverride === undefined ? isEntryInUse(entry) : inUseOverride;
+  const inUse = inUseOverride === undefined ? isEntryInUse(entry, personas) : inUseOverride;
   const personaScopeLabel = scopedLabel(entry.personaScope, personas);
   const unknownScope = entry.personaScope !== null && !personas.some((p) => p.id === entry.personaScope);
 
@@ -580,6 +584,14 @@ function ProfileEntryRow({
         {inUse ? (
           <span className="mem-tag-inuse" title="Injected into persona prompts at chat time">
             In use
+          </span>
+        ) : null}
+        {isAutoDetected(entry) ? (
+          <span
+            className="mem-chip mem-chip-neutral"
+            title="Detected by the partner from your chats, not typed by you"
+          >
+            Auto-detected
           </span>
         ) : null}
         {entry.status !== 'confirmed' ? (

@@ -77,6 +77,8 @@ export function statusLabel(status: ProfileEntryStatus): string {
 export interface PersonaLike {
   id: string;
   name: string;
+  /** M19: private-memory toggle (absent = off). */
+  memory?: { personaMemory?: 'on' | 'off' };
 }
 
 /**
@@ -91,26 +93,54 @@ export function scopedLabel(scope: string | null, personas: readonly PersonaLike
 }
 
 /**
- * The "in use" indicator: confirmed GLOBAL entries are the tailoring
- * candidates. The server injects at most the 8 NEWEST of them (newest
- * first), so the true injected set is capped + order-dependent.
+ * The "in use" indicator. The server injects at most the 8 NEWEST confirmed
+ * GLOBAL entries into every persona, plus — when a persona has private memory
+ * on — the 8 newest of [globals + that persona's own scoped entries]. This
+ * returns the union across the personas passed in (newest-first, capped),
+ * which equals the old global-only set when none has private memory on.
  */
-export function tailoringInUseIds(entries: readonly ProfileEntry[]): ReadonlySet<string> {
-  const candidates = entries
-    .filter((entry) => entry.status === 'confirmed' && entry.personaScope === null)
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 8);
-  return new Set(candidates.map((entry) => entry.id));
+export const TAILORING_ENTRY_LIMIT = 8;
+
+export function tailoringInUseIds(
+  entries: readonly ProfileEntry[],
+  personas: readonly PersonaLike[] = [],
+): ReadonlySet<string> {
+  const confirmed = entries.filter((entry) => entry.status === 'confirmed');
+  const newest = (list: readonly ProfileEntry[]): ProfileEntry[] =>
+    [...list].sort((a, b) => b.createdAt - a.createdAt).slice(0, TAILORING_ENTRY_LIMIT);
+
+  const ids = new Set(newest(confirmed.filter((entry) => entry.personaScope === null)).map((e) => e.id));
+  for (const persona of personas) {
+    if (persona.memory?.personaMemory !== 'on') continue;
+    const scoped = confirmed.filter(
+      (entry) => entry.personaScope === null || entry.personaScope === persona.id,
+    );
+    for (const entry of newest(scoped)) ids.add(entry.id);
+  }
+  return ids;
 }
 
-/** Single-entry predicate used by tests/legacy callers (confirmed + global). */
-export function isEntryInUse(entry: ProfileEntry): boolean {
-  return entry.status === 'confirmed' && entry.personaScope === null;
+/** Single-entry predicate: confirmed, and honored by at least one persona. */
+export function isEntryInUse(entry: ProfileEntry, personas: readonly PersonaLike[] = []): boolean {
+  if (entry.status !== 'confirmed') return false;
+  if (entry.personaScope === null) return true;
+  return personas.some(
+    (persona) => persona.id === entry.personaScope && persona.memory?.personaMemory === 'on',
+  );
 }
 
 /** How many of the given entries are actually injected (capped, newest-first). */
-export function countEntriesInUse(entries: readonly ProfileEntry[]): number {
-  return tailoringInUseIds(entries).size;
+export function countEntriesInUse(
+  entries: readonly ProfileEntry[],
+  personas: readonly PersonaLike[] = [],
+): number {
+  return tailoringInUseIds(entries, personas).size;
+}
+
+/** M19: a partner-suggested entry was detected by the model, not typed by the
+ *  user. The UI labels these so provenance is never ambiguous. */
+export function isAutoDetected(entry: ProfileEntry): boolean {
+  return entry.source === 'partner_suggestion';
 }
 
 // ---------------------------------------------------------------------------

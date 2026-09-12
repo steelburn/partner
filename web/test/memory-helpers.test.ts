@@ -12,6 +12,7 @@ import {
   countEntriesInUse,
   dateValueToForgetIso,
   episodeTitle,
+  isAutoDetected,
   isEntryInUse,
   kindLabel,
   kindTone,
@@ -120,6 +121,27 @@ describe('in-use indicator', () => {
       ]),
     ).toBe(2);
     expect(countEntriesInUse([])).toBe(0);
+  });
+
+  it('M19: scoped entries count as in use only for a persona with private memory on', () => {
+    const entries = [
+      entry({ id: 'g', personaScope: null }),
+      entry({ id: 's', personaScope: 'p-1' }),
+    ];
+    const off = [{ id: 'p-1', name: 'Maya', memory: { personaMemory: 'off' as const } }];
+    const on = [{ id: 'p-1', name: 'Maya', memory: { personaMemory: 'on' as const } }];
+
+    expect(isEntryInUse(entries[1] as ProfileEntry, off)).toBe(false);
+    expect(isEntryInUse(entries[1] as ProfileEntry, on)).toBe(true);
+    expect(countEntriesInUse(entries, off)).toBe(1);
+    expect(countEntriesInUse(entries, on)).toBe(2);
+  });
+});
+
+describe('provenance', () => {
+  it('isAutoDetected flags partner suggestions only', () => {
+    expect(isAutoDetected(entry())).toBe(false);
+    expect(isAutoDetected(entry({ source: 'partner_suggestion', status: 'suggested' }))).toBe(true);
   });
 });
 

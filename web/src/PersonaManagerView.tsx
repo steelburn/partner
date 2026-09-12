@@ -514,7 +514,11 @@ interface PersonaEditorProps {
   onSessionLost: () => void;
 }
 
-const DEFAULT_MEMORY: PersonaInput['memory'] = { userProfile: 'none', episodes: 'none' };
+const DEFAULT_MEMORY: PersonaInput['memory'] = {
+  userProfile: 'none',
+  episodes: 'none',
+  personaMemory: 'off',
+};
 
 /** Comma-separated editor input -> trimmed string list. */
 function list(raw: string): string[] {
@@ -533,6 +537,9 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
   const [systemPrompt, setSystemPrompt] = useState(persona?.character.systemPrompt ?? '');
   const [temperature, setTemperature] = useState(persona ? String(persona.character.temperature) : '0.6');
   const [level, setLevel] = useState<IndependenceLevel>(persona?.independence.level ?? 'assist');
+  // M19: persona-private memory (facts scoped to this persona, recalled only
+  // in chats with it; auto-detected facts land as suggestions in Memory).
+  const [personaMemory, setPersonaMemory] = useState(persona?.memory.personaMemory === 'on');
   const [taskClasses, setTaskClasses] = useState<Record<TaskClass, string>>({
     chat: persona?.model.taskClasses.chat ?? '',
     deep: persona?.model.taskClasses.deep ?? '',
@@ -649,7 +656,10 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
         autoScopes: persona?.independence.autoScopes ?? [],
         schedules,
       },
-      memory: persona?.memory ?? DEFAULT_MEMORY,
+      memory: {
+        ...(persona?.memory ?? DEFAULT_MEMORY),
+        personaMemory: personaMemory ? 'on' : 'off',
+      },
       ...(defaultSkills.trim() !== '' || bannedSkills.trim() !== '' || bannedTools.trim() !== ''
         ? {
             policy: {
@@ -928,6 +938,26 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
               The persona may never direct-execute these — bans beat its autonomy envelope.
             </p>
           </div>
+        </fieldset>
+
+        <fieldset className="persona-memory">
+          <legend className="label persona-memory-legend">Memory</legend>
+          <label className="check-label" htmlFor={`${idPrefix}-memory`}>
+            <input
+              id={`${idPrefix}-memory`}
+              className="check"
+              type="checkbox"
+              checked={personaMemory}
+              onChange={(event) => setPersonaMemory(event.target.checked)}
+              disabled={formDisabled}
+            />
+            Keep a private memory of me for this persona
+          </label>
+          <p className="form-hint">
+            When on, this persona notices durable facts about you and recalls them only while you
+            are chatting with it — never in another persona&apos;s chat. New facts arrive as
+            suggestions in Memory for you to confirm.
+          </p>
         </fieldset>
 
         <SchedulesSection

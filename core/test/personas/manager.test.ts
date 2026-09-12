@@ -94,7 +94,7 @@ describe('persona CRUD', () => {
     expect(created.character.temperature).toBe(0.5);
     expect(created.independence.requireHumanFor).toEqual(['high']);
     expect(created.independence.autoScopes).toEqual(['files:read']);
-    expect(created.memory).toEqual({ userProfile: 'none', episodes: 'none' });
+    expect(created.memory).toEqual({ userProfile: 'none', episodes: 'none', personaMemory: 'off' });
 
     const got = manager.get(created.id);
     expect(got).toEqual(created);
@@ -102,11 +102,12 @@ describe('persona CRUD', () => {
     const updated = manager.update(created.id, {
       tagline: 'warmer',
       independence: { level: 'suggest' },
-      memory: { userProfile: 'read' },
+      memory: { userProfile: 'read', personaMemory: 'on' },
     });
     expect(updated.tagline).toBe('warmer');
     expect(updated.independence.level).toBe('suggest');
     expect(updated.memory.userProfile).toBe('read');
+    expect(updated.memory.personaMemory).toBe('on');
     expect(updated.character.temperature).toBe(0.5); // untouched
     expect(manager.get('nope')).toBeNull();
   });
@@ -241,6 +242,9 @@ describe('validation + normalization', () => {
     expect(() =>
       manager.create({ name: 'X', memory: { episodes: 'read' as never } }),
     ).toThrowError(/memory.episodes/);
+    expect(() =>
+      manager.create({ name: 'X', memory: { personaMemory: 'maybe' as never } }),
+    ).toThrowError(/memory.personaMemory/);
     expect(() =>
       manager.create({ name: 'X', independence: { requireHumanFor: ['critical' as never] } }),
     ).toThrowError(/requireHumanFor/);

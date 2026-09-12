@@ -47,8 +47,16 @@ export interface PersonaIndependence {
 }
 
 export interface PersonaMemoryFlags {
+  /** Global user-profile facts (shared across personas) this persona may read. */
   userProfile: 'read' | 'none';
   episodes: 'read+write' | 'none';
+  /**
+   * M19 persona-private memory about the user. 'on' = this persona keeps its
+   * own facts (auto-detected, user-confirmed) and recalls them ONLY while
+   * chatting with it; 'off'/absent = neither reads nor writes them (privacy
+   * default). Global profile facts stay governed by {@link userProfile}.
+   */
+  personaMemory?: 'on' | 'off';
 }
 
 /**

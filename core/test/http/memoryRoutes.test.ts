@@ -45,8 +45,12 @@ function withoutMeta(text: string): string {
     .join('\n');
 }
 
-/** Fake OpenAI-compatible upstream that records every chat/completions body. */
-function startChatUpstream(): Promise<{ server: TestServer; bodies: Array<{ model: string; messages: ChatMessage[] }> }> {
+/** Fake OpenAI-compatible upstream that records every chat/completions body.
+ *  M19: a request carrying the remember extractor system prompt answers with
+ *  a JSON array (default []), so chat turns can be followed by extraction. */
+function startChatUpstream(
+  options: { suggestReply?: string } = {},
+): Promise<{ server: TestServer; bodies: Array<{ model: string; messages: ChatMessage[] }> }> {
   const bodies: Array<{ model: string; messages: ChatMessage[] }> = [];
   return startHttpServer((req, res) => {
     const path = (req.url ?? '').split('?')[0] ?? '';
@@ -61,19 +65,23 @@ function startChatUpstream(): Promise<{ server: TestServer; bodies: Array<{ mode
         data += chunk.toString('utf8');
       });
       req.on('end', () => {
+        let isRemember = false;
         try {
           const parsed = JSON.parse(data) as { model?: unknown; messages?: unknown };
+          const messages = Array.isArray(parsed.messages) ? (parsed.messages as ChatMessage[]) : [];
+          isRemember = messages.some(
+            (m) => typeof m.content === 'string' && m.content.includes('private memory of the USER'),
+          );
           bodies.push({
             model: typeof parsed.model === 'string' ? parsed.model : '',
-            messages: Array.isArray(parsed.messages)
-              ? (parsed.messages as ChatMessage[])
-              : [],
+            messages,
           });
         } catch {
           // ignore malformed probe bodies
         }
+        const reply = isRemember ? options.suggestReply ?? '[]' : 'honored ';
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-        res.end(sseReply(['honored '], { prompt: 3, completion: 2 }));
+        res.end(sseReply([reply], { prompt: 3, completion: 2 }));
       });
       return;
     }
@@ -602,6 +610,126 @@ describe('chat-time tailoring over the wire', () => {
       expect(chat.text).toContain('demo: received');
       expect(chat.text).not.toContain('<Partner profile you should honor>');
       expect(chat.text).not.toContain('profile bytes never in demo');
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('M19 persona-scoped memory + automatic remember', () => {
+  it('injects persona-scoped entries only when the persona has private memory on', async () => {
+    const upstream = await startChatUpstream();
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      h.profile?.add({ kind: 'identity', value: 'global fact' });
+      h.profile?.add({ kind: 'preference', value: 'researcher private', personaScope: 'p-researcher' });
+      const provider = await h.providerManager.create({
+        name: 'm19-scope',
+        endpoint: upstream.server.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19scope');
+
+      // OFF (default): the scoped fact never rides the prelude.
+      const off = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
+      expect(off.status).toBe(200);
+      const offPrelude = String(upstream.bodies[0]?.messages[0]?.content ?? '');
+      expect(offPrelude).toContain('global fact');
+      expect(offPrelude).not.toContain('researcher private');
+
+      // ON: the scoped fact joins the prelude.
+      h.personas.update('p-researcher', { memory: { personaMemory: 'on' } });
+      const on = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'hi again' }] });
+      expect(on.status).toBe(200);
+      const onPrelude = String(upstream.bodies[1]?.messages[0]?.content ?? '');
+      expect(onPrelude).toContain('global fact');
+      expect(onPrelude).toContain('researcher private');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('files auto-detected suggestions for a memory-on persona after a turn', async () => {
+    const upstream = await startChatUpstream({
+      suggestReply:
+        '[{"kind":"identity","value":"Works as a backend engineer"},{"kind":"preference","value":"Prefers bullet lists"}]',
+    });
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      h.personas.update('p-researcher', { memory: { personaMemory: 'on' } });
+      const provider = await h.providerManager.create({
+        name: 'm19-remember',
+        endpoint: upstream.server.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19remember');
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          personaId: 'p-researcher',
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'I am a backend engineer; use bullets please' }],
+        });
+      expect(chat.status).toBe(200);
+      expect(chat.text).toContain('done_meta');
+
+      // The response has ended; extraction runs out of band. idle() awaits it.
+      await h.memory?.remember.idle();
+
+      const listed = await request(h.app).get('/v1/memory/profile').set(authed(token));
+      expect(listed.status).toBe(200);
+      const entries = (listed.body.profile as Array<Record<string, unknown>>).filter(
+        (entry) => entry.status === 'suggested',
+      );
+      expect(entries).toHaveLength(2);
+      expect(entries.every((entry) => entry.personaScope === 'p-researcher')).toBe(true);
+      expect(entries.every((entry) => entry.source === 'partner_suggestion')).toBe(true);
+      const values = entries.map((entry) => entry.value);
+      expect(values).toContain('Works as a backend engineer');
+      expect(values).toContain('Prefers bullet lists');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('never extracts for a persona with private memory off', async () => {
+    const upstream = await startChatUpstream({
+      suggestReply: '[{"kind":"identity","value":"Should never be filed"}]',
+    });
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const provider = await h.providerManager.create({
+        name: 'm19-off',
+        endpoint: upstream.server.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19off');
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
+      expect(chat.status).toBe(200);
+      await h.memory?.remember.idle();
+
+      // Only the chat completion hit the upstream — no extractor call.
+      expect(upstream.bodies).toHaveLength(1);
+      const listed = await request(h.app).get('/v1/memory/profile').set(authed(token));
+      expect(listed.body.profile).toHaveLength(0);
     } finally {
       h.close();
     }

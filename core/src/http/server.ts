@@ -1728,7 +1728,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // the request's own messages. The prelude is never persisted.
       const tailoring =
         routingPersona !== null && options.memory
-          ? buildTailoring(options.memory.profile, routingPersona.id)
+          ? buildTailoring(options.memory.profile, routingPersona)
           : null;
       const requestMessages = assembleRequestMessages({
         persona: routingPersona,
@@ -2039,6 +2039,27 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           ...(routingPersonaId !== null ? { personaId: routingPersonaId } : {}),
           ...(conversationId !== null ? { conversationId } : {}),
         });
+        // M19 automatic remember: persisted, provider-routed turns whose
+        // persona keeps private memory are scanned OUT OF BAND. res.end()
+        // has already fired, so the client never waits on extraction; the
+        // manager tracks the work so tests can await idle().
+        if (
+          persist &&
+          sawDone &&
+          !continueTurn &&
+          conversationId !== null &&
+          routingPersona !== null &&
+          routingPersona.memory.personaMemory === 'on' &&
+          options.memory !== undefined &&
+          (lastUser !== undefined || deltaText.trim() !== '')
+        ) {
+          options.memory.remember.enqueue({
+            personaId: routingPersona.id,
+            userText: lastUser?.content ?? '',
+            assistantText: deltaText,
+            conversationId,
+          });
+        }
       }
       return;
     }

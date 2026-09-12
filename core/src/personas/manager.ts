@@ -45,6 +45,7 @@ const HUMAN_TIERS: ReadonlySet<string> = new Set(['high', 'medium']);
 const TASK_CLASSES: readonly TaskClass[] = ['chat', 'deep', 'coding', 'vision', 'cheap'];
 const USER_PROFILE_ACCESS: ReadonlySet<string> = new Set(['read', 'none']);
 const EPISODE_ACCESS: ReadonlySet<string> = new Set(['read+write', 'none']);
+const PERSONA_MEMORY_MODES: ReadonlySet<string> = new Set(['on', 'off']);
 
 /** Lower/upper bound for character.temperature (clamped, not rejected). */
 const TEMPERATURE_MIN = 0;
@@ -249,7 +250,12 @@ function toMemoryFlags(row: PersonaRow): PersonaMemoryFlags {
     typeof raw.episodes === 'string' && EPISODE_ACCESS.has(raw.episodes)
       ? (raw.episodes as 'read+write' | 'none')
       : 'none';
-  return { userProfile, episodes };
+  // M19: persona-private memory. Older rows have no field -> 'off'.
+  const personaMemory =
+    typeof raw.personaMemory === 'string' && PERSONA_MEMORY_MODES.has(raw.personaMemory)
+      ? (raw.personaMemory as 'on' | 'off')
+      : 'off';
+  return { userProfile, episodes, personaMemory };
 }
 
 function toRowPersona(row: PersonaRow): Persona {
@@ -385,15 +391,20 @@ function normalizeMemory(raw: Partial<PersonaMemoryFlags> | undefined): PersonaM
   const body = raw ?? {};
   const userProfile = body.userProfile ?? 'none';
   const episodes = body.episodes ?? 'none';
+  const personaMemory = body.personaMemory ?? 'off';
   if (!USER_PROFILE_ACCESS.has(userProfile)) {
     throw personaError('invalid_input', "memory.userProfile must be 'read' or 'none'");
   }
   if (!EPISODE_ACCESS.has(episodes)) {
     throw personaError('invalid_input', "memory.episodes must be 'read+write' or 'none'");
   }
+  if (!PERSONA_MEMORY_MODES.has(personaMemory)) {
+    throw personaError('invalid_input', "memory.personaMemory must be 'on' or 'off'");
+  }
   return {
     userProfile: userProfile as 'read' | 'none',
     episodes: episodes as 'read+write' | 'none',
+    personaMemory: personaMemory as 'on' | 'off',
   };
 }
 
@@ -734,7 +745,7 @@ function makeSeedPersona(seed: StarterSeed, at: number): Persona {
     character,
     model: { taskClasses: {} },
     independence: { level: seed.level, requireHumanFor: ['high'] },
-    memory: { userProfile: 'none', episodes: 'none' },
+    memory: { userProfile: 'none', episodes: 'none', personaMemory: 'off' },
     isDefault: seed.isDefault,
     paused: false,
     createdAt: at,

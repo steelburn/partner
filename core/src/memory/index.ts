@@ -22,6 +22,8 @@ import { createMemoryForgetManager } from './forget.js';
 import type { MemoryForgetManager, MemoryForgetResult } from './forget.js';
 import { createProfileManager } from './profile.js';
 import type { ProfileManager } from './profile.js';
+import { createRememberManager } from './remember.js';
+import type { RememberManager, RememberTarget } from './remember.js';
 import { createSearchManager } from './search.js';
 import type { SearchManager } from './search.js';
 import { createMemoryTransferManager } from './transfer.js';
@@ -54,6 +56,26 @@ export { createMemoryTransferManager } from './transfer.js';
 export type { MemoryImportCounts, MemoryTransferManager, MemoryTransferManagerOptions } from './transfer.js';
 
 export { buildTailoring, TAILORING_ENTRY_CAP, TAILORING_MAX_ENTRIES } from './tailor.js';
+export type { TailoringPersona } from './tailor.js';
+
+export {
+  createRememberManager,
+  parseRememberReply,
+  looksLikeSecret,
+  REMEMBER_SYSTEM_PROMPT,
+  REMEMBER_MAX_ITEMS,
+  REMEMBER_VALUE_CAP,
+  REMEMBER_EVIDENCE_CAP,
+  REMEMBER_INPUT_CAP,
+} from './remember.js';
+export type {
+  RememberManager,
+  RememberManagerOptions,
+  RememberInput,
+  RememberOutcome,
+  RememberCandidate,
+  RememberTarget,
+} from './remember.js';
 
 /**
  * The M4 memory surface wired into CoreAppOptions.memory / CoreBundle.memory
@@ -65,6 +87,8 @@ export interface MemoryBundle {
   search: SearchManager;
   forget: MemoryForgetManager;
   transfer: MemoryTransferManager;
+  /** M19 automatic remember (persona-scoped suggestions). */
+  remember: RememberManager;
 }
 
 export interface MemoryWiringOptions {
@@ -79,6 +103,11 @@ export interface MemoryWiringOptions {
    * harness and createCore can share the same resolver shape.
    */
   providerResolver: (personaId: string | null) => SummarizeTarget | null | Promise<SummarizeTarget | null>;
+  /**
+   * M19 automatic-remember resolver (cheap task class). Falls back to
+   * {@link providerResolver} when omitted, so older harnesses keep working.
+   */
+  rememberResolver?: (personaId: string) => RememberTarget | null | Promise<RememberTarget | null>;
   /** Injectable clock (epoch ms), shared by every manager. */
   now?: () => number;
 }
@@ -125,7 +154,16 @@ export function createMemoryBundle(options: MemoryWiringOptions): MemoryBundle {
     audit: options.audit,
     now,
   });
-  return { profile, episodes, search, forget, transfer };
+  const rememberTargetResolver =
+    options.rememberResolver ??
+    ((personaId: string) => options.providerResolver(personaId) as RememberTarget | null | Promise<RememberTarget | null>);
+  const remember = createRememberManager({
+    profile,
+    audit: options.audit,
+    demo: options.demo,
+    providerResolver: rememberTargetResolver,
+  });
+  return { profile, episodes, search, forget, transfer, remember };
 }
 
 /**
@@ -139,7 +177,10 @@ export function createMemoryBundle(options: MemoryWiringOptions): MemoryBundle {
 export function createSummarizeResolver(deps: {
   personas: PersonaManager;
   providers: ProviderManager;
+  /** Chat task class used for the resolved model (M19 passes 'cheap'). */
+  taskClass?: 'chat' | 'deep' | 'coding' | 'vision' | 'cheap';
 }): (personaId: string | null) => Promise<SummarizeTarget | null> {
+  const taskClass = deps.taskClass ?? 'chat';
   return async (personaId: string | null): Promise<SummarizeTarget | null> => {
     if (personaId === null) return null;
     const persona = deps.personas.get(personaId);
@@ -147,7 +188,7 @@ export function createSummarizeResolver(deps: {
     const resolved = resolveChatModel({
       persona,
       providers: deps.providers.list(),
-      taskClass: 'chat',
+      taskClass,
     });
     if (resolved.provider === null || resolved.model === '') return null;
     try {
