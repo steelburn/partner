@@ -17,7 +17,7 @@ function makeManager(ttlMs = 60_000, now = () => 1_000_000): { manager: SessionM
 describe('session manager', () => {
   it('create returns a 256-bit token and stores only its hash', async () => {
     const { manager, store } = makeManager();
-    const { token, expiresAt } = await manager.create('web', ORIGIN);
+    const { token, expiresAt } = await manager.create({ kind: 'web', origin: ORIGIN });
     expect(token).toMatch(/^[0-9a-f]{64}$/); // 256 bits of hex
 
     const row = store.findByTokenHash(tokenHash(token));
@@ -36,7 +36,7 @@ describe('session manager', () => {
 
   it('validate accepts the right origin and refuses a different one', async () => {
     const { manager } = makeManager();
-    const { token } = await manager.create('web', ORIGIN);
+    const { token } = await manager.create({ kind: 'web', origin: ORIGIN });
 
     const ok = await manager.validate(token, ORIGIN);
     expect(ok.ok).toBe(true);
@@ -52,7 +52,7 @@ describe('session manager', () => {
   it('an expired session is rejected', async () => {
     let now = 1_000_000;
     const { manager } = makeManager(60_000, () => now);
-    const { token } = await manager.create('web', ORIGIN);
+    const { token } = await manager.create({ kind: 'web', origin: ORIGIN });
     now = 1_000_000 + 60_001;
     const result = await manager.validate(token, ORIGIN);
     expect(result).toEqual({ ok: false, reason: 'expired' });
@@ -60,7 +60,7 @@ describe('session manager', () => {
 
   it('revoke kills the session immediately; unknown revoke is false', async () => {
     const { manager } = makeManager();
-    const { token } = await manager.create('web', ORIGIN);
+    const { token } = await manager.create({ kind: 'web', origin: ORIGIN });
 
     expect(await manager.revoke(token)).toBe(true);
     expect(await manager.validate(token, ORIGIN)).toEqual({ ok: false, reason: 'revoked' });
@@ -76,7 +76,7 @@ describe('session manager', () => {
   it('touch bumps last_seen_at for a live session only', async () => {
     let now = 1_000_000;
     const { manager, store } = makeManager(60_000, () => now);
-    const { token } = await manager.create('web', ORIGIN);
+    const { token } = await manager.create({ kind: 'web', origin: ORIGIN });
 
     now = 1_000_000 + 5_000;
     expect(await manager.touch(token)).toBe(true);
@@ -89,9 +89,9 @@ describe('session manager', () => {
 
   it('tokens from different creations never collide', async () => {
     const { manager } = makeManager();
-    const a = await manager.create('web', ORIGIN);
-    const b = await manager.create('web', ORIGIN);
-    const c = await manager.create('native', ORIGIN);
+    const a = await manager.create({ kind: 'web', origin: ORIGIN });
+    const b = await manager.create({ kind: 'web', origin: ORIGIN });
+    const c = await manager.create({ kind: 'native', origin: ORIGIN });
     expect(new Set([a.token, b.token, c.token]).size).toBe(3);
     expect(await manager.validate(a.token, ORIGIN)).toMatchObject({ ok: true });
   });

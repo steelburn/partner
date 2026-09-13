@@ -9,6 +9,11 @@
 
 export type ProviderKind = 'openai-compatible';
 
+/**
+ * How a provider profile was created. `'llm-self-service'` is LEGACY (M1): the
+ * integration that wrote it was removed in M22, but the value stays so provider
+ * rows written by an older install keep reading. Nothing writes it any more.
+ */
 export type ProviderSource = 'manual' | 'llm-self-service';
 
 /**
@@ -79,23 +84,7 @@ export interface ProviderInput {
 }
 
 // ---------------------------------------------------------------------------
-// llm-self-service integrated import (S0 endpoints, PLAN-S0.md)
+// (removed in M22) The llm-self-service import contract — `SelfServiceLoginKey`
+// and `SelfServiceConnectInput` — lived here. Provider setup is now always a
+// base URL + key typed by the user; see PLAN-M22.md.
 // ---------------------------------------------------------------------------
-
-/** GET {endpoint}/api/login-key — proxied by the core so the web UI can
- *  encrypt the password in the page without CORS. */
-export interface SelfServiceLoginKey {
-  publicKeyPem: string;
-}
-
-/**
- * Connect request. The web UI encrypts the password with the envelope public
- * key (WebCrypto RSA-OAEP/SHA-256); the core forwards the CIPHERTEXT only and
- * rejects a plaintext `password` field outright (PLAN-M1.md).
- */
-export interface SelfServiceConnectInput {
-  /** Self-service base URL, e.g. https://enter.ne1.dev (no /v1). */
-  endpoint: string;
-  email: string;
-  passwordCipher: string;
-}

@@ -15,6 +15,8 @@ import type {
   AuditRow,
   AuditStore,
   ConversationRow,
+  KeyWrapRow,
+  KeyWrapStore,
   ConversationRowPatch,
   ConversationStore,
   EpisodeRow,
@@ -56,6 +58,10 @@ import type {
   ThemeRow,
   ThemeRowPatch,
   ThemeStore,
+  UserCredentialRow,
+  UserCredentialStore,
+  UserRow,
+  UserStore,
 } from './types.js';
 
 const META_SCHEMA_VERSION_KEY = 'schema_version';
@@ -122,7 +128,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  -- M20-B S3 (schema v18): who the session acts as, which client class it
+  -- is, which device it belongs to, and when its token was last rotated.
+  -- kind stays what it is: it is the audit actor on the file/root/grant
+  -- routes, so the client class needed its own column.
+  user_id TEXT,
+  client_class TEXT NOT NULL DEFAULT 'desktop',
+  device_label TEXT,
+  platform TEXT,
+  rotated_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -600,6 +615,55 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- M20-B S2/S2a system-DB tables (additive schema v17). These two are the
+-- PRE-USER tables: the user list cannot live inside a per-user database
+-- (which database to open is decided BY the user, so the answer would have
+-- to precede the question), and a credential exists to PROVE which user a
+-- request is, likewise before the user is resolved. They therefore live in
+-- the system database (data/system.db, keychain account system-key, see
+-- core/src/system/db.ts) together with the pairings/sessions home.
+-- os_profile_key is UNIQUE so one OS user maps to exactly one app user; it
+-- is nullable for a user with no OS profile on this machine.
+-- user_credentials holds salt + scrypt key + params ONLY: the passphrase
+-- itself never reaches SQLite, a log, an audit row or an API response.
+-- disabled_at is the reversible stop (M20-B S2): a disabled user refuses
+-- requests and keeps every row and file; deletion is NOT a store operation.
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  os_profile_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  disabled_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS user_credentials (
+  user_id TEXT PRIMARY KEY,
+  salt TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  params TEXT NOT NULL,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- M20-B S9: a user's partition cipher key, WRAPPED under a key derived from
+-- their passphrase (own salt + HKDF domain separation, so the credential row's
+-- verifier cannot unwrap it). The plaintext key is removed from the keychain at
+-- first sign-in unless the user explicitly keeps it unlocked, which is what
+-- makes "no live session ⇒ nobody can open this database" true.
+CREATE TABLE IF NOT EXISTS key_wraps (
+  user_id TEXT PRIMARY KEY,
+  purpose TEXT NOT NULL DEFAULT 'vault',
+  salt TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -608,7 +672,9 @@ const PAIRING_COLUMNS = `
   locked_until AS lockedUntil, created_at AS createdAt`;
 
 const SESSION_COLUMNS = `
-  id, token_hash AS tokenHash, kind, origin, created_at AS createdAt,
+  id, token_hash AS tokenHash, kind, origin, user_id AS userId,
+  client_class AS clientClass, device_label AS deviceLabel, platform,
+  rotated_at AS rotatedAt, created_at AS createdAt,
   expires_at AS expiresAt, last_seen_at AS lastSeenAt, revoked_at AS revokedAt`;
 
 const AUDIT_COLUMNS = `
@@ -729,6 +795,18 @@ const FOLDER_COLUMNS = `
   id, name, parent_id AS parentId, position,
   created_at AS createdAt, updated_at AS updatedAt`;
 
+const USER_COLUMNS = `
+  id, label, os_profile_key AS osProfileKey, created_at AS createdAt,
+  disabled_at AS disabledAt, keep_unlocked AS keepUnlocked`;
+
+const USER_CREDENTIAL_COLUMNS = `
+  user_id AS userId, salt, hash, params, failed_attempts AS failedAttempts,
+  locked_until AS lockedUntil, created_at AS createdAt, updated_at AS updatedAt`;
+
+const KEY_WRAP_COLUMNS = `
+  user_id AS userId, purpose, salt, nonce, tag, ciphertext,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
 /**
  * M11 (PLAN-M11 C1) guarded additive columns on v1-era tables. Schema is
  * otherwise additive-only (CREATE TABLE IF NOT EXISTS), so existing file DBs
@@ -755,6 +833,18 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   // conversation to post the outcome note into + the requesting persona.
   ['pending_tools', 'conversation_id', 'conversation_id TEXT'],
   ['pending_tools', 'persona_id', 'persona_id TEXT'],
+  // M20-B S3 (v18) session widening: acting user, client class, device
+  // identity. Legacy session rows read back 'desktop' / NULL (a pre-auth
+  // desktop pairing), which is exactly today's behaviour.
+  ['sessions', 'user_id', 'user_id TEXT'],
+  ['sessions', 'client_class', "client_class TEXT NOT NULL DEFAULT 'desktop'"],
+  ['sessions', 'device_label', 'device_label TEXT'],
+  ['sessions', 'platform', 'platform TEXT'],
+  ['sessions', 'rotated_at', 'rotated_at INTEGER'],
+  // M20-B S9 (v19) user policy: keep the partition key in the keychain so this
+  // user's schedules can run while nobody is signed in (explicit, audited,
+  // per-user — it weakens the at-rest promise for THIS user only).
+  ['users', 'keep_unlocked', 'keep_unlocked INTEGER NOT NULL DEFAULT 0'],
 ];
 
 /**
@@ -923,16 +1013,57 @@ export function createPairingStore(db: Database.Database): PairingStore {
 
 export function createSessionStore(db: Database.Database): SessionStore {
   const insert = db.prepare(
-    `INSERT INTO sessions (token_hash, kind, origin, created_at, expires_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (
+       token_hash, kind, origin, created_at, expires_at, last_seen_at,
+       user_id, client_class, device_label, platform
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const find = db.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE token_hash = ?`);
   const touch = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?');
   const revoke = db.prepare('UPDATE sessions SET revoked_at = ? WHERE id = ?');
+  const rotateStmt = db.prepare(
+    'UPDATE sessions SET token_hash = ?, expires_at = ?, rotated_at = ? WHERE id = ?',
+  );
+  const extendStmt = db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?');
+  const listByUserStmt = db.prepare(
+    `SELECT ${SESSION_COLUMNS} FROM sessions WHERE user_id = ? ORDER BY id ASC`,
+  );
+  // The transitional pre-auth read: rows that belong to NO user (every session
+  // predating the sign-in route). Deliberately NOT `SELECT … FROM sessions`:
+  // once users exist, an unscoped read here would let a legacy user-less session
+  // see — and revoke — a NAMED user's devices.
+  const listUnscopedStmt = db.prepare(
+    `SELECT ${SESSION_COLUMNS} FROM sessions WHERE user_id IS NULL ORDER BY id ASC`,
+  );
+  // Owner-scoped revoke: a row belonging to another user (or an id that is
+  // already revoked/unknown) matches nothing, so the route can answer 404.
+  const revokeOwned = db.prepare(
+    'UPDATE sessions SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL',
+  );
+  // The same revoke for a user-LESS row, scoped by `user_id IS NULL` so it can
+  // never touch a named user's row.
+  const revokeUnscopedStmt = db.prepare(
+    'UPDATE sessions SET revoked_at = ? WHERE id = ? AND user_id IS NULL AND revoked_at IS NULL',
+  );
+  const revokeAllOwned = db.prepare(
+    'UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL',
+  );
 
   return {
-    insert(tokenHash, kind, origin, createdAt, expiresAt, lastSeenAt): number {
-      const info = insert.run(tokenHash, kind, origin, createdAt, expiresAt, lastSeenAt);
+    insert(tokenHash, kind, origin, createdAt, expiresAt, lastSeenAt, meta): number {
+      const info = insert.run(
+        tokenHash,
+        kind,
+        origin,
+        createdAt,
+        expiresAt,
+        lastSeenAt,
+        meta?.userId ?? null,
+        // Same default as the column, so the store path never writes NULL.
+        meta?.clientClass ?? 'desktop',
+        meta?.deviceLabel ?? null,
+        meta?.platform ?? null,
+      );
       return Number(info.lastInsertRowid);
     },
     findByTokenHash(tokenHash: string): SessionRow | undefined {
@@ -943,6 +1074,27 @@ export function createSessionStore(db: Database.Database): SessionStore {
     },
     revoke(id: number, at: number): void {
       revoke.run(at, id);
+    },
+    rotate(id: number, newTokenHash: string, expiresAt: number, at: number): boolean {
+      return rotateStmt.run(newTokenHash, expiresAt, at, id).changes > 0;
+    },
+    extend(id: number, expiresAt: number): boolean {
+      return extendStmt.run(expiresAt, id).changes > 0;
+    },
+    listByUser(userId: string): SessionRow[] {
+      return listByUserStmt.all(userId) as SessionRow[];
+    },
+    listUnscoped(): SessionRow[] {
+      return listUnscopedStmt.all() as SessionRow[];
+    },
+    revokeUnscoped(id: number, at: number): boolean {
+      return revokeUnscopedStmt.run(at, id).changes > 0;
+    },
+    revokeById(id: number, userId: string, at: number): boolean {
+      return revokeOwned.run(at, id, userId).changes > 0;
+    },
+    revokeAllForUser(userId: string, at: number): number {
+      return revokeAllOwned.run(at, userId).changes;
     },
   };
 }
@@ -2614,6 +2766,140 @@ export function createMcpServerStore(db: Database.Database): McpServerStore {
     },
     remove(id: string): void {
       remove.run(id);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M20-B S2/S2a system-DB row stores (PLAN-M20-B.md §2a — additive schema
+// v17). Plain typed CRUD over the SYSTEM database handle: `users` and the
+// per-user credential records. The user manager (users/manager.ts) owns id
+// validation, first-run provisioning and the disabled gate; audit rows are NOT
+// written yet — the routes that own them are not built, so this must not claim
+// otherwise. The
+// credential manager (users/credentials.ts) owns scrypt hashing, the timing-
+// safe compare, rotation and the lockout bucket. Stores never read the clock.
+// ---------------------------------------------------------------------------
+
+export function createUserStore(db: Database.Database): UserStore {
+  const insert = db.prepare(
+    `INSERT INTO users (id, label, os_profile_key, created_at, disabled_at, keep_unlocked)
+     VALUES (@id, @label, @osProfileKey, @createdAt, @disabledAt, @keepUnlocked)`,
+  );
+  const findById = db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`);
+  const findByOsProfileKey = db.prepare(
+    `SELECT ${USER_COLUMNS} FROM users WHERE os_profile_key = ?`,
+  );
+  const listAll = db.prepare(
+    `SELECT ${USER_COLUMNS} FROM users ORDER BY created_at ASC, rowid ASC`,
+  );
+  const disable = db.prepare('UPDATE users SET disabled_at = ? WHERE id = ?');
+  const enable = db.prepare('UPDATE users SET disabled_at = NULL WHERE id = ?');
+  // M20-B S9: the per-user at-rest policy (audited by the caller).
+  const setKeepUnlocked = db.prepare('UPDATE users SET keep_unlocked = ? WHERE id = ?');
+  /** SQLite returns 0/1 for the policy column; a UserRow carries a boolean. */
+  const toRow = (row: unknown): UserRow | undefined =>
+    row === undefined ? undefined : { ...(row as UserRow), keepUnlocked: (row as { keepUnlocked: unknown }).keepUnlocked === 1 };
+
+  return {
+    insert(row: UserRow): void {
+      // SQLite has no boolean type: a UserRow carries `keepUnlocked` as a JS
+      // boolean, so the storage boundary converts it (binding `false` directly is
+      // a "can only bind numbers, strings…" error).
+      insert.run({ ...row, keepUnlocked: row.keepUnlocked ? 1 : 0 });
+    },
+    findById(id: string): UserRow | undefined {
+      return toRow(findById.get(id));
+    },
+    findByOsProfileKey(key: string): UserRow | undefined {
+      return toRow(findByOsProfileKey.get(key));
+    },
+    list(): UserRow[] {
+      return (listAll.all() as UserRow[]).map(
+        (row) => ({ ...row, keepUnlocked: row.keepUnlocked === (1 as unknown as boolean) }),
+      );
+    },
+    disable(id: string, at: number): boolean {
+      return disable.run(at, id).changes > 0;
+    },
+    enable(id: string): boolean {
+      return enable.run(id).changes > 0;
+    },
+    setKeepUnlocked(id: string, value: boolean): boolean {
+      return setKeepUnlocked.run(value ? 1 : 0, id).changes > 0;
+    },
+  };
+}
+
+/**
+ * M20-B S9 wrapped partition keys. Upsert, because re-wrapping (a passphrase
+ * change) writes the same row; `createdAt` survives so the row answers "when was
+ * this key first protected" rather than "when was it last touched".
+ */
+export function createKeyWrapStore(db: Database.Database): KeyWrapStore {
+  const upsert = db.prepare(
+    `INSERT INTO key_wraps (user_id, purpose, salt, nonce, tag, ciphertext, created_at, updated_at)
+     VALUES (@userId, @purpose, @salt, @nonce, @tag, @ciphertext, @createdAt, @updatedAt)
+     ON CONFLICT(user_id) DO UPDATE SET
+       purpose = excluded.purpose,
+       salt = excluded.salt,
+       nonce = excluded.nonce,
+       tag = excluded.tag,
+       ciphertext = excluded.ciphertext,
+       updated_at = excluded.updated_at`,
+  );
+  const findByUser = db.prepare(`SELECT ${KEY_WRAP_COLUMNS} FROM key_wraps WHERE user_id = ?`);
+  const removeByUser = db.prepare('DELETE FROM key_wraps WHERE user_id = ?');
+  const listAll = db.prepare(`SELECT ${KEY_WRAP_COLUMNS} FROM key_wraps ORDER BY user_id ASC`);
+
+  return {
+    upsert(row: KeyWrapRow): void {
+      upsert.run({ ...row });
+    },
+    findByUser(userId: string): KeyWrapRow | undefined {
+      return findByUser.get(userId) as KeyWrapRow | undefined;
+    },
+    removeByUser(userId: string): boolean {
+      return removeByUser.run(userId).changes > 0;
+    },
+    list(): KeyWrapRow[] {
+      return listAll.all() as KeyWrapRow[];
+    },
+  };
+}
+
+export function createUserCredentialStore(db: Database.Database): UserCredentialStore {
+  // upsert, not insert: first set and rotation write the same row, and the
+  // row's createdAt survives a rotation (when this credential was created).
+  const upsert = db.prepare(
+    `INSERT INTO user_credentials (user_id, salt, hash, params, failed_attempts,
+                                   locked_until, created_at, updated_at)
+     VALUES (@userId, @salt, @hash, @params, @failedAttempts, @lockedUntil,
+             @createdAt, @updatedAt)
+     ON CONFLICT(user_id) DO UPDATE SET
+       salt = excluded.salt,
+       hash = excluded.hash,
+       params = excluded.params,
+       failed_attempts = excluded.failed_attempts,
+       locked_until = excluded.locked_until,
+       updated_at = excluded.updated_at`,
+  );
+  const findByUserId = db.prepare(
+    `SELECT ${USER_CREDENTIAL_COLUMNS} FROM user_credentials WHERE user_id = ?`,
+  );
+  const setAttempts = db.prepare(
+    'UPDATE user_credentials SET failed_attempts = ?, locked_until = ? WHERE user_id = ?',
+  );
+
+  return {
+    upsert(row: UserCredentialRow): void {
+      upsert.run({ ...row });
+    },
+    findByUserId(userId: string): UserCredentialRow | undefined {
+      return findByUserId.get(userId) as UserCredentialRow | undefined;
+    },
+    setAttempts(userId: string, failedAttempts: number, lockedUntil: number | null): void {
+      setAttempts.run(failedAttempts, lockedUntil, userId);
     },
   };
 }

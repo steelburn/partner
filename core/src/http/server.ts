@@ -2,17 +2,58 @@
  * Partner core HTTP server (Express 5) — the M0 security spine as routes.
  *
  * Layering, in order:
- *  1. Loopback Host guard — 403 before any routing when the Host header is
- *     not on the allowlist (default `127.0.0.1:<port>` / `localhost:<port>`).
+ *  1. Host allowlist guard — 403 before any routing when the Host header is
+ *     not on the allowlist (default `127.0.0.1:<port>` / `localhost:<port>`;
+ *     with remote access on, the explicit ALLOWED_HOSTS list from config).
+ *     PLAN-M20 §2.1: the Host header is client-supplied once a client is
+ *     remote, so it is a LOOKUP KEY for session/origin binding — NOT a
+ *     network control. TLS (cert fingerprint pinned at pair time) and that
+ *     named allowlist are the controls.
  *  2. Public surface — /v1/health, /v1/boot (shell boot identity) and
  *     (demo only) /v1/dev/pair-code.
  *  3. Pairing exchange — POST /v1/pair drives the 6-digit single-use manager
- *     and mints a `web` session bound to the caller's (allowlisted) origin.
+ *     (LOCAL only, mints `desktop`) or a 256-bit single-use pair secret
+ *     (LOCAL-issued by POST /v1/pair/payload, accepted from anywhere, mints
+ *     `mobile`) and mints a `web` session bound to the caller's (allowlisted)
+ *     origin. Both paths are per-peer rate-limited. See M20-B S7 below.
  *  4. Authed group (Bearer + origin) — POST /v1/chat (SSE), GET /v1/audit,
- *     the M1 provider API (/v1/providers…, /v1/models), the
- *     self-service import (/v1/self-service/*), the M2 tool surface
+ *     the M1 provider API (/v1/providers…, /v1/models), the M2 tool surface
  *     (/v1/roots|/v1/grants|/v1/tools…, /v1/proposals…) and the M3
  *     persona + conversation API (/v1/personas…, /v1/conversations…).
+ *
+ * M20-B S4 (client-class capability envelope): the mutating route groups that
+ * the capability vocabulary HAS A NAME for carry `capability(<name>)`
+ * (http/requireCapability.ts) straight after requireSession, and /v1/tools/exec
+ * passes the session's class into the broker so it re-checks per TOOL before the
+ * grant check. The class always comes from the validated session row — a mobile
+ * session is refused whether or not it holds a grant, and an unknown class is
+ * refused outright. Read paths (chat, files.browse/refs) stay open to every
+ * class that holds the capability.
+ *
+ * SCOPE OF THAT GUARD, stated so it is not read as "every route": the vocabulary
+ * is TWELVE names (M22 added the last two). Gated are the MACHINE-power surfaces
+ * (file write, roots, grants, deploy, skill install/invoke, MCP call INCLUDING
+ * server create/update/delete — configuring one spawns a process — browser
+ * scopes, provider-purpose discovery) and, since M22, the two surfaces that were
+ * missing a name: **provider KEY writes** (`provider.configure`:
+ * `/v1/providers/:id/key`, `/v1/search/key`) and **autonomous firing**
+ * (`persona.run`: playbook run, schedule run-now). A stored key is spendable
+ * money and a credential that outlives the session; a run is work the user did
+ * not just ask for. Both are denied to mobile/extension by the envelope table.
+ * NOT gated, deliberately: the DATA plane (personas, conversations, folders,
+ * notes, plans, themes, memory) because a phone may legitimately edit its own
+ * notes and memory, and provider create/delete, which name an endpoint rather
+ * than a secret.
+ *
+ * M20-B S7 (networked pairing): the peer — `socket.remoteAddress`, never the
+ * Host header — decides which credential is even admissible. `{code}` is
+ * refused from a non-loopback peer and mints `desktop`; a `{secret}` is
+ * accepted from anywhere and mints `mobile`, so no shape of remote request can
+ * reach desktop authority. The payload route (which CREATES a secret) is
+ * loopback-only and refuses without remote access + TLS, because a secret
+ * carried to another device over plaintext is the thing the pinned cert
+ * fingerprint exists to prevent. Secrets cross exactly one boundary and are
+ * never logged, audited or persisted.
  *
  * M3 chat (PLAN-M3.md): POST /v1/chat accepts optional {conversationId?,
  * personaId?, taskClass?}. A persona (explicit or derived from the
@@ -36,7 +77,7 @@ import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
-import type { ProviderInput, ProviderPurpose, ProviderSource, SelfServiceConnectInput } from '@partner/shared';
+import type { ProviderInput, ProviderPurpose, ProviderSource } from '@partner/shared';
 import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import type { SiteScope } from '@partner/shared';
@@ -49,17 +90,22 @@ import { resolveChatModel, resolveImageTurnUpgrade } from '../gateway/resolver.j
 import { isImageCapableModel } from '../gateway/vision.js';
 import { UpstreamError, createOpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
-import {
-  connectSelfService,
-  createSelfServiceDemoDouble,
-  fetchSelfServiceLoginKey,
-  SelfServiceError,
-} from '../gateway/selfService.js';
 import { normalizeEndpoint } from '../providers/providerManager.js';
 import type { ProviderManager } from '../providers/providerManager.js';
 import { ProviderError } from '../providers/errors.js';
 import type { PairingManager } from './pairing.js';
+import type { UserManager } from '../users/manager.js';
+import type { CredentialManager } from '../users/credentials.js';
+import type { AuthMode } from '../config.js';
+import { createPairSecretManager } from './pairSecret.js';
+import type { PairSecretManager } from './pairSecret.js';
+import { buildPairPayload } from './pairPayload.js';
+import { createRateLimiter } from './rateLimit.js';
+import type { RateLimiter } from './rateLimit.js';
+import { isLoopbackPeer } from './peer.js';
 import type { SessionInfo, SessionManager } from './session.js';
+import { requireCapability } from './requireCapability.js';
+import type { Capability } from './capabilities.js';
 import type { AuditService } from '../services/redaction.js';
 import type { PendingToolRow } from '../stores/types.js';
 import type { ToolBroker } from '../broker/broker.js';
@@ -115,12 +161,65 @@ import { PlaybookError, playbookError, playbookErrorStatus } from '../playbooks/
 import type { ScheduleManager } from '../schedules/index.js';
 import { ScheduleError, scheduleErrorStatus } from '../schedules/index.js';
 
+/**
+ * M22: the account lane. `pairing` is the desktop shape (no users at all);
+ * `login` requires the managers, because a session must name its user.
+ */
+export interface CoreAuthOptions {
+  mode: AuthMode;
+  /** Present in login mode (the system-database managers). */
+  users?: UserManager;
+  capabilities?: CredentialManager;
+  /** The client class a login session is minted with (config). */
+  sessionClass?: string;
+  /**
+   * M20-B S9: the per-user key vault. A successful sign-in wraps the user's
+   * partition key (first time) and releases it into memory; a request whose
+   * user has no key available is refused with `partition_locked` rather than
+   * being served from a partition nobody unlocked.
+   */
+  vault?: {
+    adopt(userId: string, passphrase: string): Promise<boolean>;
+    unlock(userId: string, passphrase: string): Promise<boolean>;
+    lock(userId: string): boolean;
+    keyFor(userId: string): Promise<string | undefined>;
+  };
+}
+
 export interface CoreAppOptions {
   port: number;
   demo: boolean;
   version: string;
   schemaVersion: number;
-  /** Host header allowlist; defaults to loopback for `port`. */
+  /**
+   * M22: how clients authenticate. Absent = pairing (unchanged); `login`
+   * disables the pairing routes and enables POST /v1/auth/session.
+   */
+  auth?: CoreAuthOptions;
+  /**
+   * M22/R1: per-user partitions. When present (login mode), every authenticated
+   * `/v1/*` request is handed to THAT USER'S OWN core — a complete single-user
+   * app built over their own encrypted database and skills directory — instead
+   * of being served by this app's stores. Returns `undefined` when the partition
+   * cannot be opened; the request then fails 503 rather than ever falling back
+   * to another user's data.
+   */
+  delegate?: (userId: string) => Promise<express.Express | 'partition_locked' | undefined>;
+  /**
+   * M22/R4: the bucket key for the AUTH rate limits (pair + sign-in). Defaults
+   * to the socket peer; a deployment behind a trusted tunnel sets it to the real
+   * client address so per-IP budgets are per client, not per tunnel. It never
+   * feeds a locality decision — that stays on `peerAddress`.
+   */
+  clientIp?: (req: Request) => string | undefined;
+  /** R7: the JSON body cap in bytes (default 1 MiB). */
+  maxJsonBytes?: number;
+  /** M22: fixed-window budget for POST /v1/auth/session, per network peer. */
+  loginRateLimit?: { limit?: number; windowMs?: number };
+  /**
+   * Host-lookup allowlist. Defaults to the derived loopback pair for `port`;
+   * with remote access on, config passes the explicit ALLOWED_HOSTS list.
+   */
   hostAllowlist?: string[];
   /**
    * M15 device pairing channel: when the shell hands the core a per-boot
@@ -141,8 +240,56 @@ export interface CoreAppOptions {
    * authority and guards no data. Absent in dev/CI/container runs.
    */
   bootNonce?: string;
+  /**
+   * M22: the deployment OWNS the project roots (`FIXED_ROOTS`). The list still
+   * reports them, but adding or removing one is refused with `roots_fixed` —
+   * what the file tools can see is a deployment decision (a mounted volume),
+   * not a client one. Absent ⇒ today's desktop behaviour.
+   */
+  rootsFixed?: boolean;
   /** Optional built SPA directory served at / (stub at M0; the packaged shell wires the real path). */
   staticDir?: string;
+  /**
+   * M20-B S7: remote access is ON (config.remoteAccess). Gates the networked
+   * pairing surfaces — POST /v1/pair/payload refuses with
+   * `remote_access_disabled` when it is false, because a secret for another
+   * device is meaningless while nothing but loopback can reach this core.
+   */
+  remoteAccess?: boolean;
+  /**
+   * M20-B S7: the served certificate's fingerprint (config.tls.fingerprint),
+   * the value a pairing client PINS. Absent without TLS, and the payload route
+   * then refuses (`tls_required`): a secret carried to another device over
+   * plaintext is exactly what the pin exists to prevent.
+   */
+  tlsFingerprint?: string;
+  /**
+   * M20-B S7: the https URL a pairing device should use. Defaults to
+   * `https://<first allowlisted host>`; explicit override for a deployment
+   * whose canonical URL is not the first ALLOWED_HOSTS entry.
+   */
+  pairCoreUrl?: string;
+  /**
+   * M20-B S7: fixed-window budget for POST /v1/pair, per network peer.
+   * Defaults to the limiter's own 10 per 60s.
+   */
+  pairRateLimit?: { limit?: number; windowMs?: number };
+  /**
+   * M20-B S7: the pair-secret manager (256-bit single-use secrets for the
+   * networked path). Defaults to a fresh in-memory manager, which is the
+   * correct lifetime — a secret that has been scanned is consumed, and one
+   * that has not is meaningless after a restart.
+   */
+  pairSecrets?: PairSecretManager;
+  /**
+   * M20-B S7: TEST SEAM — the network peer of a request. Defaults to the real
+   * socket address (`req.socket.remoteAddress`), which is the only signal that
+   * distinguishes a local caller from a remote one. Injectable because a
+   * hermetic test cannot dial the core from a non-loopback address; production
+   * code (index.ts) never passes it, and the value can only ever make a
+   * request look MORE remote or unclassifiable (both fail closed).
+   */
+  peerAddress?: (req: Request) => string | undefined;
   pairing: PairingManager;
   sessions: SessionManager;
   audit: AuditService;
@@ -293,11 +440,125 @@ export type ServerChatEvent = ChatEvent | ChatDoneMetaEvent;
 
 const ALLOWED_ROLES: ReadonlySet<string> = new Set(['system', 'user', 'assistant']);
 const DEFAULT_AUDIT_LIMIT = 100;
+/**
+ * MIME types this route may render INLINE. Everything else is forced to a
+ * download (PLAN-M20.md §8.1.1).
+ *
+ * Why: the SPA and this API share an origin, and the session bearer token lives
+ * in that origin's `localStorage`. `assertAllowed` accepts any `text/*` upload
+ * — including `text/html` — so serving one `inline` let a document execute on
+ * the authenticated origin and read the token. `nosniff` does not help here:
+ * it defends against content *sniffing*, not against an explicitly declared
+ * `text/html`.
+ *
+ * The realistic chain is not an attacker uploading. The partner generates an
+ * HTML/CSS prototype for the Design capability, and the user opens it — which
+ * is exactly why the disposition is decided here instead of trusting a client
+ * to ask for the right one.
+ *
+ * Uploading HTML stays allowed (the model legitimately reads HTML the user
+ * attaches); only *rendering it on the app's origin* is refused. Images and PDF
+ * are not script-bearing document types and the SPA displays them inline, so
+ * they keep `inline`.
+ */
+const INLINE_SAFE_MIME: ReadonlySet<string> = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'application/pdf',
+]);
+
+/** True when a response body may be rendered in the page rather than saved. */
+export function isInlineSafeMime(mime: string): boolean {
+  return INLINE_SAFE_MIME.has(String(mime ?? '').trim().toLowerCase());
+}
+
+/**
+ * Headers for a core-served attachment body.
+ *
+ * Extracted so the policy is unit-testable without an HTTP round trip and so
+ * there is exactly one place that decides whether user bytes may render on the
+ * authenticated origin.
+ */
+export function attachmentContentHeaders(
+  mime: string,
+  name: string,
+): Record<string, string> {
+  const inline = isInlineSafeMime(mime);
+  const headers: Record<string, string> = {
+    'Content-Type': mime,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`,
+    'X-Content-Type-Options': 'nosniff',
+  };
+  if (!inline) {
+    // Defence in depth: if a client ignores the disposition and renders the
+    // body anyway, `sandbox` gives it an opaque origin with no script access
+    // to this origin's storage. Deliberately NOT applied to the inline types —
+    // `sandbox` blocks plugins, which breaks the browser's inline PDF viewer.
+    headers['Content-Security-Policy'] = 'sandbox';
+  }
+  return headers;
+}
+
 const MAX_AUDIT_LIMIT = 500;
 
-/** The origin used for session binding is the (allowlisted) Host header. */
+/**
+ * The Host header as a LOOKUP KEY (PLAN-M20 §2.1): the origin a session is
+ * bound to and matched against the allowlist. Client-supplied, so it decides
+ * nothing about the network — TLS and the allowlist do. `X-Forwarded-Host` is
+ * deliberately never read: honouring it would let an unauthenticated proxy
+ * header pick the session origin.
+ */
 function originOf(req: Request): string {
   return String(req.headers.host ?? '').toLowerCase();
+}
+
+/**
+ * M20-B S7: the network peer of a request — the ONLY signal that separates a
+ * local caller from a remote one (`Host` is lookup-key only, §2.1). Returns
+ * `undefined` when the transport exposes none (e.g. a unix socket), which the
+ * pairing routes treat as unclassifiable and refuse.
+ */
+function socketPeerOf(req: Request): string | undefined {
+  const address = req.socket?.remoteAddress;
+  return typeof address === 'string' && address.length > 0 ? address : undefined;
+}
+
+/**
+ * M20-B S7: the https URL a scanning device should use, derived from the
+ * allowlist the operator wrote (`https://<first ALLOWED_HOSTS entry>`). Null
+ * when the allowlist is empty, which the payload route refuses rather than
+ * inventing an address.
+ */
+function defaultPairCoreUrl(hostAllowlist: readonly string[]): string | null {
+  const first = hostAllowlist.find((host) => host.trim().length > 0);
+  return first === undefined ? null : `https://${first.trim().toLowerCase()}`;
+}
+
+/**
+ * M20-B S7: the per-peer rate-limit bucket of a pairing attempt. The peer is
+ * the bucket key; an absent peer cannot be attributed and is refused by the
+ * limiter (`invalid_key`) rather than sharing an anonymous budget.
+ */
+const PAIR_RATE_LIMIT_DEFAULT = { limit: 10, windowMs: 60_000 } as const;
+
+const DEVICE_LABEL_MAX = 64;
+const PLATFORM_MAX = 32;
+
+/** Sentinel for a malformed optional tag — a unique symbol, NOT a magic
+ *  string, so a client cannot send the literal text that means "invalid". */
+const INVALID_TAG = Symbol('invalid_tag');
+
+/** Optional, non-secret device metadata: bounded and control-character free. */
+function readOptionalTag(value: unknown, max: number): string | null | typeof INVALID_TAG {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return INVALID_TAG;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  // eslint-disable-next-line no-control-regex
+  if (trimmed.length > max || /[\u0000-\u001f\u007f]/.test(trimmed)) return INVALID_TAG;
+  return trimmed;
 }
 
 /**
@@ -474,7 +735,7 @@ function pickProvider(options: CoreAppOptions): ProviderClient | undefined {
   return options.demo ? demoProvider() : undefined;
 }
 
-/** Loopback-only Host guard, applied before any routing. */
+/** Host-allowlist guard (a lookup key, not a network control), before routing. */
 function hostGuard(allowlist: ReadonlySet<string>) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!allowlist.has(originOf(req))) {
@@ -502,6 +763,8 @@ function requireSession(sessions: SessionManager) {
       res.status(401).json({ error: 'unauthorized', reason: result.reason });
       return;
     }
+    // res.locals.session carries the validated row — the capability guards
+    // below read its `clientClass`; the request never supplies one.
     res.locals.session = result.session;
     res.locals.token = token;
     next();
@@ -727,14 +990,41 @@ function parseModelPins(raw: unknown): Partial<Record<ProviderPurpose, string[]>
   return pins;
 }
 
-/** Safe audit target for a self-service endpoint: its host, or a constant. */
-function endpointAuditTarget(raw: unknown): string {
-  if (typeof raw !== 'string') return 'self-service';
-  try {
-    return new URL(raw.trim()).host || 'self-service';
-  } catch {
-    return 'self-service';
-  }
+/**
+ * The M1 llm-self-service import (login-key + connect routes) was REMOVED in
+ * M22: Partner is a plain OpenAI-compatible client, and provider setup is a
+ * base URL + key typed by the user. The `llm-self-service` ProviderSource value
+ * stays in the shared enum so rows written by older installs still read, but
+ * nothing creates one.
+ */
+
+/**
+ * M22: the deployment owns the roots, so this surface is read-only. Refused
+ * BEFORE any parameter validation or store write, and audited, because a client
+ * asking to change what the file tools can reach is worth a row even when it is
+ * refused by configuration.
+ */
+function refuseFixedRoots(options: CoreAppOptions, res: Response): boolean {
+  if (options.rootsFixed !== true) return false;
+  options.audit.log('session', 'roots.change_denied', 'roots', { reason: 'roots_fixed' });
+  res.status(403).json({
+    error: 'roots_fixed',
+    message:
+      'Project roots are set by the deployment (FIXED_ROOTS) and cannot be changed from a client',
+  });
+  return true;
+}
+
+/**
+ * M22: LOGIN mode has no pairing ceremony. Answered for every pairing route so
+ * a client cannot tell "no such route" from "wrong mode" and go hunting for
+ * another door.
+ */
+function refusePairingAuth(res: Response): void {
+  res.status(403).json({
+    error: 'pairing_disabled',
+    message: 'This Partner authenticates with a user login (AUTH_MODE=login)',
+  });
 }
 
 function notConfigured(res: Response, what = 'provider manager'): void {
@@ -1160,21 +1450,41 @@ async function decideExternalApproval(
 
 export function createCoreApp(options: CoreAppOptions): express.Express {
   const { pairing, sessions, audit } = options;
-  const allowlist = new Set(
-    (options.hostAllowlist ?? [`127.0.0.1:${options.port}`, `localhost:${options.port}`]).map((h) =>
-      h.toLowerCase(),
-    ),
-  );
+  const hostAllowlist =
+    options.hostAllowlist ?? [`127.0.0.1:${options.port}`, `localhost:${options.port}`];
+  const allowlist = new Set(hostAllowlist.map((h) => h.toLowerCase()));
+
+  // M20-B S7: the networked-pairing lane. `peerOf` is the one signal that
+  // separates a local caller from a remote one; the limiter buckets per peer
+  // (an unattributable peer is refused by the limiter itself, never pooled);
+  // and the secret manager is in-memory by design (a scanned secret is
+  // consumed, an unscanned one dies with the process).
+  const peerOf = options.peerAddress ?? socketPeerOf;
+  const limitKeyOf = (req: Request): string =>
+    String(options.clientIp?.(req) ?? peerOf(req) ?? '');
+  const pairSecrets = options.pairSecrets ?? createPairSecretManager();
+  const pairLimiter: RateLimiter = createRateLimiter({
+    limit: options.pairRateLimit?.limit ?? PAIR_RATE_LIMIT_DEFAULT.limit,
+    windowMs: options.pairRateLimit?.windowMs ?? PAIR_RATE_LIMIT_DEFAULT.windowMs,
+  });
+  const pairCoreUrl = options.pairCoreUrl ?? defaultPairCoreUrl(hostAllowlist);
+
+  // M22: the account lane. `loginMode` short-circuits every pairing route, so a
+  // hosted core cannot be enrolled by proximity even if a code is somehow
+  // minted (e.g. by a stale tray process).
+  const auth = options.auth ?? { mode: 'pairing' as AuthMode };
+  const loginMode = auth.mode === 'login';
+  const loginLimiter: RateLimiter = createRateLimiter({
+    limit: options.loginRateLimit?.limit ?? PAIR_RATE_LIMIT_DEFAULT.limit,
+    windowMs: options.loginRateLimit?.windowMs ?? PAIR_RATE_LIMIT_DEFAULT.windowMs,
+  });
 
   const app = express();
   app.disable('x-powered-by');
 
-  // Demo mode: an in-process S0 double keeps the import fully offline.
-  const demoSelfService = options.demo ? createSelfServiceDemoDouble(options.port) : undefined;
-
   // 1. Loopback guard + JSON body parsing (public routes may not send JSON).
   app.use(hostGuard(allowlist));
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: options.maxJsonBytes ?? 1024 * 1024 }));
 
   // Built SPA (optional at M0): serve static assets and index.html at /.
   const staticDir = options.staticDir;
@@ -1190,6 +1500,12 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       demo: options.demo,
       version: options.version,
       schemaVersion: options.schemaVersion,
+      // M22: the SPA picks its gate from this (a login form vs the pairing
+      // ceremony). Neither value is a secret; `hasUsers` is what lets the form
+      // say "no account exists yet — create one on the server" instead of
+      // failing every attempt with a 401.
+      authMode: auth.mode,
+      ...(loginMode ? { hasUsers: (auth.users?.list().length ?? 0) > 0 } : {}),
     });
   });
 
@@ -1211,7 +1527,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     });
   });
 
-  if (options.demo) {
+  // M22: suppressed in LOGIN mode along with the rest of the pairing lane.
+  if (options.demo && !loginMode) {
     app.get('/v1/dev/pair-code', async (_req: Request, res: Response) => {
       let code = await pairing.devCode();
       if (code === null) {
@@ -1230,7 +1547,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // is single-active with the usual 120s TTL and dies with the process, and
   // no other loopback caller (browser page, local process) can read it
   // without the header secret.
-  if (options.deviceSecret !== undefined && options.deviceSecret !== '') {
+  if (!loginMode && options.deviceSecret !== undefined && options.deviceSecret !== '') {
     const expected = Buffer.from(options.deviceSecret, 'utf8');
     app.get('/v1/pair/device', async (req: Request, res: Response) => {
       const actual = Buffer.from(req.header('x-partner-device') ?? '', 'utf8');
@@ -1244,10 +1561,162 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     });
   }
 
-  // 3. Pairing exchange -> mints a `web` session.
+  // 3a. M20-B S7: issue a NETWORKED pairing payload (QR / link) — LOCAL ONLY.
+  //
+  // M22: refused entirely in LOGIN mode. Pairing proves a DEVICE by proximity;
+  // a hosted core authenticates a USER, and leaving both doors open would let
+  // whoever can reach the port try the weaker one.
+  app.post('/v1/pair/payload', async (req: Request, res: Response) => {
+    if (loginMode) {
+      refusePairingAuth(res);
+      return;
+    }
+    if (!isLoopbackPeer(peerOf(req))) {
+      audit.log('pair', 'pair.payload', 'pair', { ok: false, reason: 'loopback_required' });
+      res.status(403).json({ error: 'loopback_required' });
+      return;
+    }
+    if (options.remoteAccess !== true) {
+      // A secret for another device is meaningless while only loopback can
+      // reach this core, so refuse rather than hand out a dead credential.
+      res.status(409).json({ error: 'remote_access_disabled' });
+      return;
+    }
+    if (options.tlsFingerprint === undefined || pairCoreUrl === null) {
+      res.status(409).json({ error: 'tls_required' });
+      return;
+    }
+    const secret = await pairSecrets.issue();
+    let payload: string;
+    try {
+      payload = buildPairPayload({
+        coreUrl: pairCoreUrl,
+        certFingerprint: options.tlsFingerprint,
+        secret,
+      });
+    } catch {
+      // A caller bug at issue time (the module refuses what it would not
+      // produce). Name it without echoing the secret or the URL.
+      audit.log('pair', 'pair.payload', 'pair', { ok: false, reason: 'invalid_payload' });
+      res.status(500).json({ error: 'pair_payload_failed' });
+      return;
+    }
+    audit.log('pair', 'pair.payload', 'pair', { ok: true, coreUrl: pairCoreUrl });
+    res.json({ payload, coreUrl: pairCoreUrl, certFingerprint: options.tlsFingerprint });
+  });
+
+  // 3b. Pairing exchange -> mints a `web` session.
+  //
+  // Two credential shapes, one route, and the peer they arrived from decides
+  // what they can buy (PLAN-M20-B S7):
+  //  - `{code}` — the 6-digit local ceremony. Refused outright from a
+  //    non-loopback peer, and mints the `desktop` class.
+  //  - `{secret}` — a 256-bit single-use secret issued above, for a device
+  //    that is NOT this machine. Accepted from anywhere, and NEVER mints
+  //    `desktop`: it mints `mobile`. A remote request cannot reach desktop
+  //    authority by any shape of request.
+  // Both paths are per-peer rate-limited BEFORE any verification, and the
+  // bucket is reset on success so a legitimate pairing does not consume it.
   app.post('/v1/pair', async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as { code?: unknown };
+    if (loginMode) {
+      refusePairingAuth(res);
+      return;
+    }
+    const peer = peerOf(req);
+    const budget = pairLimiter.check(limitKeyOf(req));
+    if (!budget.allowed) {
+      audit.log('pair', 'pair.rate_limited', 'pair', { reason: budget.reason });
+      if (budget.reason === 'invalid_clock') {
+        res.status(503).json({ error: 'temporarily_unavailable' });
+        return;
+      }
+      if (budget.reason === 'invalid_key') {
+        // No attributable peer: refuse rather than pool unknown callers.
+        res.status(403).json({ error: 'forbidden_peer' });
+        return;
+      }
+      const retryAfterMs = Math.max(0, Math.ceil(budget.retryAfterMs));
+      res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      res.status(429).json({
+        error: 'too_many_attempts',
+        reason: 'rate_limited',
+        retryAfterMs,
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as {
+      code?: unknown;
+      secret?: unknown;
+      deviceLabel?: unknown;
+      platform?: unknown;
+    };
     const code = typeof body.code === 'string' ? body.code.trim() : '';
+    const secret = typeof body.secret === 'string' ? body.secret : '';
+    if (code.length > 0 && secret.length > 0) {
+      res.status(400).json({ error: 'invalid_pairing_request', reason: 'ambiguous_credential' });
+      return;
+    }
+    if (code.length === 0 && secret.length === 0) {
+      res.status(400).json({ error: 'invalid_pairing_request', reason: 'missing_credential' });
+      return;
+    }
+
+    // Optional, non-secret device metadata for the S5 registry. Validated
+    // before a credential is spent so a malformed body cannot consume one.
+    const deviceLabel = readOptionalTag(body.deviceLabel, DEVICE_LABEL_MAX);
+    if (deviceLabel === INVALID_TAG) {
+      res.status(400).json({ error: 'invalid_pairing_request', reason: 'invalid_device_label' });
+      return;
+    }
+    const platform = readOptionalTag(body.platform, PLATFORM_MAX);
+    if (platform === INVALID_TAG) {
+      res.status(400).json({ error: 'invalid_pairing_request', reason: 'invalid_platform' });
+      return;
+    }
+
+    const origin = originOf(req);
+
+    if (secret.length > 0) {
+      const result = await pairSecrets.verify(secret);
+      if (!result.ok) {
+        audit.log('pair', 'pair.secret.verify', 'web', { ok: false, reason: result.reason });
+        if (result.reason === 'locked') {
+          res.status(429).json({ error: 'too_many_attempts', reason: result.reason });
+          return;
+        }
+        res.status(401).json({ error: 'pairing_failed', reason: result.reason });
+        return;
+      }
+      // NEVER `desktop`, and no user is named: pairing enrolls a DEVICE; the
+      // authentication lane supplies user_id later (§2a).
+      const created = await sessions.create({
+        kind: 'web',
+        origin,
+        clientClass: 'mobile',
+        deviceLabel: deviceLabel ?? null,
+        platform: platform ?? null,
+      });
+      pairLimiter.reset(limitKeyOf(req));
+      audit.log('pair', 'pair.secret.verify', 'web', { ok: true, clientClass: 'mobile' });
+      res.json({
+        token: created.token,
+        kind: 'web',
+        clientClass: 'mobile',
+        expiresAt: created.expiresAt,
+      });
+      return;
+    }
+
+    // The 6-digit code is the LOCAL ceremony: refuse before verifying so a
+    // remote caller can never consume (or lock) the code the user is reading
+    // off their own screen.
+    if (!isLoopbackPeer(peer)) {
+      audit.log('pair', 'pair.verify', 'web', { ok: false, reason: 'loopback_required' });
+      res.status(403).json({ error: 'loopback_required' });
+      return;
+    }
+
     const result = await pairing.verify(code);
 
     if (!result.ok) {
@@ -1260,20 +1729,219 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       return;
     }
 
-    const origin = originOf(req);
-    const created = await sessions.create('web', origin);
-    audit.log('pair', 'pair.verify', 'web', { ok: true, kind: 'web' });
+    // M20-B S3: the class is 'desktop' — reachable only from this machine (the
+    // peer check above), and no user is named here: pairing enrolls a DEVICE,
+    // the authentication lane supplies user_id later (§2a).
+    const created = await sessions.create({
+      kind: 'web',
+      origin,
+      clientClass: 'desktop',
+      deviceLabel: deviceLabel ?? null,
+      platform: platform ?? null,
+    });
+    pairLimiter.reset(limitKeyOf(req));
+    audit.log('pair', 'pair.verify', 'web', { ok: true, kind: 'web', clientClass: 'desktop' });
     // The token crosses exactly this boundary; it is stored hashed and never
     // re-serialized anywhere (logs, audit, SSE).
-    res.json({ token: created.token, kind: 'web', expiresAt: created.expiresAt });
+    res.json({
+      token: created.token,
+      kind: 'web',
+      clientClass: 'desktop',
+      expiresAt: created.expiresAt,
+    });
   });
+
+  // 3c. M22: USER LOGIN — the hosted shape's only way in.
+  //
+  // The credential is proved against the system database (scrypt, per-user
+  // lockout, timing parity for unknown users) and the session it mints carries
+  // the USER, which the pairing ceremony cannot do (§2a: enrollment is not
+  // authentication). Nothing about the password — or the presented username —
+  // enters an audit row or a response: the row is ids and counts only.
+  app.post('/v1/auth/session', async (req: Request, res: Response) => {
+    if (!loginMode || auth.users === undefined || auth.capabilities === undefined) {
+      res.status(403).json({
+        error: 'login_disabled',
+        message: 'This Partner authenticates by pairing (AUTH_MODE is not login)',
+      });
+      return;
+    }
+
+    const peer = peerOf(req);
+    const budget = loginLimiter.check(limitKeyOf(req));
+    if (!budget.allowed) {
+      audit.log('auth', 'auth.signin', 'rate_limited', { ok: false, reason: budget.reason });
+      if (budget.reason === 'invalid_key') {
+        res.status(403).json({ error: 'forbidden_peer' });
+        return;
+      }
+      if (budget.reason === 'invalid_clock') {
+        res.status(503).json({ error: 'temporarily_unavailable' });
+        return;
+      }
+      const retryAfterMs = Math.max(0, Math.ceil(budget.retryAfterMs));
+      res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      res.status(429).json({ error: 'too_many_attempts', reason: 'rate_limited', retryAfterMs });
+      return;
+    }
+
+    // An instance with no account yet cannot authenticate anybody, and every
+    // attempt would look like a wrong password. Say so instead: the fix is an
+    // operator command, not a retry.
+    const all = auth.users.list();
+    if (all.length === 0) {
+      res.status(409).json({
+        error: 'no_account',
+        message:
+          'No account exists yet — create one on the machine running Partner ' +
+          '(docker compose exec partner node tools/user.mjs add <name>)',
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as { username?: unknown; password?: unknown };
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (username === '' || password === '') {
+      res.status(400).json({ error: 'invalid_input', message: 'username and password are required' });
+      return;
+    }
+
+    // Username matching is case-insensitive against the LABEL the operator set
+    // (and the id, so a script can use either). The password is what proves it.
+    const wanted = username.toLowerCase();
+    const user = all.find(
+      (candidate) =>
+        candidate.label.toLowerCase() === wanted || candidate.id.toLowerCase() === wanted,
+    );
+    // Unknown username: still spend the verification work, so "no such user"
+    // and "wrong password" cost the same and cannot be told apart by timing.
+    const targetId = user?.id ?? '';
+    const verified = await auth.capabilities.verify(targetId, password);
+    if (!verified.ok) {
+      audit.log('auth', 'auth.signin', targetId === '' ? 'unknown' : targetId, {
+        ok: false,
+        reason: user === undefined ? 'unknown_user' : verified.reason,
+      });
+      if (verified.ok === false && verified.reason === 'locked') {
+        const retryAfterMs = Math.max(0, verified.lockedUntil - Date.now());
+        res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+        res.status(429).json({ error: 'too_many_attempts', reason: 'locked', retryAfterMs });
+        return;
+      }
+      // One message for "no such user" and "wrong password" — no enumeration.
+      res.status(401).json({ error: 'invalid_credentials' });
+      return;
+    }
+
+    const resolution = auth.users.resolve(targetId);
+    if (!resolution.ok) {
+      audit.log('auth', 'auth.signin', targetId, { ok: false, reason: resolution.reason });
+      res.status(403).json({ error: 'account_disabled' });
+      return;
+    }
+
+    // M20-B S9: sign-in is also the UNLOCK event. The first sign-in after an
+    // upgrade WRAPS the partition key under this passphrase and removes the
+    // plaintext copy, so from then on "signed out" means "cannot be opened".
+    // The key goes into memory for the life of the session.
+    if (auth.vault !== undefined) {
+      await auth.vault.adopt(resolution.user.id, password);
+      const unlocked = await auth.vault.unlock(resolution.user.id, password);
+      if (!unlocked) {
+        // Only reachable if the wrap was written under a different passphrase
+        // (an out-of-band rotation); the credential matched, so say what failed.
+        audit.log('auth', 'auth.unlock', resolution.user.id, { ok: false });
+        res.status(409).json({
+          error: 'unlock_failed',
+          message:
+            'The stored key could not be unwrapped with that passphrase — the ' +
+            'account was rotated outside this core. Re-run tools/user.mjs passwd.',
+        });
+        return;
+      }
+      audit.log('auth', 'auth.unlock', resolution.user.id, { ok: true });
+    }
+
+    const created = await sessions.create({
+      kind: 'web',
+      origin: originOf(req),
+      clientClass: auth.sessionClass ?? 'desktop',
+      userId: resolution.user.id,
+    });
+    loginLimiter.reset(limitKeyOf(req));
+    audit.log('auth', 'auth.signin', resolution.user.id, {
+      ok: true,
+      clientClass: auth.sessionClass ?? 'desktop',
+    });
+    res.json({
+      token: created.token,
+      kind: 'web',
+      clientClass: auth.sessionClass ?? 'desktop',
+      userId: resolution.user.id,
+      expiresAt: created.expiresAt,
+    });
+  });
+
+  // 3d. M22/R1: PER-USER PARTITION DELEGATION.
+  //
+  // Registered AFTER the public surface and the account routes, so /v1/health,
+  // /v1/boot and /v1/auth/session stay this app's business, and BEFORE the authed
+  // router, so no route here ever reads a store belonging to another user. The
+  // session (validated against the SHARED system sessions) names the user; that
+  // user's own app then serves the request — including re-validating the token
+  // itself, which is cheap and keeps the child app a normal core.
+  if (options.delegate !== undefined) {
+    const delegate = options.delegate;
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (!req.path.startsWith('/v1/')) {
+        next();
+        return;
+      }
+      requireSession(sessions)(req, res, () => {
+        const session = res.locals.session as SessionInfo | undefined;
+        if (session === undefined || session.userId === null) {
+          // Login mode always names a user; a session without one has no
+          // partition, and guessing one would be the bug this design prevents.
+          res.status(403).json({ error: 'no_partition', reason: 'session_has_no_user' });
+          return;
+        }
+        void delegate(session.userId).then(
+          (target) => {
+            if (target === 'partition_locked') {
+              // S9: the SESSION is valid but the user's key is not in memory
+              // (signed out, idle-locked, or after a restart). Signing in again
+              // unlocks it; the SPA treats this as "authenticate again".
+              res.status(401).json({ error: 'unauthorized', reason: 'partition_locked' });
+              return;
+            }
+            if (target === undefined) {
+              res.status(503).json({ error: 'partition_unavailable' });
+              return;
+            }
+            target(req, res, next);
+          },
+          () => res.status(503).json({ error: 'partition_unavailable' }),
+        );
+      });
+    });
+  }
 
   // 4. Authed group (Bearer token + origin binding). Auth is applied per
   // route so unmatched public paths fall through to the 404 handler instead
   // of being swallowed by a router-level auth middleware.
   const api = express.Router();
 
-  api.post('/v1/chat', requireSession(sessions), async (req: Request, res: Response) => {
+  /**
+   * Per-route capability guard (M20-B S4): the client-class envelope of the
+   * session that paid the token, mounted AFTER requireSession (which is what
+   * puts the session — and its class — on res.locals) and BEFORE the broker or
+   * any handler, so a refused call touches no store. The capability names come
+   * from `capabilities.ts`; the class NEVER comes from the request.
+   */
+  const capability = (cap: Capability) => requireCapability(cap, { audit });
+
+  api.post('/v1/chat', requireSession(sessions), capability('chat'), async (req: Request, res: Response) => {
     const session = res.locals.session as SessionInfo;
     const body = (req.body ?? {}) as {
       messages?: unknown;
@@ -1456,12 +2124,6 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       taskClass: taskClassRaw ?? 'chat',
     });
     let managedProvider: ProviderSummary | null = resolved.provider;
-    // Demo-mode guard: a provider imported through the built-in demo double is
-    // an OFFLINE artifact (its endpoint is this core itself), so keep the demo
-    // provider as the chat backend — demo stays usable with no network.
-    if (options.demo && managedProvider?.source === 'llm-self-service') {
-      managedProvider = null;
-    }
 
     // Persistence helpers — best effort ONLY. A failure is logged (redacted)
     // and the stream continues: persistence must never break a chat turn.
@@ -1966,6 +2628,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               external: externalTools,
               audit,
               conversationId: activeConversationId,
+              // M20-B S4: the persona's tool calls inherit the SESSION's class.
+              // Without this the loop reached the broker class-less, which
+              // defaulted to the desktop envelope and let a mobile turn execute
+              // a granted write.
+              clientClass: (res.locals.session as SessionInfo).clientClass,
               appendSystemNote,
             });
             // M11 F2 native function calls (same gate/broker, same notes).
@@ -1977,6 +2644,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 external: externalTools,
                 audit,
                 conversationId: activeConversationId,
+                clientClass: (res.locals.session as SessionInfo).clientClass,
                 appendSystemNote,
               });
             }
@@ -2311,7 +2979,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.post('/v1/providers/:id/key', requireSession(sessions), async (req: Request, res: Response) => {
+  api.post(
+    '/v1/providers/:id/key',
+    requireSession(sessions),
+    capability('provider.configure'),
+    async (req: Request, res: Response) => {
     const manager = requireProviderManager(options, res);
     if (!manager) return;
     const id = String(req.params.id ?? '');
@@ -2383,63 +3055,6 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     } catch (err) {
       if (err instanceof UpstreamError) {
         res.status(502).json({ error: 'upstream', message: err.message });
-        return;
-      }
-      throw err;
-    }
-  });
-
-  // llm-self-service integrated import (S0 contract, proxied for the web UI).
-  api.post('/v1/self-service/login-key', requireSession(sessions), async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as { endpoint?: unknown };
-    try {
-      const { publicKeyPem } = await fetchSelfServiceLoginKey(body.endpoint, {
-        demo: options.demo,
-        demoDouble: demoSelfService,
-      });
-      audit.log('self-service', 'self_service.login_key', endpointAuditTarget(body.endpoint), { ok: true });
-      res.json({ publicKeyPem });
-    } catch (err) {
-      if (err instanceof SelfServiceError) {
-        audit.log('self-service', 'self_service.login_key', endpointAuditTarget(body.endpoint), {
-          ok: false,
-          reason: err.kind,
-        });
-        res.status(err.httpStatus).json({ error: err.kind, message: err.message });
-        return;
-      }
-      throw err;
-    }
-  });
-
-  api.post('/v1/self-service/connect', requireSession(sessions), async (req: Request, res: Response) => {
-    const manager = requireProviderManager(options, res);
-    if (!manager) return;
-    const raw = (req.body ?? {}) as Record<string, unknown>;
-    // Envelope only: a plaintext password field is rejected outright (PLAN-M1).
-    if (raw.password !== undefined && raw.password !== null && raw.password !== '') {
-      audit.log('self-service', 'self_service.connect', 'rejected', { ok: false, reason: 'plaintext_password' });
-      res.status(400).json({
-        error: 'plaintext_password_rejected',
-        message: 'password must be sent encrypted (passwordCipher)',
-      });
-      return;
-    }
-    try {
-      const summary = await connectSelfService(manager, raw as unknown as SelfServiceConnectInput, {
-        demo: options.demo,
-        demoDouble: demoSelfService,
-      });
-      audit.log('self-service', 'self_service.connect', summary.id, {
-        ok: true,
-        source: summary.source,
-        providerId: summary.id,
-      });
-      res.status(201).json(summary);
-    } catch (err) {
-      if (err instanceof SelfServiceError) {
-        audit.log('self-service', 'self_service.connect', 'connect', { ok: false, reason: err.kind });
-        res.status(err.httpStatus).json({ error: err.kind, message: err.message });
         return;
       }
       throw err;
@@ -2819,9 +3434,13 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         res.status(404).json({ error: 'not_found', message: 'attachment content not found' });
         return;
       }
-      res.setHeader('Content-Type', content.mime);
-      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(content.name)}`);
-      res.setHeader('X-Content-Type-Options', 'nosniff');
+      // Policy lives in one exported place (PLAN-M20.md §8.1.1): executable
+      // document types never render on the SPA's origin.
+      for (const [header, value] of Object.entries(
+        attachmentContentHeaders(content.mime, content.name),
+      )) {
+        res.setHeader(header, value);
+      }
       res.send(content.data);
     },
   );
@@ -3015,7 +3634,18 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ servers: mcp.list() });
   });
 
-  api.post('/v1/mcp/servers', requireSession(sessions), (req: Request, res: Response) => {
+  // M20-B S4 (blocker fix): registering or EDITING an MCP server takes an
+  // arbitrary `command`/`args` and an `enabled` toggle, and an enabled server is
+  // SPAWNED as a child process with the user's privileges (mcp/client.ts).
+  // Ungated, that made the envelope's `mcp.call` guard meaningless: any class
+  // could register + enable a command and then invoke it. Configuring is at
+  // least as powerful as calling, so it clears the same bar. (If a future class
+  // may call but not configure, split a `mcp.configure` capability here.)
+  api.post(
+    '/v1/mcp/servers',
+    requireSession(sessions),
+    capability('mcp.call'),
+    (req: Request, res: Response) => {
     const mcp = requireMcp(options, res);
     if (!mcp) return;
     try {
@@ -3027,7 +3657,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.put('/v1/mcp/servers/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.put(
+    '/v1/mcp/servers/:id',
+    requireSession(sessions),
+    capability('mcp.call'),
+    (req: Request, res: Response) => {
     const mcp = requireMcp(options, res);
     if (!mcp) return;
     const id = String(req.params.id ?? '');
@@ -3040,7 +3674,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.delete('/v1/mcp/servers/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.delete(
+    '/v1/mcp/servers/:id',
+    requireSession(sessions),
+    capability('mcp.call'),
+    (req: Request, res: Response) => {
     const mcp = requireMcp(options, res);
     if (!mcp) return;
     const id = String(req.params.id ?? '');
@@ -3066,7 +3704,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       });
   });
 
-  api.post('/v1/mcp/servers/:id/call', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/mcp/servers/:id/call', requireSession(sessions), capability('mcp.call'), (req: Request, res: Response) => {
     const mcp = requireMcp(options, res);
     if (!mcp) return;
     const id = String(req.params.id ?? '');
@@ -3109,7 +3747,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.put('/v1/search/key', requireSession(sessions), (req: Request, res: Response) => {
+  api.put(
+    '/v1/search/key',
+    requireSession(sessions),
+    capability('provider.configure'),
+    (req: Request, res: Response) => {
     const search = requireSearch(options, res);
     if (!search) return;
     const body = (req.body ?? {}) as { key?: unknown };
@@ -3904,7 +4546,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // skipped. The client turns a pick into a partner-file:// link.
   // -----------------------------------------------------------------------
 
-  api.get('/v1/files/browse', requireSession(sessions), (req: Request, res: Response) => {
+  api.get('/v1/files/browse', requireSession(sessions), capability('file.read'), (req: Request, res: Response) => {
     const queryPath = typeof req.query.path === 'string' ? req.query.path : '';
     const actor = actorOf(res.locals.session as SessionInfo);
     try {
@@ -3931,7 +4573,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.get('/v1/files/refs', requireSession(sessions), (req: Request, res: Response) => {
+  api.get('/v1/files/refs', requireSession(sessions), capability('file.read'), (req: Request, res: Response) => {
     const broker = options.broker;
     if (!broker) {
       notConfigured(res, 'tool broker');
@@ -3995,12 +4637,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/roots', requireSession(sessions), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
-    res.json({ roots: broker.roots.list() });
+    // M22: `rootsFixed` lets the UI render the list read-only instead of
+    // offering buttons that the next two routes will refuse.
+    res.json({ roots: broker.roots.list(), rootsFixed: options.rootsFixed === true });
   });
 
-  api.post('/v1/roots', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/roots', requireSession(sessions), capability('roots'), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
+    if (refuseFixedRoots(options, res)) return;
     const actor = actorOf(res.locals.session as SessionInfo);
     try {
       const root = broker.roots.add((req.body ?? {}) as ProjectRootInput);
@@ -4012,9 +4657,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.delete('/v1/roots/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.delete('/v1/roots/:id', requireSession(sessions), capability('roots'), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
+    if (refuseFixedRoots(options, res)) return;
     const actor = actorOf(res.locals.session as SessionInfo);
     const id = String(req.params.id ?? '');
     try {
@@ -4033,7 +4679,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ grants: broker.grants.list() });
   });
 
-  api.post('/v1/grants', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/grants', requireSession(sessions), capability('grants'), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
     const actor = actorOf(res.locals.session as SessionInfo);
@@ -4058,7 +4704,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.status(201).json(grant);
   });
 
-  api.delete('/v1/grants/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.delete('/v1/grants/:id', requireSession(sessions), capability('grants'), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
     const actor = actorOf(res.locals.session as SessionInfo);
@@ -4103,6 +4749,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
     const response = broker.exec(tool, body.params, {
       requestedBy: session.kind === 'persona' || session.kind === 'skill' ? session.kind : 'web',
+      // The broker checks the envelope against this BEFORE the grant check.
+      clientClass: session.clientClass,
     });
     respondExec(res, response);
   });
@@ -4137,6 +4785,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.post(
     '/v1/personas/:id/schedules/:scheduleId/run-now',
     requireSession(sessions),
+    capability('persona.run'),
     async (req: Request, res: Response) => {
       const schedules = requireSchedules(options, res);
       if (!schedules) return;
@@ -4222,6 +4871,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
               ...(note !== undefined ? { note } : {}),
             },
             actor,
+            // M20-B S4 (blocker fix): the APPROVER's class decides whether the
+            // stored tool may run, because approving EXECUTES it. Without this a
+            // mobile session could approve a write someone else queued and have
+            // it run — the envelope bypassed through the approval queue.
+            (res.locals.session as SessionInfo).clientClass,
           );
       // M14: a decided persona-requested row may belong to a queued SCHEDULE
       // run — resume it headlessly in-process (approve executes the tool
@@ -4247,7 +4901,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json(view);
   });
 
-  api.post('/v1/proposals/:id/apply', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/proposals/:id/apply', requireSession(sessions), capability('file.write'), (req: Request, res: Response) => {
     const broker = requireBroker(options, res);
     if (!broker) return;
     const session = res.locals.session as SessionInfo;
@@ -4262,6 +4916,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // exists (the broker decides); this route just forwards the wire params.
     const response = broker.exec('files.apply', { projectId, proposalId }, {
       requestedBy: session.kind === 'persona' || session.kind === 'skill' ? session.kind : 'web',
+      clientClass: session.clientClass,
     });
     respondExec(res, response);
   });
@@ -4290,6 +4945,127 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.status(204).end();
   });
 
+  // M20-B S3: rotate the presented session's token IN PLACE (the mitigation for
+  // the 30-day localStorage bearer named in PLAN-M20 §8.1 item 3). The device
+  // row survives — same id, same user/class/label — while the token that was
+  // presented stops resolving, so a copied token dies at the next request.
+  // The new token crosses this response boundary only, exactly like /v1/pair;
+  // the audit row carries the session id and class, never token material.
+  api.post('/v1/session/rotate', requireSession(sessions), async (_req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const rotated = await sessions.rotate(res.locals.token as string);
+    if (rotated === null) {
+      // The row vanished between auth and rotation (revoked concurrently).
+      res.status(401).json({ error: 'unauthorized', reason: 'not_found' });
+      return;
+    }
+    audit.log('session', 'session.rotate', 'web', {
+      sessionId: session.id,
+      clientClass: session.clientClass,
+    });
+    res.json({
+      token: rotated.token,
+      expiresAt: rotated.expiresAt,
+      kind: session.kind,
+      clientClass: session.clientClass,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // M20-B S5 — the device registry: SEE and REVOKE the sessions paired to this
+  // core. This is the user-visible half of "the 30-day bearer is the weakest
+  // link" (PLAN-M20 §8.1 item 3): rotation limits how long a leaked token
+  // lives, and these routes are how its owner notices one and kills it.
+  //
+  // Scope, and the ONE transitional rule: a caller sees its OWN user's
+  // devices. `session.userId === null` is the pre-auth case — the sign-in
+  // route does not exist yet, so every session in the field has user_id NULL
+  // and a user-scoped read would list NOTHING on every install that exists
+  // today. On an install with no users at all the single-user core IS the
+  // whole core, so the list is every device. That branch lives in
+  // `SessionManager.listDevices`/`revokeDeviceById` (one place, commented
+  // there) and the authentication lane deletes it; a session that NAMES a user
+  // is answered from that user's rows only and never falls back to the whole
+  // table.
+  //
+  // Bodies carry id/clientClass/deviceLabel/platform/createdAt/lastSeenAt/
+  // revokedAt and nothing else — never a token hash (the manager projects the
+  // row through `DeviceRecord`, which has no such field, so a hash cannot leak
+  // by adding one here) and never another user's row.
+  //
+  // No `capability(...)` guard on this group, deliberately: device lifecycle
+  // is the session's own credential, not a class-gated authority. A new
+  // capability would be DENIED for mobile/extension by construction (S4 fails
+  // closed on an unknown name), which would leave a phone unable to list or
+  // sign out its own device — the exact device a stolen token most likely sits
+  // on.
+  // -------------------------------------------------------------------------
+
+  api.get('/v1/devices', requireSession(sessions), async (_req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    res.json({ devices: await sessions.listDevices(session.userId) });
+  });
+
+  // Revoke ONE device. Idempotent: re-revoking an already-revoked (or
+  // concurrently revoked) row answers 200 with `alreadyRevoked: true` and
+  // writes no second audit row. An id that is not in the caller's own
+  // registry — another user's device, or no row at all — is a single 404 with
+  // ONE message for both cases: 403 would confirm the row exists, and two
+  // distinct messages would leak the same fact by another route.
+  api.post(
+    '/v1/devices/:id/revoke',
+    requireSession(sessions),
+    async (req: Request, res: Response) => {
+      const session = res.locals.session as SessionInfo;
+      const raw = String(req.params.id ?? '');
+      const id = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN;
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        // No device id can have this shape, so it cannot exist either.
+        res.status(404).json({ error: 'not_found', message: 'device not found' });
+        return;
+      }
+      const result = await sessions.revokeDeviceById(id, session.userId);
+      if (result === null) {
+        res.status(404).json({ error: 'not_found', message: 'device not found' });
+        return;
+      }
+      if (!result.alreadyRevoked) {
+        // Only a real state change is audited; ids only, never token material.
+        audit.log('session', 'session.revoke', 'device', { sessionId: id });
+      }
+      res.json({ id, revoked: true, alreadyRevoked: result.alreadyRevoked });
+    },
+  );
+
+  // Revoke EVERY device of the caller. DECISION: this INCLUDES the calling
+  // session. It is the panic button for a leaked bearer, so leaving the one
+  // session the caller is holding alive would leave a hole the user cannot
+  // close from the UI — and `revokeAllForUser` is exactly "every live session
+  // of this user", so an exclusion would be a second, subtly different rule.
+  // The response therefore STATES the consequence instead of implying it:
+  // `currentSessionRevoked: true` tells the client to show "pair again"
+  // rather than let the user discover it on their next request (which will be
+  // a 401 `reason: 'revoked'`). A later "sign out my other devices" is a
+  // separate route with an explicit exclude id — never a silent change here.
+  api.post(
+    '/v1/devices/revoke-all',
+    requireSession(sessions),
+    async (_req: Request, res: Response) => {
+      const session = res.locals.session as SessionInfo;
+      const result = await sessions.revokeAllDevices(session.userId, session.id);
+      // Counts and ids only — no device labels, no token material.
+      audit.log('session', 'session.revoke_all', 'device', {
+        count: result.revoked,
+        sessionId: session.id,
+        currentSessionRevoked: result.currentSessionRevoked,
+      });
+      res.json({
+        revoked: result.revoked,
+        currentSessionRevoked: result.currentSessionRevoked,
+      });
+    },
+  );
+
   // -------------------------------------------------------------------------
   // M7 browser site-scope surface (PLAN-M7 wire spec). Per-origin consent
   // for browser capture/action: list/put/delete configured scopes and read
@@ -4305,7 +5081,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ scopes: scopes.list() });
   });
 
-  api.put('/v1/browser/scopes/:origin', requireSession(sessions), (req: Request, res: Response) => {
+  api.put('/v1/browser/scopes/:origin', requireSession(sessions), capability('browser'), (req: Request, res: Response) => {
     const scopes = requireScopes(options, res);
     if (!scopes) return;
     const origin = String(req.params.origin ?? '');
@@ -4319,7 +5095,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.delete('/v1/browser/scopes/:origin', requireSession(sessions), (req: Request, res: Response) => {
+  api.delete('/v1/browser/scopes/:origin', requireSession(sessions), capability('browser'), (req: Request, res: Response) => {
     const scopes = requireScopes(options, res);
     if (!scopes) return;
     const origin = String(req.params.origin ?? '');
@@ -4367,7 +5143,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ skills: skills.list() });
   });
 
-  api.post('/v1/skills/install', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/skills/install', requireSession(sessions), capability('skill.install'), (req: Request, res: Response) => {
     const skills = requireSkills(options, res);
     if (!skills) return;
     const body = (req.body ?? {}) as { catalogId?: unknown };
@@ -4408,7 +5184,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ invocations: skills.listInvocations(id) });
   });
 
-  api.post('/v1/skills/:id/disable', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/skills/:id/disable', requireSession(sessions), capability('skill.install'), (req: Request, res: Response) => {
     const skills = requireSkills(options, res);
     if (!skills) return;
     const id = String(req.params.id ?? '');
@@ -4420,7 +5196,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.post('/v1/skills/:id/enable', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/skills/:id/enable', requireSession(sessions), capability('skill.install'), (req: Request, res: Response) => {
     const skills = requireSkills(options, res);
     if (!skills) return;
     const id = String(req.params.id ?? '');
@@ -4432,7 +5208,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.delete('/v1/skills/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.delete('/v1/skills/:id', requireSession(sessions), capability('skill.install'), (req: Request, res: Response) => {
     const skills = requireSkills(options, res);
     if (!skills) return;
     const id = String(req.params.id ?? '');
@@ -4445,7 +5221,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.status(204).end();
   });
 
-  api.post('/v1/skills/:id/invoke', requireSession(sessions), async (req: Request, res: Response) => {
+  api.post('/v1/skills/:id/invoke', requireSession(sessions), capability('skill.invoke'), async (req: Request, res: Response) => {
     const skills = requireSkills(options, res);
     if (!skills) return;
     const runner = requireSkillRunner(options, res);
@@ -4507,7 +5283,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ playbooks: playbooks.listPlaybooks() });
   });
 
-  api.post('/v1/playbooks/:id/run', requireSession(sessions), async (req: Request, res: Response) => {
+  api.post(
+    '/v1/playbooks/:id/run',
+    requireSession(sessions),
+    capability('persona.run'),
+    async (req: Request, res: Response) => {
     const playbooks = requirePlaybooks(options, res);
     if (!playbooks) return;
     const id = String(req.params.id ?? '');
@@ -4537,6 +5317,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         ...(personaId !== undefined ? { personaId } : {}),
         ...(conversationId !== undefined ? { conversationId } : {}),
         inputs,
+        // M20-B S4: a playbook started from a request inherits that session's
+        // client class, so a mobile session cannot start a run whose tool calls
+        // then execute under the desktop envelope.
+        clientClass: (res.locals.session as SessionInfo).clientClass,
       });
     } catch (err) {
       if (sendPlaybookError(res, err)) return;
@@ -4604,7 +5388,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     res.json({ profiles: profiles.list() });
   });
 
-  api.post('/v1/deploy-profiles', requireSession(sessions), (req: Request, res: Response) => {
+  api.post('/v1/deploy-profiles', requireSession(sessions), capability('deploy'), (req: Request, res: Response) => {
     const profiles = requireDeployProfiles(options, res);
     if (!profiles) return;
     try {
@@ -4616,7 +5400,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
-  api.delete('/v1/deploy-profiles/:id', requireSession(sessions), (req: Request, res: Response) => {
+  api.delete('/v1/deploy-profiles/:id', requireSession(sessions), capability('deploy'), (req: Request, res: Response) => {
     const profiles = requireDeployProfiles(options, res);
     if (!profiles) return;
     const id = String(req.params.id ?? '');
@@ -4632,6 +5416,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.post(
     '/v1/deploy-profiles/:id/package',
     requireSession(sessions),
+    capability('deploy'),
     (req: Request, res: Response) => {
       const profiles = requireDeployProfiles(options, res);
       if (!profiles) return;

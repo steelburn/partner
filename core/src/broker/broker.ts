@@ -3,9 +3,11 @@
  *
  * Default-deny resolution for every exec:
  *   1. manifest registry lookup      -> denied `unknown_tool`
- *   2. envelope + per-tool params    -> denied `bad_params`
- *   3. project root exists           -> denied `unknown_project`
- *   4. explicit user grant present   -> execute
+ *   2. client-class capability       -> denied `capability_denied`
+ *      (M20-B S4; BEFORE the grant check on purpose)
+ *   3. envelope + per-tool params    -> denied `bad_params`
+ *   4. project root exists           -> denied `unknown_project`
+ *   5. explicit user grant present   -> execute
  *      no grant (ANY risk)           -> enqueue + needs_approval (the UI can
  *                                       grant via decide(remember:true))
  *
@@ -26,6 +28,8 @@ import type {
 } from '@partner/shared/tools.js';
 import type { ProjectRoot } from '@partner/shared/tools.js';
 import { FILE_TOOL_MANIFESTS } from './toolManifests.js';
+import { capabilityDenial } from '../http/capabilities.js';
+import type { Capability } from '../http/capabilities.js';
 import { toolError, ToolError } from './errors.js';
 import type { GrantManager } from './grants.js';
 import type { PendingManager } from './pending.js';
@@ -50,6 +54,15 @@ export interface ToolBrokerOptions {
 
 export interface ExecContext {
   requestedBy: ToolRequestedBy;
+  /**
+   * The acting session's client class (M20-B S4) — read from the SESSION ROW by
+   * the route, never from a request field.
+   *
+   * Absent means "an internal caller with no client session" (the persona/skill
+   * tool loops, the file-ref read back into a chat turn), which keeps the
+   * desktop envelope so those pre-existing paths are unchanged.
+   */
+  clientClass?: string;
 }
 
 export interface DecideResult {
@@ -75,7 +88,7 @@ export interface ToolBroker {
   /** Close a pending call. An APPROVAL executes the tool ONCE (with the
    *  stored params); approve+remember additionally persists a grant for
    *  future direct execs. */
-  decide(pendingId: string, input: ToolDecisionInput, by: string): DecideResult;
+  decide(pendingId: string, input: ToolDecisionInput, by: string, clientClass?: string): DecideResult;
   /** Proposal read surface for the web (diff payload). */
   getProposal(id: string): ProposalView | null;
   /** Discard a proposal; throws ToolError when missing/already applied. */
@@ -151,6 +164,59 @@ function sanitizeForAudit(value: unknown, key: string): unknown {
   return value;
 }
 
+/**
+ * Broker tool -> capability (M20-B S4). The manifest type is frozen in shared/, so
+ * the two vocabularies are joined here, next to the gate that consumes them.
+ *
+ * A manifest with NO entry resolves to '' — an unknown capability, which
+ * `capabilityDenial` REFUSES for a session-class call rather than assuming
+ * read-only. Widening the registry therefore fails closed until this table says
+ * otherwise (the same rule the capability table documents for its own entries).
+ */
+/**
+ * The capability an APPROVAL of `toolId` requires, or `''` when the vocabulary
+ * has no name for it.
+ *
+ * Scoped by source for the same reason the tool pass is: `capabilityForTool`
+ * maps broker tools only, and an unmapped id yields `''` which `capabilityDenial`
+ * refuses for EVERY class — so applying it unconditionally would stop desktop
+ * approving an MCP or search row. MCP's dynamic ids are prefixed `mcp:`, and an
+ * enabled MCP server spawns a process, so approving one clears `mcp.call`.
+ * Static externals such as web search stay on their existing consent (enabled
+ * backend + the user's approval).
+ */
+function approvalCapability(toolId: string): string {
+  const mapped = capabilityForTool(toolId);
+  if (mapped !== '') return mapped;
+  return toolId.startsWith('mcp:') ? 'mcp.call' : '';
+}
+
+const TOOL_CAPABILITIES: Readonly<Record<string, Capability>> = {
+  'files.list': 'file.read',
+  'files.read': 'file.read',
+  'files.search': 'file.read',
+  'files.edit': 'file.write',
+  'files.apply': 'file.write',
+  'files.delete': 'file.write',
+};
+
+/**
+ * The capability a broker tool requires, or `''` for an unmapped one.
+ *
+ * Exported so callers that can reach the broker WITHOUT going through
+ * `broker.exec` — the persona/skill/playbook tool loops, which decide
+ * execute-vs-enqueue themselves and may call `pending.enqueue` directly — can
+ * apply the same envelope before they queue anything. `broker.exec` still
+ * checks independently: two gates on one decision is the point, because the
+ * loops were the way a mobile session reached a desktop write.
+ *
+ * `''` is deliberately NOT a capability: `capabilityDenial` refuses an unknown
+ * capability, so an unmapped tool fails closed for every class.
+ */
+export function capabilityForTool(toolId: string): Capability | '' {
+  return TOOL_CAPABILITIES[toolId] ?? '';
+}
+
 export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
   const { roots, grants, pending, proposals, tools, audit } = options;
   const manifests = options.manifests ?? FILE_TOOL_MANIFESTS;
@@ -171,6 +237,22 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
         ms: now() - started,
       });
       return { outcome: 'denied', reason: 'unknown_tool' };
+    }
+
+    // M20-B S4: the client-class envelope sits ABOVE the per-tool grant. The
+    // ORDER is the control — an already-GRANTED mobile session must still be
+    // refused, or its grant for files.edit would walk the phone straight into a
+    // write. Checked before params/root so a class that may not ask for the
+    // capability learns nothing about the project either.
+    const capability = TOOL_CAPABILITIES[tool] ?? '';
+    const denial = capabilityDenial(ctx.clientClass ?? 'desktop', capability);
+    if (denial !== null) {
+      // Class + capability ONLY: the requested params never reach this row.
+      audit.log('tool', 'capability.denied', tool, {
+        clientClass: denial.clientClass,
+        capability: denial.capability,
+      });
+      return { outcome: 'denied', reason: denial.reason };
     }
 
     // Envelope + per-tool shape validation (typed bad_params before any grant
@@ -273,7 +355,12 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
     return typeof params.projectId === 'string' ? params.projectId : '';
   }
 
-  function decide(pendingId: string, input: ToolDecisionInput, by: string): DecideResult {
+  function decide(
+    pendingId: string,
+    input: ToolDecisionInput,
+    by: string,
+    clientClass?: string,
+  ): DecideResult {
     const approved = input.decision === 'approve';
     const pre = pending.get(pendingId);
     if (!pre) throw toolError('not_found', 'pending call not found');
@@ -284,6 +371,37 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
     let result: AnyParams | undefined;
 
     if (approved) {
+      // M20-B S4 (blocker fix): approving EXECUTES the stored tool, so the
+      // APPROVER's class must clear the same envelope the tool requires. The
+      // verified gap: `decide` took only an actor LABEL, so a mobile session
+      // could approve a queued write and have it run — the envelope was bypassed
+      // through the approval queue, which is reachable without holding a grant.
+      const needed = approvalCapability(pre.toolId);
+      if (needed !== '') {
+        const denied = capabilityDenial(clientClass ?? 'desktop', needed);
+        if (denied !== null) {
+          audit.log('tool', 'capability.denied', pre.toolId, {
+            clientClass: denied.clientClass,
+            capability: denied.capability,
+          });
+          throw toolError('capability_denied', 'this device may not approve that tool');
+        }
+      }
+      // Approve-and-remember CREATES A GRANT, so it also needs the grant
+      // authority — a device that may not grant must not acquire one this way.
+      if (input.remember === true) {
+        const grantDenied = capabilityDenial(clientClass ?? 'desktop', 'grants');
+        if (grantDenied !== null) {
+          audit.log('tool', 'capability.denied', pre.toolId, {
+            clientClass: grantDenied.clientClass,
+            capability: grantDenied.capability,
+          });
+          throw toolError(
+            'capability_denied',
+            'this device may not approve-and-remember (that creates a grant)',
+          );
+        }
+      }
       // Execute ONCE with the stored params BEFORE closing the row. A grant
       // is only persisted when the execution actually succeeds (review fix:
       // never grant on a failed approval).

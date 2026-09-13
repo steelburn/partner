@@ -1,0 +1,102 @@
+# Partner — LIVE server + Cloudflare Tunnel (M21)
+#
+#   docker compose up -d --build        # build + start (see README for first run)
+#   docker compose exec partner node tools/user.mjs add <name>   # create the account
+#   docker compose exec partner node tools/user.mjs list
+#
+# TWO containers, TWO network namespaces, deliberately:
+#   partner      — the core + built SPA, listening on HTTPS inside the network.
+#                  No published port: the tunnel is the only ingress.
+#   cloudflared  — an outbound-only tunnel to Cloudflare's edge.
+#
+# WHY THE TUNNEL IS NOT IN THE CORE'S NETWORK NAMESPACE: the pairing routes use
+# the SOCKET PEER to decide what a request may do (M20-B S7 — `{code}` is
+# loopback-only and the payload issuer is loopback-only). A tunnel container
+# sharing the core's namespace would dial 127.0.0.1, so EVERY internet request
+# would look local: an anonymous visitor could mint a pairing secret and trade it
+# for a session. Keeping the namespaces separate means the internet arrives as a
+# bridge address, the local-only routes stay refused, and pairing happens through
+# `compose exec` (shell access = proof of being at the machine).
+name: partner
+
+services:
+  partner:
+    build:
+      context: .
+    image: partner-server:local
+    container_name: partner
+    restart: unless-stopped
+    environment:
+      # Fail fast when the public hostname is unset: the core would refuse to
+      # boot anyway (remote mode requires a named allowlist), but a restart loop
+      # hides that error. The allowlist is exactly this hostname — the bare name,
+      # no port, because that is what Cloudflare sends and what the pairing
+      # payload's `coreUrl` must be.
+      PARTNER_HOST: ${PARTNER_HOST:?set PARTNER_HOST in .env — the public hostname}
+      ALLOWED_HOSTS: ${PARTNER_HOST:?set PARTNER_HOST in .env — the public hostname}
+      # M22: user login (the hosted shape), and the deployment-owned files root.
+      AUTH_MODE: ${AUTH_MODE:-login}
+      FIXED_ROOTS: ${FIXED_ROOTS:-/files}
+      # Optional tuning, forwarded only when set (an empty value is treated as
+      # unset by loadConfig, so the core's own defaults apply).
+      SCHEDULER_TZ: ${SCHEDULER_TZ:-}
+      SCHEDULER_TICK_MS: ${SCHEDULER_TICK_MS:-}
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-}
+      LOGIN_SESSION_CLASS: ${LOGIN_SESSION_CLASS:-}
+      LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-}
+      PARTITION_MAX_OPEN: ${PARTITION_MAX_OPEN:-}
+      PARTITION_IDLE_MS: ${PARTITION_IDLE_MS:-}
+      FIXED_ROOTS_READ_ONLY: ${FIXED_ROOTS_READ_ONLY:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-}
+      MAX_JSON_BYTES: ${MAX_JSON_BYTES:-}
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      LOGIN_RATE_WINDOW_MS: ${LOGIN_RATE_WINDOW_MS:-}
+      TZ: ${SCHEDULER_TZ:-}
+    # NO `env_file:` on purpose: `.env` is read by COMPOSE for interpolation, so
+    # the core container never receives TUNNEL_TOKEN (it has no use for it).
+    volumes:
+      # The encrypted DB, its cipher key and installed skills. Losing this volume
+      # loses the account; back it up (see README).
+      - partner-data:/data
+      # M22: the ONLY place the file tools can reach. The deployment owns it
+      # (`FIXED_ROOTS`), so a client cannot add or remove roots — mount your
+      # own host directory here (e.g. `- /srv/partner-files:/files`) to swap this
+      # named volume for real files.
+      - partner-files:/files
+      # origin.crt/origin.key — the certificate the core serves. Read-only here.
+      - ./secrets:/certs:ro
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - partner
+    # NO `ports:`. Publishing 4390 would (a) expose the whole API without the
+    # tunnel and (b) make every request non-loopback, so pairing through the
+    # tunnel could never work.
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: partner-tunnel
+    restart: unless-stopped
+    depends_on:
+      partner:
+        # The tunnel only starts once the core answers its healthcheck, so the
+        # edge never serves a half-booted app.
+        condition: service_healthy
+    environment:
+      # Read from the environment rather than passed as `--token`, so the token
+      # does not appear in the process arguments.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env — Cloudflare dashboard → Networks → Tunnels}
+    command: tunnel --no-autoupdate run
+    networks:
+      - partner
+
+volumes:
+  partner-data:
+  partner-files:
+
+networks:
+  partner:
+    driver: bridge

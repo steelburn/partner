@@ -4,6 +4,7 @@ import { createAttachmentStore, createChatBlobStore } from '../../src/stores/db.
 import { createAttachmentManager } from '../../src/attachments/index.js';
 import { auditLog } from '../../src/services/redaction.js';
 import { createAuditStore } from '../../src/stores/db.js';
+import { loadConfig } from '../../src/config.js';
 
 function b64(text: string): string {
   return Buffer.from(text, 'utf8').toString('base64');
@@ -87,5 +88,37 @@ describe('M11 F1 attachment manager', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('R7 — the per-attachment cap is a deployment knob', () => {
+  it('enforces a tightened maxBytes and names the configured limit', () => {
+    const db = openDatabase(':memory:');
+    try {
+      const audit = auditLog({ store: createAuditStore(db) });
+      const manager = createAttachmentManager({
+        blobs: createChatBlobStore(db),
+        attachments: createAttachmentStore(db),
+        audit,
+        maxBytes: 64, // 0 MB in the message, but the enforcement is what matters
+      });
+      expect(() =>
+        manager.upload('c-1', { name: 'big.txt', mime: 'text/plain', dataBase64: b64('x'.repeat(200)) }),
+      ).toThrow(/capped at 0 MB/);
+      // Under the cap still works.
+      const ok = manager.upload('c-1', { name: 'small.txt', mime: 'text/plain', dataBase64: b64('hi') });
+      expect(ok.name).toBe('small.txt');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('config parses the upload/json caps', () => {
+    const cfg = loadConfig({ DEMO_MODE: '1' });
+    expect(cfg.maxUploadBytes).toBe(8 * 1024 * 1024);
+    expect(cfg.maxJsonBytes).toBe(1024 * 1024);
+    const tight = loadConfig({ DEMO_MODE: '1', MAX_UPLOAD_BYTES: '1024', MAX_JSON_BYTES: '2048' });
+    expect(tight.maxUploadBytes).toBe(1024);
+    expect(tight.maxJsonBytes).toBe(2048);
   });
 });

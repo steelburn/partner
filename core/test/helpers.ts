@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Express } from 'express';
+import type { Express, Request } from 'express';
 import type { Keychain, Persona } from '@partner/shared';
 import type { PlaybookChatTarget } from '../src/playbooks/index.js';
 import { SCHEMA_VERSION } from '@partner/shared';
@@ -173,6 +173,24 @@ export function makeTempRoot(): string {
 export interface HarnessOptions {
   demo?: boolean;
   pairing?: PairingOptions;
+  /** M20-B S7: simulate the request's network peer (e.g. a LAN address). */
+  peer?: string | undefined;
+  /**
+   * M20-B S7: per-request peer resolver, for the realistic mixed case (the
+   * secret is ISSUED from the machine and REDEEMED from the phone). Takes
+   * precedence over `peer`.
+   */
+  peerAddress?: (req: Request) => string | undefined;
+  /** M20-B S7: expose the QR/link payload route (config.remoteAccess). */
+  remoteAccess?: boolean;
+  /** M20-B S7: the pinned certificate fingerprint the payload carries. */
+  tlsFingerprint?: string;
+  /** M20-B S7: override the https core URL in the payload. */
+  pairCoreUrl?: string;
+  /** M20-B S7: fixed-window pair budget (limit/windowMs). */
+  pairRateLimit?: { limit?: number; windowMs?: number };
+  /** M22: the deployment owns the project roots, so /v1/roots is read-only. */
+  rootsFixed?: boolean;
   staticDir?: string;
   /** M15: enable the header-guarded /v1/pair/device channel with this secret. */
   deviceSecret?: string;
@@ -667,6 +685,17 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     hostAllowlist: ALLOWLIST,
     staticDir: options.staticDir,
     deviceSecret: options.deviceSecret,
+    // M22: pretend the deployment owns the roots (the route refusals).
+    ...(options.rootsFixed === undefined ? {} : { rootsFixed: options.rootsFixed }),
+    // M20-B S7: the networked-pairing lane. `peer` is the TEST seam for the
+    // network peer (sockets are loopback under supertest); the real default
+    // reads `req.socket.remoteAddress`.
+    ...(options.remoteAccess === undefined ? {} : { remoteAccess: options.remoteAccess }),
+    ...(options.tlsFingerprint === undefined ? {} : { tlsFingerprint: options.tlsFingerprint }),
+    ...(options.pairCoreUrl === undefined ? {} : { pairCoreUrl: options.pairCoreUrl }),
+    ...(options.pairRateLimit === undefined ? {} : { pairRateLimit: options.pairRateLimit }),
+    ...(options.peer === undefined ? {} : { peerAddress: () => options.peer }),
+    ...(options.peerAddress === undefined ? {} : { peerAddress: options.peerAddress }),
     pairing,
     sessions,
     audit,

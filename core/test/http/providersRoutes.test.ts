@@ -140,136 +140,6 @@ function startDelayedUpstream(deltas: string[]): Promise<FakeUpstream> {
   });
 }
 
-interface FakeSelfService {
-  server: http.Server;
-  base: string;
-  publicKeyPem: string;
-  provisionedKey: string;
-  close(): Promise<void>;
-}
-
-function startFakeSelfService(creds: Record<string, string>, provisionedKey: string): Promise<FakeSelfService> {
-  return new Promise((resolve, reject) => {
-    const { publicKey, privateKey } = generateKeyPairSync('rsa', {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: 'spki', format: 'pem' },
-      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    });
-    const sessions = new Map<string, string>(); // token -> email
-
-    function decrypt(b64: string): string | null {
-      try {
-        return privateDecrypt(
-          { key: privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
-          Buffer.from(b64, 'base64'),
-        ).toString('utf8');
-      } catch {
-        return null;
-      }
-    }
-
-    function readBody(req: http.IncomingMessage): Promise<string> {
-      return new Promise((resolveBody) => {
-        let data = '';
-        req.on('data', (c: Buffer) => {
-          data += c.toString('utf8');
-        });
-        req.on('end', () => resolveBody(data));
-      });
-    }
-
-    const server = http.createServer(async (req, res) => {
-      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      const url = new URL(req.url ?? '/', base);
-      const json = (status: number, body: Record<string, unknown>): void => {
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
-      };
-
-      if (url.pathname === '/api/login-key' && req.method === 'GET') {
-        json(200, { publicKeyPem: publicKey });
-        return;
-      }
-      if (url.pathname === '/api/session' && req.method === 'POST') {
-        const body = JSON.parse((await readBody(req)) || '{}') as {
-          email?: unknown;
-          passwordCipher?: unknown;
-        };
-        const email = typeof body.email === 'string' ? body.email : '';
-        const password =
-          typeof body.passwordCipher === 'string' ? decrypt(body.passwordCipher) : null;
-        if (email === '' || password === null || creds[email] !== password) {
-          // Identical shape for wrong-password AND unknown-user (no enumeration).
-          json(401, { error: 'Invalid email or password' });
-          return;
-        }
-        const token = randomBytes(16).toString('hex');
-        sessions.set(token, email);
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Set-Cookie': `partner_ss=${token}; HttpOnly; Path=/; SameSite=Lax`,
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      if (url.pathname === '/api/me/key' && req.method === 'GET') {
-        const cookie = String(req.headers.cookie ?? '');
-        const match = /partner_ss=([0-9a-f]+)/.exec(cookie);
-        const email = match ? sessions.get(match[1] ?? '') : undefined;
-        if (!email) {
-          json(401, { error: 'Not authenticated' });
-          return;
-        }
-        json(200, {
-          email,
-          proxyBaseUrl: base,
-          endpoint: `${base}/v1`,
-          key: provisionedKey,
-          expiresAt: null,
-        });
-        return;
-      }
-      json(404, { error: 'not found' });
-    });
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      resolve({
-        server,
-        base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-        publicKeyPem: publicKey,
-        provisionedKey,
-        close(): Promise<void> {
-          return new Promise((done) => {
-            server.closeAllConnections();
-            server.close(() => done());
-          });
-        },
-      });
-    });
-  });
-}
-
-/** WebCrypto RSA-OAEP/SHA-256 envelope — byte-for-byte the portal's client. */
-async function encryptPassword(publicKeyPem: string, password: string): Promise<string> {
-  const der = Buffer.from(
-    publicKeyPem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s+/g, ''),
-    'base64',
-  );
-  const key = await crypto.subtle.importKey(
-    'spki',
-    der,
-    { name: 'RSA-OAEP', hash: 'SHA-256' },
-    false,
-    ['encrypt'],
-  );
-  const encrypted = await crypto.subtle.encrypt(
-    { name: 'RSA-OAEP' },
-    key,
-    new TextEncoder().encode(password),
-  );
-  return Buffer.from(encrypted).toString('base64');
-}
-
 const PROVISIONED_KEY = 'sk-demo-provisioned-123456';
 const upstreams: Array<{ close(): Promise<void> }> = [];
 
@@ -283,7 +153,7 @@ afterEach(async () => {
 });
 
 function secretTokens(): string[] {
-  return [PROVISIONED_KEY, 'sk-pasted-secret-777777', 'ciphertext-block', 's3cret-plaintext-pw'];
+  return [PROVISIONED_KEY, 'sk-pasted-secret-777777'];
 }
 
 // ---------------------------------------------------------------------------
@@ -299,8 +169,6 @@ describe('auth gate on every provider route', () => {
         ['post', '/v1/providers/x/test'],
         ['delete', '/v1/providers/x'],
         ['get', '/v1/models?provider=x'],
-        ['post', '/v1/self-service/login-key'],
-        ['post', '/v1/self-service/connect'],
       ];
       for (const [method, path] of cases) {
         const res = await request(h.app)[method as 'get' | 'post' | 'delete'](path)
@@ -759,165 +627,27 @@ describe('POST /v1/chat through a managed provider', () => {
   });
 });
 
-describe('self-service import routes', () => {
-  const GOOD_EMAIL = 'good@example.com';
-  const GOOD_PASSWORD = 'correct horse battery';
-
-  it('login-key proxies the fake PEM (authed)', async () => {
-    const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness({ demo: false });
-    try {
-      const token = await pairToken(h);
-      const res = await request(h.app)
-        .post('/v1/self-service/login-key')
-        .set(authed(token))
-        .send({ endpoint: ss.base });
-      expect(res.status).toBe(200);
-      expect(res.body.publicKeyPem).toBe(ss.publicKeyPem);
-
-      const bad = await request(h.app)
-        .post('/v1/self-service/login-key')
-        .set(authed(token))
-        .send({ endpoint: 'http://not-loopback.example' });
-      expect(bad.status).toBe(400);
-
-      const unreachable = await request(h.app)
-        .post('/v1/self-service/login-key')
-        .set(authed(token))
-        .send({ endpoint: 'http://127.0.0.1:1' });
-      expect([502, 504]).toContain(unreachable.status);
-    } finally {
-      h.close();
-    }
-  });
-
-  it('connect happy path: envelope login -> provider (source llm-self-service) + key in keychain', async () => {
-    const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness({ demo: false });
-    try {
-      const token = await pairToken(h);
-      const cipher = await encryptPassword(ss.publicKeyPem, GOOD_PASSWORD);
-      expect(cipher.length).toBeGreaterThan(0);
-
-      const connect = await request(h.app)
-        .post('/v1/self-service/connect')
-        .set(authed(token))
-        .send({ endpoint: ss.base, email: GOOD_EMAIL, passwordCipher: cipher });
-      expect(connect.status).toBe(201);
-      const summary = connect.body as {
-        id: string;
-        name: string;
-        source: string;
-        endpoint: string;
-        kind: string;
-      };
-      expect(summary).toMatchObject({
-        name: 'llm-self-service (org)',
-        source: 'llm-self-service',
-        kind: 'openai-compatible',
-        endpoint: `${ss.base}/v1`,
-      });
-      // The key went to the keychain, never into the response.
-      await expect(h.keychain.get('partner', `provider:${summary.id}`)).resolves.toBe(PROVISIONED_KEY);
-      const connectText = JSON.stringify(connect.body);
-      expect(connectText).not.toContain(PROVISIONED_KEY);
-      expect(connectText).not.toContain('keyRef');
-      expect(connectText).not.toContain(cipher);
-
-      // The provider shows up in the normal list without secrets.
-      const list = await request(h.app).get('/v1/providers').set(authed(token));
-      expect(JSON.stringify(list.body)).not.toContain(PROVISIONED_KEY);
-      expect(JSON.stringify(list.body)).not.toContain('keyRef');
-
-      // Audit rows: import + set_key + connect all present, none with secrets.
-      const rows = h.audit.list(100);
-      const actions = rows.map((r) => r.action);
-      expect(actions).toContain('self_service.connect');
-      expect(actions).toContain('provider.set_key');
-      expect(actions).toContain('provider.create');
-      const blob = rows.map((r) => JSON.stringify(r)).join('\n');
-      expect(blob).not.toContain(PROVISIONED_KEY);
-      expect(blob).not.toContain(cipher);
-      expect(blob).not.toContain(GOOD_PASSWORD);
-    } finally {
-      h.close();
-    }
-  });
-
-  it('rejects a plaintext password field with 400 (envelope only) and creates nothing', async () => {
-    const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness({ demo: false });
-    try {
-      const token = await pairToken(h);
-      const res = await request(h.app)
-        .post('/v1/self-service/connect')
-        .set(authed(token))
-        .send({ endpoint: ss.base, email: GOOD_EMAIL, password: GOOD_PASSWORD });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe('plaintext_password_rejected');
-      expect(JSON.stringify(res.body)).not.toContain(GOOD_PASSWORD);
-      expect(h.providerManager.list()).toHaveLength(0);
-      const rows = h.audit.list(100).filter((r) => r.action === 'self_service.connect');
-      expect(rows.some((r) => r.details.includes('plaintext_password'))).toBe(true);
-      expect(rows.map((r) => JSON.stringify(r)).join('\n')).not.toContain(GOOD_PASSWORD);
-    } finally {
-      h.close();
-    }
-  });
-
-  it('wrong password and unknown user both map to the SAME generic 401', async () => {
-    const ss = await track(await startFakeSelfService({ [GOOD_EMAIL]: GOOD_PASSWORD }, PROVISIONED_KEY));
-    const h = demoHarness({ demo: false });
-    try {
-      const token = await pairToken(h);
-
-      const wrongPw = await encryptPassword(ss.publicKeyPem, 'wrong password');
-      const wrong = await request(h.app)
-        .post('/v1/self-service/connect')
-        .set(authed(token))
-        .send({ endpoint: ss.base, email: GOOD_EMAIL, passwordCipher: wrongPw });
-      expect(wrong.status).toBe(401);
-      expect(wrong.body.message).toBe('Invalid email or password');
-
-      const unknownPw = await encryptPassword(ss.publicKeyPem, GOOD_PASSWORD);
-      const unknown = await request(h.app)
-        .post('/v1/self-service/connect')
-        .set(authed(token))
-        .send({ endpoint: ss.base, email: 'nobody@example.com', passwordCipher: unknownPw });
-      expect(unknown.status).toBe(401);
-      // Identical wording — no enumeration of which failure happened.
-      expect(unknown.body).toEqual(wrong.body);
-
-      expect(h.providerManager.list()).toHaveLength(0);
-    } finally {
-      h.close();
-    }
-  });
-});
-
 describe('end-to-end redaction regression', () => {
-  it('a full import + chat + probe never leaks key/cipher/password into responses or audit', async () => {
+  it('a key write + chat + probe never leaks the key into responses or audit', async () => {
     const upstream = await track(await startFakeUpstream());
-    const ss = await track(
-      await startFakeSelfService({ ['good@example.com']: 'horse-battery-staple' }, PROVISIONED_KEY),
-    );
     const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
       const bodies: string[] = [];
 
-      const cipher = await encryptPassword(ss.publicKeyPem, 'horse-battery-staple');
-      const loginKey = await request(h.app)
-        .post('/v1/self-service/login-key')
+      // The secret enters through the provider key route (the M1 import path
+      // that used to carry it was removed in M22).
+      const created = await request(h.app)
+        .post('/v1/providers')
         .set(authed(token))
-        .send({ endpoint: ss.base });
-      bodies.push(loginKey.text);
-      const connect = await request(h.app)
-        .post('/v1/self-service/connect')
+        .send({ name: 'redaction probe', endpoint: upstream.base });
+      bodies.push(created.text);
+      const id = (created.body as { id: string }).id;
+      const keyWrite = await request(h.app)
+        .post(`/v1/providers/${id}/key`)
         .set(authed(token))
-        .send({ endpoint: ss.base, email: 'good@example.com', passwordCipher: cipher });
-      bodies.push(connect.text);
-      const id = (connect.body as { id: string }).id;
+        .send({ key: PROVISIONED_KEY });
+      bodies.push(keyWrite.text);
 
       const models = await request(h.app).get(`/v1/models?provider=${id}`).set(authed(token));
       bodies.push(models.text);
@@ -936,72 +666,17 @@ describe('end-to-end redaction regression', () => {
       const all = bodies.join('\n');
       expect(all).not.toContain(PROVISIONED_KEY);
       expect(all).not.toContain('sk-');
-      expect(all).not.toContain(cipher);
-      expect(all).not.toContain('horse-battery-staple');
       expect(all).not.toContain('keyRef');
 
       const auditRows = h.audit.list(1000);
       const blob = auditRows.map((r) => JSON.stringify(r)).join('\n');
       expect(blob).not.toContain(PROVISIONED_KEY);
       expect(blob).not.toContain('sk-');
-      expect(blob).not.toContain(cipher);
-      expect(blob).not.toContain('horse-battery-staple');
       expect(blob).not.toContain('keyRef');
       const actions = auditRows.map((r) => r.action);
-      expect(actions).toContain('self_service.connect');
+      expect(actions).toContain('provider.set_key');
       expect(actions).toContain('provider.test');
       expect(actions).toContain('chat.stream');
-    } finally {
-      h.close();
-    }
-  });
-});
-
-describe('demo double (offline llm-self-service import)', () => {
-  // DEMO_MODE=1 must keep the import fully offline: the core serves the S0
-  // double itself (no network, no credentials) — end of the review major.
-  it('login-key + connect work in demo against the built-in double', async () => {
-    const h = demoHarness(); // demo: true
-    try {
-      const token = await pairToken(h);
-      const keyRes = await request(h.app)
-        .post('/v1/self-service/login-key')
-        .set(authed(token))
-        .send({ endpoint: 'https://enter.ne1.dev' }); // would be real network if not demo
-      expect(keyRes.status).toBe(200);
-      const pem = keyRes.body.publicKeyPem as string;
-      expect(pem).toContain('BEGIN PUBLIC KEY');
-
-      const cipher = await encryptPassword(pem, 'demo-pass-123');
-      const connect = await request(h.app)
-        .post('/v1/self-service/connect')
-        .set(authed(token))
-        .send({ endpoint: 'https://enter.ne1.dev', email: 'demo@example.com', passwordCipher: cipher });
-      expect(connect.status).toBe(201);
-      const summary = connect.body as { source: string; endpoint: string; id: string };
-      expect(summary.source).toBe('llm-self-service');
-      expect(summary.endpoint).toBe('http://127.0.0.1:4390/v1');
-      await expect(h.keychain.get('partner', `provider:${summary.id}`)).resolves.toBe('sk-demo-import');
-      expect(JSON.stringify(connect.body)).not.toContain('sk-demo-import');
-
-      // Wrong password -> identical generic 401 (no enumeration). The double
-      // accepts any >=4-char password (demo semantics), so use a short one.
-      const badCipher = await encryptPassword(pem, 'x');
-      const bad = await request(h.app)
-        .post('/v1/self-service/connect')
-        .set(authed(token))
-        .send({ endpoint: 'https://enter.ne1.dev', email: 'demo@example.com', passwordCipher: badCipher });
-      expect(bad.status).toBe(401);
-      expect(bad.body.message).toBe('Invalid email or password');
-
-      // Chat still works offline in demo: the demo-imported provider is not
-      // used as a chat backend (its endpoint is this core itself).
-      const chat = await request(h.app)
-        .post('/v1/chat')
-        .set(authed(token))
-        .send({ messages: [{ role: 'user', content: 'hi' }] });
-      expect(chat.status).toBe(200);
-      expect(chat.text).toContain('demo: received');
     } finally {
       h.close();
     }

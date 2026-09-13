@@ -105,6 +105,12 @@ export interface PlaybookManager {
     personaId?: string;
     conversationId?: string;
     inputs: Record<string, unknown>;
+    /**
+     * The starting session's client class (M20-B S4). A run started from a
+     * REQUEST carries it so the loop's tool calls inherit that session's
+     * envelope; a scheduled fire passes nothing and keeps the desktop envelope.
+     */
+    clientClass?: string;
   }): Promise<PreparedPlaybookRun>;
   /** Prepare a resume after a queued tool was decided. Unknown run ->
    *  not_found; queue row still open -> conflict (not_decided). */
@@ -119,6 +125,8 @@ interface PreparedState {
   runId: string;
   conversationId: string | null;
   inputs: Record<string, unknown>;
+  /** M20-B S4: the class the run started with; absent = session-less fire. */
+  clientClass?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +461,8 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
     personaId?: string;
     conversationId?: string;
     inputs: Record<string, unknown>;
+    /** M20-B S4: the starting session's client class (absent = session-less). */
+    clientClass?: string;
   }): Promise<PreparedPlaybookRun> {
     const playbook = playbookById(input.playbookId);
     if (playbook === null) throw playbookError('not_found', 'playbook not found');
@@ -509,6 +519,7 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
       runId,
       conversationId: resolved.conversationId,
       inputs,
+      ...(input.clientClass !== undefined ? { clientClass: input.clientClass } : {}),
     };
     void persistUserTurn(state, messages);
 
@@ -521,6 +532,10 @@ export function createPlaybookManager(options: PlaybookManagerOptions): Playbook
           allowedTools: playbookRef.allowedTools,
           playbookId: playbookRef.id,
           target: chatTarget,
+          // M20-B S4: a request-driven run's tool calls carry the starting
+          // session's class; a scheduled fire leaves it undefined (desktop
+          // envelope, which is what a headless run legitimately has).
+          ...(state.clientClass !== undefined ? { clientClass: state.clientClass } : {}),
         }),
         state,
         'playbook.run',

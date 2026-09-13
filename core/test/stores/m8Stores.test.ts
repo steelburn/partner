@@ -14,13 +14,18 @@ import { SCHEMA_VERSION } from '@partner/shared';
 import { makeTempRoot, removeTempRoot } from '../helpers.js';
 import { join } from 'node:path';
 
-describe('M8 skills stores (schema v9 tables)', () => {
-  it('keeps SCHEMA_VERSION at 11 (v11 = spend_ledger) and stamps the meta row', () => {
+describe('M8 skills stores (additive, idempotent)', () => {
+  // The version is asserted as a LITERAL on purpose: a schema bump must be a
+  // deliberate edit here, not something that silently follows the constant. The
+  // title therefore does NOT name a version — it drifted to "at 11" while
+  // asserting 18, which is precisely the contradiction a schema guard exists to
+  // surface.
+  it('stamps the current SCHEMA_VERSION into the meta row (18 at the time of writing)', () => {
     const db = openDatabase(':memory:');
     const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as {
       value: string;
     };
-    expect(SCHEMA_VERSION).toBe(16);
+    expect(SCHEMA_VERSION).toBe(19);
     expect(meta.value).toBe(String(SCHEMA_VERSION));
     db.close();
   });

@@ -29,8 +29,8 @@ describe('M11 schema v12 (guarded columns)', () => {
       const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as
         | { value: string }
         | undefined;
-      expect(meta?.value).toBe('16');
-      expect(SCHEMA_VERSION).toBe(16);
+      expect(meta?.value).toBe(String(SCHEMA_VERSION));
+      expect(SCHEMA_VERSION).toBe(19);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');

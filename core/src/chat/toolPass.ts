@@ -27,6 +27,8 @@ import type { ToolManifest, ToolRisk } from '@partner/shared/tools.js';
 import { parseReplyTools } from '../playbooks/directives.js';
 import { authorizeTool } from '../playbooks/gate.js';
 import { summarizeToolResult } from '../playbooks/loop.js';
+import { capabilityForTool } from '../broker/broker.js';
+import { capabilityDenial } from '../http/capabilities.js';
 import type { AuditService } from '../services/redaction.js';
 
 /** The broker surface the pass needs (structural — easy to fake in tests). */
@@ -73,6 +75,17 @@ export interface ChatToolPassDeps {
     match?(toolId: string): ToolManifest | undefined;
   }>;
   audit: AuditService;
+  /**
+   * The client class of the session that started this turn (M20-B S4).
+   *
+   * Load-bearing: `/v1/chat` is allowed to mobile and extension, so WITHOUT this
+   * the persona loop reached the broker with no class and `broker.exec` defaulted
+   * to the DESKTOP envelope — a phone turn could execute a granted `files.edit`,
+   * contradicting the capability table. Absent means a genuinely session-less
+   * caller (a scheduled or otherwise headless run), which legitimately keeps the
+   * desktop envelope; a request-driven turn must always pass it.
+   */
+  clientClass?: string;
   /** Persist a system note into the conversation transcript (no-op guard). */
   appendSystemNote: (content: string) => void;
   now?: () => number;
@@ -185,7 +198,7 @@ async function handleDirective(
   deps: ChatToolPassDeps,
   at: number,
 ): Promise<ChatToolDecision | null> {
-  const { persona, broker, appendSystemNote } = deps;
+  const { persona, broker, appendSystemNote, audit } = deps;
   const toolId = directive.toolId;
   // The owning external provider: ALLOWED providers win (a provider whose
   // allow() is false never owns its tool id — that reads as disabled).
@@ -208,6 +221,38 @@ async function handleDirective(
   }
 
   const args = directive.args ?? {};
+  //
+  // M20-B S4 — the client-class envelope covers the PERSONA's tool calls too, not
+  // only a session's direct API calls. Checked HERE, before execute-vs-queue, so
+  // a class that may not ask cannot even queue the work; `broker.exec` repeats it
+  // independently, because two gates on one decision is the point.
+  //
+  // Scoped by source on purpose: `capabilityForTool` maps only BROKER tools, and
+  // an unmapped tool yields `''` which `capabilityDenial` REFUSES for every class
+  // — applying it unconditionally would deny search and MCP tools to desktop too.
+  // So: broker tools use their mapping, MCP's dynamically-resolved tools require
+  // `mcp.call` (an enabled MCP server SPAWNS a process, so invoking one from a
+  // phone must clear the same bar as calling it), and static externals such as
+  // web search stay on their existing "enabled backend + approval" consent.
+  const requiredCapability = manifestById.has(toolId)
+    ? capabilityForTool(toolId)
+    : dynamicManifest !== undefined
+      ? 'mcp.call'
+      : '';
+  if (requiredCapability !== '') {
+    const classDenial = capabilityDenial(deps.clientClass ?? 'desktop', requiredCapability);
+    if (classDenial !== null) {
+      audit.log('persona', 'capability.denied', toolId, {
+        clientClass: classDenial.clientClass,
+        capability: classDenial.capability,
+      });
+      appendSystemNote(
+        `The tool "${toolId}" is not available to this device — continue without it.`,
+      );
+      return { toolId, decision: 'refused', reason: 'capability_denied' };
+    }
+  }
+
   const projectId = typeof args.projectId === 'string' ? args.projectId : '';
   // External tools have no project grant; "enabled backend" IS the consent.
   const hasGrant = projectId !== '' ? broker.grants.hasGrant(toolId, projectId, at) : owner !== undefined;

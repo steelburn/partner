@@ -351,3 +351,73 @@ describe('M11 F2 external array dispatch guard', () => {
     expect(notes.join('\n')).toContain('mcp text');
   });
 });
+
+describe('M20-B S4: the persona tool loop inherits the SESSION client class', () => {
+  // The verified gap this closes: `/v1/chat` is allowed to mobile, and the loop
+  // reached the broker with no class, so `broker.exec` defaulted to DESKTOP and a
+  // phone turn executed a granted write. Checked here at the seam because the
+  // loop is where a phone actually reached a write; `broker.exec` keeps its own
+  // check as the second gate.
+  const WRITE: ToolManifest = { ...READ, id: 'files.edit', description: 'write' };
+
+  it('refuses a mobile turn BEFORE it can execute or queue a write tool', async () => {
+    const notes: string[] = [];
+    let execCalls = 0;
+    let enqueued = 0;
+    const broker = brokerLike({
+      manifests: [READ, WRITE],
+      grants: { hasGrant: () => true }, // a grant must NOT be enough
+      exec: () => {
+        execCalls += 1;
+        return { outcome: 'executed', result: { content: 'wrote' } };
+      },
+      pending: {
+        enqueue: () => {
+          enqueued += 1;
+          return 'p-1';
+        },
+      },
+    });
+    const deps: ChatToolPassDeps = { ...makeDeps(persona('auto'), broker, notes), clientClass: 'mobile' };
+
+    const result = await runChatToolPass(directive('files.edit'), deps);
+
+    expect(result.decisions).toEqual([
+      { toolId: 'files.edit', decision: 'refused', reason: 'capability_denied' },
+    ]);
+    // Neither side effect happened: not executed, and not even queued (a class
+    // that may not ask must not be able to park the work for someone else).
+    expect(execCalls).toBe(0);
+    expect(enqueued).toBe(0);
+    expect(notes.join(' ')).toContain('not available to this device');
+  });
+
+  it('still lets a desktop turn execute it, and does not deny read tools to mobile', async () => {
+    const notes: string[] = [];
+    let execCalls = 0;
+    const broker = brokerLike({
+      manifests: [READ, WRITE],
+      grants: { hasGrant: () => true },
+      exec: () => {
+        execCalls += 1;
+        return { outcome: 'executed', result: { content: 'wrote' } };
+      },
+    });
+
+    const desktop = await runChatToolPass(directive('files.edit'), {
+      ...makeDeps(persona('auto'), broker, notes),
+      clientClass: 'desktop',
+    });
+    expect(desktop.decisions).toEqual([{ toolId: 'files.edit', decision: 'executed' }]);
+    expect(execCalls).toBe(1);
+
+    // Positive control: the envelope is not "deny everything for mobile" — a
+    // read tool still runs, which is what keeps the guard from being a brick.
+    const mobileRead = await runChatToolPass(directive('files.read'), {
+      ...makeDeps(persona('auto'), broker, notes),
+      clientClass: 'mobile',
+    });
+    expect(mobileRead.decisions).toEqual([{ toolId: 'files.read', decision: 'executed' }]);
+    expect(execCalls).toBe(2);
+  });
+});

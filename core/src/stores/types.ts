@@ -43,13 +43,42 @@ export interface SessionRow {
   kind: string;
   /** Binding origin (loopback Host header); validate() enforces a match. */
   origin: string;
+  /**
+   * The app user this session acts as, or NULL for a session that predates
+   * the authentication lane (M20-B S3 first half). NULL means "no user", not
+   * "any user": per-user reads must not match it.
+   */
+  userId: string | null;
+  /**
+   * Client class — 'desktop' (default) | 'mobile' | 'extension' — i.e. the
+   * M20-B S4 capability-envelope dimension. Deliberately NOT `kind`: `kind`
+   * is already the audit actor for the file/root/grant routes (see
+   * `actorOf` in http/server.ts), so widening it would silently rewrite what
+   * `?actor=` queries return.
+   */
+  clientClass: string;
+  /** Human label for the device ("Sam's phone"); null when none was given. */
+  deviceLabel: string | null;
+  /** Platform tag ('ios', 'win32', 'chrome-extension'); null when none. */
+  platform: string | null;
+  /** When this row's token was last replaced; null = never rotated. */
+  rotatedAt: number | null;
   createdAt: number;
   expiresAt: number;
   lastSeenAt: number;
   revokedAt: number | null;
 }
 
+/** Optional client/device identity for `insert`; absent = class 'desktop'. */
+export interface SessionInsertMeta {
+  userId?: string | null;
+  clientClass?: string;
+  deviceLabel?: string | null;
+  platform?: string | null;
+}
+
 export interface SessionStore {
+  /** The trailing meta object is optional so the M0 positional callers stay. */
   insert(
     tokenHash: string,
     kind: string,
@@ -57,10 +86,54 @@ export interface SessionStore {
     createdAt: number,
     expiresAt: number,
     lastSeenAt: number,
+    meta?: SessionInsertMeta,
   ): number;
   findByTokenHash(tokenHash: string): SessionRow | undefined;
   touch(id: number, at: number): void;
   revoke(id: number, at: number): void;
+  /**
+   * Replace this row's token hash IN PLACE and stamp `rotated_at`: the row
+   * (the device record) survives with its user/class/label/platform, while
+   * the outgoing token stops resolving at all. False when the id is unknown.
+   */
+  rotate(id: number, newTokenHash: string, expiresAt: number, at: number): boolean;
+  /** Push `expires_at` out without touching the token (refresh). */
+  extend(id: number, expiresAt: number): boolean;
+  /** One user's sessions, oldest first; NULL-user rows never match. */
+  listByUser(userId: string): SessionRow[];
+  /**
+   * EVERY session row, oldest first, whatever its user — including the
+   * NULL-user rows `listByUser` can never match (SQL `user_id = NULL` is
+   * never true, so a user-scoped read cannot reach them).
+   *
+   * Transitional (M20-B S5): the sign-in route does not exist yet, so every
+   * session in the field has `user_id` NULL and a user-scoped device list
+   * would be empty on every install that exists today. On an install that has
+   * no users at all the single-user core IS the whole core, so its device list
+   * is every row. The device routes reach this ONLY through
+   * `SessionManager.listDevices(null)` / `revokeDeviceById(id, null)`; a
+   * session that NAMES a user must never fall back here, or one user would
+   * read every other user's devices. The authentication lane deletes this
+   * method with that fallback.
+   */
+  listUnscoped(): SessionRow[];
+  /**
+   * Revoke one session, scoped to its owner: an id belonging to another user
+   * matches nothing and returns false, so the caller answers 404 rather than
+   * 403 and ids cannot be enumerated across users.
+   */
+  revokeById(id: number, userId: string, at: number): boolean;
+  /**
+   * Revoke one USER-LESS session (`user_id IS NULL`), scoped by that predicate.
+   *
+   * Exists so the transitional pre-auth path cannot reach a NAMED user's row: an
+   * unscoped `UPDATE … WHERE id = ?` would let a legacy device revoke anyone's
+   * session once users exist, which is the whole reason this is scoped rather
+   * than plain.
+   */
+  revokeUnscoped(id: number, at: number): boolean;
+  /** Revoke every live session of one user; the count that were killed. */
+  revokeAllForUser(userId: string, at: number): number;
 }
 
 export interface AuditRow {
@@ -115,7 +188,7 @@ export interface ProviderRow {
   id: string;
   name: string;
   kind: string;
-  /** 'manual' | 'llm-self-service'. */
+  /** 'manual' | 'llm-self-service' (the latter is legacy — M22 removed the import). */
   source: string;
   /** M11 purpose tag: 'general'|'cheap'|'deep'|'coding'|'vision'|'research' (default 'general'). */
   purpose: string;
@@ -1202,4 +1275,125 @@ export interface McpServerStore {
   list(): McpServerRow[];
   update(id: string, patch: { name?: string; command?: string; args?: string[] | null; enabled?: boolean; updatedAt: number }): void;
   remove(id: string): void;
+}
+
+// ---------------------------------------------------------------------------
+// M20-B S2/S2a system-DB stores (PLAN-M20-B.md §2a — additive schema v17).
+// These two tables are the PRE-USER ones: they must exist before any app user
+// is resolved, so they live in `data/system.db` (keychain account
+// `system-key`; see core/src/system/db.ts) rather than inside a per-user
+// partition. Row CRUD only — `users/manager.ts` owns id validation, first-run
+// and the disabled gate, `users/credentials.ts` owns hashing and lockout.
+// ---------------------------------------------------------------------------
+
+/** `users` row — one app user of this core. User #0 is the OS-profile holder. */
+export interface UserRow {
+  id: string;
+  /** Display name (the OS login name for a first-run user). */
+  label: string;
+  /**
+   * The OS login this user is the app-side of, lowercased (`osProfile.ts`).
+   * NULL for a user with no OS profile on this machine — someone who reaches
+   * this core from another device. UNIQUE, so one OS user maps to exactly one
+   * app user and an install that never had users keeps behaving as it does.
+   */
+  osProfileKey: string | null;
+  createdAt: number;
+  /**
+   * Set by disable(): the user refuses requests while kept intact. Null means
+   * active. Nothing in this store ever deletes a user or their data — a
+   * disabled user's rows, partition and files stay, and a delete is a
+   * deliberate act elsewhere (partition dir removal + this row) rather than a
+   * side effect of disabling.
+   */
+  disabledAt: number | null;
+  /**
+   * M20-B S9: keep this user's partition key in the keychain so their schedules
+   * run while nobody is signed in. False (the default) means the key lives only
+   * inside the passphrase-wrapped record — signed out means unreadable.
+   */
+  keepUnlocked: boolean;
+}
+
+/**
+ * `key_wraps` row (M20-B S9) — a partition key wrapped under a key derived from
+ * the user's passphrase. The stored credential verifier cannot unwrap it: the
+ * wrap uses its own salt plus HKDF domain separation (see `users/keyWrap.ts`).
+ */
+export interface KeyWrapRow {
+  userId: string;
+  /** Reserved: the vault key today, the runner's job key later (S8). */
+  purpose: string;
+  /** base64: the wrap's own salt (16 bytes). */
+  salt: string;
+  /** base64: AES-GCM nonce (12 bytes). */
+  nonce: string;
+  /** base64: AES-GCM authentication tag (16 bytes). */
+  tag: string;
+  /** base64: the wrapped 32-byte key. */
+  ciphertext: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KeyWrapStore {
+  upsert(row: KeyWrapRow): void;
+  findByUser(userId: string): KeyWrapRow | undefined;
+  /** Drop a user's wrap (account recovery path). True when a row was removed. */
+  removeByUser(userId: string): boolean;
+  list(): KeyWrapRow[];
+}
+
+export interface UserStore {
+  insert(row: UserRow): void;
+  findById(id: string): UserRow | undefined;
+  /** The app user mapped to an OS profile (the one-profile-one-user rule). */
+  findByOsProfileKey(key: string): UserRow | undefined;
+  /** Every user, oldest first; disabled users are included (see disabledAt). */
+  list(): UserRow[];
+  /** Stamp disabled_at. False when the id is unknown. Never deletes a row. */
+  disable(id: string, at: number): boolean;
+  /** Clear disabled_at (disable is reversible). False when the id is unknown. */
+  enable(id: string): boolean;
+  /**
+   * M20-B S9: the per-user at-rest policy. `true` keeps the partition key in the
+   * keychain so this user's schedules run with nobody signed in — the promise is
+   * weakened for THIS user, by their own explicit choice. Audited by the caller.
+   */
+  setKeepUnlocked(id: string, value: boolean): boolean;
+}
+
+/**
+ * `user_credentials` row — one passphrase credential per user.
+ *
+ * The passphrase itself is NEVER stored: only a random per-user salt, the
+ * scrypt-derived key and the parameters that produced it. `hash` is read by
+ * the credential manager alone (to compare) and is never returned by it,
+ * logged, or placed in an audit row.
+ */
+export interface UserCredentialRow {
+  userId: string;
+  /** Per-user random salt, hex (16 bytes). */
+  salt: string;
+  /** scrypt-derived key, hex. */
+  hash: string;
+  /** JSON `ScryptParams` the key was derived with (users/credentials.ts). */
+  params: string;
+  /** Consecutive failed verifications since the last success / lock expiry. */
+  failedAttempts: number;
+  /** While set and still in the future, verify() refuses with `locked`. */
+  lockedUntil: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface UserCredentialStore {
+  /** Create the credential, or REPLACE salt+hash+params (first set / rotation). */
+  upsert(row: UserCredentialRow): void;
+  findByUserId(userId: string): UserCredentialRow | undefined;
+  /**
+   * Rewrite the lockout bucket: `failedAttempts` consecutive failures and the
+   * instant a lock releases (`lockedUntil` null = not locked).
+   */
+  setAttempts(userId: string, failedAttempts: number, lockedUntil: number | null): void;
 }

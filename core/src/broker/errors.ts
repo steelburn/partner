@@ -25,7 +25,14 @@ export type ToolErrorCode =
   | 'read_only'
   | 'not_pending'
   | 'exists'
-  | 'changed_since_proposal';
+  | 'changed_since_proposal'
+  /**
+   * M20-B S4: the caller's CLIENT CLASS may not use (or approve) that tool.
+   * Named separately from `denied` so a client can tell "your device may not"
+   * apart from "the policy refused", and so the audit row and the response
+   * agree on the reason.
+   */
+  | 'capability_denied';
 
 export class ToolError extends Error {
   readonly code: ToolErrorCode;

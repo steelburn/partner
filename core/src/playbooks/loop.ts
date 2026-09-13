@@ -115,6 +115,15 @@ export interface ToolLoopRunRequest {
   /** Pre-resolved target (the caller preflighted provider); when absent the
    *  resolver is called — null there still means no_provider. */
   target?: PlaybookChatTarget;
+  /**
+   * The client class of the session that STARTED this run (M20-B S4).
+   *
+   * Carried on the run rather than on the loop, because one loop instance serves
+   * both request-driven runs (which have a session) and scheduled/headless ones
+   * (which legitimately do not). `resume` inherits whatever the run started with
+   * — the run has not changed hands, so neither has its authority.
+   */
+  clientClass?: string;
 }
 
 export interface ToolLoopDeps {
@@ -138,6 +147,12 @@ interface RunMemory {
   model: string | null;
   finalText: string;
   waitingOn?: { pendingId: string; toolId: string };
+  /**
+   * M20-B S4: the class that started this run, so every tool call it makes
+   * inherits the SAME envelope. Absent = a genuinely session-less run (a
+   * scheduled fire), which keeps the desktop envelope.
+   */
+  clientClass?: string;
 }
 
 export interface ToolLoop {
@@ -412,7 +427,14 @@ export function createToolLoop(deps: ToolLoopDeps): ToolLoop {
 
     // gate: executed — the broker runs it (a user grant was present at gate
     // time; one revoked mid-flight surfaces as needs_approval -> queued).
-    const response = broker.exec(toolId, args, { requestedBy: 'persona' });
+    //
+    // M20-B S4: the run's client class rides along. Without it the broker
+    // defaulted to DESKTOP, so a mobile session could start a playbook and have
+    // its tool calls run with desktop authority.
+    const response = broker.exec(toolId, args, {
+      requestedBy: 'persona',
+      ...(state.clientClass !== undefined ? { clientClass: state.clientClass } : {}),
+    });
     if (response.outcome === 'executed') {
       state.toolCalls += 1;
       auditToolDecision(audit, state, toolId, {
@@ -496,6 +518,9 @@ export function createToolLoop(deps: ToolLoopDeps): ToolLoop {
       toolCalls: 0,
       model: null,
       finalText: '',
+      // M20-B S4: the run remembers who started it, so every tool call it makes
+      // — including after a `resume` — is judged by that same envelope.
+      ...(req.clientClass !== undefined ? { clientClass: req.clientClass } : {}),
     };
     states.set(runId, state);
     try {

@@ -34,6 +34,12 @@ export interface AttachmentManagerOptions {
   attachments: AttachmentStore;
   audit: AuditService;
   now?: () => number;
+  /**
+   * R7: the per-attachment cap (default {@link MAX_ATTACHMENT_BYTES}). A hosted
+   * deployment can tighten it without a code change — which is why it is an
+   * option rather than only a constant.
+   */
+  maxBytes?: number;
 }
 
 export interface AttachmentManager {
@@ -121,6 +127,7 @@ export function createAttachmentManager(
   options: AttachmentManagerOptions,
 ): AttachmentManager {
   const { blobs, attachments, audit } = options;
+  const maxBytes = options.maxBytes ?? MAX_ATTACHMENT_BYTES;
   const now = options.now ?? Date.now;
 
   function upload(
@@ -141,10 +148,10 @@ export function createAttachmentManager(
     if (data.length === 0) {
       throw attachmentError('invalid_input', 'attachment is empty');
     }
-    if (data.length > MAX_ATTACHMENT_BYTES) {
+    if (data.length > maxBytes) {
       throw attachmentError(
         'too_large',
-        `attachments are capped at ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB`,
+        `attachments are capped at ${Math.round(maxBytes / (1024 * 1024))} MB`,
       );
     }
     const sha256 = createHash('sha256').update(data).digest('hex');

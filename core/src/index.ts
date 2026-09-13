@@ -11,18 +11,36 @@
  * Running this file directly (node/tsx entry) starts the loopback server and
  * prints a one-line startup banner; importing it never listens.
  */
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import type { Express } from 'express';
 import type { Keychain } from '@partner/shared';
+import { LEGACY_USER_ID } from '@partner/shared';
 import Database from 'better-sqlite3';
 
 // ---- config ----------------------------------------------------------------
 export { CORE_VERSION, DEFAULT_DB_PATH, DEFAULT_HOST, DEFAULT_PORT, loadConfig } from './config.js';
-export type { CoreConfig, KeychainKind } from './config.js';
+export type { CoreConfig, CoreTlsConfig, KeychainKind } from './config.js';
+
+// ---- users & credentials (M20-B S2/S2a, wired in M22) ---------------------
+export { createUserManager, FIRST_USER_ID } from './users/manager.js';
+export { createUserRails, partitionConfigFor } from './users/rails.js';
+export { createUserPartitions } from './users/partition.js';
+export { dbKeyAccount, ensureDbKey, DB_KEY_ACCOUNT } from './keychain/dbKey.js';
+export { openEncryptedDatabase } from './stores/db.js';
+export { userDbPath, userSkillsDir, usersRoot } from './users/paths.js';
+export { LEGACY_USER_ID } from '@partner/shared';
+export { createCredentialManager, SCRYPT_PARAMS } from './users/credentials.js';
+export { createSystemStores } from './users/store.js';
+export { openSystemDatabase, SYSTEM_KEY_ACCOUNT } from './system/db.js';
+export { isClientClass, CLIENT_CLASSES, CLIENT_ENVELOPE } from './http/capabilities.js';
 
 // ---- keychain --------------------------------------------------------------
 export { createKeychainFake, createKeychainNative, KEYCHAIN_SERVICE } from './keychain/keychain.js';
+export { createKeychainFile, keychainFileError } from './keychain/file.js';
 export type { Keychain } from './keychain/keychain.js';
 
 // ---- stores ----------------------------------------------------------------
@@ -148,8 +166,6 @@ export type { ResolveChatModelOptions, ResolvedChatModel } from './gateway/resol
 export { createBudgetTracker } from './gateway/budget.js';
 export { priceForModel } from './gateway/pricing.js';
 export type { BudgetOptions, BudgetRecord, BudgetTracker } from './gateway/budget.js';
-export { connectSelfService, fetchSelfServiceLoginKey } from './gateway/selfService.js';
-export type { SelfServiceErrorKind, SelfServiceOptions } from './gateway/selfService.js';
 
 // ---- providers (M1) --------------------------------------------------------
 export { createProviderManager, toSummary, normalizeEndpoint } from './providers/providerManager.js';
@@ -419,7 +435,7 @@ export type { CoreAppOptions } from './http/server.js';
 export type { ChatDoneMetaEvent, ServerChatEvent } from './http/server.js';
 
 import { loadConfig } from './config.js';
-import type { CoreConfig } from './config.js';
+import type { CoreConfig, CoreTlsConfig } from './config.js';
 import {
   openDatabase,
   createPairingStore,
@@ -482,7 +498,19 @@ import type { PersonaManager } from './personas/manager.js';
 import { createConversationManager } from './conversations/manager.js';
 import type { ConversationManager } from './conversations/manager.js';
 import { createKeychainFake, createKeychainNative } from './keychain/keychain.js';
-import { ensureDbKey } from './keychain/dbKey.js';
+import { createKeychainFile, keychainFileError } from './keychain/file.js';
+import { isDirectEntryPoint } from './entry.js';
+import { rateLimitKeyFor } from './http/peer.js';
+import { dbKeyAccount, ensureDbKey } from './keychain/dbKey.js';
+import { userDbPath } from './users/paths.js';
+import { createUserManager } from './users/manager.js';
+import type { UserManager } from './users/manager.js';
+import { createCredentialManager } from './users/credentials.js';
+import type { CredentialManager } from './users/credentials.js';
+import { createSystemStores, type SystemStores } from './users/store.js';
+import { createUserRails } from './users/rails.js';
+import { createKeyVault } from './users/unlock.js';
+import { openSystemDatabase } from './system/db.js';
 import { createPairingManager } from './http/pairing.js';
 import type { PairingManager } from './http/pairing.js';
 import { createSessionManager } from './http/session.js';
@@ -542,6 +570,7 @@ import {
   createToolLoop,
 } from './playbooks/index.js';
 import type { DeployManager, PlaybookManager } from './playbooks/index.js';
+import { transportRefusal } from './net/tls.js';
 import { createScheduleManager } from './schedules/index.js';
 import type { ScheduleManager } from './schedules/index.js';
 import type { ScheduleRunStore } from './stores/types.js';
@@ -642,16 +671,90 @@ export interface CoreBundle {
 }
 
 /**
- * Open the core's database for a config: demo/:memory: stays plaintext;
- * a LIVE file database is opened whole-file-encrypted (M10 W1) with the
+ * The keychain a config asks for (M21). ONE place decides this, because the
+ * database open and the app build must agree: they did not before, and a config
+ * where they disagreed would encrypt the DB with one keychain and store provider
+ * keys in another. `file` names its path in the failure so a container boot says
+ * which mount is wrong.
+ */
+export function createConfiguredKeychain(config: CoreConfig): Keychain {
+  switch (config.keychain) {
+    case 'fake':
+      return createKeychainFake();
+    case 'file': {
+      const path = config.keychainFile;
+      if (path === undefined) {
+        // config.ts refuses this combination; the guard keeps the invariant
+        // here too, so a hand-built CoreConfig cannot skip it.
+        throw new Error('KEYCHAIN_KIND=file requires KEYCHAIN_FILE');
+      }
+      try {
+        return createKeychainFile(path);
+      } catch (cause) {
+        throw keychainFileError(cause, path);
+      }
+    }
+    default:
+      return createKeychainNative();
+  }
+}
+
+/**
+ * Open the core's database for a config: demo/:memory: stays plaintext; a
+ * LIVE file database is opened whole-file-encrypted (M10 W1) with the
  * keychain-held cipher key (created on first use).
+ *
+ * M20-B S1: a boot with USER_ID opens THAT app user's partition — their own
+ * encrypted file under `data/users/<userId>/` with their own cipher key —
+ * while a boot without USER_ID keeps today's single-user path + account
+ * byte-identical. Partitions are opened through the bounded per-user cache
+ * (one open, reused; S3 owns the process-lifetime instance).
  */
 async function openCoreDatabase(config: CoreConfig): Promise<Database.Database> {
   if (config.demo || config.dbPath === ':memory:') return openDatabase(config.dbPath);
-  const keychain: Keychain =
-    config.keychain === 'native' ? createKeychainNative() : createKeychainFake();
+  const keychain: Keychain = createConfiguredKeychain(config);
+  if (config.userId !== undefined) {
+    // A single-user boot needs exactly ONE partition handle, so open it directly
+    // instead of through the bounded cache. A cache built per call and discarded
+    // would leave the handle UNTRACKED — nothing could ever close it — while its
+    // LRU bound and closeAll() claimed to be managing it. The process-lifetime
+    // cache belongs to the multi-user wiring (N rails), where more than one
+    // partition is open at once.
+    //
+    // Going through `userDbPath`/`dbKeyAccount` (not a hand-built path) is what
+    // gives user #0 the LEGACY database and the legacy keychain account, so an
+    // existing install keeps its data instead of opening an empty file.
+    const keyHex = await ensureDbKey(keychain, dbKeyAccount(config.userId));
+    return openEncryptedDatabase(userDbPath(config.dataRoot, config.userId), keyHex);
+  }
   const keyHex = await ensureDbKey(keychain);
   return openEncryptedDatabase(config.dbPath, keyHex);
+}
+
+/**
+ * Register the deployment-owned roots (M22) idempotently.
+ *
+ * IDEMPOTENT matters: grants reference a root BY ID, so a second boot must find
+ * the existing row rather than insert a duplicate (the manager refuses a
+ * duplicate canonical path with a typed `exists` error). The stored path is the
+ * canonical one, so the lookup compares canonical paths.
+ */
+function applyFixedRoots(
+  roots: ProjectRootManager,
+  paths: readonly string[],
+  readOnly = false,
+): void {
+  for (const raw of paths) {
+    if (!existsSync(raw) || !statSync(raw).isDirectory()) {
+      throw new Error(
+        `FIXED_ROOTS: ${raw} is not an existing directory — mount it (compose) or ` +
+          'fix the path; refusing to boot with a root the file tools cannot use',
+      );
+    }
+    const canonical = realpathSync(raw);
+    if (roots.list().some((root) => root.path === canonical)) continue;
+    roots.add({ label: basename(canonical) || canonical, path: canonical, readOnly });
+  }
 }
 
 /**
@@ -660,7 +763,22 @@ async function openCoreDatabase(config: CoreConfig): Promise<Database.Database> 
  * be opened encrypted first (pass the db from {@link openCoreDatabase});
  * demo/:memory: builds stay synchronous and untouched.
  */
-export function createCore(config: CoreConfig, db?: Database.Database): CoreBundle {
+/**
+ * Build the core for ONE database. In login mode the listening app calls this
+ * once per user (see users/rails.ts) — that is the whole of "multi-user": the
+ * same single-user core, over each user's own file, key and skills directory.
+ */
+export function createCore(
+  config: CoreConfig,
+  db?: Database.Database,
+  system?: SystemStores,
+  appOptions?: {
+    /** M22/R1: per-user partition delegation (login mode). */
+    delegate?: (userId: string) => Promise<Express | 'partition_locked' | undefined>;
+    /** M20-B S9: the key vault, so the account routes can unlock/lock. */
+    auth?: { vault?: import('./http/server.js').CoreAuthOptions['vault'] };
+  },
+): CoreBundle {
   if (db === undefined) {
     if (!config.demo && config.dbPath !== ':memory:') {
       throw new Error(
@@ -670,15 +788,35 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
     }
     db = openDatabase(config.dbPath);
   }
-  const keychain = config.keychain === 'native' ? createKeychainNative() : createKeychainFake();
+  const keychain = createConfiguredKeychain(config);
 
-  const pairing = createPairingManager(createPairingStore(db), {
+  // M22: in LOGIN mode the pre-user tables MUST come from the system database
+  // (`data/system.db`, keyed by `system-key`), because resolving and proving a
+  // user cannot depend on a database that is chosen BY the user. A hand-built
+  // call that forgets it would silently mint sessions against the wrong store,
+  // so it is refused rather than defaulted.
+  if (config.authMode === 'login' && system === undefined) {
+    throw new Error(
+      'AUTH_MODE=login requires the system database (users + credentials) — boot via ' +
+        'startServer, which opens it with the `system-key` keychain account',
+    );
+  }
+
+  const pairing = createPairingManager(system?.pairings ?? createPairingStore(db), {
     codeTtlMs: config.codeTtlMs,
     maxAttempts: config.maxAttempts,
     lockMs: config.lockMs,
     demo: config.demo,
   });
-  const sessions = createSessionManager(createSessionStore(db), { ttlMs: config.sessionTtlMs });
+  const sessions = createSessionManager(system?.sessions ?? createSessionStore(db), {
+    ttlMs: config.sessionTtlMs,
+  });
+  // M22 account managers. Present ONLY in login mode: pairing mode has no user
+  // to resolve (the OS profile identifies the holder, §2a), and building these
+  // over a store nobody reads would invite a route to trust them by accident.
+  const users = system === undefined ? undefined : createUserManager({ store: system.users });
+  const credentials =
+    system === undefined ? undefined : createCredentialManager(system.credentials);
   const audit = auditLog({ store: createAuditStore(db) });
   // M10 cumulative spend ledger over the same db (PLAN-M10 W3).
   const spendLedger = createSpendLedgerManager({ store: createSpendLedgerStore(db) });
@@ -694,6 +832,11 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   // proposals tables (schema v3) + the six files.* tools. Roots are added at
   // runtime (a registered dir must exist), so wiring here needs no temp dir.
   const projectRootManager = createProjectRootManager({ store: createProjectRootStore(db) });
+  // M22: a deployment may OWN the roots (a container volume mount). Register
+  // them before anything can read the list, and fail the boot when one is not a
+  // directory — a typo'd or unmounted path must not silently leave the file
+  // tools with no reachable root (or, worse, "succeed" with an empty one).
+  applyFixedRoots(projectRootManager, config.fixedRoots, config.fixedRootsReadOnly);
   const grantManager = createGrantManager({ store: createGrantStore(db) });
   const pendingManager = createPendingManager({
     store: createPendingToolStore(db),
@@ -745,6 +888,7 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   // live in chat_blobs inside the encrypted DB; staged rows bind to turns.
   const attachments = createAttachmentManager({
     blobs: createChatBlobStore(db),
+    maxBytes: config.maxUploadBytes,
     attachments: createAttachmentStore(db),
     audit,
   });
@@ -969,14 +1113,44 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   });
 
   const app = createCoreApp({
+    ...(appOptions ?? {}),
     port: config.port,
     demo: config.demo,
     version: config.version,
     schemaVersion: config.schemaVersion,
     hostAllowlist: config.hostAllowlist,
     staticDir: config.staticDir,
+    // M22: the account lane (login) or the pairing ceremony (default).
+    auth:
+      config.authMode === 'login' && users !== undefined && credentials !== undefined
+        ? {
+            mode: 'login',
+            users,
+            capabilities: credentials,
+            sessionClass: config.loginSessionClass,
+            ...(appOptions?.auth ?? {}),
+          }
+        : { mode: config.authMode, ...(appOptions?.auth ?? {}) },
+    loginRateLimit: config.loginRateLimit,
+    maxJsonBytes: config.maxJsonBytes,
+    // M22: a deployment-owned roots list makes the roots surface read-only.
+    rootsFixed: config.fixedRoots.length > 0,
+    // R4: the header is read only when the socket peer is a trusted proxy, and
+    // it feeds the rate-limit buckets only (never locality).
+    clientIp: (req) =>
+      rateLimitKeyFor({
+        peer: req.socket?.remoteAddress ?? undefined,
+        headerValue:
+          config.clientIpHeader === undefined ? undefined : req.headers[config.clientIpHeader],
+        trustedCidrs: config.trustedProxyCidrs,
+      }),
     deviceSecret: config.deviceSecret,
     bootNonce: config.bootNonce,
+    // M20-B S7: the networked-pairing lane reads the transport facts from the
+    // one place they are decided (S6): remote access gates the payload route
+    // and the certificate fingerprint is the value a scanning device pins.
+    remoteAccess: config.remoteAccess,
+    tlsFingerprint: config.tls?.fingerprint,
     pairing,
     sessions,
     audit,
@@ -1071,27 +1245,193 @@ export function createCore(config: CoreConfig, db?: Database.Database): CoreBund
   };
 }
 
-function listen(app: Express, port: number, host: string): Promise<Server> {
+function listen(
+  app: Express,
+  port: number,
+  host: string,
+  tls?: CoreTlsConfig,
+): Promise<Server> {
   return new Promise((resolve, reject) => {
-    const server = app.listen(port, host, () => resolve(server));
+    // PLAN-M20-B S6: TLS configured ⇒ https. The material was loaded and
+    // SAN-checked by config.ts; https needs the PEM itself, so it is read here
+    // (a failure is a hard boot error, never a silent downgrade to plain
+    // HTTP).
+    const server =
+      tls === undefined
+        ? app.listen(port, host, () => resolve(server))
+        : createHttpsServer(
+            { cert: readFileSync(tls.certFile), key: readFileSync(tls.keyFile) },
+            app,
+          ).listen(port, host, () => resolve(server));
     server.on('error', reject);
   });
 }
 
 /**
- * Build the core and bind the loopback HTTP server. Resolves once listening.
+ * M22: open the PRE-USER store set (users, credentials, pairings, sessions) for
+ * a LOGIN-mode boot. `undefined` in pairing mode — the desktop shape keeps its
+ * session/pairing tables in the main database, byte-identical to today.
  */
-export async function startServer(config: CoreConfig = loadConfig()): Promise<{ bundle: CoreBundle; server: Server }> {
-  const db = await openCoreDatabase(config);
-  const bundle = createCore(config, db);
-  const server = await listen(bundle.app, config.port, config.host);
+async function openSystemFor(
+  config: CoreConfig,
+  keychain: Keychain,
+): Promise<{ stores: SystemStores; db: Database.Database } | undefined> {
+  if (config.authMode !== 'login') return undefined;
+  const db = await openSystemDatabase({ location: config.systemDbPath, keychain });
+  return { stores: createSystemStores(db), db };
+}
+
+/**
+ * M22: the ACCOUNT LANE as a public seam — the same keychain resolution and the
+ * same system database the server boots with, so the operator CLI
+ * (`docker/server/tools/user.mjs`) can create and rotate credentials without a
+ * second, divergent spelling of "where does the user list live?".
+ */
+export async function openAccounts(config: CoreConfig = loadConfig()): Promise<{
+  db: Database.Database;
+  stores: SystemStores;
+  users: UserManager;
+  credentials: CredentialManager;
+  close(): void;
+}> {
+  const keychain = createConfiguredKeychain(config);
+  const db = await openSystemDatabase({ location: config.systemDbPath, keychain });
+  const stores = createSystemStores(db);
+  return {
+    db,
+    stores,
+    users: createUserManager({ store: stores.users }),
+    credentials: createCredentialManager(stores.credentials),
+    close: () => db.close(),
+  };
+}
+
+/**
+ * Build the core and bind the listener — plain HTTP on `host` unless TLS is
+ * configured (then HTTPS). Resolves once listening.
+ */
+export interface StartedServer {
+  bundle: CoreBundle;
+  server: Server;
+  /**
+   * M20-B S9 (login mode only): the account lane — the key vault and the
+   * per-user rails. Exposed so an operator tool (and a test) can LOCK a user's
+   * key, sweep idle partitions, or close one deliberately, without reaching into
+   * this function's closure.
+   */
+  accounts?: { vault: ReturnType<typeof createKeyVault>; rails: ReturnType<typeof createUserRails> };
+  /**
+   * M22: whether any account exists. The boot hint has to say "sign in" or
+   * "create the account" — the wrong one reads as a dead end, and only this
+   * function can see the user table.
+   */
+  loginHasUsers?: boolean;
+}
+
+export async function startServer(config: CoreConfig = loadConfig()): Promise<StartedServer> {
+  // M20-B S6 second line of defence: `loadConfig` already refuses a remote bind
+  // without TLS, but `startServer` accepts an explicit `CoreConfig`, so a
+  // hand-built one could otherwise put a PLAINTEXT listener on a non-loopback
+  // host. Re-asserted here because the consequence (serving the whole API in
+  // clear text) is not worth trusting a caller to have built correctly.
+  const insecure = transportRefusal({ remote: config.remoteAccess === true, tls: config.tls !== undefined });
+  if (insecure !== null) {
+    throw new Error(
+      `refusing to start: ${insecure.reason} — a non-loopback bind requires TLS ` +
+        '(REMOTE_ACCESS=1 with TLS_CERT_FILE/TLS_KEY_FILE, or construct the config through loadConfig)',
+    );
+  }
+  const keychain = createConfiguredKeychain(config);
+  const system = await openSystemFor(config, keychain);
+  // M22/R1: in login mode the listening app is a GATEWAY — it authenticates and
+  // delegates every other /v1 request to the caller's own partition, so it needs
+  // no file database of its own. (User #0's partition IS the legacy
+  // `partner.db`, opened by the rails on their first request.)
+  // M20-B S9: the per-user key vault (login mode only).
+  const vault =
+    system === undefined
+      ? undefined
+      : createKeyVault({
+          keychain,
+          wraps: system.stores.keyWraps,
+          users: system.stores.users,
+        });
+  const rails =
+    system === undefined
+      ? undefined
+      : createUserRails({
+          config,
+          system: system.stores,
+          keychain,
+          build: (cfg, partitionDb, stores) =>
+            createCore(cfg, partitionDb as Database.Database, stores),
+          maxOpen: config.partitionMaxOpen,
+          idleMs: config.partitionIdleMs,
+          ...(vault === undefined ? {} : { vault }),
+        });
+  // R1 data-safety guard: in login mode the listening app has no database of its
+  // own, and a pre-partition database exists only for the FIRST user. One sitting
+  // there with no user to own it would be silently orphaned by a partitioned boot,
+  // so refuse and say what to do.
+  if (rails !== undefined && system !== undefined && existsSync(config.dbPath)) {
+    const anyUser = system.stores.users.list().length > 0;
+    const ownerExists = system.stores.users.findById(LEGACY_USER_ID) !== undefined;
+    if (anyUser && !ownerExists) {
+      throw new Error(
+        'login mode found an existing pre-partition database at ' +
+          config.dbPath +
+          " but no first user (id '" +
+          LEGACY_USER_ID +
+          "') to own it — refusing to boot rather than leave it unreadable. " +
+          'Delete that file if it is scratch, or move it to the first user\'s partition ' +
+          'directory and copy its keychain entry to the same name with the user id appended.',
+      );
+    }
+  }
+  const db =
+    rails === undefined ? await openCoreDatabase(config) : openDatabase(':memory:');
+  const bundle = createCore(
+    config,
+    db,
+    system?.stores,
+    rails === undefined
+      ? undefined
+      : {
+          delegate: async (userId) => {
+            // S9 first: no key, no partition. This is what makes a signed-out
+            // user unreadable rather than merely unread.
+            if (vault !== undefined && (await vault.keyFor(userId)) === undefined) {
+              return 'partition_locked' as const;
+            }
+            return (await rails.coreFor(userId))?.app;
+          },
+          ...(vault === undefined ? {} : { auth: { vault } }),
+        },
+  );
+  const server = await listen(bundle.app, config.port, config.host, config.tls);
   // M14: the scheduler heartbeat runs while the core listens (auto-stopped
   // on close so a shutdown never ticks a closed DB).
-  bundle.scheduler.start();
+  // The gateway itself has no schedules; each OPEN partition runs its own.
+  if (rails === undefined) bundle.scheduler.start();
+  // R3: close partitions that have gone idle, so key material does not sit in
+  // memory for a user who walked away. Unref'd: never keeps the process alive.
+  const idleTimer =
+    rails === undefined || config.partitionIdleMs <= 0
+      ? undefined
+      : setInterval(() => rails.sweep(), Math.max(30_000, Math.floor(config.partitionIdleMs / 4)));
+  idleTimer?.unref();
   server.on('close', () => {
+    if (idleTimer !== undefined) clearInterval(idleTimer);
     bundle.scheduler.stop();
+    rails?.closeAll();
+    system?.db.close();
   });
-  return { bundle, server };
+  return {
+    bundle,
+    server,
+    ...(vault === undefined || rails === undefined ? {} : { accounts: { vault, rails } }),
+    ...(system === undefined ? {} : { loginHasUsers: system.stores.users.list().length > 0 }),
+  };
 }
 
 async function main(): Promise<void> {
@@ -1102,7 +1442,7 @@ async function main(): Promise<void> {
   // so this branch never prints a banner or any other text to stdout.
   if (process.argv.includes('--native-messaging')) {
     const db = await openCoreDatabase(config);
-    const bundle = createCore(config, db);
+    const bundle = createCore(config, db, (await openSystemFor(config, createConfiguredKeychain(config)))?.stores);
     const deps: NativeSessionDeps = {
       version: bundle.config.version,
       demo: bundle.config.demo,
@@ -1123,17 +1463,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { bundle, server } = await startServer(config);
+  const { bundle, server, loginHasUsers } = await startServer(config);
   // M15: the boot hint tells an operator where the pairing code comes from —
   // the demo seam, the shell device channel (tray), or nowhere (a bare live
   // core intentionally exposes no code surface).
-  const pairHint = config.demo
-    ? ' · dev pairing code: GET /v1/dev/pair-code'
-    : config.deviceSecret !== undefined
-      ? ' · device pairing: GET /v1/pair/device (shell tray)'
-      : ' · no pairing code surface (boot inside the shell, or set PARTNER_DEVICE_SECRET)';
+  // M22: in LOGIN mode there is no code surface at all. Say which of the two
+  // states applies — "create an account" or "sign in" — because the wrong one is
+  // a dead end for whoever reads it (a fresh hosted core has no other way in).
+  const pairHint =
+    config.authMode === 'login'
+      ? loginHasUsers === true
+        ? ' · user login: sign in at the web UI'
+        : ' · user login: create the account with `node tools/user.mjs add <name>`'
+      : config.demo
+        ? ' · dev pairing code: GET /v1/dev/pair-code'
+        : config.deviceSecret !== undefined
+          ? ' · device pairing: GET /v1/pair/device (shell tray)'
+          : ' · no pairing code surface (boot inside the shell, or set PARTNER_DEVICE_SECRET)';
   console.log(
-    `partner-core v${config.version} up on http://${config.host}:${config.port}` +
+    `partner-core v${config.version} up on ${config.tls === undefined ? 'http' : 'https'}://${config.host}:${config.port}` +
       ` demo=${config.demo ? 'on' : 'off'} schema=v${config.schemaVersion}${pairHint}`,
   );
 
@@ -1173,15 +1521,16 @@ async function main(): Promise<void> {
   }
 }
 
-// CLI entry guard: listen only when executed directly (tsx src/index.ts, or a
-// bundled CJS artifact whose import.meta.url is empty), never when imported
-// (vitest, integration tests, web/shell packages).
-const entryArg = process.argv[1];
-const metaUrl = (import.meta as { url?: string }).url;
-const isDirectEntry =
-  entryArg !== undefined &&
-  (metaUrl === undefined || metaUrl === '' || metaUrl === pathToFileURL(entryArg).href);
-if (isDirectEntry) {
+// CLI entry guard: listen only when THIS file was the entry point — never when
+// imported (vitest, the operator CLI tools, web/shell packages). See
+// ./entry.js for why "a bundled artifact always runs" was wrong.
+if (
+  isDirectEntryPoint({
+    entryArg: process.argv[1],
+    metaUrl: (import.meta as { url?: string }).url,
+    selfFile: typeof __filename === 'string' ? __filename : undefined,
+  })
+) {
   main().catch((err: unknown) => {
     console.error('partner-core failed to start:', err instanceof Error ? err.message : err);
     process.exit(1);

@@ -94,8 +94,8 @@ export function normalizeEndpoint(raw: unknown): string {
     throw new ProviderError('invalid_endpoint', 'endpoint must be http(s)');
   }
   if (url.protocol === 'http:') {
-    // http is only ever acceptable on a loopback host (local fakes/tests) -
-    // the same rule the self-service client enforces (PLAN.md §11).
+    // http is only ever acceptable on a loopback host (local fakes/tests) —
+    // an https requirement everywhere else (PLAN.md §11).
     const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
     if (!loopback) {
       throw new ProviderError(

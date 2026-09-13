@@ -299,3 +299,55 @@ describe('audit discipline', () => {
     expect(blob).not.toContain('secret-content-body');
   });
 });
+
+describe('M20-B S4: the CLIENT CLASS gates approvals, not just direct calls', () => {
+  // Approving EXECUTES the stored tool, so the approver's class must clear the
+  // same envelope the tool requires. The verified gap: `decide` took only an
+  // actor LABEL, so a mobile session could approve a queued write and have it run
+  // — the envelope bypassed through the approval queue, with no grant needed.
+  it('refuses a MOBILE approve of a queued write, and creates nothing', () => {
+    const h = setup();
+    h.write('a.txt', 'hello');
+    // `files.edit` is the write-PROPOSAL tool (medium risk, so it queues without
+    // a grant); `files.apply` is the writer. Both map to `file.write`, which is
+    // exactly what mobile lacks — so the approval is the gate under test.
+    const queued = execResult(h, 'files.edit', {
+      projectId: h.root.id,
+      path: 'a.txt',
+      proposedContent: 'rewritten by a phone',
+    });
+    expect(queued.outcome).toBe('needs_approval');
+    if (queued.outcome !== 'needs_approval') return;
+
+    expect(() =>
+      h.broker.decide(queued.pendingId, { decision: 'approve' }, 'web', 'mobile'),
+    ).toThrowError(/capability_denied|may not approve/);
+
+    // Nothing was created, and the row is STILL WAITING — a refused approval
+    // must not consume the decision, or the desktop user loses the request.
+    expect(h.broker.getProposal('probe')).toBeNull();
+    expect(h.broker.pending.get(queued.pendingId)?.decidedAt).toBeNull();
+
+    // Desktop approves the same row and it runs — the control is the class.
+    const decided = h.broker.decide(queued.pendingId, { decision: 'approve' }, 'web', 'desktop');
+    expect(decided.ok).toBe(true);
+  });
+
+  it('refuses approve-and-remember from mobile even for a READ tool (it creates a grant)', () => {
+    const h = setup();
+    h.write('a.txt', 'hello');
+    const queued = execResult(h, 'files.list', { projectId: h.root.id, path: '.' });
+    expect(queued.outcome).toBe('needs_approval');
+    if (queued.outcome !== 'needs_approval') return;
+
+    expect(() =>
+      h.broker.decide(queued.pendingId, { decision: 'approve', remember: true }, 'web', 'mobile'),
+    ).toThrowError(/capability_denied|may not approve/);
+    expect(h.broker.grants.hasGrant('files.list', h.root.id)).toBe(false);
+
+    // …but a plain approve (no grant) is fine for mobile, because a read IS in
+    // its envelope — the guard must not become "mobile cannot approve anything".
+    const plain = h.broker.decide(queued.pendingId, { decision: 'approve' }, 'web', 'mobile');
+    expect(plain.ok).toBe(true);
+  });
+});

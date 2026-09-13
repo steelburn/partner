@@ -1,9 +1,9 @@
 /**
  * M1 cross-cutting e2e over a spawned demo core (PLAN-M1.md exit criteria):
- * provider CRUD with keys landing only in the (fake) keychain, plus the
- * integrated llm-self-service import running against the BUILT-IN demo
- * double — fully offline, no external servers, no real credentials
- * (review-fixed: DEMO_MODE must not hit the real enter.ne1.dev).
+ * provider CRUD against a real HTTP upstream, with keys landing only in the
+ * (fake) keychain. No external servers, no real credentials. (The
+ * llm-self-service demo-double import that used to live here was removed in
+ * M22.)
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -100,30 +100,7 @@ function authed(path: string, init: RequestInit = {}): Promise<Response> {
   });
 }
 
-async function encryptWithPem(pem: string, password: string): Promise<string> {
-  const der = Buffer.from(
-    pem
-      .replace('-----BEGIN PUBLIC KEY-----', '')
-      .replace('-----END PUBLIC KEY-----', '')
-      .replace(/\s+/g, ''),
-    'base64',
-  );
-  const key = await globalThis.crypto.subtle.importKey(
-    'spki',
-    der,
-    { name: 'RSA-OAEP', hash: 'SHA-256' },
-    false,
-    ['encrypt'],
-  );
-  const enc = await globalThis.crypto.subtle.encrypt(
-    { name: 'RSA-OAEP' },
-    key,
-    new TextEncoder().encode(password),
-  );
-  return Buffer.from(enc).toString('base64');
-}
-
-describe('M1 e2e: providers + offline llm-self-service import', () => {
+describe('M1 e2e: providers (manual CRUD + keychain discipline)', () => {
   it('starts with no providers and refuses unauthenticated provider routes', async () => {
     const anon = await fetch(`${core.base}/v1/providers`);
     expect(anon.status).toBe(401);
@@ -160,77 +137,4 @@ describe('M1 e2e: providers + offline llm-self-service import', () => {
     expect(((await empty.json()) as { providers: unknown[] }).providers).toEqual([]);
   });
 
-  it('rejects a plaintext password in self-service connect', async () => {
-    const res = await authed('/v1/self-service/connect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        endpoint: 'https://enter.ne1.dev',
-        email: 'demo@example.com',
-        password: 'not-allowed',
-      }),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it('full offline import via the built-in demo double (no external server)', async () => {
-    const endpoint = 'https://enter.ne1.dev'; // would be the real portal if NOT demo
-
-    const keyRes = await authed('/v1/self-service/login-key', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ endpoint }),
-    });
-    expect(keyRes.status).toBe(200);
-    const pem = ((await keyRes.json()) as { publicKeyPem: string }).publicKeyPem;
-
-    // Wrong (too short) credentials -> identical generic 401, no enumeration.
-    const bad = await authed('/v1/self-service/connect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        endpoint,
-        email: 'demo@example.com',
-        passwordCipher: await encryptWithPem(pem, 'x'),
-      }),
-    });
-    expect(bad.status).toBe(401);
-    expect(((await bad.json()) as { message?: string }).message).toBe('Invalid email or password');
-
-    const ok = await authed('/v1/self-service/connect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        endpoint,
-        email: 'demo@example.com',
-        passwordCipher: await encryptWithPem(pem, 'demo-pass-123'),
-      }),
-    });
-    expect(ok.status).toBe(201);
-    const provider = (await ok.json()) as {
-      id: string;
-      source: string;
-      name: string;
-      endpoint: string;
-    };
-    expect(provider.source).toBe('llm-self-service');
-    expect(provider.name).toBe('llm-self-service (org)');
-    expect(provider.endpoint).toBe(`http://127.0.0.1:${corePort}/v1`);
-    expect(JSON.stringify(provider)).not.toContain('sk-demo-import');
-
-    // List never leaks the key.
-    const listText = await (await authed('/v1/providers')).text();
-    expect(listText).toContain('llm-self-service (org)');
-    expect(listText).not.toContain('sk-demo-import');
-
-    // Chat still works offline: demo ignores llm-self-service-sourced
-    // providers as a chat backend (their endpoint is this core itself).
-    const chat = await authed('/v1/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: 'hello partner' }] }),
-    });
-    expect(chat.status).toBe(200);
-    expect(await chat.text()).toContain('demo: received');
-  });
 });

@@ -134,5 +134,18 @@ export interface ProviderClient {
 // Versioning
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 19;
 export const WIRE_VERSION = 'v1';
+
+/**
+ * The id of the user that OWNS the pre-partition layout (M20-B §4.1 / S2).
+ *
+ * M20-B's locked decision is that an existing install does not move: the
+ * single-user database at `<dataRoot>/partner.db`, its `<dataRoot>/skills`
+ * directory and its legacy `db-key` keychain account ARE this user's partition.
+ *
+ * It is the same value as the first user created on an empty core, and the two
+ * must never drift — which is why one constant is exported and the other is
+ * derived from it rather than spelled a second time.
+ */
+export const LEGACY_USER_ID = '0';

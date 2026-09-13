@@ -71,10 +71,7 @@ export function createPlaybookProviderResolver(deps: {
       providers: deps.providers.list(),
       taskClass: 'chat',
     });
-    const usable =
-      resolved.provider !== null &&
-      resolved.model !== '' &&
-      !(deps.demo && resolved.provider.source === 'llm-self-service');
+    const usable = resolved.provider !== null && resolved.model !== '';
     if (usable && resolved.provider !== null) {
       try {
         const client: ProviderClient = await deps.providers.clientFor(resolved.provider.id);
