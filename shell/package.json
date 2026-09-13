@@ -1,6 +1,6 @@
 {
   "name": "@partner/shell",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Tauri v2 desktop shell (tray, window, autostart, updater) \u2014 scaffolded in M0; buildable once Rust is installed (PLAN-M0.md)",
   "scripts": {}
