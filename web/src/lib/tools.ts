@@ -431,3 +431,35 @@ export async function browseDirectories(
   });
   return parseBrowseResult(await expectJson<unknown>(response), response.status);
 }
+
+/** M22: the roots surface state — the list plus who owns it. */
+export interface RootsState {
+  roots: ProjectRoot[];
+  /**
+   * True when the DEPLOYMENT owns the roots (`FIXED_ROOTS`): the core refuses
+   * add/remove, so the UI must render the list read-only instead of offering
+   * buttons that will 403.
+   */
+  rootsFixed: boolean;
+}
+
+/** GET /v1/roots -> { roots, rootsFixed } (M22). */
+export async function listRootsState(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<RootsState> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(ROOTS_PATH, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || !Array.isArray(parsed.roots)) {
+    throw new ApiRequestError(response.status, 'The roots response had an unexpected shape.');
+  }
+  return {
+    roots: parsed.roots as ProjectRoot[],
+    // Absent means "the client owns them" (older cores, and the default).
+    rootsFixed: parsed.rootsFixed === true,
+  };
+}

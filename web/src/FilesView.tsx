@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type {
   GrantRecord,
   PendingToolCall,
@@ -24,7 +25,7 @@ import {
   browseDirectories,
   decidePending,
   listGrants,
-  listRoots,
+  listRootsState,
   removeGrant,
   removeRoot,
   type BrowseResult,
@@ -63,6 +64,8 @@ export default function FilesView({
   onRefreshPending,
 }: FilesViewProps) {
   const [roots, setRoots] = useState<ProjectRoot[] | null>(null);
+  /** M22: the deployment owns the roots, so this view is read-only. */
+  const [rootsFixed, setRootsFixed] = useState(false);
   const [grants, setGrants] = useState<GrantRecord[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
@@ -77,8 +80,9 @@ export default function FilesView({
       return;
     }
     try {
-      const [rootList, grantList] = await Promise.all([listRoots(token), listGrants(token)]);
-      setRoots(rootList);
+      const [rootState, grantList] = await Promise.all([listRootsState(token), listGrants(token)]);
+      setRoots(rootState.roots);
+      setRootsFixed(rootState.rootsFixed);
       setGrants(grantList);
       setLoadError(null);
     } catch (cause) {
@@ -95,8 +99,9 @@ export default function FilesView({
     try {
       const token = readStoredToken();
       if (!token) return;
-      const [rootList, grantList] = await Promise.all([listRoots(token), listGrants(token)]);
-      setRoots(rootList);
+      const [rootState, grantList] = await Promise.all([listRootsState(token), listGrants(token)]);
+      setRoots(rootState.roots);
+      setRootsFixed(rootState.rootsFixed);
       setGrants(grantList);
     } catch {
       // ignore transient refresh failures
@@ -148,10 +153,10 @@ export default function FilesView({
         {sessionLost ? (
           <div className="files-alert" role="alert">
             <p className="files-alert-text">
-              Your session with the Partner core has expired. Pair again to manage roots.
+              {sessionLostSentence('manage roots')}
             </p>
             <button type="button" className="btn btn-secondary" onClick={onUnpair}>
-              Pair again
+              {sessionLostAction()}
             </button>
           </div>
         ) : null}
@@ -182,8 +187,9 @@ export default function FilesView({
           <section className="card roots-card" aria-label="Project roots">
             <h2 className="card-title">Project roots</h2>
             <p className="card-copy">
-              Everything outside a registered root is invisible to the tools. Removing a root also
-              removes its grants.
+              {rootsFixed
+                ? 'These folders are set by the deployment (FIXED_ROOTS) and cannot be changed from here. Everything outside them is invisible to the tools.'
+                : 'Everything outside a registered root is invisible to the tools. Removing a root also removes its grants.'}
             </p>
             {roots.length === 0 ? (
               <div className="empty-state empty-inline">
@@ -207,12 +213,15 @@ export default function FilesView({
                       onRemoved={removeRootLocal}
                       onGrantAdded={replaceGrant}
                       onGrantRemoved={dropGrant}
+                      fixed={rootsFixed}
                     />
                   </li>
                 ))}
               </ul>
             )}
-            <AddRootCard disabled={sessionLost} onAdded={appendRoot} onSessionLost={handleSessionLost} />
+            {rootsFixed ? null : (
+              <AddRootCard disabled={sessionLost} onAdded={appendRoot} onSessionLost={handleSessionLost} />
+            )}
           </section>
         ) : null}
       </div>
@@ -406,6 +415,8 @@ interface RootCardProps {
   onRemoved: (id: string) => void;
   onGrantAdded: (grant: GrantRecord) => void;
   onGrantRemoved: (id: string) => void;
+  /** M22: the deployment owns the root — no remove action. */
+  fixed?: boolean;
 }
 
 function RootCard({
@@ -417,6 +428,7 @@ function RootCard({
   onRemoved,
   onGrantAdded,
   onGrantRemoved,
+  fixed = false,
 }: RootCardProps) {
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -481,6 +493,7 @@ function RootCard({
           >
             {showEdit ? 'Hide edit preview' : 'Edit preview'}
           </button>
+          {fixed ? null : (
           <button
             type="button"
             className="btn btn-secondary btn-sm btn-danger"
@@ -493,6 +506,7 @@ function RootCard({
           >
             {removing ? 'Removing…' : confirmingRemove ? 'Confirm remove' : 'Remove'}
           </button>
+          )}
         </div>
       </div>
       <p className="root-path">{root.path}</p>

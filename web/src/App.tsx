@@ -21,8 +21,10 @@ import { NotesMini } from './NotesMini.js';
 import {
   IconAudit,
   IconChat,
+  IconClose,
   IconFiles,
   IconMemory,
+  IconMore,
   IconNotes,
   IconPanelLeft,
   IconPanelRight,
@@ -33,6 +35,18 @@ import {
   IconSkills,
   IconThemes,
 } from './icons.js';
+import {
+  aggregateAttention,
+  attentionCounts,
+  attentionLabel,
+  failedRunsNeedingAttention,
+  formatBadge,
+  isAttentionView,
+  type AttentionCounts,
+} from './lib/attention.js';
+import { listProfile } from './lib/memory.js';
+import { listScheduleRuns } from './lib/schedules.js';
+import { revokeSession } from './lib/api.js';
 import AuditView from './AuditView.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
@@ -45,7 +59,13 @@ import PlaybooksView from './PlaybooksView.js';
 import ProvidersView from './ProvidersView.js';
 import SkillsView from './SkillsView.js';
 import ThemeStudio from './ThemeStudio.js';
-import { revokeSession } from './lib/api.js';
+import {
+  MOBILE_MORE,
+  MOBILE_TABS,
+  NAV_GROUPS,
+  NAV_LABELS,
+  type ViewName,
+} from './lib/nav.js';
 import { createConversation, deleteConversation, listConversations } from './lib/conversations.js';
 import { conversationOpenAction } from './lib/conversation-open.js';
 import {
@@ -70,22 +90,17 @@ import {
 } from './theme/apply.js';
 
 /** How often the shell refreshes the pending-approval count for the badge. */
+/** M20.A: approvals are time-critical (a turn is blocked on the decision), so
+the queue keeps its fast poll. Memory suggestions and failed runs only change
+when work completes, and each poll is a round trip — slower is correct. */
 const QUEUE_POLL_MS = 4000;
+const ATTENTION_POLL_MS = 15000;
 
-type ViewName =
-  | 'chat'
-  | 'personas'
-  | 'providers'
-  | 'files'
-  | 'memory'
-  | 'themes'
-  | 'notes'
-  | 'skills'
-  | 'playbooks'
-  | 'audit';
-
-/** M14 nav sidebar: groups keep the M3 order/aria semantics; labels are
- *  hidden below the icon-rail breakpoint (CSS), never scrolled. */
+/**
+ * Views, labels and tier membership live in `lib/nav.ts` so the desktop
+ * sidebar and the phone tabs/More sheet can never drift apart —
+ * `nav.test.ts` asserts that the phone surface reaches every view exactly
+ * once. */
 interface NavItem {
   view: ViewName;
   label: string;
@@ -94,9 +109,36 @@ interface NavItem {
   badge?: string;
 }
 
-interface NavGroup {
-  name: string;
-  items: NavItem[];
+/** The one place the nav model meets the icon set. */
+function iconFor(view: ViewName): JSX.Element {
+  switch (view) {
+    case 'chat':
+      return <IconChat />;
+    case 'notes':
+      return <IconNotes />;
+    case 'personas':
+      return <IconPersonas />;
+    case 'providers':
+      return <IconProviders />;
+    case 'themes':
+      return <IconThemes />;
+    case 'files':
+      return <IconFiles />;
+    case 'skills':
+      return <IconSkills />;
+    case 'playbooks':
+      return <IconPlaybooks />;
+    case 'memory':
+      return <IconMemory />;
+    case 'audit':
+      return <IconAudit />;
+  }
+}
+
+/** Badge for a nav destination, from the shared attention model
+ *  (`lib/attention.ts`) so every surface defines "waiting on you" once. */
+function badgeFor(view: ViewName, attention: AttentionCounts): string | undefined {
+  return isAttentionView(view) ? formatBadge(attention[view]) : undefined;
 }
 
 function NavButton({
@@ -114,11 +156,7 @@ function NavButton({
       className="btn btn-secondary side-tab"
       onClick={() => onSelect(item.view)}
       aria-pressed={current === item.view}
-      aria-label={
-        item.badge !== undefined && item.badge !== ''
-          ? `${item.label} — ${item.badge}`
-          : item.label
-      }
+      aria-label={attentionLabel(item.label, item.badge)}
     >
       {item.icon}
       <span className="side-label">{item.label}</span>
@@ -133,62 +171,181 @@ function NavButton({
 
 function SideNav({
   current,
-  pendingCount,
+  attention,
   onSelect,
 }: {
   current: ViewName;
-  pendingCount: number;
+  attention: AttentionCounts;
   onSelect: (view: ViewName) => void;
 }) {
-  const groups: NavGroup[] = [
-    {
-      name: 'Workspace',
-      items: [
-        { view: 'chat', label: 'Chat', icon: <IconChat /> },
-        { view: 'notes', label: 'Notes', icon: <IconNotes /> },
-      ],
-    },
-    {
-      name: 'Studio',
-      items: [
-        { view: 'personas', label: 'Personas', icon: <IconPersonas /> },
-        { view: 'providers', label: 'Providers', icon: <IconProviders /> },
-        { view: 'themes', label: 'Themes', icon: <IconThemes /> },
-      ],
-    },
-    {
-      name: 'Tools',
-      items: [
-        {
-          view: 'files',
-          label: 'Files',
-          icon: <IconFiles />,
-          badge: pendingCount > 0 ? (pendingCount > 99 ? '99+' : String(pendingCount)) : undefined,
-        },
-        { view: 'skills', label: 'Skills', icon: <IconSkills /> },
-        { view: 'playbooks', label: 'Playbooks', icon: <IconPlaybooks /> },
-      ],
-    },
-    {
-      name: 'System',
-      items: [
-        { view: 'memory', label: 'Memory', icon: <IconMemory /> },
-        { view: 'audit', label: 'Audit', icon: <IconAudit /> },
-      ],
-    },
-  ];
-
   return (
     <nav className="side-nav" aria-label="Partner views">
-      {groups.map((group) => (
+      {NAV_GROUPS.map((group) => (
         <div className="side-group" role="group" aria-label={group.name} key={group.name}>
           <span className="side-group-title">{group.name}</span>
-          {group.items.map((item) => (
-            <NavButton key={item.view} item={item} current={current} onSelect={onSelect} />
-          ))}
+          {group.views.map((view) => {
+            const label = NAV_LABELS[view];
+            return (
+              <NavButton
+                key={view}
+                item={{ view, label, icon: iconFor(view), badge: badgeFor(view, attention) }}
+                current={current}
+                onSelect={onSelect}
+              />
+            );
+          })}
         </div>
       ))}
     </nav>
+  );
+}
+
+/**
+ * M20.A phone navigation — a bottom tab bar (primary destinations, inside
+ * thumb reach) plus a "More" sheet for everything else.
+ *
+ * This is the whole reason a phone layout works: the conversation/notes/assets
+ * rails become overlays, so the tab bar and the compact top bar are the only
+ * permanent chrome. That is what hands the transcript and composer the full
+ * viewport width instead of the 58px they got when the rails were columns.
+ *
+ * Rendered at every tier but hidden by CSS above the phone breakpoint, so
+ * there is exactly one nav definition per form factor and no JS breakpoints
+ * (JS media queries would also mismatch SSR/initial paint).
+ */
+function MobileNav({
+  current,
+  attention,
+  onSelect,
+}: {
+  current: ViewName;
+  attention: AttentionCounts;
+  onSelect: (view: ViewName) => void;
+}) {
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  /**
+   * The More tab carries the aggregate of everything the sheet hides.
+   * A badge on an item inside a closed sheet is invisible, so without this the
+   * one notification that says "open the sheet" is the one the user cannot
+   * see — which is exactly how a memory suggestion went unnoticed.
+   *
+   * Visible tabs are deliberately excluded: their own badge is already on the
+   * tab bar, and showing the same count twice reads as two separate problems.
+   */
+  const moreBadge = formatBadge(aggregateAttention(attention, MOBILE_MORE));
+
+  /** Escape closes the sheet; the explicit Close button is the pointer path
+   *  and the scrim is decorative (aria-hidden), so this is the keyboard path. */
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setMoreOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [moreOpen]);
+
+  const select = (view: ViewName): void => {
+    setMoreOpen(false);
+    onSelect(view);
+  };
+
+  return (
+    <>
+      {moreOpen ? (
+        <div className="more-scrim" aria-hidden="true" onClick={() => setMoreOpen(false)} />
+      ) : null}
+      <nav className="mobile-nav" aria-label="Partner views">
+        {moreOpen ? (
+          <div className="more-sheet" role="group" aria-label="More views">
+            <div className="more-sheet-head">
+              <span className="more-sheet-title">More</span>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm more-sheet-close"
+                onClick={() => setMoreOpen(false)}
+                aria-label="Close more views"
+              >
+                <IconClose />
+              </button>
+            </div>
+            <div className="more-sheet-grid">
+              {MOBILE_MORE.map((view) => {
+                const label = NAV_LABELS[view];
+                const badge = badgeFor(view, attention);
+                return (
+                  <button
+                    key={view}
+                    type="button"
+                    className="btn btn-secondary more-item"
+                    onClick={() => select(view)}
+                    aria-pressed={current === view}
+                    aria-label={attentionLabel(label, badge)}
+                  >
+                    {iconFor(view)}
+                    <span className="more-item-label">{label}</span>
+                    {badge === undefined ? null : (
+                      <span className="tab-badge" aria-hidden="true">
+                        {badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+        <div className="mobile-tabs">
+          {MOBILE_TABS.map((view) => {
+            const label = NAV_LABELS[view];
+            const badge = badgeFor(view, attention);
+            return (
+              <button
+                key={view}
+                type="button"
+                className="btn mobile-tab"
+                onClick={() => select(view)}
+                aria-pressed={current === view}
+                aria-label={attentionLabel(label, badge)}
+              >
+                <span className="mobile-tab-face">
+                  {iconFor(view)}
+                  {badge === undefined ? null : (
+                    <span className="tab-badge" aria-hidden="true">
+                      {badge}
+                    </span>
+                  )}
+                </span>
+                <span className="mobile-tab-label">{label}</span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className="btn mobile-tab"
+            onClick={() => setMoreOpen((open) => !open)}
+            aria-pressed={moreOpen}
+            aria-expanded={moreOpen}
+            aria-label={
+              moreBadge === undefined
+                ? 'More views'
+                : `More views — ${moreBadge} waiting`
+            }
+          >
+            <span className="mobile-tab-face">
+              <IconMore />
+              {moreBadge === undefined ? null : (
+                <span className="tab-badge" aria-hidden="true">
+                  {moreBadge}
+                </span>
+              )}
+            </span>
+            <span className="mobile-tab-label">More</span>
+          </button>
+        </div>
+      </nav>
+    </>
   );
 }
 
@@ -341,6 +498,45 @@ export default function App() {
       .catch(() => undefined);
   }, []);
 
+  /**
+   * M20.A attention counts: memory suggestions and recent failed runs — the
+   * two "waiting on you" sources that had no badge. Approvals already arrive
+   * through `pending` above.
+   *
+   * Only COUNTS live in shell state. The memory entries themselves are never
+   * copied here, so an unconfirmed personal fact does not sit in browser memory
+   * (or a devtools snapshot) merely to render a number — the Memory view owns
+   * that data and fetches it when opened.
+   *
+   * A failed poll keeps the last known count rather than clearing the badge:
+   * a transient error must not silently hide something that needs the user.
+   */
+  const [memorySuggestions, setMemorySuggestions] = useState<number>(0);
+  const [failedRuns, setFailedRuns] = useState<number>(0);
+
+  const refreshAttention = useCallback((): void => {
+    const token = readStoredToken();
+    if (!token) {
+      setMemorySuggestions(0);
+      setFailedRuns(0);
+      return;
+    }
+    void listProfile(token)
+      .then((entries) =>
+        setMemorySuggestions(entries.filter((entry) => entry.status === 'suggested').length),
+      )
+      .catch(() => undefined);
+    void listScheduleRuns(token, { limit: 50 })
+      .then((runs) => setFailedRuns(failedRunsNeedingAttention(runs, Date.now())))
+      .catch(() => undefined);
+  }, []);
+
+  const attention = attentionCounts({
+    pendingApprovals: pending.length,
+    memorySuggestions,
+    failedScheduleRuns: failedRuns,
+  });
+
   // M6: theme list + resolved active theme. The active theme is persona-
   // scoped (persona.colorTheme -> global active -> preset), so it refetches
   // whenever the active persona changes.
@@ -458,9 +654,14 @@ export default function App() {
     void refreshFolders();
     void refreshThemes();
     refreshQueue();
+    refreshAttention();
     const timer = window.setInterval(refreshQueue, QUEUE_POLL_MS);
+    // Attention changes only when work completes, and every poll is a round
+    // trip, so it rides a slower clock than a blocked turn's approval.
+    const attentionTimer = window.setInterval(refreshAttention, ATTENTION_POLL_MS);
     const onFocus = (): void => {
       refreshQueue();
+      refreshAttention();
       // Core may have started after the page; backfill lists that never
       // loaded so the persona picker/rail appear without a manual refresh.
       if (personas === null && personasError === null) void refreshPersonas();
@@ -470,10 +671,11 @@ export default function App() {
     window.addEventListener('focus', onFocus);
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(attentionTimer);
       window.removeEventListener('focus', onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paired, refreshPersonas, refreshConversations, refreshFolders, refreshQueue]);
+  }, [paired, refreshPersonas, refreshConversations, refreshFolders, refreshQueue, refreshAttention]);
 
   // Keep the active persona valid as the list changes (default > first).
   useEffect(() => {
@@ -655,6 +857,12 @@ export default function App() {
   const handleDone = (meta: StreamDoneMeta): void => {
     if (activeConversationId === null) setActiveConversationId(meta.conversationId);
     void refreshConversations();
+    // M19 automatic remember runs OUT OF BAND, after the client's response has
+    // ended, so a suggestion can land just after this handler fires. Check now
+    // and once more shortly after rather than waiting for the 15s attention
+    // poll — otherwise a suggestion appears to be missing for a quarter minute.
+    refreshAttention();
+    window.setTimeout(refreshAttention, 3000);
   };
   const handleToggleMode = (): void => {
     const next: ThemeMode = mode === 'light' ? 'dark' : 'light';
@@ -854,7 +1062,14 @@ function ColumnDivider({
   /* M12.5: conversations rail visibility + resizable column widths. The
    * widths are per-session; defaults come from CSS (breakpoint-tuned), so a
    * null width means "follow the responsive default". */
-  const [railOpen, setRailOpen] = useState<boolean>(() => readSession(RAIL_OPEN_KEY) === null ? true : readSession(RAIL_OPEN_KEY) === '1');
+  const [railOpen, setRailOpen] = useState<boolean>(() => {
+    const stored = readSession(RAIL_OPEN_KEY);
+    if (stored !== null) return stored === '1';
+    // M20.A: on a phone the rail is an overlay over the transcript, so an open
+    // rail on first paint would hide the very content the user opened. Default
+    // closed there; the desktop default stays open. Mirrors the ≤640 CSS tier.
+    return !(typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches);
+  });
   const [railW, setRailW] = useState<number | null>(() => readIntSession(RAIL_W_KEY));
   const [notesW, setNotesW] = useState<number | null>(() => readIntSession(NOTES_W_KEY));
   const toggleRail = useCallback((): void => {
@@ -866,6 +1081,33 @@ function ColumnDivider({
   const commitRailW = useCallback((value: number): void => writeSession(RAIL_W_KEY, String(value)), []);
   const commitNotesW = useCallback((value: number): void => writeSession(NOTES_W_KEY, String(value)), []);
   const [assetsW, setAssetsW] = useState<number | null>(() => readIntSession(ASSETS_W_KEY));
+
+  /**
+   * M20.A phone tier (mirrors the ≤640 CSS breakpoint). Layout stays in CSS;
+   * this only drives *state* defaults, because on a phone the rails are
+   * overlays and an overlay left open covers the view — a behaviour CSS cannot
+   * correct on its own.
+   */
+  const [phoneTier, setPhoneTier] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 640px)');
+    const onChange = (): void => setPhoneTier(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  /** Entering the phone tier turns the rails into overlays; close them so a
+   *  rotation to portrait cannot leave a sheet covering the transcript.
+   *  Runs on mount too, which matches the closed default above. */
+  useEffect(() => {
+    if (!phoneTier) return;
+    setRailOpen(false);
+    setNotesLaneOverride('0');
+    setAssetsLaneOpen(false);
+  }, [phoneTier, setAssetsLaneOpen]);
   const commitAssetsW = useCallback(
     (value: number): void => writeSession(ASSETS_W_KEY, String(value)),
     [],
@@ -900,7 +1142,7 @@ function ColumnDivider({
       <aside className="app-side" aria-label="App">
         <span className="app-brand side-brand">Partner</span>
         {paired ? (
-          <SideNav current={view} pendingCount={pending.length} onSelect={setView} />
+          <SideNav current={view} attention={attention} onSelect={setView} />
         ) : null}
       </aside>
       <div className="app-col">
@@ -935,16 +1177,49 @@ function ColumnDivider({
             >
               <IconPanelRight />
             </button>
+            {/*
+             * Chrome lives in ONE place: the shell's top bar ("a slim top bar
+             * (persona picker + lane/theme controls)" — M14). Both of these
+             * used to sit in a row above the composer as well, so the asset
+             * lane and the conversation theme each had two homes; measured
+             * @390×844 they were 579px apart on screen at once. The assets
+             * toggle stays gated on there being a conversation, because the
+             * pane is conversation-scoped (`listAssets(token, conversationId)`) —
+             * ungated it took the chat input from 682px to 366px on desktop to
+             * render a one-line placeholder.
+             */}
             <button
               type="button"
               className="btn btn-secondary btn-sm"
               onClick={toggleAssetsLane}
+              disabled={activeConversationId === null}
               aria-pressed={assetsLaneOpen}
               aria-label={assetsLaneOpen ? 'Hide assets panel' : 'Show assets panel'}
               title={assetsLaneOpen ? 'Hide assets panel' : 'Show assets panel'}
             >
               <IconSave />
             </button>
+            {activeConversationId !== null && themes !== null && themes.length > 0 ? (
+              <select
+                className="field topbar-theme-select"
+                value={activeTheme?.themeId ?? ''}
+                onChange={(event) =>
+                  void handleBindConversationTheme(
+                    activeConversationId,
+                    event.target.value === '' ? null : event.target.value,
+                  )
+                }
+                aria-label="Theme for this conversation"
+                title="Theme for this conversation"
+              >
+                <option value="">Auto theme</option>
+                {themes.map((theme) => (
+                  <option key={theme.id} value={theme.id}>
+                    {theme.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <button
               type="button"
               className="btn btn-secondary btn-sm"
@@ -1011,14 +1286,9 @@ function ColumnDivider({
                   personaPaused={Boolean(activePersona?.paused)}
                   onStreamingChange={setStreaming}
                   onDone={handleDone}
-                  themes={themes}
-                  activeThemeId={activeTheme?.themeId ?? null}
-                  onBindTheme={(themeId) => void handleBindConversationTheme(activeConversationId, themeId)}
                   pending={pending}
                   onRefreshPending={refreshQueue}
                   viewActive={view === 'chat'}
-                  assetsOpen={assetsLaneOpen}
-                  onToggleAssets={toggleAssetsLane}
                   onAssetsChanged={handleAssetsChanged}
                   externalDraft={externalDraft}
                   onDraftConsumed={() => setExternalDraft(null)}
@@ -1110,6 +1380,7 @@ function ColumnDivider({
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'memory'}
+                onAttentionChanged={refreshAttention}
               />
             </div>
             <div className={view === 'themes' ? 'app-view app-view-active' : 'app-view'}>
@@ -1163,6 +1434,21 @@ function ColumnDivider({
         )}
       </main>
       </div>
+      {paired ? (
+        <MobileNav
+          current={view}
+          attention={attention}
+          onSelect={(next) => {
+            // M20.A: the phone nav is the only visible one at that tier, and
+            // every phone rail is an overlay — switching destination must not
+            // leave one hanging over the newly selected view.
+            setRailOpen(false);
+            setNotesLaneOverride('0');
+            setAssetsLaneOpen(false);
+            setView(next);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -56,7 +56,7 @@ Non-negotiable discipline (see also the repo UX rules):
 | `--surface-2` | #ececea | #22262a | inputs, wells, nested rows |
 | `--text` | #16181d | #e8eaed | primary text |
 | `--text-muted` | #3f444c | #cbd1d8 | labels, captions |
-| `--text-faint` | #5d636e | #9aa1ab | disabled/placeholder (exempt from body-text minimums) |
+| `--text-faint` | #5d636e | #9aa1ab | **disabled** text only (a disabled control also fades). NOT for placeholders: a placeholder is instructive text and follows the body floor (M20-B S7) |
 | `--accent` | #1f6f43 | #6aedb6 | links, active nav, focus emphasis on surfaces |
 | `--accent-hover` | #195936 | #84f6cb | accent hover |
 | `--accent-emphasis` | #1f6f43 | #1a5b37 | **filled** actions (primary buttons, user bubbles) |
@@ -73,8 +73,9 @@ WCAG sidecar (4.5 / 3.0). Dark-mode values above are tuned to those gates on
 dark surfaces — secondary text is brighter than a naive palette requires.
 Filled actions use `accent-emphasis` (dark green in dark mode) so
 `accent-contrast` text passes while links keep the brighter `--accent`.
-Placeholders/disabled use `--text-faint` and are exempt from body-text
-minimums. Theme saves are contrast-gated (M6).
+Placeholders use `--text-muted` (M20-B S7: `--text-faint` is Lc 68.9 light /
+48.0 dark on the input well, below the body floor) and disabled text uses
+`--text-faint`. Theme saves are contrast-gated (M6).
 
 M12 P0.3 note (gate pairs + usage rule): the light-mode `--accent` green
 under-reaches the Lc 75 floor on tinted fills (`--surface` 72.6,
@@ -85,6 +86,17 @@ text only ever sits on `--bg`/`--surface` (use `--accent-hover` on
 surfaces); never on `--surface-2` wells — a well that must carry accent text
 surfaces to `--surface`. Dark mode may carry `--accent` on `--surface-2`
 wells.
+
+M20.A note — **the same rule applies to `--danger`, which was never checked**:
+light-mode `--danger` (#b42318) measures **Lc 80.9 on `--bg`**, **75.4 on
+`--surface`** and **69.5 on `--surface-2`** — i.e. it *fails* the body floor on a
+`--surface-2` well. This was a real defect in the Memory view, where
+`--surface-2` entry rows carried a ghost Delete action (measured Lc 69.52;
+now the control takes its own `--bg` ground at Lc 80.9). **Usage rule:** in
+light mode danger text may sit on `--bg` or `--surface`, never directly on a
+`--surface-2` well — give the control its own ground. Dark mode is fine
+anywhere (Lc ≥ 78). Any `--danger` text placed on a well in a new component
+must be checked against this, not assumed from the token name.
 
 ## Typography
 
@@ -109,6 +121,44 @@ wells.
 - Content column ≈ 720px for prose; wider for dense tool surfaces
   (chat, tables) with the same gutter rhythm.
 - Density default is comfortable; no density override before M6.
+
+## Responsive & touch (M20.A)
+
+Three tiers. A reader should be able to name the tier from any screenshot.
+
+| Tier | Width | Shell | Navigation | Rails (conversations/notes/assets) |
+|---|---|---|---|---|
+| **phone** | ≤ 640 | single column: top bar, content, tab bar | bottom tab bar + More sheet | **overlays** over the transcript |
+| **tablet** | 641–1150 | content column, icon rail | icon rail (labels hidden) | columns below 900, overlays at ≤ 760 |
+| **desktop** | > 1150 | sidebar + content column | full sidebar with group labels | columns |
+
+The tier breakpoints are mirrored in code by `matchMedia` constants
+(`App.tsx`, `web/src/lib/nav.ts`) used **only for state defaults** — never for
+layout, which stays in CSS so there is one source of truth per form factor.
+
+Rules that hold on any touch tier:
+
+- **Touch targets:** `--target-min` (44px) is a floor on the *hit area* of every
+  control. A control may look small; it must never be touchable-small. Primary
+  actions use `--target-comfortable` (48px).
+- **No hover-only affordances.** Anything revealed by `:hover` must also be
+  revealed under `@media (hover: none)` (and at the phone tier, because some
+  phones report `hover: hover`). A destructive or essential action reachable
+  only by hovering is unreachable on a phone.
+- **Dynamic viewport.** The shell is sized with `100dvh` (with a `100vh`
+  fallback declaration) so an open keyboard shrinks the layout instead of
+  covering the composer. Never `100vh` alone.
+- **Safe areas.** `viewport-fit=cover` in the viewport meta, then
+  `--safe-top/right/bottom/left` (`env(safe-area-inset-*)`) on the top bar and
+  tab bar. Zero on desktop, so the same rule needs no media query.
+- **One nav per form factor.** Above the phone tier the tab bar is hidden by
+  CSS, not unmounted, so no JS breakpoint can disagree with the paint.
+
+Measured gates (a gate that only asserts “no horizontal overflow” is not
+enough — at HEAD the phone layout never overflowed, it *crushed* content):
+composer width ≥ 296px at 360px and ≥ 320px at 390px · zero controls under
+44×44 · no horizontal overflow at 320/360/375/390/430 · tablet geometry
+unchanged from the desktop column model.
 
 ## Shapes & elevation
 
@@ -142,7 +192,10 @@ v1 inventory (built from M3 onward; states are part of every component):
 | Toast | surface + elevation-md + semantic left edge. |
 | Toggle / checkbox / radio | accent when on, surface-2 when off; disabled = faint. |
 | Choice / form card | transcript controls from `:::partner.*` containers: a choice is a radio/checkbox set, a form is one textarea per open-ended question with a **single** submit. Confirm sends one labelled user turn; inert while a turn streams. Surface fill + `--radius-lg`, no border. |
+| Grouped answers | **A reply that asks more than one question set offers exactly ONE submit.** Two containers in one message (e.g. a choice *and* a form) render as sections of one `--surface` panel with one button — never as two cards with two buttons, because pressing either would send only its own answer and silently discard the other's. The grouped cards drop their own surface and margin (nested `--surface` on `--surface` is the plane-stacking the system avoids) and their empty actions rows collapse via `:empty`. Submission is blocked until **every** part is complete, and the disabled state always states what it is waiting for ("2 answers still needed") — a disabled control with no reason is a dead end. Once sent the group is inert ("Answers sent"), so one prominent button cannot post a duplicate. |
 | List rows | separators: space → surface shift → border (last resort). |
+| Bottom tab bar (phone) | 4 primary destinations + **More**; every tab ≥ 44px and ≥ 72px wide at 360px. Active tab = the nav-active contract (filled `accent-emphasis` pill with `accent-contrast` text) — the one combination the theme gate guarantees in both modes. Labels `--fs-xs` in `--text-muted`; **never** `--text-faint` (Lc 49.5 on the dark surface, below the body floor; faint is exempt only for disabled/placeholder). |
+| More sheet (phone) | `elevation-lg`, full width, anchored above the tab bar, `--radius-lg` top corners, ≤ 60dvh and scrollable. Rows are `--target-min` tall in a 2-column grid. Closes on select, on the Close control, and on Escape; the scrim is decorative (`aria-hidden`) so the keyboard path is explicit. |
 
 Empty/loading states: skeletons are surface-2 blocks (no spinners-only).
 **Empty-state contract** (adopted from the design review): every empty view
@@ -172,3 +225,9 @@ Motion is for state feedback (appear/expand/focus), never decoration; respect
 - Don't: invent colors/shadows/sizes; glassmorphism, gradient orbs, neon
   glow; 1px gray card borders as decoration; permanent-dark reflex; ship an
   interactive element without focus-visible and disabled states.
+- Don't: gate an affordance on `:hover` alone — on touch it simply does not
+  exist. Don't size the shell with `100vh` alone (the keyboard covers the
+  composer). Don't reserve a column for a rail on a phone: the transcript is
+  the workspace, so rails overlay it.
+- Don't: use `--text-faint` for a control label to "quiet it down" — it is
+  exempt only for disabled/placeholder text.

@@ -105,6 +105,16 @@ export const SHARED_TOKENS = {
   fontFamilyMono:
     "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
   radius: { sm: '6px', md: '10px', lg: '14px', full: '999px' },
+  /**
+   * Canvas for third-party document content (the sandboxed HTML/CSS preview).
+   *
+   * Deliberately NOT the theme background and deliberately identical in both
+   * modes: the preview renders an arbitrary document, whose own colours were
+   * authored against a white canvas. In dark mode a theme-tinted canvas would
+   * put black authored text on a dark surface. This replaces a hardcoded
+   * `#ffffff`, which was the only raw hex left in the stylesheet.
+   */
+  surfaceDoc: '#ffffff',
   /** Named elevation levels only — never invent blur/opacity. */
   elevation: {
     sm: '0 1px 2px rgba(16, 18, 20, 0.06)',
@@ -113,6 +123,30 @@ export const SHARED_TOKENS = {
   },
   focusRing: '2px solid',
   motion: { fast: '100ms', base: '180ms', slow: '280ms', ease: 'cubic-bezier(0.25, 0.1, 0.25, 1)' },
+  /**
+   * Responsive / touch profile (M20.A). ADDITIVE: no existing token value
+   * changes, so user-authored themes stay valid.
+   *
+   * - `target.min` is the minimum touch hit area. 44px is the floor (Apple HIG
+   *   44pt; Material asks 48dp) and the geometry gate asserts it on every
+   *   visible control, so a control may look small but must never be
+   *   *touchable-small*. Prefer `comfortable` for primary actions.
+   * - `safe` reads the OS insets that `viewport-fit=cover` exposes (notch,
+   *   home indicator, rounded corners). Zero on desktop, so the same rules
+   *   work everywhere with no media query.
+   * - `viewport.dvh` keeps the shell the size of the *visible* viewport so a
+   *   mobile keyboard shrinks the layout instead of hiding the composer
+   *   behind it; `vh` is the fallback for engines without dynamic units.
+   */
+  target: { min: '44px', comfortable: '48px' },
+  chrome: { bottomNav: '56px', topbarCompact: '48px' },
+  safe: {
+    top: 'env(safe-area-inset-top, 0px)',
+    right: 'env(safe-area-inset-right, 0px)',
+    bottom: 'env(safe-area-inset-bottom, 0px)',
+    left: 'env(safe-area-inset-left, 0px)',
+  },
+  viewport: { dvh: '100dvh', vh: '100vh' },
 } as const;
 
 export type SharedTokens = typeof SHARED_TOKENS;
@@ -140,6 +174,7 @@ export function cssVars(mode: ThemeMode): Record<string, string> {
     '--radius-sm': SHARED_TOKENS.radius.sm,
     '--radius-md': SHARED_TOKENS.radius.md,
     '--radius-lg': SHARED_TOKENS.radius.lg,
+    '--surface-doc': SHARED_TOKENS.surfaceDoc,
     '--elevation-sm': SHARED_TOKENS.elevation.sm,
     '--elevation-md': SHARED_TOKENS.elevation.md,
     '--elevation-lg': SHARED_TOKENS.elevation.lg,
@@ -151,6 +186,16 @@ export function cssVars(mode: ThemeMode): Record<string, string> {
     '--motion-base': SHARED_TOKENS.motion.base,
     '--motion-slow': SHARED_TOKENS.motion.slow,
     '--motion-ease': SHARED_TOKENS.motion.ease,
+    '--target-min': SHARED_TOKENS.target.min,
+    '--target-comfortable': SHARED_TOKENS.target.comfortable,
+    '--bottom-nav-h': SHARED_TOKENS.chrome.bottomNav,
+    '--topbar-compact-h': SHARED_TOKENS.chrome.topbarCompact,
+    '--safe-top': SHARED_TOKENS.safe.top,
+    '--safe-right': SHARED_TOKENS.safe.right,
+    '--safe-bottom': SHARED_TOKENS.safe.bottom,
+    '--safe-left': SHARED_TOKENS.safe.left,
+    '--app-dvh': SHARED_TOKENS.viewport.dvh,
+    '--app-vh': SHARED_TOKENS.viewport.vh,
   };
   for (const [name, size] of Object.entries(SHARED_TOKENS.fontSize)) {
     out[`--fs-${name}`] = size;

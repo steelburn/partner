@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import { PersonaCompare } from './PersonaCompare.js';
 import { isImageCapableModel } from '@partner/shared';
 import type {
@@ -112,10 +113,10 @@ export default function PersonaManagerView({
         {sessionLost ? (
           <div className="personas-alert" role="alert">
             <p className="personas-alert-text">
-              Your session with the Partner core has expired. Pair again to manage personas.
+              {sessionLostSentence('manage personas')}
             </p>
             <button type="button" className="btn btn-secondary" onClick={onUnpair}>
-              Pair again
+              {sessionLostAction()}
             </button>
           </div>
         ) : null}

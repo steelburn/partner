@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type { Persona, Plan, PlanSummary, TaskStatus } from '@partner/shared';
 import { isSessionLost } from './lib/personas.js';
 import { readStoredToken } from './lib/token.js';
@@ -156,10 +157,10 @@ export default function PlansSegment({ active, personas, onUnpair }: PlansSegmen
       {sessionLost ? (
         <div className="memory-alert" role="alert">
           <p className="memory-alert-text">
-            Your session with the Partner core has expired. Pair again to keep plans.
+            {sessionLostSentence('keep plans')}
           </p>
           <button type="button" className="btn btn-secondary" onClick={onUnpair}>
-            Pair again
+            {sessionLostAction()}
           </button>
         </div>
       ) : null}

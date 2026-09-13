@@ -16,10 +16,35 @@ export interface ChoiceCardProps {
   title: string | null;
   options: string[];
   busy: boolean;
-  onConfirm: (labels: string[]) => void;
+  /**
+   * Standalone submit handler. Optional because a card inside an answer group
+   * renders inputs only — the group owns the single submit — and is driven by
+   * `onAnswerChange` instead. Passing a no-op `onConfirm` there would be a
+   * silent trap, so the absence is explicit.
+   */
+  onConfirm?: (labels: string[]) => void;
+  /**
+   * M20.A: false when another container in the same message also asks a
+   * question. One message must offer exactly one submit, or pressing one
+   * button discards the other's answers.
+   */
+  showSubmit?: boolean;
+  /** Report the current answer upward (null while incomplete) for the group. */
+  onAnswerChange?: (text: string | null) => void;
+  /** The group has submitted: clear this card's pending draft once. */
+  answered?: boolean;
 }
 
-export function ChoiceCard({ mode, title, options, busy, onConfirm }: ChoiceCardProps) {
+export function ChoiceCard({
+  mode,
+  title,
+  options,
+  busy,
+  onConfirm,
+  showSubmit = true,
+  onAnswerChange,
+  answered = false,
+}: ChoiceCardProps) {
   // M14: when a conversation context is present, pending selections survive
   // "move to another chat and come back" (per-conversation UI memory).
   const { conversationId } = useChoiceMemory();
@@ -66,9 +91,9 @@ export function ChoiceCard({ mode, title, options, busy, onConfirm }: ChoiceCard
   };
 
   const confirm = (): void => {
-    if (!canConfirm) return;
+    if (answerText === null) return;
     if (noneMode && freeText.trim() !== '') {
-      onConfirm([freeText.trim()]);
+      onConfirm?.([freeText.trim()]);
       return;
     }
     const labels =
@@ -80,8 +105,38 @@ export function ChoiceCard({ mode, title, options, busy, onConfirm }: ChoiceCard
     if (labels.length === 0) return;
     // The card is answered — forget the pending selection for this card.
     if (memoryKey !== null) conversationUi.setChoice(conversationId, memoryKey, null);
-    onConfirm(labels);
+    onConfirm?.(labels);
   };
+
+  /**
+   * The exact text this card would send, or null while it cannot be sent. The
+   * group composes its one message from this, and it is derived from the same
+   * labels `confirm()` sends — so a grouped submit is byte-identical to what
+   * this card would have sent alone.
+   */
+  const answerText: string | null = (() => {
+    if (!canConfirm) return null;
+    if (noneMode && freeText.trim() !== '') return freeText.trim();
+    const labels =
+      mode === 'single'
+        ? single !== null
+          ? [single]
+          : []
+        : [...(selected as ReadonlySet<string>)];
+    if (labels.length === 0) return null;
+    return mode === 'multi' ? labels.join('; ') : (labels[0] ?? null);
+  })();
+
+  useEffect(() => {
+    onAnswerChange?.(answerText);
+  }, [onAnswerChange, answerText]);
+
+  // Grouped card: the group submits on this card's behalf, so the pending draft
+  // is cleared here once that has happened.
+  useEffect(() => {
+    if (!answered || memoryKey === null) return;
+    conversationUi.setChoice(conversationId, memoryKey, null);
+  }, [answered, conversationId, memoryKey]);
 
   return (
     <fieldset className="choice-card" disabled={busy} aria-busy={busy}>
@@ -132,14 +187,16 @@ export function ChoiceCard({ mode, title, options, busy, onConfirm }: ChoiceCard
         </button>
       )}
       <div className="choice-actions">
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          onClick={confirm}
-          disabled={!canConfirm}
-        >
-          {mode === 'multi' ? 'Confirm selections' : 'Confirm'}
-        </button>
+        {showSubmit ? (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={confirm}
+            disabled={!canConfirm}
+          >
+            {mode === 'multi' ? 'Confirm selections' : 'Confirm'}
+          </button>
+        ) : null}
       </div>
     </fieldset>
   );

@@ -216,3 +216,36 @@ export function IconPanelRight(props: IconProps) {
     </Svg>
   );
 }
+
+/** M20.A phone nav — "More" (overflow): three dots, the standard overflow
+ *  affordance for a bottom tab bar that cannot hold every destination. */
+export function IconMore(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="3.4" cy="8" r="1.05" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="1.05" fill="currentColor" stroke="none" />
+      <circle cx="12.6" cy="8" r="1.05" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+/** M20.A phone nav sheet close. */
+export function IconClose(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 4l8 8" />
+      <path d="M12 4l-8 8" />
+    </Svg>
+  );
+}
+
+/** M20.A phone composer — attach (paperclip). Standard single-use affordance
+ *  so the composer can drop the "＋ Attach" text on a narrow row and give the
+ *  reclaimed width to the message field. */
+export function IconAttach(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M11.8 4.9 6.6 10a2.1 2.1 0 0 0 2.9 3l5-5a3.5 3.5 0 0 0-4.9-4.9L4.3 8.4a4.6 4.6 0 0 0 6.5 6.5l3.8-3.8" />
+    </Svg>
+  );
+}

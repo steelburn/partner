@@ -2,7 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- M20.A: viewport-fit=cover is what makes env(safe-area-inset-*) report
+         real values (notch / home indicator); without it the inset tokens are
+         always 0 and the tab bar can sit under the home indicator.
+         interactive-widget=resizes-content keeps the visual viewport the
+         layout viewport on Android, so an open keyboard shrinks the shell
+         instead of covering the composer. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>Partner</title>
   </head>
   <body>

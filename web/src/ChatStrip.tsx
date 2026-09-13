@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type {
   AttachmentMeta,
   BrainstormSessionSummary,
   ChatEvent,
   ConversationMessage,
   ProviderSummary,
-  ThemeProfile,
 } from '@partner/shared';
 import { isImageCapableModel } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
@@ -29,7 +29,8 @@ import { PartnerMarkdown } from './Markdown.js';
 import type { WikiNoteTarget } from './WikiLinkChip.js';
 import { ChoiceMemoryContext } from './ChoiceMemory.js';
 import { conversationUi } from './lib/conversation-ui.js';
-import { IconSave, IconSend } from './icons.js';
+import { isGroupLive } from './lib/answer-group.js';
+import { IconAttach, IconSave, IconSend } from './icons.js';
 import { CodePreview } from './CodePreview.js';
 import { SaveAssetsDialog } from './AssetsPanel.js';
 import { extractCandidates, type AssetCandidate } from './lib/assets-extract.js';
@@ -50,28 +51,17 @@ export interface ChatStripProps {
   onStreamingChange?: (streaming: boolean) => void;
   /** Server-confirmed ids after a turn (App refreshes + adopts the conversation). */
   onDone?: (meta: StreamDoneMeta) => void;
-  /** D6: theme list for the per-conversation theme select (null = loading). */
-  themes?: ThemeProfile[] | null;
-  /** D6: currently resolved theme id ('' = auto/persona/global). */
-  activeThemeId?: string | null;
-  /** D6: bind the active conversation to a theme (null = Auto/clear). */
-  onBindTheme?: (themeId: string | null) => void;
   /**
-   * M12.5: live pending-approval rows (the App shell polls them ~4s). Rows
-   * bound to THIS conversation render as an actionable in-chat approval
-   * card — approving/denying decides the row and continues the turn.
-   */
+   * D6: the per-conversation theme select moved to the shell's top bar
+   * (2026-09-13) — chrome lives in one place, and the row above the composer
+   * held a second copy of both it and the Assets toggle. */
   pending: PendingToolCall[];
   /** Ask the shell to re-fetch the pending list right now (post-decide). */
   onRefreshPending: () => void;
   /** True while the Chat view is the visible one — returning to it reloads
    *  history so decisions made elsewhere (Files queue) show their notes. */
   viewActive?: boolean;
-  /** M14: the Assets pane (workspace lane) is open — the chat-bar button
-   *  toggles the shell-owned pane instead of the old inline drawer. */
-  assetsOpen?: boolean;
-  onToggleAssets?: () => void;
-  /** M14: an asset was saved here while the pane is open — bump its list. */
+  /** M14: an asset was saved here — the shell refreshes the pane's list. */
   onAssetsChanged?: () => void;
   /**
    * M16 F4: an external surface (asset Discuss) wants this text quoted into
@@ -142,14 +132,9 @@ export default function ChatStrip({
   personaPaused,
   onStreamingChange,
   onDone,
-  themes,
-  activeThemeId,
-  onBindTheme,
   pending,
   onRefreshPending,
   viewActive = false,
-  assetsOpen = false,
-  onToggleAssets,
   onAssetsChanged,
   externalDraft,
   onDraftConsumed,
@@ -748,7 +733,7 @@ export default function ChatStrip({
         dropPlaceholder();
         setTurnError({
           message: result.unauthorized
-            ? 'Your session with the Partner core has expired. Pair again to continue.'
+            ? sessionLostSentence('continue')
             : result.message,
           canRepair: result.unauthorized,
         });
@@ -881,7 +866,7 @@ export default function ChatStrip({
         dropLocals();
         setTurnError({
           message: result.unauthorized
-            ? 'Your session with the Partner core has expired. Pair again to continue.'
+            ? sessionLostSentence('continue')
             : result.message,
           canRepair: result.unauthorized,
         });
@@ -1156,6 +1141,9 @@ export default function ChatStrip({
   const metaText = metaParts.join(' · ');
   const showPending = streaming && rows[rows.length - 1]?.role === 'assistant';
   const emptyState = conversationId === null ? EMPTY_STATE : EMPTY_CONVERSATION_STATE;
+  /** The linked-brainstorm header only belongs to the conversation it came from. */
+  const showBrainstorm =
+    brainstormSession !== null && brainstormSession.conversationId === conversationId;
 
   return (
     <section className="chat" aria-label="Chat with Partner">
@@ -1172,7 +1160,11 @@ export default function ChatStrip({
         ) : rows.length === 0 && !historyLoading ? (
           <p className="chat-empty">{emptyState}</p>
         ) : (
-          rows.map((row) =>
+          // `rowIndex`/`rows.length` is the transcript position that decides
+          // whether a grouped-answer control is still live (see `isGroupLive`).
+          // Only this call site has it, which is why the prop is optional and
+          // defaults to interactive everywhere else.
+          rows.map((row, rowIndex) =>
             row.role === 'user' ? (
               <div key={row.key} className="msg msg-user">
                 <div className="msg-plain">{row.text}</div>
@@ -1203,6 +1195,7 @@ export default function ChatStrip({
                       text={row.text}
                       busy={streaming}
                       onAnswer={handleAnswer}
+                      groupLive={isGroupLive(rowIndex, rows.length)}
                       onPreviewCode={({ title, source }) => setPreview({ title, source })}
                       resolveNote={resolveNote}
                       onOpenNote={onOpenNote}
@@ -1264,7 +1257,7 @@ export default function ChatStrip({
             <span className="chat-error-text">{turnError.message}</span>
             {turnError.canRepair ? (
               <button type="button" className="btn btn-secondary btn-sm" onClick={onUnpair}>
-                Pair again
+                {sessionLostAction()}
               </button>
             ) : null}
           </div>
@@ -1275,71 +1268,46 @@ export default function ChatStrip({
         ) : null}
       </div>
 
-      <div className="chat-assets-bar">
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={onToggleAssets}
-          disabled={conversationId === null || onToggleAssets === undefined}
-          aria-expanded={assetsOpen}
-        >
-          {assetsOpen ? 'Hide Assets' : 'Assets'}
-        </button>
-        {conversationId !== null && themes !== null && themes !== undefined && onBindTheme !== undefined ? (
-          <label className="chat-theme-label">
-            Theme
-            <select
-              className="field chat-theme-select"
-              value={activeThemeId ?? ''}
-              onChange={(event) => onBindTheme(event.target.value === '' ? null : event.target.value)}
-              aria-label="Theme for this conversation"
+      {showBrainstorm || brainstormError !== null || assetsFlash !== null ? (
+        <div className="chat-assets-bar">
+          {showBrainstorm ? (
+            <span
+              className={
+                brainstormSession.concluded
+                  ? 'chat-brainstorm is-concluded'
+                  : 'chat-brainstorm'
+              }
             >
-              <option value="">Auto (persona/global)</option>
-              {themes.map((theme) => (
-                <option key={theme.id} value={theme.id}>
-                  {theme.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        {brainstormSession !== null && brainstormSession.conversationId === conversationId ? (
-          <span
-            className={
-              brainstormSession.concluded
-                ? 'chat-brainstorm is-concluded'
-                : 'chat-brainstorm'
-            }
-          >
-            <span className="chat-brainstorm-state">
-              Brainstorm {brainstormSession.concluded ? 'concluded' : 'active'}
+              <span className="chat-brainstorm-state">
+                Brainstorm {brainstormSession.concluded ? 'concluded' : 'active'}
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={brainstormBusy}
+                aria-busy={brainstormBusy}
+                onClick={() => void flipBrainstorm()}
+              >
+                {brainstormBusy
+                  ? 'Saving…'
+                  : brainstormSession.concluded
+                    ? 'Reopen'
+                    : 'Conclude'}
+              </button>
             </span>
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              disabled={brainstormBusy}
-              aria-busy={brainstormBusy}
-              onClick={() => void flipBrainstorm()}
-            >
-              {brainstormBusy
-                ? 'Saving…'
-                : brainstormSession.concluded
-                  ? 'Reopen'
-                  : 'Conclude'}
-            </button>
-          </span>
-        ) : null}
-        {brainstormError !== null ? (
-          <span className="chat-brainstorm-error" role="alert">
-            {brainstormError}
-          </span>
-        ) : null}
-        {assetsFlash !== null ? (
-          <span className="chat-assets-flash" role="status">
-            {assetsFlash}
-          </span>
-        ) : null}
-      </div>
+          ) : null}
+          {brainstormError !== null ? (
+            <span className="chat-brainstorm-error" role="alert">
+              {brainstormError}
+            </span>
+          ) : null}
+          {assetsFlash !== null ? (
+            <span className="chat-assets-flash" role="status">
+              {assetsFlash}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {staged.length > 0 ? (
         <div className="attach-staged" role="list" aria-label="Files ready to send">
@@ -1483,13 +1451,20 @@ export default function ChatStrip({
             conversationId === null || streaming || personaPaused ? ' attach-button-disabled' : ''
           }`}
           aria-disabled={!conversationId || streaming || personaPaused}
+          aria-label="Attach a file to this chat"
           title={
             conversationId === null
               ? 'Start a chat before attaching files'
               : 'Attach a file (text, image, PDF, HTML/CSS)'
           }
         >
-          {attaching ? 'Adding…' : '＋ Attach'}
+          <IconAttach />
+          {/* M20.A: the visible label is dropped on a phone so the message
+           *  field gets the width back (measured before: the text button took
+           *  109px of a 326px row, leaving the field 49px). The control keeps
+           *  its accessible name — the label's aria-label above and the file
+           *  input's own aria-label below. */}
+          <span className="btn-text">{attaching ? 'Adding…' : '＋ Attach'}</span>
           <input
             ref={fileInputRef}
             className="attach-input"
@@ -1525,12 +1500,15 @@ export default function ChatStrip({
         />
         <button
           type="submit"
-          className="btn btn-primary"
+          className="btn btn-primary chat-send"
           disabled={!canSend}
           aria-busy={streaming}
+          aria-label={streaming ? 'Working — response in progress' : 'Send message'}
         >
           <IconSend />
-          {streaming ? 'Working…' : 'Send'}
+          {/* M20.A: label hidden on a phone; progress is still visible in the
+           *  transcript status line, so dropping the word loses no state. */}
+          <span className="btn-text">{streaming ? 'Working…' : 'Send'}</span>
         </button>
       </form>
       {preview !== null ? (

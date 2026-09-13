@@ -20,7 +20,30 @@ export interface FormCardProps {
   title: string | null;
   questions: string[];
   busy: boolean;
-  onConfirm: (message: string) => void;
+  /**
+   * Standalone submit handler. Optional because a card inside an answer group
+   * renders inputs only — the group owns the single submit — and is driven by
+   * `onAnswerChange` instead.
+   */
+  onConfirm?: (message: string) => void;
+  /**
+   * M20.A: false when another container in the same message also asks a
+   * question. One message must offer exactly one submit, or pressing one
+   * button discards the other's answers.
+   */
+  showSubmit?: boolean;
+  /** Report the current answer upward (null while incomplete) for the group. */
+  onAnswerChange?: (text: string | null) => void;
+  /** The group has submitted: clear this card's pending draft once. */
+  answered?: boolean;
+  /**
+   * Grouped forms require EVERY question, unlike a standalone form (which
+   * accepts any non-empty answer). Rationale: the point of a single grouped
+   * submit is that the persona receives a complete answer set in one turn, so
+   * a half-filled form would defeat it; alone, a form has no sibling answers to
+   * be lost alongside, so its existing permissive rule is left untouched.
+   */
+  requireAllAnswers?: boolean;
 }
 
 /** Render the submitted answers as one labelled message for the model. */
@@ -34,7 +57,16 @@ export function formatFormAnswers(questions: string[], answers: string[]): strin
   return parts.join('\n\n');
 }
 
-export function FormCard({ title, questions, busy, onConfirm }: FormCardProps) {
+export function FormCard({
+  title,
+  questions,
+  busy,
+  onConfirm,
+  showSubmit = true,
+  onAnswerChange,
+  answered = false,
+  requireAllAnswers = false,
+}: FormCardProps) {
   const { conversationId } = useChoiceMemory();
   const memoryKey =
     conversationId !== null ? conversationUi.getFormKey(title, questions) : null;
@@ -49,7 +81,23 @@ export function FormCard({ title, questions, busy, onConfirm }: FormCardProps) {
     conversationUi.setForm(conversationId, memoryKey, { answers });
   }, [conversationId, memoryKey, answers]);
 
-  const canSubmit = !busy && answers.some((answer) => answer.trim() !== '');
+  const allAnswered = questions.every((_, index) => (answers[index] ?? '').trim() !== '');
+  const someAnswered = answers.some((answer) => answer.trim() !== '');
+  const canSubmit = !busy && (requireAllAnswers ? allAnswered : someAnswered);
+
+  /** The text this form would send, or null while it is not answerable yet. */
+  const answerText = canSubmit ? formatFormAnswers(questions, answers) : null;
+
+  useEffect(() => {
+    onAnswerChange?.(answerText === '' ? null : answerText);
+  }, [onAnswerChange, answerText]);
+
+  // Grouped card: the group submits on this card's behalf, so the pending draft
+  // is cleared here once that has happened.
+  useEffect(() => {
+    if (!answered || memoryKey === null) return;
+    conversationUi.setForm(conversationId, memoryKey, null);
+  }, [answered, conversationId, memoryKey]);
 
   const setAnswer = (index: number, value: string): void => {
     setAnswers((prev) => {
@@ -61,12 +109,12 @@ export function FormCard({ title, questions, busy, onConfirm }: FormCardProps) {
   };
 
   const submit = (): void => {
-    if (!canSubmit) return;
-    const message = formatFormAnswers(questions, answers);
+    if (!canSubmit || answerText === null) return;
+    const message = answerText;
     if (message === '') return;
     // The form is answered — forget the pending draft for this card.
     if (memoryKey !== null) conversationUi.setForm(conversationId, memoryKey, null);
-    onConfirm(message);
+    onConfirm?.(message);
   };
 
   return (
@@ -81,7 +129,7 @@ export function FormCard({ title, questions, busy, onConfirm }: FormCardProps) {
               value={answers[index] ?? ''}
               rows={2}
               disabled={busy}
-              autoFocus={index === 0}
+              autoFocus={showSubmit && index === 0}
               aria-label={question}
               placeholder="Type your answer…"
               onChange={(event) => setAnswer(index, event.target.value)}
@@ -90,14 +138,16 @@ export function FormCard({ title, questions, busy, onConfirm }: FormCardProps) {
         ))}
       </div>
       <div className="form-actions">
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          onClick={submit}
-          disabled={!canSubmit}
-        >
-          Submit answers
-        </button>
+        {showSubmit ? (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={submit}
+            disabled={!canSubmit}
+          >
+            Submit answers
+          </button>
+        ) : null}
       </div>
     </fieldset>
   );

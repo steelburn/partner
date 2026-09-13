@@ -61,7 +61,14 @@ export default function PersonaPicker({
           {active ? active.name : personas.length === 0 ? 'No persona' : 'Pick a persona'}
         </span>
         {active?.paused ? <span className="chip">Paused</span> : null}
-        {active ? <span className="chip">{levelLabel(active.independence.level)}</span> : null}
+        {active ? (
+          /* `picker-level` exists so the phone tier can drop this chip alone:
+           * the phone top bar also carries the assets toggle and the
+           * per-conversation theme select, and the level is the one chip that
+           * is repeated in the sheet this button opens. Paused must stay — a
+           * paused persona refuses chat — so the two chips are not one class. */
+          <span className="chip picker-level">{levelLabel(active.independence.level)}</span>
+        ) : null}
       </button>
 
       {open ? (

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type {
   CatalogSkill,
   Persona,
@@ -334,10 +335,10 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
         {sessionLost ? (
           <div className="skills-alert" role="alert">
             <p className="skills-alert-text">
-              Your session with the Partner core has expired. Pair again to manage skills.
+              {sessionLostSentence('manage skills')}
             </p>
             <button type="button" className="btn btn-secondary" onClick={onUnpair}>
-              Pair again
+              {sessionLostAction()}
             </button>
           </div>
         ) : null}

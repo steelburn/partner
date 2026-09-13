@@ -12,19 +12,17 @@ import type {
   ProviderInput,
   ProviderPurpose,
   ProviderSummary,
-  SelfServiceConnectInput,
-  SelfServiceLoginKey,
 } from '@partner/shared';
 import { parseSseStream } from './sse.js';
 
 const PAIR_PATH = '/v1/pair';
+const AUTH_SESSION_PATH = '/v1/auth/session';
+const PAIR_PAYLOAD_PATH = '/v1/pair/payload';
 const HEALTH_PATH = '/v1/health';
 const CHAT_PATH = '/v1/chat';
 const SESSION_PATH = '/v1/session';
 const DEMO_PAIR_CODE_PATH = '/v1/dev/pair-code';
 const PROVIDERS_PATH = '/v1/providers';
-const SELF_SERVICE_LOGIN_KEY_PATH = '/v1/self-service/login-key';
-const SELF_SERVICE_CONNECT_PATH = '/v1/self-service/connect';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -46,6 +44,13 @@ export interface CoreHealth {
   demo: boolean;
   version: string;
   schemaVersion: number;
+  /**
+   * M22: which gate to render. `login` is a remote-hosted core authenticating
+   * users; `pairing` is the desktop ceremony. Absent (an older core) = pairing.
+   */
+  authMode: 'pairing' | 'login';
+  /** M22: only sent in login mode — false means "no account exists yet". */
+  hasUsers?: boolean;
 }
 
 /**
@@ -77,6 +82,8 @@ export async function fetchCoreHealth(
     demo: record.demo,
     version: typeof record.version === 'string' ? record.version : '',
     schemaVersion: typeof record.schemaVersion === 'number' ? record.schemaVersion : 0,
+    authMode: record.authMode === 'login' ? 'login' : 'pairing',
+    ...(typeof record.hasUsers === 'boolean' ? { hasUsers: record.hasUsers } : {}),
   };
 }
 
@@ -95,8 +102,10 @@ function extractMessage(parsed: unknown): string | null {
     const err = obj.error as Record<string, unknown>;
     if (typeof err.message === 'string' && err.message.length > 0) return err.message;
   }
-  if (typeof obj.error === 'string' && obj.error.length > 0) return obj.error;
+  // A top-level `message` is the human sentence; `error` is the machine code.
+  // (Preferring `error` showed users "invalid_input" and "no_account".)
   if (typeof obj.message === 'string' && obj.message.length > 0) return obj.message;
+  if (typeof obj.error === 'string' && obj.error.length > 0) return obj.error;
   return null;
 }
 
@@ -130,6 +139,60 @@ export function extractErrorMessage(text: string, status: number): string {
   return trimmed.length <= 280 ? trimmed : `${trimmed.slice(0, 280)}…`;
 }
 
+/** M22: sign in with a username + passphrase (the hosted shape). */
+export interface SignInResult {
+  token: string;
+  userId: string;
+  clientClass: string;
+  expiresAt: number;
+}
+
+/**
+ * POST /v1/auth/session {username, password} -> a session that names its user.
+ *
+ * 401 is one message for "no such user" and "wrong password" (no enumeration),
+ * 429 carries the lockout/rate-limit retry, and 409 means the core has no
+ * account yet — the fix is an operator command, so the caller should surface the
+ * server's wording rather than say "wrong password".
+ */
+export async function signIn(
+  username: string,
+  password: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SignInResult> {
+  const fetchImpl: FetchLike = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(AUTH_SESSION_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+  } catch {
+    throw new Error('network');
+  }
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorMessage(response));
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new ApiRequestError(response.status, 'Sign-in response was not valid JSON.');
+  }
+  const token = readToken(body);
+  if (token === null) {
+    throw new ApiRequestError(response.status, 'Sign-in response did not include a session token.');
+  }
+  const record = body as Record<string, unknown>;
+  return {
+    token,
+    userId: typeof record.userId === 'string' ? record.userId : '',
+    clientClass: typeof record.clientClass === 'string' ? record.clientClass : 'desktop',
+    expiresAt: typeof record.expiresAt === 'number' ? record.expiresAt : 0,
+  };
+}
+
 /**
  * Exchange a 6-digit pairing code for a session token.
  *
@@ -140,13 +203,80 @@ export async function requestPair(
   code: string,
   options: { fetchImpl?: FetchLike } = {},
 ): Promise<PairResult> {
-  const fetchImpl: FetchLike = options.fetchImpl ?? fetch;
+  return postPair({ code }, options.fetchImpl ?? fetch);
+}
+
+/**
+ * M20-B S7: redeem a networked pairing secret (the QR/link path) for a session.
+ * The core mints this session as the `mobile` client class — never `desktop`.
+ *
+ * `deviceLabel` is optional registry metadata (the core bounds and sanitizes
+ * it); the secret is the only credential, and it crosses exactly this call.
+ */
+export async function requestPairSecret(
+  secret: string,
+  options: { deviceLabel?: string | null; fetchImpl?: FetchLike } = {},
+): Promise<PairResult> {
+  const body: Record<string, unknown> = { secret };
+  const label = options.deviceLabel?.trim();
+  if (label !== undefined && label !== '') body.deviceLabel = label;
+  return postPair(body, options.fetchImpl ?? fetch);
+}
+
+/** The shared POST /v1/pair exchange: body in, session token out. */
+async function postPair(body: Record<string, unknown>, fetchImpl: FetchLike): Promise<PairResult> {
   let response: Response;
   try {
     response = await fetchImpl(PAIR_PATH, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('network');
+  }
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorMessage(response));
+  }
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch {
+    throw new ApiRequestError(response.status, 'Pairing response was not valid JSON.');
+  }
+  const token = readToken(parsed);
+  if (token === null) {
+    throw new ApiRequestError(response.status, 'Pairing response did not include a session token.');
+  }
+  return { token };
+}
+
+/** M20-B S7: what POST /v1/pair/payload returns to the machine's own UI. */
+export interface PairPayloadInfo {
+  /** The JSON payload, base64url-encoded into the link/QR this UI renders. */
+  payload: string;
+  coreUrl: string;
+  certFingerprint: string;
+}
+
+/**
+ * Ask the core to ISSUE a networked pairing secret (M20-B S7).
+ *
+ * Local-only at the core: it refuses with 403 `loopback_required` when the
+ * request did not come from this machine, 409 `remote_access_disabled` when
+ * remote access is off, and 409 `tls_required` without a pinned certificate.
+ */
+export async function fetchPairPayload(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<PairPayloadInfo> {
+  const fetchImpl: FetchLike = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(PAIR_PAYLOAD_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: '{}',
     });
   } catch {
     throw new Error('network');
@@ -160,11 +290,21 @@ export async function requestPair(
   } catch {
     throw new ApiRequestError(response.status, 'Pairing response was not valid JSON.');
   }
-  const token = readToken(body);
-  if (token === null) {
-    throw new ApiRequestError(response.status, 'Pairing response did not include a session token.');
+  if (typeof body !== 'object' || body === null) {
+    throw new ApiRequestError(response.status, 'Pairing response was not the expected shape.');
   }
-  return { token };
+  const record = body as Record<string, unknown>;
+  const payload = record.payload;
+  const coreUrl = record.coreUrl;
+  const certFingerprint = record.certFingerprint;
+  if (
+    typeof payload !== 'string' ||
+    typeof coreUrl !== 'string' ||
+    typeof certFingerprint !== 'string'
+  ) {
+    throw new ApiRequestError(response.status, 'Pairing response was not the expected shape.');
+  }
+  return { payload, coreUrl, certFingerprint };
 }
 
 export type DemoPairCodeResult =
@@ -639,66 +779,8 @@ export async function testProvider(
 }
 
 /**
- * POST /v1/self-service/login-key {endpoint} -> the S0 envelope public key.
- * The core proxies GET {endpoint}/api/login-key (S0). 502/504 mean the
- * upstream self-service app is unreachable through the core.
+ * POST /v1/providers/:id/test -> the provider after a probe.
+ *
+ * (The llm-self-service `login-key` and `connect` clients that lived here were
+ * removed in M22 — provider setup is a base URL + key typed by the user.)
  */
-export async function fetchSelfServiceLoginKey(
-  token: string,
-  endpoint: string,
-  options: { fetchImpl?: FetchLike } = {},
-): Promise<SelfServiceLoginKey> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(SELF_SERVICE_LOGIN_KEY_PATH, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-      accept: 'application/json',
-    },
-    body: JSON.stringify({ endpoint }),
-  });
-  if (response.status === 502 || response.status === 504) {
-    throw new ApiRequestError(response.status, 'Upstream service unavailable');
-  }
-  const loginKey = await expectJson<SelfServiceLoginKey>(response);
-  if (typeof loginKey?.publicKeyPem !== 'string' || loginKey.publicKeyPem.length === 0) {
-    throw new ApiRequestError(
-      response.status,
-      'The self-service login key response was missing its public key.',
-    );
-  }
-  return loginKey;
-}
-
-/**
- * POST /v1/self-service/connect {endpoint, email, passwordCipher} -> the
- * created provider profile. The ciphertext was produced IN THE PAGE by
- * cryptoEnvelope; the plaintext password never crosses the loopback.
- * A 401 from the core means the upstream rejected the org credentials (the
- * core sends the same wording for wrong-credential/unknown-user — no
- * enumeration); 502 means the self-service app is unreachable.
- */
-export async function connectSelfService(
-  token: string,
-  input: SelfServiceConnectInput,
-  options: { fetchImpl?: FetchLike } = {},
-): Promise<ProviderSummary> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(SELF_SERVICE_CONNECT_PATH, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-      accept: 'application/json',
-    },
-    body: JSON.stringify(input),
-  });
-  if (response.status === 401) {
-    throw new ApiRequestError(401, 'Invalid email or password');
-  }
-  if (response.status === 502) {
-    throw new ApiRequestError(502, 'Upstream service unavailable');
-  }
-  return expectJson<ProviderSummary>(response);
-}

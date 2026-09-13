@@ -1,0 +1,88 @@
+/**
+ * Navigation model (M20.A) — the single source of truth for *which views exist*
+ * and how they are reached on each form factor.
+ *
+ * Why this is a module and not inline JSX: the desktop sidebar lists every
+ * view, but a phone shows only a handful of tabs plus a "More" sheet. The
+ * moment those two lists are maintained separately, a view can silently become
+ * unreachable on a phone — which is a real product bug that type-checks
+ * perfectly. So the split is data, and `nav.test.ts` asserts that the mobile
+ * tabs plus the More sheet cover exactly the full view set, each exactly once.
+ *
+ * Geometry notes live in app.css; this module owns only the information
+ * architecture (which view, which label, which group, which tier).
+ */
+
+/** Every view in the app. Order here is the desktop sidebar order. */
+export const VIEW_NAMES = [
+  'chat',
+  'notes',
+  'personas',
+  'providers',
+  'themes',
+  'files',
+  'skills',
+  'playbooks',
+  'memory',
+  'audit',
+] as const;
+
+export type ViewName = (typeof VIEW_NAMES)[number];
+
+export interface NavGroupMeta {
+  name: string;
+  views: ViewName[];
+}
+
+/** Desktop sidebar groups (unchanged M14 order and aria semantics). */
+export const NAV_GROUPS: readonly NavGroupMeta[] = [
+  { name: 'Workspace', views: ['chat', 'notes'] },
+  { name: 'Studio', views: ['personas', 'providers', 'themes'] },
+  { name: 'Tools', views: ['files', 'skills', 'playbooks'] },
+  { name: 'System', views: ['memory', 'audit'] },
+] as const;
+
+/** Human labels, shared by the sidebar, the mobile tabs and the More sheet. */
+export const NAV_LABELS: Record<ViewName, string> = {
+  chat: 'Chat',
+  notes: 'Notes',
+  personas: 'Personas',
+  providers: 'Providers',
+  themes: 'Themes',
+  files: 'Files',
+  skills: 'Skills',
+  playbooks: 'Playbooks',
+  memory: 'Memory',
+  audit: 'Audit',
+};
+
+/**
+ * Phone bottom tabs, in thumb-priority order.
+ *
+ * Five slots is the most that stays comfortably tappable at 360px (72px per
+ * slot, above `--target-min`). `files` earns a slot because it carries the
+ * pending-approval badge — on a phone the approval queue is the one thing that
+ * must never be more than one tap away. `chat` leads because chat is the
+ * product.
+ */
+export const MOBILE_TABS: readonly ViewName[] = ['chat', 'notes', 'files', 'personas'] as const;
+
+/** Everything else, reached from the More sheet. */
+export const MOBILE_MORE: readonly ViewName[] = [
+  'providers',
+  'themes',
+  'skills',
+  'playbooks',
+  'memory',
+  'audit',
+] as const;
+
+/** Views reachable from the phone UI (tabs + More sheet). */
+export function mobileReachableViews(): ViewName[] {
+  return [...MOBILE_TABS, ...MOBILE_MORE];
+}
+
+/** Views listed by the desktop sidebar. */
+export function sidebarViews(): ViewName[] {
+  return NAV_GROUPS.flatMap((group) => group.views);
+}

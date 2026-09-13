@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ApiRequestError,
   asChatEvent,
-  connectSelfService,
   createProvider,
   deleteProvider,
-  fetchSelfServiceLoginKey,
   listProviders,
   setProviderKey,
   testProvider,
@@ -171,74 +169,6 @@ describe('provider API', () => {
       status: 502,
       message: 'upstream refused',
     });
-  });
-});
-
-describe('self-service import API', () => {
-  it('fetchSelfServiceLoginKey POSTs {endpoint} and parses the PEM', async () => {
-    const pem = '-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----';
-    const { fetchImpl, calls } = recordFetch(() => jsonResponse({ publicKeyPem: pem }));
-    const result = await fetchSelfServiceLoginKey(TOKEN, 'https://enter.ne1.dev', { fetchImpl });
-    expect(result).toEqual({ publicKeyPem: pem });
-    expect(calls[0]?.input).toBe('/v1/self-service/login-key');
-    expect(calls[0]?.init?.headers).toMatchObject({ authorization: `Bearer ${TOKEN}` });
-    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ endpoint: 'https://enter.ne1.dev' });
-  });
-
-  it('fetchSelfServiceLoginKey maps upstream 502 to a friendly message', async () => {
-    const { fetchImpl } = recordFetch(() => new Response('gateway timeout', { status: 502 }));
-    await expect(
-      fetchSelfServiceLoginKey(TOKEN, 'https://enter.ne1.dev', { fetchImpl }),
-    ).rejects.toMatchObject({ status: 502, message: 'Upstream service unavailable' });
-  });
-
-  it('fetchSelfServiceLoginKey rejects a body without a public key', async () => {
-    const { fetchImpl } = recordFetch(() => jsonResponse({}));
-    await expect(
-      fetchSelfServiceLoginKey(TOKEN, 'https://enter.ne1.dev', { fetchImpl }),
-    ).rejects.toMatchObject({ name: 'ApiRequestError' });
-  });
-
-  it('connect happy path POSTs passwordCipher ONLY — never a password field', async () => {
-    const created = providerSummary({ source: 'llm-self-service', name: 'llm-self-service (org)' });
-    const { fetchImpl, calls } = recordFetch(() => jsonResponse(created, 201));
-    const result = await connectSelfService(
-      TOKEN,
-      { endpoint: 'https://enter.ne1.dev', email: 'me@example.com', passwordCipher: 'CIPHER==' },
-      { fetchImpl },
-    );
-    expect(result).toEqual(created);
-    expect(calls[0]?.input).toBe('/v1/self-service/connect');
-    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
-    expect(body).toEqual({
-      endpoint: 'https://enter.ne1.dev',
-      email: 'me@example.com',
-      passwordCipher: 'CIPHER==',
-    });
-    expect(body).not.toHaveProperty('password');
-  });
-
-  it('connect maps 401 to "Invalid email or password"', async () => {
-    const { fetchImpl } = recordFetch(() =>
-      jsonResponse({ error: 'the upstream wording must never reach the page' }, 401),
-    );
-    await expect(
-      connectSelfService(TOKEN, { endpoint: 'https://enter.ne1.dev', email: 'x@y.z', passwordCipher: 'c' }, { fetchImpl }),
-    ).rejects.toMatchObject({ status: 401, message: 'Invalid email or password' });
-  });
-
-  it('connect maps 502 to "Upstream service unavailable"', async () => {
-    const { fetchImpl } = recordFetch(() => new Response('bad gateway', { status: 502 }));
-    await expect(
-      connectSelfService(TOKEN, { endpoint: 'https://enter.ne1.dev', email: 'x@y.z', passwordCipher: 'c' }, { fetchImpl }),
-    ).rejects.toMatchObject({ status: 502, message: 'Upstream service unavailable' });
-  });
-
-  it('connect passes through other readable errors (e.g. core 400)', async () => {
-    const { fetchImpl } = recordFetch(() => jsonResponse({ error: 'endpoint must be https' }, 400));
-    await expect(
-      connectSelfService(TOKEN, { endpoint: 'http://enter.ne1.dev', email: 'x@y.z', passwordCipher: 'c' }, { fetchImpl }),
-    ).rejects.toMatchObject({ status: 400, message: 'endpoint must be https' });
   });
 });
 

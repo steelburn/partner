@@ -22,9 +22,11 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markd
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
-import type { ChoiceMode } from '@partner/shared';
+import type { ChoiceBlock, ChoiceMode, FormBlock } from '@partner/shared';
+import { AnswerGroup } from './AnswerGroup.js';
 import { ChoiceCard } from './ChoiceCard.js';
 import { FormCard } from './FormCard.js';
+import { isAnswerable, shouldGroupAnswers } from './lib/answer-group.js';
 import { WikiLinkChip, type WikiNoteTarget } from './WikiLinkChip.js';
 import { codeAssetBody, codeAssetPreview } from './lib/code-assets.js';
 import { linkifyWikiLinks, wikiTitleFromHref } from './lib/wiki-links.js';
@@ -35,6 +37,15 @@ export interface PartnerMarkdownProps {
   onAnswer?: (message: string) => void;
   /** Chat is mid-stream: interactions stay inert until the turn ends. */
   busy?: boolean;
+  /**
+   * M20.A: whether a grouped-answer control in THIS message is still live.
+   *
+   * Defaults to `true` deliberately: only the chat transcript knows a message's
+   * position, so every other renderer of this component (the assets lane, note
+   * previews) keeps its existing interactive behaviour untouched rather than
+   * silently inheriting a transcript concept it has no position in.
+   */
+  groupLive?: boolean;
   /** Intercept a partner-file link (F1); absent links render as plain text. */
   onFileLink?: (href: string) => void;
   /** F12: an html/css code asset asked for a sandboxed preview. */
@@ -150,12 +161,22 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   text,
   onAnswer,
   busy,
+  groupLive,
   onPreviewCode,
   resolveNote,
   onOpenNote,
 }: PartnerMarkdownProps) {
   const visibleText = useMemo(() => filterToolDirectives(text), [text]);
   const hits = useMemo(() => parseStructuredBlocks(visibleText), [visibleText]);
+  /**
+   * M20.A: a reply that asks more than one question set must offer exactly ONE
+   * submit. Each card used to keep its own button, and pressing either sent only
+   * that card's answer — the other question set was discarded. When grouping
+   * applies, every answerable block renders together at the first one's
+   * position and shares a single submit; prose and asset containers keep their
+   * own places.
+   */
+  const grouped = useMemo(() => shouldGroupAnswers(hits.map((hit) => hit.block)), [hits]);
   const noteLink = useMemo<NoteLinkContextValue>(
     () => ({ resolveNote, onOpenNote, busy: busy === true }),
     [resolveNote, onOpenNote, busy],
@@ -169,12 +190,49 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   }
   const segments: React.ReactNode[] = [];
   let cursor = 0;
+  // Rendered once, at the first answerable block's position, when grouping.
+  let groupRendered = false;
   hits.forEach((hit, index) => {
     const before = visibleText.slice(cursor, hit.start);
     if (!isBlank(before)) {
       segments.push(<MarkdownFragment key={`md-${index}`} text={before} />);
     }
     const block = hit.block;
+    if (grouped && isAnswerable(block)) {
+      if (!groupRendered) {
+        groupRendered = true;
+        const answerable = hits
+          .map((other) => other.block)
+          .filter((other): other is ChoiceBlock | FormBlock => isAnswerable(other))
+          .map((other) =>
+            other.kind === 'choice'
+              ? { ...other, mode: other.mode === 'multi' ? ('multi' as const) : ('single' as const) }
+              : other,
+          );
+        segments.push(
+          <AnswerGroup
+            key="answer-group"
+            blocks={answerable}
+            busy={busy === true}
+            live={groupLive ?? true}
+            onAnswer={(message) => onAnswer?.(message)}
+          />,
+        );
+      }
+      cursor = hit.end;
+      return;
+    }
+    // Standalone card — this message has exactly ONE answerable container, so
+    // it keeps its own submit and none of the grouping machinery above.
+    //
+    // DELIBERATE ASYMMETRY with the grouped path: this card is handed no
+    // liveness signal, so a lone choice/form in an OLDER message stays
+    // interactive even though the conversation has moved past it. That is the
+    // same underlying staleness the grouped path now closes, but changing it
+    // here is out of this change's brief — it is a separate decision (logged as
+    // a follow-up) and would alter long-standing behaviour for every historical
+    // card. The grouped path takes `groupLive` because that is where the
+    // duplicate-submit bug was actually reported.
     if (block.kind === 'choice') {
       const mode: ChoiceMode = block.mode === 'multi' ? 'multi' : 'single';
       segments.push(

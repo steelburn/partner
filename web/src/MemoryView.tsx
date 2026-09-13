@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type {
   EpisodeSummary,
   ForgetRequest,
@@ -102,6 +103,13 @@ export interface MemoryViewProps {
   onUnpair: () => void;
   /** True while this view is the visible one (triggers a reload). */
   active?: boolean;
+  /**
+   * M20.A: a confirm/edit/reject changes how many suggestions are waiting, so
+   * the shell re-reads its attention counts and the nav badge clears at once
+   * instead of at the next poll. Only a count is involved — no entry text
+   * crosses this callback.
+   */
+  onAttentionChanged?: () => void;
 }
 
 /**
@@ -112,7 +120,12 @@ export interface MemoryViewProps {
  * Memory content is user data: it is rendered to the OWNER only — nothing in
  * this view ever logs it, and errors/notes carry counts and ids, never text.
  */
-export default function MemoryView({ personas, onUnpair, active }: MemoryViewProps) {
+export default function MemoryView({
+  personas,
+  onUnpair,
+  active,
+  onAttentionChanged,
+}: MemoryViewProps) {
   const [entries, setEntries] = useState<ProfileEntry[] | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -146,7 +159,10 @@ export default function MemoryView({ personas, onUnpair, active }: MemoryViewPro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, sessionLost, reloadTick]);
 
-  const handleChanged = (): void => setReloadTick((tick) => tick + 1);
+  const handleChanged = (): void => {
+    setReloadTick((tick) => tick + 1);
+    onAttentionChanged?.();
+  };
 
   const handleSessionLost = (): void => setSessionLost(true);
 
@@ -172,10 +188,10 @@ export default function MemoryView({ personas, onUnpair, active }: MemoryViewPro
         {sessionLost ? (
           <div className="memory-alert" role="alert">
             <p className="memory-alert-text">
-              Your session with the Partner core has expired. Pair again to manage memory.
+              {sessionLostSentence('manage memory')}
             </p>
             <button type="button" className="btn btn-secondary" onClick={onUnpair}>
-              Pair again
+              {sessionLostAction()}
             </button>
           </div>
         ) : null}
@@ -1291,62 +1307,12 @@ function ControlsCard({ entryCount, episodeCount, onChanged, onSessionLost }: Co
         undone. Export first if you might want the data back.
       </p>
 
-      <div className="mem-control-row">
-        <div className="mem-control-text">
-          <span className="mem-control-title">Forget everything</span>
-          <span className="mem-control-copy">Removes every profile entry and episode.</span>
-        </div>
-        <button
-          type="button"
-          className="btn btn-secondary btn-danger"
-          disabled={forgetAllBusy || importing || exporting}
-          onClick={() => void forgetAll()}
-          aria-busy={forgetAllBusy}
-          aria-label={forgetAllArmed ? 'Confirm forgetting everything' : 'Forget everything'}
-        >
-          {forgetAllBusy ? 'Forgetting…' : forgetAllArmed ? 'Confirm forget all' : 'Forget all'}
-        </button>
-      </div>
-
-      <div className="mem-control-row">
-        <div className="mem-control-text">
-          <span className="mem-control-title">Forget before a date</span>
-          <span className="mem-control-copy">
-            Removes profile entries and episodes CREATED before the chosen day (a whole-memory boundary).
-          </span>
-        </div>
-        <div className="mem-control-date">
-          <input
-            className="field mem-date-input"
-            type="date"
-            value={date}
-            disabled={dateBusy || forgetAllBusy || importing || exporting}
-            onChange={(event) => {
-              setDate(event.target.value);
-              setDateArmed(false);
-              clearFeedback();
-            }}
-            aria-label="Forget memory before this date"
-          />
-          <button
-            type="button"
-            className="btn btn-secondary btn-danger"
-            disabled={dateBusy || !dateValid || forgetAllBusy || importing || exporting}
-            onClick={() => void forgetBefore()}
-            aria-busy={dateBusy}
-            aria-label={
-              dateArmed ? `Confirm forgetting memory before ${date}` : 'Forget memory before the selected date'
-            }
-          >
-            {dateBusy
-              ? 'Forgetting…'
-              : dateArmed
-                ? `Confirm before ${date}`
-                : 'Forget before'}
-          </button>
-        </div>
-      </div>
-
+      {/* M20.A: portability first, destructive last, escalating in scope
+       * (a dated boundary, then everything). "Forget everything" used to be
+       * the FIRST row of this card — the most prominent position given to the
+       * most irreversible action, one row above the Export that the copy above
+       * tells the user to reach for first. The arm/confirm pattern is
+       * unchanged; only the order and the separation are. */}
       <div className="mem-control-row">
         <div className="mem-control-text">
           <span className="mem-control-title">Export</span>
@@ -1393,6 +1359,67 @@ function ControlsCard({ entryCount, episodeCount, onChanged, onSessionLost }: Co
           tabIndex={-1}
           aria-hidden="true"
         />
+      </div>
+
+      {/* Destructive group, separated by space (DESIGN.md: space → background
+       * shift → elevation before a border). Narrower scope first so severity
+       * escalates downward. */}
+      <div className="mem-danger-group">
+        <div className="mem-control-row">
+          <div className="mem-control-text">
+            <span className="mem-control-title">Forget before a date</span>
+            <span className="mem-control-copy">
+              Removes profile entries and episodes CREATED before the chosen day (a whole-memory boundary).
+            </span>
+          </div>
+          <div className="mem-control-date">
+            <input
+              className="field mem-date-input"
+              type="date"
+              value={date}
+              disabled={dateBusy || forgetAllBusy || importing || exporting}
+              onChange={(event) => {
+                setDate(event.target.value);
+                setDateArmed(false);
+                clearFeedback();
+              }}
+              aria-label="Forget memory before this date"
+            />
+            <button
+              type="button"
+              className="btn btn-secondary btn-danger"
+              disabled={dateBusy || !dateValid || forgetAllBusy || importing || exporting}
+              onClick={() => void forgetBefore()}
+              aria-busy={dateBusy}
+              aria-label={
+                dateArmed ? `Confirm forgetting memory before ${date}` : 'Forget memory before the selected date'
+              }
+            >
+              {dateBusy
+                ? 'Forgetting…'
+                : dateArmed
+                  ? `Confirm before ${date}`
+                  : 'Forget before'}
+            </button>
+          </div>
+        </div>
+
+        <div className="mem-control-row">
+          <div className="mem-control-text">
+            <span className="mem-control-title">Forget everything</span>
+            <span className="mem-control-copy">Removes every profile entry and episode.</span>
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary btn-danger"
+            disabled={forgetAllBusy || importing || exporting}
+            onClick={() => void forgetAll()}
+            aria-busy={forgetAllBusy}
+            aria-label={forgetAllArmed ? 'Confirm forgetting everything' : 'Forget everything'}
+          >
+            {forgetAllBusy ? 'Forgetting…' : forgetAllArmed ? 'Confirm forget all' : 'Forget all'}
+          </button>
+        </div>
       </div>
 
       <div className="form-feedback" aria-live="polite">

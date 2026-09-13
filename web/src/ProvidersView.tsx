@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type { ProviderPurpose, ProviderSummary } from '@partner/shared';
 import { isImageCapableModel, PROVIDER_PURPOSES } from '@partner/shared';
 import {
   ApiRequestError,
-  connectSelfService,
   createPurposeProviders,
   deleteProvider,
   discoverProviderModels,
-  fetchSelfServiceLoginKey,
   listProviders,
   setProviderKey,
   testProvider,
 } from './lib/api.js';
-import { encryptPasswordWithPublicKey } from './lib/cryptoEnvelope.js';
 import {
   budgetLabel,
   describeHealth,
@@ -27,6 +25,7 @@ import {
 import { readStoredToken } from './lib/token.js';
 import { McpPanel } from './McpPanel.js';
 import { SearchPanel } from './SearchPanel.js';
+import { DeviceAccessPanel } from './DeviceAccessPanel.js';
 
 export interface ProvidersViewProps {
   /** Forget the session and return to the pairing gate (auth failure). */
@@ -34,8 +33,6 @@ export interface ProvidersViewProps {
   /** True while this view is the visible one; triggers the first load. */
   active?: boolean;
 }
-
-const IMPORT_DEFAULT_ENDPOINT = 'https://enter.ne1.dev';
 
 /** True when an ApiRequestError means the core session is gone. */
 function isSessionLost(cause: unknown): boolean {
@@ -47,7 +44,7 @@ function isSessionLost(cause: unknown): boolean {
 /**
  * M1 Providers screen (provisional): list + per-row Test/Set key/Delete,
  * an inline purpose-provider setup card (discover + assign models per
- * purpose), and the "Connect llm-self-service" import card. Secrets policy: provider keys and the org password live only in
+ * purpose). Secrets policy: provider keys live only in
  * transient, uncontrolled input fields and are cleared immediately; only the
  * ciphertext produced in this page is ever sent to the core.
  */
@@ -58,7 +55,6 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
   /** M11 F4: filter the list by provider purpose ('all' = no filter). */
   const [purposeFilter, setPurposeFilter] = useState<ProviderPurpose | 'all'>('all');
   /** Id of a freshly added provider whose Set-key step should auto-open. */
-  const [keyHintId, setKeyHintId] = useState<string | null>(null);
   const [loadedOnce, setLoadedOnce] = useState(false);
 
   const load = async (): Promise<void> => {
@@ -98,12 +94,6 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
     setProviders((prev) => prev?.filter((p) => p.id !== id) ?? prev);
   };
 
-  const appendProvider = (created: ProviderSummary): void => {
-    setProviders((prev) => [...(prev ?? []), created]);
-    setKeyHintId(created.id);
-  };
-
-  /** M13 purpose bundle: append every created profile (keys already stored). */
   const appendProviders = (created: ProviderSummary[]): void => {
     setProviders((prev) => [...(prev ?? []), ...created]);
   };
@@ -131,10 +121,10 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
         {sessionLost ? (
           <div className="providers-alert" role="alert">
             <p className="providers-alert-text">
-              Your session with the Partner core has expired. Pair again to manage providers.
+              {sessionLostSentence('manage providers')}
             </p>
             <button type="button" className="btn btn-secondary" onClick={onUnpair}>
-              Pair again
+              {sessionLostAction()}
             </button>
           </div>
         ) : null}
@@ -158,8 +148,7 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
             <p className="empty-state-copy">
               Nothing can call a model yet. Add your OpenAI-compatible endpoint once below and
               Partner creates a provider per purpose (General, Cheap, Deep, Coding, Vision,
-              Research) — keys stay in your OS keychain. Or connect llm-self-service to pull in
-              the key provisioned for your account.
+              Research) — keys stay in your OS keychain.
             </p>
             <div className="empty-actions">
               <button
@@ -168,13 +157,6 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
                 onClick={() => scrollToCard('purpose-bundle-card')}
               >
                 Set up purpose providers
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => scrollToCard('connect-selfservice-card')}
-              >
-                Connect llm-self-service
               </button>
             </div>
           </div>
@@ -202,7 +184,6 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
                   <li key={provider.id} className="provider-card">
                     <ProviderRow
                       provider={provider}
-                      openKey={provider.id === keyHintId}
                       onUpdated={replaceProvider}
                       onRemoved={removeProvider}
                       onSessionLost={handleSessionLost}
@@ -219,13 +200,9 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
           onSessionLost={handleSessionLost}
           providers={providers ?? []}
         />
-        <ImportCard
-          disabled={sessionLost}
-          onConnected={appendProvider}
-          onSessionLost={handleSessionLost}
-        />
         <McpPanel onUnpair={handleSessionLost} />
         <SearchPanel onUnpair={handleSessionLost} />
+        <DeviceAccessPanel onUnpair={handleSessionLost} />
       </div>
     </section>
   );
@@ -240,22 +217,17 @@ type RowOp = 'test' | 'set-key' | 'delete';
 interface ProviderRowProps {
   provider: ProviderSummary;
   /** Auto-open the Set-key step (freshly added provider). */
-  openKey: boolean;
   onUpdated: (next: ProviderSummary) => void;
   onRemoved: (id: string) => void;
   onSessionLost: () => void;
 }
 
-function ProviderRow({ provider, openKey, onUpdated, onRemoved, onSessionLost }: ProviderRowProps) {
+function ProviderRow({ provider, onUpdated, onRemoved, onSessionLost }: ProviderRowProps) {
   const [busy, setBusy] = useState<RowOp | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false);
   const keyRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    if (openKey) setKeyOpen(true);
-  }, [openKey]);
 
   const handleOpError = (cause: unknown): void => {
     if (isSessionLost(cause)) {
@@ -876,161 +848,3 @@ function PurposeBundleCard({ disabled, onAddedMany, onSessionLost, providers }: 
 }
 
 
-interface ImportCardProps {
-  disabled: boolean;
-  onConnected: (created: ProviderSummary) => void;
-  onSessionLost: () => void;
-}
-
-function ImportCard({ disabled, onConnected, onSessionLost }: ImportCardProps) {
-  const [endpoint, setEndpoint] = useState(IMPORT_DEFAULT_ENDPOINT);
-  const [email, setEmail] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const passwordRef = useRef<HTMLInputElement | null>(null);
-  // Never leave the plaintext password in the DOM after the view unmounts.
-  useEffect(
-    () => () => {
-      if (passwordRef.current) passwordRef.current.value = '';
-    },
-    [],
-  );
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (busy || disabled) return;
-    const token = readStoredToken();
-    if (!token) {
-      onSessionLost();
-      return;
-    }
-
-    const normalizedEndpoint = normalizeEndpoint(endpoint);
-    const endpointError = validateEndpoint(normalizedEndpoint);
-    if (endpointError) {
-      setError(endpointError);
-      return;
-    }
-    const trimmedEmail = email.trim();
-    if (trimmedEmail.length === 0) {
-      setError('Enter the email you use on the llm-self-service portal.');
-      return;
-    }
-    const plaintext = passwordRef.current?.value ?? '';
-    if (plaintext.length === 0) {
-      setError('Enter the password for that account.');
-      return;
-    }
-    // Read + clear the password immediately so the plaintext exists only for
-    // the duration of this submit handler (never state, never stored).
-    if (passwordRef.current) passwordRef.current.value = '';
-
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    try {
-      const loginKey = await fetchSelfServiceLoginKey(token, normalizedEndpoint);
-      const passwordCipher = await encryptPasswordWithPublicKey(loginKey.publicKeyPem, plaintext);
-      const created = await connectSelfService(token, {
-        endpoint: normalizedEndpoint,
-        email: trimmedEmail,
-        passwordCipher,
-      });
-      setEmail('');
-      setNote(`Connected — provider "${created.name}" is ready to use.`);
-      onConnected(created);
-    } catch (cause) {
-      if (cause instanceof ApiRequestError) {
-        setError(cause.message);
-      } else if (cause instanceof Error) {
-        setError(cause.message);
-      } else {
-        setError('Could not reach the Partner core.');
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const formDisabled = busy || disabled;
-
-  return (
-    <section className="card import-card" id="connect-selfservice-card" aria-label="Connect llm-self-service">
-      <h2 className="card-title">Connect llm-self-service</h2>
-      <p className="card-copy">
-        Sign in with the same org credentials as the llm-self-service portal. Your password is
-        encrypted in this page, exchanged for your provisioned key, and never sent anywhere else.
-      </p>
-      <form className="form-stack" onSubmit={(event) => void handleSubmit(event)} aria-busy={busy}>
-        <div className="form-field">
-          <label className="label" htmlFor="import-endpoint">
-            Self-service endpoint
-          </label>
-          <input
-            id="import-endpoint"
-            className="field"
-            type="text"
-            inputMode="url"
-            autoComplete="off"
-            spellCheck={false}
-            value={endpoint}
-            disabled={formDisabled}
-            onChange={(event) => setEndpoint(event.target.value)}
-            placeholder="https://enter.ne1.dev"
-          />
-        </div>
-        <div className="form-field">
-          <label className="label" htmlFor="import-email">
-            Org email
-          </label>
-          <input
-            id="import-email"
-            className="field"
-            type="email"
-            autoComplete="username"
-            spellCheck={false}
-            value={email}
-            disabled={formDisabled}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-            aria-required="true"
-          />
-        </div>
-        <div className="form-field">
-          <label className="label" htmlFor="import-password">
-            Password
-          </label>
-          <input
-            id="import-password"
-            ref={passwordRef}
-            className="field"
-            type="password"
-            autoComplete="new-password"
-            aria-required="true"
-            disabled={formDisabled}
-            placeholder="Org account password"
-          />
-        </div>
-        <div className="form-actions">
-          <button type="submit" className="btn btn-primary" disabled={formDisabled}>
-            {busy ? 'Connecting…' : 'Connect'}
-          </button>
-        </div>
-        <p className="form-hint keychain-note">
-          The provisioned key is stored in your OS keychain by the Partner core — nothing key-shaped
-          ever returns to this page.
-        </p>
-        <div className="form-feedback" aria-live="polite">
-          {error ? (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          ) : note ? (
-            <p className="success-note">{note}</p>
-          ) : null}
-        </div>
-      </form>
-    </section>
-  );
-}

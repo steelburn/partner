@@ -8,6 +8,7 @@
  * Export is built client-side from the fetched rows only.
  */
 import { useEffect, useState, type FormEvent } from 'react';
+import { sessionLostAction, sessionLostSentence } from './lib/auth-mode.js';
 import { listAudit, type AuditEntry } from './lib/audit.js';
 import {
   auditAreaLabel,
@@ -83,10 +84,10 @@ export default function AuditView({ onUnpair, active }: AuditViewProps) {
       <div className="audit">
         <div className="audit-panel">
           <p className="pb-alert-text">
-            Your session with the Partner core has expired. Pair again to continue.
+            {sessionLostSentence('continue')}
           </p>
           <button type="button" className="btn btn-primary" onClick={onUnpair}>
-            Pair again
+            {sessionLostAction()}
           </button>
         </div>
       </div>

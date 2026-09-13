@@ -170,7 +170,11 @@ textarea {
 }
 
 .field::placeholder {
-  color: var(--text-faint);
+  /* Placeholder is INSTRUCTIVE text (it says what to type), so it follows the
+   * body floor like a hint: --text-faint is Lc 68.9 on the light well / 48.0
+   * on the dark one, below the 75 floor. Do not "quiet" a placeholder with
+   * --text-faint — it is reserved for DISABLED text. */
+  color: var(--text-muted);
   opacity: 1;
 }
 
@@ -303,6 +307,9 @@ textarea {
   margin: 0 0 var(--space-4);
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  /* M12.5 makes .gate-panel fluid, so the MEASURE has to live on the copy:
+   * an unconstrained line at 1280px runs ~120 characters. */
+  max-width: 68ch;
 }
 
 .gate-form {
@@ -324,6 +331,76 @@ textarea {
 .gate-feedback {
   margin-top: var(--space-3);
   min-height: var(--space-4);
+}
+
+/* --- M20-B S7: pairing-link confirm + phone-access card ----------------- */
+
+.gate-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  max-width: 68ch;
+}
+
+.gate-meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.gate-meta-label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.gate-meta-value {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.gate-fingerprint {
+  font-family: var(--font-mono);
+}
+
+.gate-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.pair-link-box {
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* Same measure rule as .card-copy — the link itself wraps inside it. */
+  max-width: 68ch;
+}
+
+.pair-link-label {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.pair-link-value {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.pair-link-fingerprint {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .form-error {
@@ -1712,6 +1789,13 @@ select {
   z-index: 91;
   width: 320px;
   max-width: calc(100vw - var(--space-4));
+  /* The list is as long as the persona count, so its height must be bounded by
+   * the space actually below the bar (a landscape phone is 390px tall: an
+   * unbounded 9-persona list runs past the bottom edge and the last rows become
+   * unreachable). Token-only estimate of that space: viewport minus the compact
+   * bar, its 2x8px padding and the 8px anchor gap. */
+  max-height: calc(100dvh - var(--topbar-compact-h) - var(--space-2) - var(--space-1) - var(--space-1));
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-0);
@@ -1726,6 +1810,9 @@ select {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  /* Never shrink: the popover scrolls, so a row keeps its 64px (>= the 44px
+   * touch floor) instead of being squashed to fit the bounded panel. */
+  flex: none;
   padding: var(--space-2);
   text-align: left;
   border: 0;
@@ -5199,7 +5286,11 @@ select {
   width: 100%;
   border: 0;
   border-radius: var(--radius-md);
-  background: #ffffff;
+  /* Canvas for third-party document content — a token, not a literal, so the
+   * stylesheet carries no raw hex. Intentionally identical in both modes: an
+   * arbitrary document was authored against a white canvas, so a theme-tinted
+   * one would put black authored text on a dark surface in dark mode. */
+  background: var(--surface-doc);
 }
 
 /* --- M11 F10 assets UI ---------------------------------------------------- */
@@ -5913,20 +6004,24 @@ select {
   line-height: 1.45;
 }
 
-/* --- M11 D6 per-conversation theme select --------------------------------- */
-
-.chat-theme-label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-}
-
-.chat-theme-select {
-  max-width: 220px;
+/* --- Per-conversation theme select (top bar, 2026-09-13) ------------------ *
+ * Moved here from the chat bar so the shell's top bar is the single home for
+ * chrome (see the M14 note: "a slim top bar (persona picker + lane/theme
+ * controls)"). It is a real `<select>` because the choice is a value, not an
+ * action; the control carries its own accessible name via `aria-label`, so no
+ * visible "Theme" label is needed beside it in a bar this tight. Width is
+ * capped so a long theme name cannot push the lane toggles off the row, and the
+ * option text is clipped rather than wrapped (a select cannot ellipsize, and
+ * wrapping would break the bar's single-line rule). */
+.topbar-theme-select {
+  flex: none;
+  width: auto;
+  max-width: 168px;
   font-size: var(--fs-sm);
   padding: 2px var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* --- M11 drag-to-move chats ------------------------------------------------ */
@@ -7770,4 +7865,985 @@ select {
   .n-link-picker-item {
     transition: none !important;
   }
+}
+
+/* ==========================================================================
+ * M20.A — Responsive & touch profile.
+ *
+ * Tiers (mirrored by the matchMedia constants in App.tsx; layout stays here so
+ * there is exactly one source of truth per form factor):
+ *   phone   <= 640    bottom tab bar; every rail is an overlay; transcript and
+ *                     composer own the full width
+ *   tablet  641-1150  icon rail (M12 behaviour); overlays still applied <= 760
+ *   desktop > 1150    full sidebar (M12 behaviour)
+ *
+ * Why this exists, measured at HEAD before this block (390x844):
+ *   .chat 122px · .chat-form 58px · .chat-transcript 58px
+ *   chrome = 52px icon rail + 200px conversation rail = 252px (65% of the
+ *   viewport), and 11 controls under the 44x44 touch floor.
+ *   overflowX was 0 at every width: the layout never overflowed, it silently
+ *   CRUSHED content — which is why an overflow-only gate passed while the
+ *   composer was 58px wide. The gates below assert composer width, not just
+ *   overflow.
+ * ========================================================================== */
+
+/* The bottom tab bar exists at every tier but is only shown on a phone, so
+ * there is one nav definition per form factor and no JS breakpoints. */
+.mobile-nav {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  /* --- Viewport & safe areas ------------------------------------------- *
+   * Two declarations on purpose: engines that do not know `dvh` drop the
+   * second declaration at parse time and keep the always-valid `vh`. With the
+   * keyboard open the dynamic unit shrinks the shell, so the composer rises
+   * with the keyboard instead of being pushed underneath it. */
+  html,
+  body,
+  #root {
+    height: var(--app-vh);
+    height: var(--app-dvh);
+  }
+
+  .app {
+    flex-direction: column;
+    height: var(--app-vh);
+    height: var(--app-dvh);
+    overflow: hidden;
+  }
+
+  /* The 52px icon rail is gone: it plus the conversation rail was 65% of the
+   * viewport. Navigation moves to the thumb-reachable tab bar below. */
+  .app-side {
+    display: none;
+  }
+
+  .app-col {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .app-topbar {
+    padding-top: var(--safe-top);
+  }
+
+  /* One row that scrolls rather than wraps, so the persona picker and the lane
+   * toggles never collapse the bar into two lines and eat transcript height.
+   * Controls keep their 44px floor (see the touch block below). */
+  .app-topbar-right {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: var(--space-1) var(--space-2);
+    min-height: var(--topbar-compact-h);
+  }
+
+  .app-topbar-right::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* --- Persona picker: a sheet, not a clipped popover ------------------- *
+   * That scroller is the reason this rule exists: `overflow-x: auto` forces
+   * `overflow-y: auto`, so an absolutely positioned popover is clipped to the
+   * bar's own band. Measured @390x844 at HEAD with the 9 demo personas: the
+   * popover lays out 655px tall but only the bar's 60px band paints (one
+   * option), and focusing the first option scrolls the bar itself up 65px so
+   * the trigger leaves the screen. Fixed positioning escapes the scroll
+   * container, and the list takes the same bottom-sheet shape as the More
+   * control — anchored on the tab bar, capped and scrollable, every row a full
+   * 64px target in the thumb zone. */
+  .picker-scrim {
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+  }
+
+  .picker-pop {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: calc(var(--bottom-nav-h) + var(--safe-bottom));
+    width: auto;
+    max-width: none;
+    max-height: 60vh;
+    max-height: 60dvh;
+    overflow-y: auto;
+    border-top-left-radius: var(--radius-lg);
+    border-top-right-radius: var(--radius-lg);
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    animation: sheet-rise var(--motion-base) var(--motion-ease);
+  }
+
+  /* --- Rails become overlays ------------------------------------------- *
+   * The transcript is the workspace on a phone; nothing may reserve a column
+   * beside it. Notes and Assets already went overlay at <= 760 — this brings
+   * the conversation rail in line and removes the reserved width entirely. */
+  .chat-workspace {
+    --rail-w: var(--space-0);
+  }
+
+  .chat-workspace .rail {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(86vw, 320px);
+    z-index: 30;
+    box-shadow: var(--elevation-lg);
+  }
+
+  .chat-workspace .chat {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+
+  /* Column resize is a pointer affordance with no touch equivalent. */
+  .chat-workspace .col-divider {
+    display: none;
+  }
+
+  /* --- Touch has no hover ---------------------------------------------- *
+   * Row Move/Delete were revealed only on :hover/:focus-within and collapsed
+   * to max-width 0 (measured: a 1x19 delete target). A hover-only affordance
+   * is unreachable on a phone, so reveal them permanently. The rail is a
+   * full-width overlay here, so the width that collapse was saving is free.
+   * The drag handle goes because HTML5 drag does not fire on touch and it
+   * would otherwise only fail the target floor; moving a chat between folders
+   * on a phone needs an explicit affordance, tracked as a follow-up rather
+   * than silently dropped. */
+  .rail-item-del,
+  .rail-item-move {
+    max-width: 100px;
+    opacity: 1;
+  }
+
+  .rail-item-del {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .rail-item-move {
+    padding: var(--space-1);
+  }
+
+  .rail-item-drag {
+    display: none;
+  }
+
+  /* Composer sits directly above the tab bar: a thumb margin, and the
+   * transcript keeps the remaining height. */
+  .chat-form {
+    padding: var(--space-1) var(--space-2) var(--space-1);
+  }
+
+  /* --- Bottom tab bar -------------------------------------------------- */
+  .mobile-nav {
+    display: block;
+    flex: none;
+    position: relative;
+    background: var(--surface);
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+    z-index: 40;
+  }
+
+  .mobile-tabs {
+    display: flex;
+    align-items: stretch;
+    min-height: var(--bottom-nav-h);
+  }
+
+  /* Every tab is a real 44px target and shares the width evenly, so five
+   * slots stay >= 72px wide even at a 360px viewport. */
+  .mobile-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: var(--target-min);
+    flex-direction: column;
+    gap: var(--space-0);
+    padding: var(--space-1) var(--space-0);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  /* .btn already carries focus-visible + disabled; hover/active are declared
+   * here because this control does not use a .btn variant. */
+  .mobile-tab:hover:not(:disabled) {
+    color: var(--text);
+  }
+
+  .mobile-tab:active:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  /* The active destination uses the system's own nav-active contract — a
+   * filled emphasis pill (accent-contrast on accent-emphasis), the one
+   * combination the theme gate guarantees in BOTH modes. Accent *text* on a
+   * surface would under-reach in light mode (DESIGN.md M12 P0.3 usage rule). */
+  .mobile-tab[aria-pressed='true'] {
+    background: var(--accent-emphasis);
+    color: var(--accent-contrast);
+    font-weight: var(--fw-medium);
+  }
+
+  .mobile-tab[aria-pressed='true']:hover:not(:disabled),
+  .mobile-tab[aria-pressed='true']:active:not(:disabled) {
+    background: var(--accent-emphasis-hover);
+    color: var(--accent-contrast);
+  }
+
+  .mobile-tab-face {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-tab-label {
+    font-size: var(--fs-xs);
+    line-height: 1.25;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-tab .tab-badge {
+    position: absolute;
+    top: calc(-1 * var(--space-1));
+    left: 60%;
+  }
+
+  /* --- More sheet ------------------------------------------------------ *
+   * Six destinations cannot live in a five-slot bar, so they live one tap
+   * deeper: elevation-lg (the nearest-to-user level), full width, anchored
+   * directly above the bar. */
+  .more-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+  }
+
+  .more-sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    max-height: 60vh;
+    max-height: 60dvh;
+    overflow-y: auto;
+    padding: var(--space-2) var(--space-2) var(--space-3);
+    background: var(--surface);
+    border-top-left-radius: var(--radius-lg);
+    border-top-right-radius: var(--radius-lg);
+    box-shadow: var(--elevation-lg);
+    animation: sheet-rise var(--motion-base) var(--motion-ease);
+  }
+
+  .more-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+
+  .more-sheet-title {
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--track-label);
+  }
+
+  .more-sheet-close {
+    min-width: var(--target-min);
+    min-height: var(--target-min);
+  }
+
+  .more-sheet-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: var(--space-1);
+  }
+
+  .more-item {
+    justify-content: flex-start;
+    min-height: var(--target-min);
+    padding: var(--space-2);
+  }
+
+  .more-item-label {
+    flex: 1;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The sheet is the one orchestrated motion; anything that moves ships a
+   * reduced-motion fallback (repo rule). */
+  @media (prefers-reduced-motion: reduce) {
+    .more-sheet {
+      animation: none;
+    }
+  }
+}
+
+@keyframes sheet-rise {
+  from {
+    transform: translateY(var(--space-4));
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ==========================================================================
+ * M20.A — touch target floor.
+ * Phone AND tablet are touch surfaces, so the floor spans both (<= 1150).
+ * Controls that measured under 44x44 at HEAD: the topbar lane/theme toggles,
+ * the persona picker, folder actions and the rail row actions. A control may
+ * look small; it must never be touchable-small.
+ * ========================================================================== */
+@media (max-width: 1150px) {
+  .app-topbar .btn-sm,
+  .app-topbar .picker-trigger {
+    min-height: var(--target-min);
+    min-width: var(--target-min);
+  }
+
+  .side-tab,
+  .folder-action,
+  .rail-item-del,
+  .rail-item-move,
+  .more-item {
+    min-height: var(--target-min);
+  }
+}
+
+/* Coarse pointers at any width (touch laptops, tablets in landscape) get the
+ * same floor, so the guarantee does not depend on viewport width alone. */
+@media (pointer: coarse) {
+  .btn-sm,
+  .picker-trigger,
+  .side-tab,
+  .folder-action {
+    min-height: var(--target-min);
+  }
+}
+/* M20.A addendum — the remaining measured sub-44 targets on touch tiers: the
+ * Assets-bar button, the top-bar theme select, and the collapsed
+ * notes-lane toggle. Scoped to the touch tiers rather than applying a blanket
+ * floor to every `.btn-sm`, because a universal 44px floor would inflate
+ * genuinely dense rows (audit/log tables) between 641 and 1150px, where a
+ * pointer is likely and density is the point. */
+@media (max-width: 1150px) {
+  .chat-assets-bar .btn-sm,
+  .chat-assets-bar .field,
+  .topbar-theme-select,
+  .notes-mini-toggle {
+    min-height: var(--target-min);
+  }
+
+  .topbar-theme-select,
+  .notes-mini-toggle {
+    min-width: var(--target-min);
+  }
+}
+
+/* ==========================================================================
+ * M20.A addendum 2 — no-hover devices, at every width.
+ *
+ * Measured at 768px: `Delete conversation` sat at 1x44 because the row
+ * actions are revealed only on :hover/:focus-within and collapse to
+ * `max-width: 0` at rest. That is not a phone-only problem — it is a
+ * *no-hover* problem, so the ≤640 rules above were scoped too narrowly (a
+ * tablet at 768 has no hover either, and HTML5 drag does not fire on touch).
+ *
+ * `(hover: none)` is the media feature that means exactly "this device cannot
+ * hover", so the affordance is revealed whenever hover is unavailable,
+ * independent of viewport width. The ≤640 rules are kept as well, because
+ * some phones report `hover: hover` (stylus / hybrid), and a phone must never
+ * depend on a hover state to reach a destructive action.
+ * ========================================================================== */
+@media (hover: none) {
+  /* Reveal row actions permanently. */
+  .rail-item-del,
+  .rail-item-move {
+    max-width: 100px;
+    opacity: 1;
+  }
+
+  .rail-item-del {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .rail-item-move {
+    padding: var(--space-1);
+  }
+
+  /* Drag-to-folder is a pointer gesture with no touch equivalent; without it
+   * the handle is a dead 24x24 control, so it is removed rather than left to
+   * fail the target floor. Re-filing on touch needs an explicit affordance
+   * and is tracked as a follow-up, not silently dropped. */
+  .rail-item-drag {
+    display: none;
+  }
+}
+
+/* The rail's own controls (new folder, folder name field) are inside the
+ * overlay/drawer on touch tiers, so they take the floor there too. */
+@media (max-width: 1150px), (hover: none) {
+  .rail .btn-sm,
+  .rail .field,
+  .folder-new-row .field {
+    min-height: var(--target-min);
+  }
+}
+
+/* M20.A guard rail (from a ux_audit run that FAILED): the phone tab label must
+ * use `--text-muted`, never `--text-faint`. Measured: textFaint (#9aa1ab) on
+ * the dark surface (#191c1f) is APCA Lc 49.5, well under the Lc 75 body floor
+ * — `--text-faint` is exempted for disabled/placeholder text ONLY (DESIGN.md),
+ * so it is not a legal colour for a control label. Do not "quiet down" the tab
+ * bar by switching this token. */
+
+/* ==========================================================================
+ * M20.A follow-up — persona cards, chat composer, and attention badges.
+ *
+ * Measured at HEAD @390x844 before these rules:
+ *   persona card      h 488-584px  -> only ~1.3 cards per screen
+ *   .persona-card-head h 285px     -> identity stacked; actions wrapped into a
+ *                                     183x78px blob indented 96px
+ *   composer row      326px total, of which the text buttons "＋ Attach"
+ *                     (109px) + "Send" (105px) = 214px, leaving the message
+ *                     field **49px** wide — the control the page exists for
+ *   .chat gutter      32px each side of a 390px viewport (64px = 16%)
+ *   controls <44px    52 on the Personas view (4 per card x 13 cards)
+ * ========================================================================== */
+@media (max-width: 640px) {
+  /* Phone gutters: 32px a side on a 390px screen spends 16% of the width on
+   * margin. 16px matches the top bar and hands the width to content. */
+  .chat {
+    padding: var(--space-2);
+  }
+
+  /* --- Persona cards: identity on its own row, actions on the next ------ *
+   * A full-width action row replaces an indented wrapped blob, and the
+   * per-card theme explainer (2-3 lines, x every card) is desktop-only. */
+  .persona-card-inner {
+    padding: var(--space-3);
+  }
+
+  .persona-card-head {
+    flex-wrap: wrap;
+  }
+
+  .persona-card-head .row-actions {
+    order: 3;
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
+
+  .persona-card-head .row-actions .btn {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .persona-theme-hint {
+    display: none;
+  }
+
+  /* --- Chat composer: icons instead of text buttons --------------------- *
+   * The field is the point of the row, so the two secondary controls give
+   * their width back. Each keeps an accessible name (aria-label + the file
+   * input's own label), so nothing is lost to a screen reader. */
+  .chat-form {
+    gap: var(--space-1);
+  }
+
+  .attach-button .btn-text,
+  .chat-send .btn-text {
+    display: none;
+  }
+
+  .attach-button,
+  .chat-send {
+    flex: none;
+    width: var(--target-min);
+    min-height: var(--target-min);
+    padding: var(--space-0);
+  }
+
+  /* The file input is visually hidden but still focusable, so keyboard focus
+   * would otherwise land on an undrawn control. Park the ring on its label. */
+  .attach-button:focus-within {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  /* The model caption labels a select that already carries an accessible
+   * name; on a phone the row's width belongs to the select. */
+  .chat-model-caption {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .chat-model-select {
+    max-width: none;
+    width: 100%;
+  }
+
+  /* The row is now conversation-context only (brainstorm state, save flash),
+   * so it wraps rather than scrolls and renders only when it has content — the
+   * Assets toggle and the theme select moved to the top bar. */
+  .chat-assets-bar {
+    flex-wrap: wrap;
+  }
+
+  /* --- Persona level chip yields the phone top bar's last 31px ---------- *
+   * The phone row now carries the persona trigger, three lane toggles, the
+   * per-conversation theme select and the mode toggle. Measured @390×844 with
+   * all of them: 348px of controls + 40px of 8px gaps in a 358px content box,
+   * which clipped the mode toggle by 14px (a partially cut control at rest
+   * reads as broken, not as a scrollable row). The level chip is 31px + its
+   * 8px gap and is the one control whose information the picker sheet repeats
+   * for every persona, so it is what gives way. `Paused` deliberately does NOT
+   * (a paused persona refuses chat — that state must never need a tap), and
+   * the persona name is already hidden at ≤1150. */
+  .picker-trigger .picker-level {
+    display: none;
+  }
+
+  /* Theme and lane toggles share one scrolling row on a phone, so the select
+   * is capped harder than on desktop: 76px keeps the closed control readable
+   * for "Default"/"Midnight" while leaving the mode toggle on the row. The
+   * native dropdown still lists the full option names. */
+  .topbar-theme-select {
+    max-width: 76px;
+  }
+
+  /* A badge inside the sheet is only useful if it is legible against the
+   * row it sits in — push it to the trailing edge, not against the label. */
+  .more-item .tab-badge {
+    margin-left: auto;
+  }
+}
+
+/* Touch floor for the same controls on tablets (also touch surfaces). */
+@media (max-width: 1150px), (hover: none) {
+  .persona-card-head .row-actions .btn,
+  .persona-theme-select,
+  .chat-model-select,
+  .topbar-theme-select {
+    min-height: var(--target-min);
+  }
+}
+
+/* ==========================================================================
+ * M20.A motion — consolidated top-level reduced-motion fallback.
+ *
+ * The sheet's rise animation first shipped with its fallback nested inside the
+ * ≤640 block. That works, but it means the guarantee depends on the nesting
+ * staying intact — and a ux_audit run on the block (without this) reported
+ * "motion with no prefers-reduced-motion fallback", which is the failure mode
+ * that would be real if the nesting were ever refactored. Stating it at the top
+ * level makes the fallback independent of where the rule lives.
+ * ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .more-sheet,
+  .more-scrim,
+  .picker-pop,
+  .mobile-tab,
+  .more-item,
+  .rail-item-del,
+  .rail-item-move {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ==========================================================================
+ * M20.A follow-up 2 — Memory view rework (control cards, entries, floor).
+ *
+ * Measured at HEAD @390x844 with real entries:
+ *   Memory controls card  h 1483px  (4 controls = ~2 phone screens)
+ *   .mem-control-row      h 198-411px each, with the COPY COLUMN crushed to
+ *                         9-11px (Import: 231x411 with a 9px text column,
+ *                         i.e. one character per line)
+ *   Profile card          h 3215px  (~4 screens)
+ *   12 controls <44x44    (Edit 58x35, Delete 74x35, Confirm 85x35, Reject 72x35)
+ *   copy at 12px          (--fs-xs: the context-label step, not body copy)
+ *
+ * Cause of the crushed column: `.mem-control-text` is `flex: 1; min-width: 0`,
+ * and `min-width: 0` lets a flex item shrink BELOW its min-content width. So
+ * the row never wrapped and the prose absorbed 100% of the deficit while the
+ * buttons kept their intrinsic width.
+ * ========================================================================== */
+
+/* --- Legibility floor ---------------------------------------------------- *
+ * The Memory view was missed by M12's pass: Personas moved its meta line,
+ * hints and chips off the 12px floor, Memory kept them. DESIGN.md reserves the
+ * 12px step for uppercase context labels, so this is a correction rather than a
+ * new preference — the same components in two views should not disagree. */
+.mem-privacy,
+.mem-evidence,
+.mem-row-meta,
+.mem-chip,
+.mem-tag-inuse,
+.mem-cap-note,
+.mem-control-copy {
+  font-size: var(--fs-sm);
+}
+
+@media (max-width: 640px) {
+  /* --- Control rows: stack, so the copy gets the width ------------------- *
+   * Fixes the 9-11px prose column and the 198-411px rows. The action moves
+   * under its description and goes full width, which also enlarges the target
+   * for the two irreversible actions — a mis-tap is now much harder than when
+   * "Export memory" and "Forget all" sat side by side on one line. */
+  .mem-control-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+    padding: var(--space-2);
+  }
+
+  .mem-control-row .btn {
+    width: 100%;
+  }
+
+  .mem-control-date {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+
+  .mem-date-input {
+    width: 100%;
+  }
+
+  .mem-control-copy {
+    max-width: none;
+  }
+
+  /* Entry rows carry the SAME crush as the control rows, and my first attempt
+   * at this missed because it targeted a `.row-actions` container that only
+   * exists elsewhere — the real one is `.mem-actions`, inside `.mem-row-meta`
+   * (hence margin-left: auto pushing it right). Measured: a 42-character entry
+   * rendered a 20px-wide value column 399px TALL, one character per line,
+   * beside a fixed-width kind chip. Stacking is crush-proof: the chip becomes a
+   * label above its value. */
+  .mem-row-main {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  .mem-row-meta {
+    align-items: stretch;
+  }
+
+  .mem-actions {
+    margin-left: 0;
+    flex: 1 0 100%;
+  }
+
+  .mem-actions .btn {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+/* --- Touch floor for the whole view ------------------------------------- *
+ * Phone and tablet are both touch surfaces (and `hover: none` catches touch
+ * hardware at any width). */
+@media (max-width: 1150px), (hover: none) {
+  .mem-row .btn-sm,
+  .mem-row .btn,
+  .mem-control-row .btn,
+  .mem-control-date .btn,
+  .mem-date-input,
+  .mem-search-input,
+  .add-entry-form .btn,
+  .add-entry-form .field {
+    min-height: var(--target-min);
+  }
+}
+
+/* ==========================================================================
+ * M20.A follow-up 3 — Suggestions sub-panel (and the nested-padding cause).
+ *
+ * Measured at HEAD @390x844, Suggestions block with 2 real suggestions:
+ *   padding per side = panel 32 + card 32 + sub-panel 24 + mem-row 24 = 112px
+ *   -> 57% of a 390px viewport spent on nested padding
+ *   -> text measure for a suggestion: **135px** (~19 characters per line)
+ *   -> and because the measure was that narrow, each suggestion's three
+ *      actions (Confirm/Edit/Reject) stacked into a 148px button column,
+ *      making one suggestion 450-471px tall.
+ *
+ * The narrow measure was the root cause of BOTH problems, so the fix is to
+ * flatten the nesting to one 16px gutter per level (still the 8px grid) rather
+ * than to special-case the buttons.
+ * ========================================================================== */
+@media (max-width: 640px) {
+  /* 16px matches the phone gutter already used by the chat workspace and the
+   * top bar, so every surface agrees on the inset. */
+  .memory-panel {
+    padding: var(--space-2);
+  }
+
+  .card {
+    padding: var(--space-2);
+  }
+
+  .sub-panel {
+    padding: var(--space-2);
+  }
+
+  .mem-row {
+    padding: var(--space-2);
+  }
+
+  /* Actions share one row once the measure allows it, and wrap only if a
+   * future action label genuinely does not fit. `flex: 1 1 auto` keeps each
+   * label readable rather than shrinking it below its content. */
+  .mem-actions {
+    gap: var(--space-1);
+  }
+}
+
+/* The entry-row title/copy group in the Suggestions block is a sub-panel
+ * heading pair: keep the sub-panel copy at the body floor and let it use the
+ * recovered width. */
+.sub-panel-copy {
+  max-width: none;
+}
+
+/* ==========================================================================
+ * M20.A follow-up 4 — Memory controls ordering.
+ *
+ * "Forget everything" was the FIRST row of the Memory controls card: the most
+ * prominent position given to the most irreversible action, one row above the
+ * "Export" that the card's own copy tells the user to reach for first. The
+ * order is now portability (Export, Import) then destructive, escalating in
+ * scope (a dated boundary, then everything).
+ *
+ * The destructive group is separated by SPACE — DESIGN.md's first separation
+ * device (space → background shift → elevation before a border). No new
+ * heading was invented: the danger-coloured actions and the arm/confirm pattern
+ * already carry the signal, and a kicker here would be the tracked-out eyebrow
+ * the design system bans.
+ * ========================================================================== */
+.mem-danger-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* ==========================================================================
+ * M20.A follow-up 5 — light-mode `--danger` on a `--surface-2` well (FIX).
+ *
+ * Measured, light mode, APCA:
+ *   --danger on --bg         Lc 80.88  ok
+ *   --danger on --surface    Lc 75.42  ok (thin)
+ *   --danger on --surface-2  Lc 69.52  FAILS the 75 body floor
+ *
+ * DESIGN.md's M12 P0.3 rule ("in light mode accent text only ever sits on
+ * --bg/--surface, never on a --surface-2 well") was written for *accent* text
+ * and this case — danger text — was never checked. Memory entry rows are
+ * --surface-2 wells and carry a Delete action, so the label (and its confirm
+ * state) now rests on `--bg`, which measures Lc 80.9 light and higher in dark.
+ * The button keeps `.btn-danger`'s ghost treatment: only its ground changes.
+ * ========================================================================== */
+.mem-row .btn-danger,
+.mem-row .btn-danger:hover:not(:disabled),
+.mem-row .btn-danger:active:not(:disabled) {
+  background: var(--bg);
+}
+
+/* ==========================================================================
+ * M20.A follow-up 6 — grouped answers (one submit per question set).
+ *
+ * A reply carrying a `:::partner.choice` AND a `:::partner.form` used to render
+ * two cards with two independent submits ("Confirm" / "Submit answers"), each
+ * sending only its own answer — the other question set was silently discarded.
+ * The containers are now sections of ONE panel with ONE submit.
+ *
+ * The grouped cards give up their own surface and margin: they would otherwise
+ * stack a second tint of `--surface` on the panel's own `--surface`, which is
+ * exactly the kind of nested-plane noise the design system avoids. Separation
+ * is the panel's gap — no border.
+ * ========================================================================== */
+.answer-group {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.answer-group .choice-card,
+.answer-group .form-card {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.answer-group .form-card {
+  gap: var(--space-2);
+}
+
+/* A grouped card renders no submit, leaving an empty actions row. `:empty`
+   removes the element so it cannot contribute phantom gap spacing. */
+.answer-group .choice-actions:empty,
+.answer-group .form-actions:empty {
+  display: none;
+}
+
+.answer-group-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.answer-group-hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* Phone: the single submit is the whole point of the panel, so it gets the full
+   width and the floor-sized target, with its reason above it. */
+@media (max-width: 640px) {
+  .answer-group {
+    padding: var(--space-2);
+  }
+
+  .answer-group-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .answer-group-actions .btn {
+    width: 100%;
+    min-height: var(--target-min);
+  }
+
+  .answer-group-hint {
+    margin-bottom: var(--space-0);
+  }
+}
+
+/* ==========================================================================
+ * M20.A correction — `.answer-group-parts` had NO rule.
+ *
+ * Caught by an adversarial review, and it is a miss in my own verification:
+ * `AnswerGroup.tsx` wraps the grouped cards in `.answer-group-parts`, but the
+ * follow-up-6 block only put `gap` on `.answer-group` and explicitly zeroed the
+ * cards' own margins (`.answer-group .choice-card, .answer-group .form-card
+ * { margin: 0 }`). With no rule on the wrapper, the two question sets rendered
+ * with 0px between them — directly contradicting the block's own claim that
+ * "separation is the panel's gap".
+ *
+ * Why it slipped: I measured the group's box, its buttons and its inputs, but
+ * never the distance BETWEEN its parts. Measuring a container is not the same
+ * as measuring its composition.
+ * ========================================================================== */
+.answer-group-parts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ==========================================================================
+ * M12 P0.3 follow-up — light-mode `--danger` on a `--surface-2` well (FIX).
+ *
+ * The M20.A follow-up 5 block above covered ONE case: `.mem-row .btn-danger`.
+ * The measured token pair is unchanged and is why this block exists — light
+ * mode, APCA: `--danger` #b42318 on `--bg` #ffffff Lc 80.9 (ok), on
+ * `--surface` #f6f6f4 Lc 75.4 (ok, thin), on `--surface-2` #ececea Lc 69.5 —
+ * below the 75 body floor. Dark mode passes on all three grounds.
+ *
+ * DESIGN.md M12 P0.3 ("in light mode accent text only ever sits on
+ * --bg/--surface, never on a --surface-2 well") was written for ACCENT text,
+ * so danger text was never walked. This block is that walk: every
+ * `color: var(--danger)` rule in this file was traced to the surface it
+ * renders on (its nearest ancestor that sets a `background`), and each one
+ * whose ground is a `--surface-2` well takes `--bg` instead. No colour token
+ * changes and no rule is weakened — only the ground moves, exactly as in
+ * `.mem-row .btn-danger` and `.pb-marker-error`.
+ *
+ * Wells (`--surface-2`) and the danger rules sitting directly on them:
+ *   .theme-row         Delete / Confirm-delete, and the row error copy
+ *   .mem-row           the inline error copy (its Delete button is covered above)
+ *   .mcp-server-row    Remove, and the tools-list error copy
+ *   .p-milestone       Delete / Confirm-delete, and the milestone error copy
+ *   .compare-result    the per-side comparison error copy
+ *   .n-graph-sessions  the linked-brainstorm error copy
+ *   .attach-chip       the × remove control
+ * ========================================================================== */
+.theme-row .btn-danger,
+.theme-row .btn-danger:hover:not(:disabled),
+.theme-row .btn-danger:active:not(:disabled),
+.mcp-server-row .btn-danger,
+.mcp-server-row .btn-danger:hover:not(:disabled),
+.mcp-server-row .btn-danger:active:not(:disabled),
+.p-milestone .btn-danger,
+.p-milestone .btn-danger:hover:not(:disabled),
+.p-milestone .btn-danger:active:not(:disabled) {
+  background: var(--bg);
+}
+
+.attach-chip .attach-chip-remove,
+.theme-row .row-error,
+.mem-row .row-error,
+.mcp-server-row .chat-attach-error,
+.p-milestone .row-error,
+.compare-result .chat-attach-error,
+.n-graph-sessions .row-error {
+  background: var(--bg);
+}
+
+/* ==========================================================================
+ * M20.A follow-up 8 — attachment-chip contrast (found by the ux_audit gate).
+ *
+ * The danger sweep surfaced these out-of-lane, and the gate confirmed both are
+ * real, pre-existing, light-mode failures on the `.attach-chip` `--surface-2`
+ * well (12px text, so the Lc 75 body floor applies):
+ *
+ *   .attach-chip-preview  accent      on --surface-2  Lc 69.02  FAILS
+ *   .attach-chip-meta     text-faint  on --surface-2  Lc 68.86  FAILS
+ *
+ * The first violates DESIGN.md's own M12 P0.3 usage rule ("in light mode accent
+ * text only ever sits on --bg/--surface, never on a --surface-2 well"), which
+ * names `--accent-hover` as the colour to use on surfaces — measured 77.08 here,
+ * so it passes. The second uses `--text-faint`, which DESIGN.md exempts for
+ * disabled/placeholder text ONLY; a file size is real information, so it takes
+ * the secondary-text token instead (measured 81.4). Both are token-only swaps,
+ * so neither invents a value. Dark mode passes either way (Lc 81 / 75).
+ * ========================================================================== */
+.btn-link.attach-chip-preview {
+  color: var(--accent-hover);
+}
+
+.attach-chip-meta {
+  color: var(--text-muted);
 }
