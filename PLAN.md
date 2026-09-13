@@ -56,11 +56,19 @@ auditable, and skills run sandboxed under declared permissions.
 | 2 | Provider adapters | **OpenAI-compatible only in v1**; the gateway is adapter-shaped so Anthropic/Gemini plug in later |
 | 3 | Research search | **Both**, but ship the **browser actuator first** — zero setup and no billing for non-technical users; API-key search is an optional later backend (§6.2) |
 | 4 | Vibe-coding scope | Any project the user opens; v1 safety flow = git repo root + side-by-side diff review. Plus a first-class **Ship (deploy) playbook** so vibe-coded apps land in the user's own infrastructure hassle-free (§6.1) |
-| 5 | llm-self-service key import | **Integrated** — Partner signs in with the *same org-credential flow the portal uses* and pulls the user's key into the keychain (§2, §15 S0) |
+| 5 | llm-self-service key import | **Integrated** (M1) — **REMOVED in M22**: the portal-based import is gone; providers are configured by base URL + key. See §2 |
 
 ---
 
-## 2. Relationship to llm-self-service
+## 2. Relationship to llm-self-service — **REMOVED in M22**
+
+> **The integration described below no longer exists.** M22 removed the
+> "Connect llm-self-service" import from core, web and `shared` (routes, page-side
+> RSA envelope, demo double, Providers card), so provider setup is always a base
+> URL + key typed by the user. The `'llm-self-service'` `ProviderSource` value is
+> kept so provider rows written by an older install still read. The section is
+> retained as the historical record of why the endpoint shapes looked the way
+> they did, and `S0` (the companion endpoint in that repo) is closed as obsolete.
 
 Partner reuses the *conventions* of `~/apps/llm-self-service` and does not
 depend on its server for daily use — with one small companion endpoint added
@@ -425,17 +433,27 @@ pages, skills, and other apps are not; the user is the final authority.*
 
 | Area | Design |
 |---|---|
-| **Secrets** | Keys only in OS keychain (core). Never in localStorage, cookies, extension storage, URLs, or logs. Redaction layer scrubs key-like patterns from all logs/audit/UI transcripts. |
+| **Secrets** | Keys only in OS keychain (core). Never in localStorage, cookies, extension storage, URLs, or logs. Redaction layer scrubs key-like patterns from all logs/audit/UI transcripts. **Deployments with no OS keyring** (containers, headless servers, M21) use `KEYCHAIN_KIND=file`: one JSON secrets file, 0600, atomic + serialised writes, malformed ⇒ refuse to boot. It co-locates the cipher key with the volume it protects, so it is documented as protection against a copied DB/backup — not against a reader of the volume — and `native` remains the default wherever a keyring exists. |
 | **Transport** | Web UI ↔ core: loopback only, origin allowlist, session token from one-time pairing code. Extension ↔ core: native messaging (no socket). All upstream calls HTTPS. |
 | **Org login (key import)** | Same method as the portal: password POSTed only to AppCore over HTTPS (RSA-OAEP envelope per the portal), never stored/logged; session held only to fetch the key, then discarded (§2). |
+| **Partition keys (M20-B S9)** | In login mode the partition key is **wrapped under the user's passphrase** (AES-256-GCM; separate salt + HKDF domain separation, so the stored credential verifier cannot unwrap it) and the plaintext is removed from the keychain at first sign-in. A signed-out user's partition answers `401 partition_locked` even with a valid session, and closing the partition drops the handle (an open handle would keep decrypted pages cached). The per-user, audited opt-in `keep-unlocked` is the stated exception. |
 | **Storage at rest** | SQLite: whole-file encrypted via better-sqlite3-multiple-ciphers (SQLCipher-style, M10 W1 Decision A); 32-byte key held in the OS keychain (account `db-key`); live mode refuses plaintext DBs with a migration message; demo `:memory:` untouched. Vector store same discipline. |
 | **Tool safety** | Default-deny broker (§4.3), risk tiers, project roots, write-preview, no blind applies, atomic writes + backups. |
 | **Browser safety** | Per-site scopes; sensitive-site blocklist; extension refuses autonomous action on pages with password/CC fields unless explicit per-action user click. |
 | **Skills** | Signed packages, hash verification, manifest-permission enforcement, sandboxed workers, no implicit network, budgets, one-click uninstall + store wipe. |
 | **Supply chain / updates** | Core updates signed + verified; gallery registry pinned (HTTPS + signature); no telemetry by default — opt-in crash reports only, containing no content or keys. |
 | **Budget** | Optional per-provider/per-session spend caps enforced by the core's gateway (defense-in-depth under the proxy's own caps). |
+| **Accounts (M22)** | A hosted core (`AUTH_MODE=login`) authenticates a **user**, not a device: `POST /v1/auth/session` proves a per-user passphrase (scrypt, in the **system DB**, never the passphrase itself) and mints a session that carries `user_id`. Wrong password and unknown user are indistinguishable; three failures lock for five minutes; a per-peer rate limit sits on top because behind a tunnel every request shares one peer address. The pairing routes answer 403 in this mode. Accounts are managed by the operator CLI (`tools/user.mjs`) — shell access is the "at the machine" proof — and **one user per core** is enforced until per-user partitions land. |
 | **Audit** | Append-only local audit log (tool actions, skill runs, grant changes, persona autonomy events). User-visible; exportable. |
 | **Multi-user on one machine** | OS profiles are separate Partner profiles: distinct keychain items, DBs, skill stores. Installed skills are never shared between profiles. |
+| **Remote clients (M20)** | Origin binding is **reclassified**: the `Host` header is client-supplied once clients are remote (`server.ts:298`), so it is a lookup key, not a network control — TLS/SNI plus a **named** host allowlist are. |
+| **Multi-user partition (M20)** | Isolation by **partition**: `data/users/<id>/partner.db` + its own cipher key + skills dir. A query cannot cross users. The operator-with-master-key caveat of §4.4 does not arise under Model A′. |
+| **Vault / Runner split (M20)** | The always-on Runner holds only a **job key** (Tier W: schedules, briefcases, outputs) and **cannot** open the Vault DB (Tier C). Briefcases are pre-authorized, capped, expiring and read-only; results drain into Tier C only at a user-present unlock. |
+| **Client classes (M20)** | Session `kind` becomes a client class (`desktop` / `mobile` / `extension`) with a capability envelope; a mobile session is denied file-write, project roots, deploy and skill install by default — a gate *above* the per-tool broker. |
+| **System config (M20)** | Separate local/admin-only path; never readable or writable from a remote user session; system-wide defaults are copy-on-read. |
+| **Mobile at rest (M20)** | Browser storage holds the token + theme only (no content, regression-tested); remote tokens carry a short TTL with rotation and revoke; the native shell uses the OS keystore. |
+| **Content serving (M20)** | Core-served bytes must never execute on an authenticated origin: `Content-Security-Policy: sandbox` on content routes and attachment disposition for HTML-ish types (`X-Content-Type-Options: nosniff` alone does not stop a declared `text/html`); long term a separate origin for attachment content. |
+| **Enrollment vs authentication (M20)** | Pairing answers *"may this device reach the core?"* (proximity); it does **not** answer *"which user is this session?"*. Today the only mint site is `sessions.create('web', origin)` with **no user** (`server.ts:1324`) and `SessionRow` carries no `user_id`, so the two are conflated. M20 separates them: **enrollment** (pairing, unchanged, per device) → **authentication** (new, per session, credential-proven) → **authorization** (client class + capability envelope). **A session may never carry a user without a user-authentication event.** On a single-user install enrollment *does* imply the user, because the OS profile identifies them (user #0) — which is what keeps the desktop PairGate byte-identical. A multi-user core mints an acting session only after sign-in, and one device may hold sessions for several users, so revoke is per (device, user). Detail: `PLAN-M20-B.md` §2a. |
 
 Explicit **non-goals / boundaries**: Partner never stores user passwords; it
 never acts on the browser without a site scope; it is not an autopilot for
@@ -471,13 +489,37 @@ any Partner-owned server (there is none in v1).
 | `chat_blobs` / `attachments` | chat uploads: deduped payload bytes + per-message edges |
 | `assets` | typed saved artifacts (documents/tables/code/references/deductions…) |
 | `mcp_servers` | configured stdio MCP servers (default-deny OFF) |
-| `pairings` / `sessions` | device/origin pairing + session tokens |
+| `users` | local accounts: data-partition root + disabled flag (M20) |
+| `users` | local accounts: the data-partition root, OS-profile mapping and disabled flag — in the **system DB**, not a per-user DB, because it must exist before a user is resolved (M20.B S2) |
+| `user_credentials` | per-user passphrase credential: salt, scrypt params, derived key, failure bucket and lock window. Stores **no passphrase** (M20.B S2a) |
+| `pairings` / `sessions` | device/origin pairing + session tokens; sessions gain `user_id`, client class, device label/platform and `rotated_at` (M20) — **`kind` is deliberately NOT widened**: it is the audit actor for 7 routes |
 | `audit_log` | append-only activity |
 
-Schema is `v16` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+Schema is `v19` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
 `personas.policy`/`home_folder`/`schedules`, `providers.purpose`,
 `conversations.folder_id`/`parent_id`/`source_asset_id`,
-`messages.content_type`, `pending_tools.conversation_id`/`persona_id`).
+`messages.content_type`, `pending_tools.conversation_id`/`persona_id`, and —
+M20.B — `sessions.user_id`/`client_class`/`device_label`/`platform`/`rotated_at`).
+`v17` added the `users` + `user_credentials` tables; `v18` added the session
+columns; `v19` (M20-B S9) added `key_wraps` (the passphrase-wrapped partition key)
+and `users.keep_unlocked` (the per-user, audited opt-in that keeps a key in the
+keychain so that user's schedules can run while nobody is signed in).
+
+**M20 partitions by user and by trust tier:** one whole-file-encrypted DB +
+cipher key + skills dir per user under `data/users/<id>/` (generalizing the
+existing per-OS-user keys), and a separate `runner.db` under a distinct job key
+for the always-on Runner role — the same `ensureDbKey` +
+`openEncryptedDatabase` mechanism applied twice, with no new crypto.
+
+**Legacy carve-out, and it is a data-safety property:** the first user
+(`LEGACY_USER_ID`, which `FIRST_USER_ID` derives from so the two cannot drift)
+owns the **pre-partition layout** — `<dataRoot>/partner.db`, its `<dataRoot>/skills`
+dir and the legacy `db-key` keychain account. So an existing install keeps its
+database, key and installed skills where they already are. The mapping is
+deterministic rather than "alias only when the legacy file exists", because a
+filesystem probe would give a fresh install and an upgraded one different shapes
+for the same user. (An adversarial review caught that this was asserted but
+unimplemented; see `docs/VERIFY-M20-B.md` §2.)
 
 `better-sqlite3` (same as llm-self-service). The semantic (vector) index is
 DEFERRED until an embeddings provider is pinned (M4 documented deviation);
@@ -513,6 +555,31 @@ pairing (`/v1/pair/device`, `/v1/boot` — M15); notes knowledge workspace
 `/runs/:runId` — M14). M19 adds **no route**: automatic remember runs on the
 chat path and only widens `/v1/memory/profile` with persona-scoped entries.
 
+M22 adds the **account lane** for the hosted shape: `POST /v1/auth/session`
+({username, password} → a session that carries `user_id` and `LOGIN_SESSION_CLASS`),
+`/v1/health` gains `authMode` (+ `hasUsers` in login mode), `GET /v1/roots` gains
+`rootsFixed`, and `POST`/`DELETE /v1/roots` answer `403 roots_fixed` when the
+deployment owns the roots. In `AUTH_MODE=login` the whole pairing lane
+(`/v1/pair`, `/v1/pair/payload`, `/v1/pair/device`, `/v1/dev/*`) is **refused**.
+The M1 `/v1/self-service/*` routes and the `llm-self-service` import were
+**removed** (M22).
+
+M20 adds a server surface (PLAN-M20-B.md). **Implemented:**
+`GET /v1/devices` + `POST /v1/devices/:id/revoke` + `POST /v1/devices/revoke-all`
+(S5, 404-not-403 across users, no token material in any body),
+`POST /v1/session/rotate` (S3 — the outgoing token fails on the NEXT request),
+the S4 **client-class capability guards** on the machine-power route groups
+(file write, roots, grants, deploy, skill install/invoke, MCP call **and MCP
+server create/update/delete— configuring one spawns a process—browser scopes),
+and **S7 networked pairing**: `POST /v1/pair/payload` (loopback-only; refuses
+without remote access + TLS) issues a 256-bit single-use secret for a link/QR,
+and `POST /v1/pair` accepts `{secret}` from anywhere and mints a **`mobile`**
+session (never `desktop`), refuses `{code}` from a non-loopback **socket peer**
+before verifying it, and rate-limits both paths per peer.
+**Still planned:** local-only `POST /v1/users` (S2a), the sign-in route
+(`POST /v1/auth/session`) that supplies `user_id` (§2a), briefcase routes (S8),
+and per-user partition unlock (S9).
+
 WS events: `turn.started`, `tool.request` (confirmation), `tool.executed`,
 `grant.revoked`, `skill.install`…, `persona.paused`, `budget.reached`.
 
@@ -531,12 +598,14 @@ like llm-self-service.
 
 ```
 apps/partner/
-  shell/           # Tauri v2 app (tray, window, autostart, updater)
+  shell/           # Tauri v2 app (tray, window, autostart, updater; cdylib/staticlib reserved for the M20.D mobile target)
   core/            # Node core = Tauri sidecar (gateway, broker, skills, storage, pairing)
     src/ clients/ stores/ tools/ skills/ services/ http/
   web/             # SPA (Vite+React)
   extension/       # MV3
   shared/          # types: persona, theme, tool manifests, wire protocol
+  docker/server/   # M21: LIVE server container + Cloudflare Tunnel compose
+                   # (Dockerfile, docker-compose.yml, stage.sh/ps1, tools/*.mjs)
   DESIGN.md        # default theme + component contracts
   PLAN.md          # this file
   tests/           # cross-cutting integration tests
@@ -554,7 +623,9 @@ apps/partner/
 > exit is locally green; `[ ]` + a `*State:*` line when an env-gated walk
 > remains.
 
-- [ ] **S0 — Self-service companion API (in `~/apps/llm-self-service`).**
+- [x] ~~**S0 — Self-service companion API**~~ **CLOSED as obsolete in M22** — the
+      llm-self-service import it existed to unblock was removed (§2), so the
+      companion endpoints are no longer wanted. Nothing was built in that repo.
       JSON route `GET /api/me/key` behind the existing cookie session,
       rate-limited, demo-mode path, plus exposing the login public key for
       the envelope. TDD in that repo. *Exit: curl with a demo-mode session
@@ -758,6 +829,409 @@ apps/partner/
       JSON were enough). *Exit: core 893 passed (5 env-gated skips) · web 541
       passed · typechecks 0 · web build green · `ux_audit` green (APCA
       light + dark).*
+- [ ] **M20 — Client-server, multi-user & mobile (detailed spec:
+      `PLAN-M20.md`; decisions locked 2026-09-12; M20.A in progress).**
+      Partner grows a remote, multi-device, multi-user server role.
+      **Model A′ (§3.1):** the core splits into two roles with two key
+      scopes — a **Vault** on the user's own machine holding the user key and
+      **Tier C** (memory, notes, chat, attachments, provider keys, project
+      roots), and an always-on **Runner** holding only a job key and
+      **Tier W** (schedules, briefcases, run outputs) — so scheduled work runs
+      while the desktop sleeps while the operator never holds a key to private
+      data. Pre-authorized, capped, expiring **briefcases** plus a one-way
+      **drain** at unlock replace sync. **Multi-user by partition (D4):**
+      `data/users/<id>/partner.db` with its own cipher key and skills dir
+      (generalizing today's per-OS-user isolation, §2.3); user / device /
+      client-class are three levels, and **device = session**, so multi-device
+      is per-user for free. System-wide config gets a separate local/admin-only
+      read path now (**M20.E deferred**). Sensitive-data prerequisites (D5,
+      §8.1): close the core-served-`text/html` same-origin hole, keep content
+      out of web storage, pin the cert via QR. Phases: **A** mobile/tablet/
+      touch UI (no core change) · **B** the server role (TLS, named host
+      allowlist, QR pairing, device registry + revoke, client-class capability
+      envelopes, per-user partition) · **C** PWA · **D** optional Tauri v2
+      native shell · **E** system layer (later).
+      *Exit:* refusal matrix (live/remote/TLS) · two users provably isolated
+      (DB, key, skills, audit; a query cannot cross) · the Runner cannot open
+      `vault.db` · briefcase caps + idempotent drain · a mobile-class session
+      denied file-write/deploy/skill-install · QR pairing single-use + expiry +
+      lock · real phone pair → chat → approve → revoke · geometry gates at
+      430/390/375/360 · `ux_audit` green.
+      *State:* **M20.A (mobile/tablet/touch UI) implemented + measured
+      2026-09-12** — composer 58→326px @390 and permanent chrome 252px→0 on
+      phone, controls under 44×44 11→0, tablet geometry unchanged, `ux_audit`
+      PASSED, web suite 547 (+6 nav tests), typechecks 0, build green.
+      **M20.A follow-up (same session):** the *message field* (not the
+      container) was still 49px — text buttons took 214px of the row — now
+      **222px (62%)** with icon-only 44px controls; persona cards 584→**340px**
+      (~2.5 per screen) with a full-width action row and **0** sub-44px
+      controls (was 52); and new **attention badges** (`web/src/lib/attention.ts`
+      +18 tests) so memory suggestions can no longer sit unnoticed — the phone
+      **More tab carries the aggregate** of what the sheet hides, verified
+      `3` → reject → `2`. Web suite now **565**. Rules recorded: a badge must
+      be able to clear itself (failed runs self-clear on a 24h window) and
+      `queued` runs are excluded everywhere (a paused run *is* the pending
+      approval).
+      **M20.A follow-up 2 (same session) — Memory view:** the same flex-crush bug
+      in three places, plus a legibility floor this view was **missed by M12**.
+      `.mem-control-text` is `flex: 1; min-width: 0`, and `min-width: 0` lets a
+      flex item shrink *below* min-content, so the control-row copy collapsed to
+      **9–11px (one character per line)** — the Import row 411px tall — and the
+      Memory controls card ran 1483px. Entry rows were worse: a 42-character
+      entry rendered a **20px value column 399px tall** (my first fix attempt
+      targeted `.row-actions`, which only exists elsewhere; the real container
+      is `.mem-actions` — found by re-measuring). **Suggestions** failed for a
+      different reason: 32+32+24+24 = **112px nested padding per side (57% of a
+      390px viewport)** left a 135px measure, which is also why Confirm/Edit/
+      Reject stacked into a 148px column. Flattened to one 16px gutter per
+      level: measure 135→**263px**, suggestion 450-471→**293px**. Copy/chips
+      12→**14px**. Memory view total 5436→**4075px (−25%)** while the measure
+      nearly doubles; sub-44px controls **12→0**. `ux_audit` PASSED (18 pairs).
+      Recorded: `--danger` on the light card surface is **Lc 75.42** vs floor 75
+      — thin, so it fails first if either token is retuned. **Recommended but
+      NOT applied:** "Forget everything" is the *first* row of the controls
+      card, putting the most irreversible action in the most prominent position;
+      portability-first / destructive-last is the safer convention, but that is
+      a product decision (see `PLAN-M20.md` §12).
+      **Applied recommendations (2026-09-12, same session):**
+      **(1) `PLAN-M20.md` §8.1.1 — the live security hole is CLOSED.** Core-served
+      `text/html` executed on the SPA's own origin where the session token
+      lives. One exported policy (`attachmentContentHeaders()`) now keeps only
+      images and PDF `inline` and forces everything else to `attachment` +
+      `Content-Security-Policy: sandbox`; HTML upload is unchanged (the model
+      legitimately reads attached HTML) and `CodePreview`'s sandboxed path still
+      previews it. Verified no SPA regression: the app fetches attachment bytes
+      with a Bearer header, and `fetch()` ignores `Content-Disposition`, so only
+      direct navigation changes. 8 new tests in
+      `core/test/http/attachmentContentSafety.test.ts`; root suite **893→901**.
+      **(2) Memory controls reordered** to Export → Import → Forget before a
+      date → Forget everything (portability first, destructive last, severity
+      escalating, 32px separation), verified rendered in a browser.
+      **(3) `.preview-frame`'s `#ffffff` tokenised** as `--surface-doc` — the
+      stylesheet now has **no raw hex in any declaration**.
+      **Two of my own claims were corrected:** there was never a touch
+      re-filing gap (`.rail-item-move` is a `<select aria-label="Move … to
+      folder">`, measured 66×44 — I built nothing for it), and the
+      `--rail-action-w` token I suggested was a bad idea (the width is
+      label-driven, so a token would be false systemisation).
+      **M20.A follow-up 6 (same session) — one submit per question set.**
+      Fixes a reported bug: a reply carrying a choice **and** a set of free-text
+      questions rendered two cards with two independent submits ("Confirm" /
+      "Submit answers"), and pressing either sent only its own answer while the
+      other was silently discarded. `web/src/lib/answer-group.ts` (pure, 15
+      tests) owns the message-level rule — `answerableCount > 1` groups, so a
+      single-container message keeps its existing button untouched — and
+      `composeGroupedAnswer` joins each part with the exact string that card
+      would have sent alone, so only the *arrival* changes. `AnswerGroup.tsx`
+      owns the one submit; grouped forms require every question; the group locks
+      after sending ("Answers sent") so one prominent button cannot double-post.
+      **Verified through the real chat path** (a throwaway loopback
+      OpenAI-compatible stub, since the demo provider cannot emit containers):
+      1 group · **exactly 1 submit** · **0 per-card submits** · gate walks
+      disabled→disabled→disabled→enabled with hints 2→1→1→none · the single press
+      produced **one** user turn containing both the choice and the Q/A pairs.
+      `ux_audit` PASSED. *Open:* the answered-lock is per page session (a reload
+      makes an answered group answerable again — pre-existing behaviour, needs a
+      message-level marker to fix properly).
+      **M20.A follow-up 7 — danger-on-well sweep + chip contrast (DONE):** a
+      subagent wave (scout + 3 writers + fresh-context reviewer) found the
+      grouped-answer lock should derive from **transcript position** rather than
+      client storage (no new key, and it survives reload, a different device and
+      cleared storage), and swept **16 selectors** whose light-mode `--danger`
+      text sat on a `--surface-2` well at **Lc 69.52** against a 75 floor
+      (`.theme-row`/`.mcp-server-row`/`.p-milestone` ghost danger controls,
+      `.attach-chip-remove`, and `.row-error`/`.chat-attach-error` copy) → now
+      **80.88**. The gate also caught two pre-existing chip defects, both fixed:
+      `.attach-chip-preview` accent on a well (**69.02** → `--accent-hover`
+      **77.08**) and `.attach-chip-meta` `--text-faint` (**68.86** →
+      `--text-muted` **81.40**). The reviewer found **2 MAJOR defects the parent
+      had missed**: `.answer-group-parts` had **no CSS rule** (0px separation
+      between question sets) and **no test rendered `AnswerGroup`** — deleting
+      `showSubmit={false}` restored the original bug with the suite green; both
+      fixed, the latter now falsified as non-vacuous. **Lane failure recorded:**
+      the first danger sweep produced nothing (a forked worker continued the
+      parent's reasoning); retried with `context: 'fresh'`. Verification +
+      arbitration record: `docs/VERIFY-MOBILE.md`.
+      **M20.A follow-up — phone persona picker (FIX, reported bug):** the list was
+      unusable on a phone while looking fine in the DOM. The top bar is a
+      horizontal scroller and `overflow-x: auto` forces `overflow-y: auto`, so
+      the absolute `.picker-pop` sat inside a scroll box — measured @390×844
+      with 9 personas it laid out **655px** tall but painted only the bar's
+      **60px** band (**1 of 9** options), and the open-time focus scrolled the
+      bar up **65px**, hiding the trigger. ≤640 now renders the list as the
+      **same bottom sheet as the More control** (fixed, full width, anchored on
+      the tab bar, `max-height: 60dvh`, scrollable, rows `flex: none`), and the
+      base popover gained a `calc(100dvh - …)` bound because a **landscape
+      phone (844×390) is outside the width-based tier** and its tail was
+      unreachable too. Measured after: fully in-viewport with the last option
+      reachable at 360×640, 390×844, 844×390, 768×600, 1280×900; rows ≥71px;
+      bar `scrollHeight` 715→**60**; desktop popover unchanged. New guard
+      `web/test/picker-mobile.test.ts` (**+7**), falsified against a reverted
+      `position: fixed`. `ux_audit` PASSED (picker rules, 8 APCA pairs);
+      web suite **635→642**.
+      **M20.A follow-up — the top bar owns the chrome (Assets + Theme moved up):**
+      reported as "Assets seems redundant … one at the top, and another near chat
+      input." Verified worse than two: **three** controls for one action (top-bar
+      icon, labelled chat-bar button, in-pane chevron), the first two bound to the
+      same handler/state, on screen **579px apart**, disagreeing on enabled state.
+      Then two owner criteria in sequence: **maximise chat input width** (measured:
+      phone input **222px either way** — the lane is an absolute overlay; desktop
+      **682 → 366px (−46%)** when it opens, and only the *ungated* top-bar icon
+      could do that with nothing to show), and finally **"move Theme and Assets to
+      top"** — which is also the shell's own M14 design ("a slim top bar (persona
+      picker + lane/theme controls)"). Final state: top bar = persona ·
+      conversations · notes · **assets** · **theme** · mode, with the assets toggle
+      still gated on a conversation; the row above the composer keeps only
+      brainstorm state and the save flash, and renders only when it has content.
+      Measured after: desktop 6 controls / 523px in 1008px, no scroll; phone 6
+      controls / **318px** in 358px, **no scroll**; phone transcript **513 → 565px**
+      (a 52px row directly above the composer is gone); theme bind proven end to
+      end ("Midnight" → `preset-midnight`, surviving a reload). One trade on the
+      phone: the **level** chip yields its 31px (`Paused` never does). Guards in
+      `assets-lane-controls.test.ts` (5) + `picker-mobile.test.ts` (+1), both
+      falsified. Web suite now **648**.
+      **M20.A follow-up — phone Notes view crowding (QUEUED, measured, NOT
+      started).** Reported as "mobile view is too crowded"; a scan of all four
+      phone tabs found Chat/Files/Personas clean and **Notes is the offender** —
+      its chrome is deeper than the viewport (measured @390×844: toolbar 235px in
+      **5 wrapped rows**, scope bar 128px in 3 rows, three stacked control
+      cards, and the **search field 405px below the fold** at y 1249) with
+      **3 controls under the 44px floor** (`Graph` 72×35, `Select` 71×35,
+      `New project` 111×35). Proposed: hide the desktop explainer paragraph on
+      phones (precedent: `.persona-theme-hint`), 2 toolbar rows with secondary
+      actions behind a `⋯` overflow (precedent: the phone's More sheet), a
+      one-row scope bar, and the 44px floor applied to the 35px controls. The
+      only product call is moving 4 actions one tap deeper. Full measurements +
+      *Exit:* in `PLAN-M20.md`.
+      Verification record — plus the explicitly unverified list (no visual
+      inspection; the `hover: none` branch not runtime-exercised; safe areas
+      and keyboard unproven; no background/OS notification delivery; the two
+      irreversible forget actions were **measured but never pressed**; whole-file
+      `ux_audit` outstanding; geometry not a CI gate) — in
+      `docs/VERIFY-MOBILE.md`. **All gates are now closed (D1–D5 + §12 Q1–Q12):**
+      the owner directed that the blockers be cleared, and each now carries a
+      decision with its consequence stated (`PLAN-M20-B.md` §6). Four are marked
+      ⚠ because their cost lands on how the product is *used*, not just built:
+      **D5** the Runner must be a machine the user owns (no shared/multi-tenant
+      VPS in v1 — cost: the product assumes an always-on device); **Q2** user
+      creation is local-only (cost: a remote owner cannot add a family member);
+      **Q4** a mesh VPN is the supported path with cert-fingerprint pinning on the
+      LAN fallback (cost: LAN-without-mesh is explicitly lower-assurance); **Q11**
+      un-drained Runner results are expendable. Also decided: briefcases are
+      tag-selected with **enforced** caps (≤ 20 items / ≤ 256 KB / ≤ 24 h TTL), the
+      drain is **append-only**, the per-user layout uses **N rails** (so cross-user
+      reads are structurally impossible rather than relying on every call site),
+      `users`+`pairings`+`sessions` live in a **system DB** with today's
+      `data/partner.db` treated as user #0, and the `extension` class is
+      read+browser+chat only.
+      **Deferred reviewer nits cleared, not deferred:** the guards file's
+      duplicated allowlist (lifted to module scope behind a shared
+      `declaredPartnerKeys()` — which surfaced a real `/^partner./` vs
+      `/^partner\./` regex bug introduced during the edit), the unbounded
+      `<ReactMarkdown` slice (now brace-depth-bounded, strictly stronger), the
+      wrong `strip`/`clobber` rationale, and two false "no DOM harness"
+      premises. The storage census's blind spot is narrowed: inline key literals
+      passed to storage calls are now covered (with a non-vacuity proof); a key
+      held in a *variable* remains invisible and is documented as such.
+      Remaining: **M20.B (the server role) — scoped, every gate decided.** Slice
+      plan in `PLAN-M20-B.md`; status table in its §3.0.
+      **M20.B third wave (S7 WIRING) LANDED 2026-09-13 — a real phone can now
+      obtain a mobile session.** `POST /v1/pair/payload` issues a 256-bit
+      single-use secret to a **loopback** caller (and refuses without remote
+      access + TLS, so no secret is ever carried over plaintext);
+      `POST /v1/pair` accepts `{secret}` from anywhere and mints **`mobile`** —
+      never `desktop` — while `{code}` is refused from a non-loopback **socket
+      peer** *before* it is verified, so a remote caller can neither consume nor
+      lock the code on the user's screen. Locality is the peer address, not the
+      `Host` header (§2.1). Both paths are rate-limited per peer and a successful
+      pair resets the bucket. Client half: the SPA reads `#pair=…`, re-validates
+      the payload itself (https, canonical 32-byte base64url), confirms once and
+      clears the fragment; the Providers screen issues links. Root suite
+      1109 → **1131**, web 619 → **638**, typechecks 0, build green,
+      `ux_audit` PASSED (24 pairs, light + dark), geometry measured at 1280/390
+      in both modes (no overflow, 0 controls < 44px, copy 73 chars/line).
+      **The audit also exposed a pre-existing defect, now fixed:**
+      `.field::placeholder` used `--text-faint` (Lc 68.86 light / 48.02 dark,
+      below the 75 floor) — placeholders are instructive text, so they now use
+      `--text-muted` and `DESIGN.md` reserves `--text-faint` for disabled text.
+      **Not done:** QR rendering (no encoder dependency — the link is shown as
+      text), the shell-side "copy pairing link", and a real phone/TLS walk
+      (env-gated). Issuing a link is loopback-only, so a deployment that turns
+      remote access on needs a local loopback route to the allowlisted host
+      (hosts-file alias) — stated in the UI copy and in
+      `docs/VERIFY-M20-B.md`.
+      **M20.B second wave (S4/S5/S6 WIRING) LANDED 2026-09-12:** the capability
+      envelope now **enforces** — 21 route mounts, `ExecContext.clientClass`, and
+      the refusal ordered **before** the grant check; the device registry
+      (list/revoke/revoke-all, 404-not-403 across users, no token material on the
+      wire); and the transport matrix (`REMOTE_ACCESS` + TLS files + a named
+      `ALLOWED_HOSTS`, https listener, `startServer` re-asserting the refusal).
+      Root suite 1066 → **1109**, typecheck 0, build green.
+      **The review found three BLOCKERS — the envelope was bypassable three ways,
+      all now fixed:** (1) the **approval queue** (`broker.decide` took an actor
+      *label*, not a class, so a mobile session could approve a queued write and
+      have it run, or acquire a grant via approve-and-remember); (2) the
+      **persona/skill/playbook tool loops** reached the broker class-less, so a
+      mobile *chat turn* executed with **desktop authority**; (3) **MCP server
+      CRUD** was ungated while an enabled server is **spawned as a process** —
+      code execution, which I had underestimated as configuration hygiene. Also
+      fixed: the S5 transitional rule was keyed on the *caller* having no user, so
+      a user-less session could read **and revoke a named user's devices** (now
+      scoped to `user_id IS NULL` — identical today, hole closed for the future);
+      `startServer` re-asserts the transport refusal; and an unmapped tool now
+      fails closed for **every** class including desktop.
+      **At the end of wave 2 enforcement was unreachable; the S7 wiring wave
+      closed that.** As written at the time: **S7** (pairing secret +
+      client-class delivery) was unwired, so a mobile session could only be
+      minted in tests and `/v1/pair` minted `desktop` with `user_id` NULL.
+      **Since the third wave (2026-09-13, above) a real phone can obtain a
+      `mobile` session.** Remaining: **S8**, **S9**, plus the recorded
+      vocabulary gap (provider key writes and autonomous firing have no capability
+      name — a reviewed decision, not a tidy-up). Record:
+      `docs/VERIFY-M20-B.md`.
+      **Added after the gates closed — pairing is not authentication** (raised by
+      the owner: the local desktop copy pairs, but a multi-user web version needs
+      different handling). Verified: the only session mint site is
+      `sessions.create('web', origin)` with **no user**, and `SessionRow` has no
+      `user_id`, so pairing proves *device enrollment by proximity* and cannot
+      answer *which user a session acts as*. Now separated into **enrollment →
+      authentication → authorization**, with the rule that a session never carries
+      a user without an authentication event. The **desktop copy is unchanged**
+      (on a single-user install enrollment implies the OS-profile user #0, so the
+      PairGate stays byte-identical); a multi-user core mints an acting session
+      only after sign-in, and one device may hold sessions for several users, so
+      revoke is per (device, user). Credential primitive: **per-user passphrase**
+      (argon2id/scrypt in the system DB), passkey as a later adapter behind the
+      same seam. **Sign-in doubles as the partition unlock event**, which resolves
+      §4.4's operator-readable-store problem for a hosted multi-user core at a
+      per-user, explicit, audited cost to headless schedules. This adds slices
+      **S2a** (credentials) and **S9** (per-user unlock) and raises **S6**:
+      **TLS is now a prerequisite for multi-user**, not only for remote access.
+      Design: `PLAN-M20-B.md` §2a.
+      **M20.B first wave LANDED 2026-09-12** (verification record:
+      `docs/VERIFY-M20-B.md`). Built: **S1** per-user partition (incl. the
+      legacy-user alias), **S2/S2a** `users` + `user_credentials` in a second
+      encrypted **system DB** with scrypt credentials, **S3** session widening +
+      rotation/revoke, and the **pure primitives** for S4/S6/S7. Schema v16 →
+      **v18** (v17 tables, v18 session columns), each bumped once through the
+      guarded-column migration surface. Root suite 901 → **1066**.
+      **A MAJOR data-loss bug was caught by the review and fixed:** the plan
+      asserted that the existing `data/partner.db` stays as user #0's partition
+      while no code implemented it, so an install booting with `USER_ID=0` would
+      have opened an **empty** DB under a new key and orphaned the real data.
+      Fixed with a single `LEGACY_USER_ID` constant (`FIRST_USER_ID` derives from
+      it, so they cannot drift) mapping that user to the legacy path, skills dir
+      and `db-key` account. Also fixed from the same pass: Windows reserved
+      **stem** names (`con.txt` etc.), a fail-OPEN `uncoveredHosts`, **wildcard
+      SANs not matching** (which would have refused every real Let's Encrypt/mesh
+      cert — now RFC 6125 single-label, with the `evil-example.com` suffix-attack
+      as a test), the mobile envelope's three **indirect** routes to denied
+      capabilities, a credential **timing oracle**, and a partition
+      close-during-open race. `kind` was **not** widened.
+      **CAVEAT as of wave 1 (superseded by the wave-2 entry below).** The
+      users/credentials/system-DB work is not called by `createCore`; `/v1/pair`
+      mints exactly as before with `user_id` NULL. So **no new control was in
+      force after wave 1** — the envelope, TLS refusal, rate limiting and
+      networked pairing were available, not active. Wave 2 (below) wired S4/S5/S6,
+      and the third wave wired **S7**, so the delivery path now exists too.
+
+- [x] **M21 — Container deployment + Cloudflare Tunnel (implemented + container-verified
+      2026-09-13; detailed spec: `PLAN-M21.md`, record: `docs/VERIFY-M21.md`).**
+      Partner runs headless in a container, in LIVE mode, and reaches the internet
+      only through a Cloudflare Tunnel — no published port, no inbound rule, no
+      cert to renew. Adds the one thing live mode was missing in a container: a
+      **`file` keychain kind** (`KEYCHAIN_KIND=file` + `KEYCHAIN_FILE`; JSON,
+      0600, atomic + serialised writes, malformed ⇒ refuse to boot, never
+      re-key), plus one config hardening (an unknown `KEYCHAIN_KIND` is refused
+      instead of silently meaning `native`). `docker/server/` ships the live
+      image (non-root, S6 remote matrix: `REMOTE_ACCESS` + TLS + a named
+      `ALLOWED_HOSTS`), the two-service compose, stage scripts that also generate
+      the origin certificate, and three container-side tools (`healthcheck`,
+      `pair-link`, `partner-request`). **Topology is a security property:** the
+      tunnel sidecar keeps its OWN network namespace, because the pairing routes
+      decide by socket peer (S7) and a shared namespace would make every internet
+      request look loopback — an anonymous visitor could then mint a pairing
+      secret. Pairing is therefore `compose exec partner node tools/pair-link.mjs`
+      (operator shell access = the "at the machine" proof) and yields a
+      **`mobile`** session; `desktop` class is unreachable in this shape (the
+      coherent follow-up — letting a loopback-issued secret carry its intended
+      class — is a reviewed capability decision, not taken here).
+      *Exit: container boots LIVE (`demo=off`, schema v18) and reaches `healthy` ·
+      a non-loopback peer redeems a secret for a `mobile` session while
+      `/v1/pair/payload` and `{code}` stay 403 `loopback_required` · the session
+      survives a container restart (volume + file key) and is refused
+      `desktop`-only capabilities by class · both new test invariants falsified by
+      injection · root 1131 → 1162 · web 638 · typechecks 0 · `ux_audit` n/a (no
+      new UI).*
+      *State: the Cloudflare edge leg, the dashboard's hostname settings and
+      `stage.ps1` on Windows PowerShell were env-gated at the time of writing and
+      are now **verified against a real tunnel** — the user deployed it at
+      `partner.teliti.app` on 2026-09-13 and the whole path (edge → tunnel → core
+      → pairing → mobile session → authenticated read) was checked in a browser.
+      That live check found a **blocker the suite had certified**: the SPA's
+      payload validator counted decoded CHARACTERS instead of BYTES, so every
+      genuine pairing link was refused ("missing a valid certificate
+      fingerprint") — the tests passed because their fixtures were ASCII filler.
+      Fixed (byte-based canonical validation), fixtures replaced with
+      `randomBytes(32)`, and the cross-module seam is now pinned by
+      `tests/pair-payload-agreement.test.ts`; both fixes falsified by injection.
+      A second defect of the same check: a pairing link pasted into an
+      already-open tab did nothing (fragment-only navigation does not remount the
+      SPA) — `PairGate` now listens for `hashchange`. Root **1166** · web **639**.
+      Record: `docs/VERIFY-M21.md` ("Live deployment check").*
+
+- [x] **M22 — Remote-hosted accounts, deployment-owned files, no llm-self-service
+      (implemented + container-verified 2026-09-13; detailed spec: `PLAN-M22.md`,
+      record: `docs/VERIFY-M22.md`).** Three changes for the hosted shape.
+      **(1) Pairing → user login:** `AUTH_MODE=login` makes `POST
+      /v1/auth/session` the only way in — a per-user passphrase (scrypt, system
+      DB) mints a session that carries `user_id`, wrong-password and
+      unknown-user are indistinguishable, 3 failures lock for 5 minutes, a
+      per-peer limiter sits on top (behind a tunnel every request shares one peer
+      address), and **the whole pairing lane answers 403**. Accounts are managed
+      by the operator CLI `tools/user.mjs` (shell access = the "at the machine"
+      proof); **one user per core is enforced** until per-user partitions (S1/S8/S9)
+      land, because two accounts would share one database. The desktop pairing
+      shape is unchanged. **(2) Deployment-owned roots:** `FIXED_ROOTS=/files`
+      registers the mount at boot (idempotently — grants reference the root by id)
+      and `POST`/`DELETE /v1/roots` answer `403 roots_fixed`; a non-directory root
+      fails the boot; the Files view renders read-only. **(3) llm-self-service
+      removed** from core, web and `shared` (the `ProviderSource` value stays so
+      old rows read), which also closes **S0** as obsolete.
+      *Exit: container-verified through the user's tunnel — account created by
+      CLI, sign-in returns a `desktop` session, `/v1/roots` read-only, and a
+      brokered write into `/files` completes proposal → approval → file on the
+      volume · login gate walked in a browser (fields, disabled submit, sign-in →
+      workspace, only token/theme/authMode stored) · root 1166 → 1184 · web 639 →
+      635 · typechecks 0 · build green.*
+      **R-slice (same session):** the recommendations were then built except R5
+      (Cloudflare Access, skipped by request). **R1 per-user partitions** — a
+      partition IS a single-user core (its own encrypted database, key and skills
+      directory): the listening app authenticates against the shared system
+      sessions and **delegates** every other `/v1` request to that user's app, so
+      not one of the ~200 routes changed. Two users are provably isolated
+      (`core/test/http/userPartitions.test.ts`: a read in one partition cannot
+      contain the other's rows; separate `db-key:<id>` keys; per-user audit and
+      skills), and the rails' LRU/idle/close semantics are unit-tested. **R2**
+      rotation revokes that user's sessions. **R3** `PARTITION_IDLE_MS` closes idle
+      partitions — memory hygiene, documented as exactly that. **R4**
+      `CLIENT_IP_HEADER` + `TRUSTED_PROXY_CIDRS` give per-client auth rate limiting,
+      believed only from a trusted peer and never used for a locality decision.
+      **R6** `FIXED_ROOTS_READ_ONLY=1`. **R7** `MAX_UPLOAD_BYTES` /
+      `MAX_JSON_BYTES`. **R8** a verified backup tool (`VACUUM INTO` +
+      `integrity_check`, exits non-zero when it cannot verify, prunes to `--keep`).
+      **R9** the vocabulary gap is closed (`provider.configure`, `persona.run`).
+      Root 1184 → **1204**, web 635, typechecks 0.
+      **S1/S9 (PLAN-M20-B):** S1 verified end to end (the rails are its missing
+      caller) and **S9 landed** — schema v19 wraps the partition key under the
+      passphrase (own salt + HKDF, so the stored verifier cannot unwrap it),
+      removes the plaintext at first sign-in, refuses a locked partition with
+      `401 partition_locked`, closes the handle with the key, and offers the
+      per-user AUDITED `keep-unlocked` opt-in. **S8 (Vault/Runner) NOT done** —
+      deliberately not half-landed. Root 1204 → **1215**.
+      *State: still open — S8, a device/sign-out UI, per-user quotas; unverified — a two-user browser walk,
+      R4 against the real Cloudflare edge, an R8 restore, and R3's live timer. See
+      `docs/VERIFY-M22.md`.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
@@ -772,7 +1246,9 @@ credentials. Never in production builds.
   follow-up (env-gated).
 - No plugin execution by web content; skills only via the core sandbox.
 - No autonomous payment/banking actions; no acting on sensitive sites.
-- No multi-user *server* mode (one machine, per-OS-profile separation only).
+- No multi-user *server* mode as a hosted multi-tenant service: one operator,
+  several users on their own core, isolated by partition (M20) — still no
+  Partner-hosted accounts, and still no Partner cloud.
 - Partner is an MCP **client** (stdio, config + persona tool calls) — it is
   still not an MCP *server*, and never will be in v1.
 
@@ -802,3 +1278,55 @@ credentials. Never in production builds.
 8. Which search engines the browser actuator may drive by default, and how
    CAPTCHA/consent prompts surface to the user (with an engine blocklist for
    engines that fight automation).
+9. ~~**M20 §12** — the M20 decision gates~~ **RESOLVED 2026-09-12.** Every gate
+   carries a decision with its consequence stated: `PLAN-M20.md` §11 (D1–D5) and
+   §12 (formerly-open questions 1–12), execution detail in `PLAN-M20-B.md` §6.
+   Four are marked ⚠ because their cost lands on how the product is *used*
+   (D5, Q2, Q4, Q11) and are worth revisiting deliberately.
+10. ~~**M20/§3.1** — Runner: the user's own machine or a shared VPS?~~
+    **RESOLVED: the user's own machine.** A shared/multi-tenant VPS is out of v1
+    scope, so briefcase caps are blast-radius reduction rather than the primary
+    control, and TPM sealing is optional. *Cost accepted:* the product assumes
+    the user runs an always-on device; without one, schedules only fire while the
+    Vault is awake — plain Model A, not A′.
+11. ~~**M20/§8.1** — does remote access need an explicit consent screen?~~
+    **RESOLVED: yes** — local-only, plain-language risk line, cannot be flipped
+    from a remote session, and switching it off invalidates remote sessions
+    immediately.
+12. **M20/§4.4** — if Model A′ is ever rejected, the fallback secret store is
+    an operator envelope or passphrase-derived keys (the latter breaks M14
+    headless runs). Recorded so it is never defaulted.
+13. ~~**Pairing vs authentication for a multi-user web version**~~ **RESOLVED
+    2026-09-12** (raised by the owner: the local desktop copy pairs, a multi-user
+    web version cannot use pairing as its identity mechanism). **Pairing proves
+    device enrollment by proximity; it cannot answer which user a session acts
+    as** — verified: the only mint site is `sessions.create('web', origin)` with
+    no user, and `SessionRow` has no `user_id`. Now separated into **enrollment →
+    authentication → authorization**; a session never carries a user without an
+    authentication event. The **desktop copy is unchanged** (enrollment implies
+    the OS-profile user #0), and the credential primitive is a **per-user
+    passphrase**, with passkey a later adapter behind the same seam. **Sign-in is
+    also the unlock event**, which resolves §4.4 for the hosted case without an
+    operator-readable store — at a **per-user, explicit, audited** cost to
+    headless schedules. Design: `PLAN-M20-B.md` §2a; decisions 13–16 in
+    `PLAN-M20.md` §12.
+14. **M20.B remaining work** (status table: `PLAN-M20-B.md` §3.0). Two items,
+    in the order I would take them — **S7 wiring is DONE** (2026-09-13, §15 M20
+    and `docs/VERIFY-M20-B.md`), so the reachability gap it closed is no longer
+    on this list:
+    - **The capability vocabulary gap — a decision, not a tidy-up.** Provider
+      **key writes** (`/v1/providers/:id/key`, self-service connect, search key)
+      and **autonomous firing** (playbook run, schedule run-now) have **no
+      capability name**, so they are ungated for *every* class. The ten existing
+      names cover the machine-power surfaces; the data plane (notes, memory,
+      personas, conversations) is ungated **by design** because a phone may
+      legitimately edit its own data. Naming the two power surfaces
+      (`provider.configure`, `persona.run`) changes what a mobile/extension
+      session can do, so it wants a reviewed change. The route header in
+      `core/src/http/server.ts` states the gap so it is not misread as coverage.
+    - **The upgrade rehearsal — do this before anyone sets `USER_ID`.** The
+      legacy-partition alias (user #0 owns `data/partner.db`, `data/skills` and the
+      `db-key` account) is asserted by unit tests but has **never been exercised by
+      a real file-DB boot with `USER_ID` set**. That is the one path where being
+      wrong means silent data disappearance rather than an error, so rehearse it
+      against a copy of a real data directory first.
