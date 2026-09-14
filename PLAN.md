@@ -443,7 +443,7 @@ pages, skills, and other apps are not; the user is the final authority.*
 | **Skills** | Signed packages, hash verification, manifest-permission enforcement, sandboxed workers, no implicit network, budgets, one-click uninstall + store wipe. |
 | **Supply chain / updates** | Core updates signed + verified; gallery registry pinned (HTTPS + signature); no telemetry by default — opt-in crash reports only, containing no content or keys. |
 | **Budget** | Optional per-provider/per-session spend caps enforced by the core's gateway (defense-in-depth under the proxy's own caps). |
-| **Accounts (M22)** | A hosted core (`AUTH_MODE=login`) authenticates a **user**, not a device: `POST /v1/auth/session` proves a per-user passphrase (scrypt, in the **system DB**, never the passphrase itself) and mints a session that carries `user_id`. Wrong password and unknown user are indistinguishable; three failures lock for five minutes; a per-peer rate limit sits on top because behind a tunnel every request shares one peer address. The pairing routes answer 403 in this mode. Accounts are managed by the operator CLI (`tools/user.mjs`) — shell access is the "at the machine" proof — and **one user per core** is enforced until per-user partitions land. |
+| **Accounts (M22)** | A hosted core (`AUTH_MODE=login`) authenticates a **user**, not a device: `POST /v1/auth/session` proves a per-user passphrase (scrypt, in the **system DB**, never the passphrase itself) and mints a session that carries `user_id`. Wrong password and unknown user are indistinguishable; three failures lock for five minutes; a per-peer rate limit sits on top because behind a tunnel every request shares one peer address. The pairing routes answer 403 in this mode. Accounts are created by the operator CLI (`tools/user.mjs`) — shell access is the "at the machine" proof — or, with `SIGNUP_MODE=invite`, by the person themselves from a **single-use invite the operator mints on the machine** (`tools/signup-link.mjs`), so the operator never sees their passphrase; each account gets its own partition (M20-B S1/S9). |
 | **Audit** | Append-only local audit log (tool actions, skill runs, grant changes, persona autonomy events). User-visible; exportable. |
 | **Multi-user on one machine** | OS profiles are separate Partner profiles: distinct keychain items, DBs, skill stores. Installed skills are never shared between profiles. |
 | **Remote clients (M20)** | Origin binding is **reclassified**: the `Host` header is client-supplied once clients are remote (`server.ts:298`), so it is a lookup key, not a network control — TLS/SNI plus a **named** host allowlist are. |
@@ -563,6 +563,16 @@ deployment owns the roots. In `AUTH_MODE=login` the whole pairing lane
 (`/v1/pair`, `/v1/pair/payload`, `/v1/pair/device`, `/v1/dev/*`) is **refused**.
 The M1 `/v1/self-service/*` routes and the `llm-self-service` import were
 **removed** (M22).
+
+M22 sign-up (invite lane, `SIGNUP_MODE=invite`, off by default) adds two routes:
+`POST /v1/signup/code` (**loopback-only**, mints a 256-bit single-use invite — the
+same primitive as the pairing secret — issued by `tools/signup-link.mjs`) and
+`POST /v1/auth/signup` (`{code, username, password}` from anywhere → creates the
+users row + scrypt credential exactly as `tools/user.mjs add` would, `201` with
+the new id, **no session**), and `/v1/health` gains `signupMode` (`off`/
+`invite`). The rules a name and passphrase must satisfy live in
+`shared/src/accounts.ts` so the browser validates what the core enforces. See the
+M22 entry in §15 for why `open` registration is deliberately not a mode.
 
 M22/R7 also fixes the **upload transport**: `POST
 /v1/conversations/:id/attachments` takes the file as the **request body** (content
@@ -1293,6 +1303,25 @@ apps/partner/
       `401 partition_locked`, closes the handle with the key, and offers the
       per-user AUDITED `keep-unlocked` opt-in. **S8 (Vault/Runner) NOT done** —
       deliberately not half-landed. Root 1204 → **1215**.
+      **Sign-up (invite lane, 2026-09-14):** a hosted person can now create their
+      OWN account, so the operator never types their passphrase — the one thing
+      `tools/user.mjs add` could not avoid. `SIGNUP_MODE=invite` (default `off`,
+      needs `AUTH_MODE=login`) enables it: the operator mints a 256-bit single-use
+      invite on the machine (`tools/signup-link.mjs` → `POST /v1/signup/code`,
+      loopback-only, the same secret primitive as the pairing link) and sends
+      `https://<host>/#signup=<code>`; `POST /v1/auth/signup` consumes it and
+      creates the users row + scrypt credential exactly as the CLI would (`0` for
+      the first account), returning **no session** — sign-in stays the single
+      authority path. Validation is shared (`shared/src/accounts.ts`), the shape
+      checks run BEFORE the code is spent (a typo must not burn a one-time
+      invite), a taken name is a 409, and neither the name nor the passphrase
+      reaches a response or an audit row. **There is deliberately no `open`
+      mode:** a hostname the internet reaches is reachable by anyone, and "who may
+      reach it" is not "who may create an account" — the operator's invite is the
+      decision. Root 1215 → **1229**, web 699 → **712** (a container-shaped walk
+      found the fresh-tab invite path rendering an empty code field; seeded from
+      one shared helper now, with the invariant pinned in `web/test/signup.test.ts`).
+      Record: `docs/VERIFY-M22.md`.
       *State: still open — S8, a device/sign-out UI, per-user quotas; unverified — a two-user browser walk,
       R4 against the real Cloudflare edge, an R8 restore, and R3's live timer. See
       `docs/VERIFY-M22.md`.*

@@ -378,3 +378,61 @@ MSYS_NO_PATHCONV=1 docker compose exec partner rm -f /data/partner.db
 troubleshooting table now carries this row, because the failure mode — a *silent*
 no-op followed by a loud refusal — is exactly the kind of thing an operator should
 not have to work out from the logs.
+
+## Sign-up (invite lane) — walked against a live login-mode core, 2026-09-14
+
+Setup: a throwaway demo core in the **hosted shape** —
+`PORT=4393 DEMO_MODE=1 AUTH_MODE=login SIGNUP_MODE=invite npx tsx core/src/index.ts`
+— plus `VITE_CORE_URL=http://127.0.0.1:4393 npx vite --port 5199`. `/v1/health`
+reported `authMode: login`, `signupMode: invite`, `hasUsers: false`. The invite was
+minted with the loopback-only route the operator tool calls
+(`curl -X POST http://127.0.0.1:4393/v1/signup/code` → a 43-character code; the
+route answers `403 loopback_required` to a non-loopback peer, per
+`core/test/http/signup.test.ts`).
+
+| step | observed |
+|---|---|
+| first load, no account yet | gate titled **Sign in** with "This Partner has no account yet…", the operator notice naming both `tools/user.mjs add` and `tools/signup-link.mjs`, and one primary action **"I have an invite"**; no sign-in form is rendered (a sign-in there could only answer 409) |
+| open `#signup=<code>` | **Create your account**, invite hint "Filled in from the link you opened — invites are single use", the code present in the field, four inputs (code, name, passphrase, repeat) each with the shared rule sentence underneath; submit enabled only once name + passphrase + confirmation pass |
+| submit (name `Ama`, person-chosen passphrase) | account created, then **signed in automatically**: URL back to the bare origin with the invite fragment **cleared**, gate gone, 10 nav destinations, chat view, token stored |
+| open the SAME link again, submit a different name | **"That invite has already been used or has expired. Ask for a fresh one — invites are single use."**, person still on the gate, no session — one account from one invite |
+| later visit, empty browser profile | the ordinary **sign-in** form; the name + passphrase chosen during sign-up authenticate and land in the app |
+
+### The bug this walk found (and the fix)
+
+The **fresh-tab** invite path rendered the form with an EMPTY code field while its
+hint claimed "filled in from the link you opened" — submit could never succeed. The
+first load seeded only the *intent* (which selects the form) and not the *form*;
+only the paste-into-an-open-tab (`hashchange`) path filled the code. A person who
+followed the instructions literally (open the link) got the broken path, and the
+SSR render tests could not see it because they pass `code` as a prop.
+
+Fixed by making one helper answer for both paths
+(`initialSignupFields()` in `web/src/lib/signup-link.ts`, used by the state
+initialiser AND the `hashchange` handler), with the invariant — a valid link always
+yields a non-empty code — pinned in `web/test/signup.test.ts`. Re-walked: a fresh
+load seeds the code (verified above), and the spent-link refusal still shows.
+
+### Gates for this change
+
+- `core/test/http/signup.test.ts` **19 passed** · `shared/test/accounts.test.ts`
+  **9** · `web/test/signup.test.ts` **12** · root suite **1229 passed** (5
+  env-gated skips, plus the pre-existing Windows-only `userPartitions` hook failure
+  that reproduces on this machine at `v0.1.8`) · web suite **712 passed** ·
+  typechecks 0 · `npm run build -w web` green.
+- **No CSS in this diff**, so `ux_audit` was not re-run (the gates cover tokens,
+  contrast, states and slop tells — none of which this change touches); the new
+  screens reuse the existing gate/field/hint/error classes.
+- Falsification: the invite-link seeding test fails if `initialSignupFields` is
+  bypassed for the fresh-load path (the bug above is exactly that state).
+
+### Still not verified here
+
+- A real deployment walk over the tunnel with `SIGNUP_MODE=invite` (this walk used
+  a local login-mode core; the container refresh that ships the lane is recorded in
+  the release notes).
+- `tools/signup-link.mjs` end to end inside the container (its HTTP call and both
+  refusal messages are covered by the route tests and the tool is `node --check`ed
+  by `tests/deploy-files.test.ts`).
+- The invite's interaction with `LOGIN_SESSION_CLASS=mobile` (the class applies to
+  the sign-in that follows, which is the same code path as any other login).

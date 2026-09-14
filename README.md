@@ -77,13 +77,14 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 ## Status (2026-09-14)
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1227 passed** (5 env-gated skips; plus the known Windows-only
-`userPartitions` hook failure, reproducible on a clean checkout) · web **699
-passed** · typechecks 0 · web build green. Latest release: **v0.1.9** (tap-outside
-pane dismissal + the sidebar minimize toggle, on top of the mobile phone-tier UI,
-persona picker, top-bar chrome, note projects, chat multi-question forms,
-persona-scoped memory). **M20 is partly done**: **M20.A (mobile/tablet UI) is
-implemented and measured**, **M20.B (server role) has landed through S7 + S9**
+suite **1254 passed** (5 env-gated skips; plus the known Windows-only
+`userPartitions` hook failure, reproducible on a clean checkout) · web **712
+passed** · typechecks 0 · web build green. Latest release: **v0.1.10** (hosted
+**sign-up by invite**, on top of tap-outside pane dismissal, the sidebar minimize
+toggle, the mobile phone-tier UI, persona picker, top-bar chrome, note projects,
+chat multi-question forms, persona-scoped memory). **M20 is partly done**: **M20.A
+(mobile/tablet UI) is implemented and measured**, **M20.B (server role) has
+landed through S7 + S9**
 (the capability envelope, networked pairing, per-user partitions) with **S8
 (Vault/Runner) not started**, **M21 (container + Cloudflare Tunnel) is
 live-verified** and **M22 (hosted accounts + deployment-owned files) is
@@ -540,6 +541,26 @@ per-user, audited `keep-unlocked` opt-in is the stated exception — their
 schedules may run with nobody signed in — and `passwd` refuses to orphan a
 wrapped key unless `--reset` is passed. Root **1215**, web 635, typechecks 0.
 Record: `docs/VERIFY-M22.md`.
+
+**M22 sign-up — the invite lane (2026-09-14).** The operator CLI meant the operator
+typed every account's passphrase, so a hosted core started with credentials someone
+else had seen. `SIGNUP_MODE=invite` (default **off**; needs `AUTH_MODE=login`) now
+lets a person create their OWN account: the operator mints a 256-bit **single-use**
+invite on the machine (`docker compose exec partner node tools/signup-link.mjs` →
+`https://<host>/#signup=<code>`) and sends the link; the person picks their name and
+passphrase, lands signed in, and gets their own encrypted partition. The mint route
+is **loopback-only** (the same "shell access = at the machine" proof as pairing),
+the code is consumed by exactly one account, the shape checks run **before** the
+code is spent (a typo must not burn an invite), a taken name is a 409, and neither
+the name nor the passphrase reaches a response or an audit row. Names and
+passphrases are validated by one shared rule set (`shared/src/accounts.ts`), so the
+browser cannot promise what the core refuses. **There is deliberately no `open`
+mode** — a hostname the internet reaches is reachable by anyone, and the operator's
+invite is the admission decision. The browser walk found and fixed a real bug on the
+way: a link opened in a **fresh tab** rendered the form with an empty code field
+(only the paste-into-an-open-tab path seeded it), so the person who followed the
+instructions literally got a form that could never submit. Root **1227 → 1254**, web
+**699 → 712**. Record: `docs/VERIFY-M22.md`; spec `PLAN-M22.md`.
 
 **S8 (Vault/Runner tier split) is NOT done** — deliberately. Role isolation and
 briefcase caps are a boundary where a half-implementation is worse than none (the

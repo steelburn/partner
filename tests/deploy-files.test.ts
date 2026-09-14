@@ -50,6 +50,7 @@ describe('container tools are valid JavaScript', () => {
 
 describe('compose topology (security-relevant, invisible in a YAML diff)', () => {
   const compose = read('docker-compose.yml');
+  const envExample = read('.env.example');
 
   it('never puts the tunnel in the core network namespace', () => {
     // `network_mode: service:partner` would make every tunnel request arrive from
@@ -88,6 +89,18 @@ describe('compose topology (security-relevant, invisible in a YAML diff)', () =>
   it('mounts the data volume and the certificate material read-only-or-separate', () => {
     expect(compose).toMatch(/partner-data:\/data/);
     expect(compose).toMatch(/\.\/secrets:\/certs:ro/);
+  });
+
+  it('forwards SIGNUP_MODE off-by-default, and documents the invite tool', () => {
+    // The sign-up flag must reach the CORE by name (a flag only in .env.example
+    // would leave `SIGNUP_MODE=invite` silently doing nothing) and must default
+    // to off, so a deployment that never asked for it cannot create accounts
+    // from the internet.
+    expect(compose).toMatch(/SIGNUP_MODE: \$\{SIGNUP_MODE:-off\}/);
+    expect(envExample).toMatch(/^SIGNUP_MODE=off$/m);
+    // …and the loopback-only mint tool is the documented way to issue an invite.
+    expect(envExample).toContain('tools/signup-link.mjs');
+    expect(existsSync(join(DIR, 'tools', 'signup-link.mjs'))).toBe(true);
   });
 });
 

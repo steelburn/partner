@@ -777,6 +777,22 @@ export function createCore(
     delegate?: (userId: string) => Promise<Express | 'partition_locked' | undefined>;
     /** M20-B S9: the key vault, so the account routes can unlock/lock. */
     auth?: { vault?: import('./http/server.js').CoreAuthOptions['vault'] };
+    /**
+     * M22 sign-up: the invite-secret manager, when the caller wants to own its
+     * clock (a test proving expiry/lock) or its lifetime. Production passes
+     * nothing — `signupMode`/`signupTtlMs` come from config, and the app then
+     * creates the in-memory manager itself.
+     */
+    signupSecrets?: import('./http/pairSecret.js').PairSecretManager;
+    /** Fixed-window budget for `POST /v1/auth/signup`, per network peer. */
+    signupRateLimit?: { limit?: number; windowMs?: number };
+    /**
+     * M20-B S7 TEST SEAM: the network peer of a request. Injectable because a
+     * hermetic test cannot dial the core from a non-loopback address, and the
+     * value can only ever make a request look MORE remote (checked by
+     * `isLoopbackPeer`).
+     */
+    peerAddress?: (req: import('express').Request) => string | undefined;
   },
 ): CoreBundle {
   if (db === undefined) {
@@ -1132,6 +1148,10 @@ export function createCore(
           }
         : { mode: config.authMode, ...(appOptions?.auth ?? {}) },
     loginRateLimit: config.loginRateLimit,
+    // M22 sign-up: `off` unless the deployment opted into invite-gated
+    // self-service (SIGNUP_MODE=invite + AUTH_MODE=login, enforced by loadConfig).
+    signupMode: config.signupMode,
+    signupTtlMs: config.signupTtlMs,
     maxJsonBytes: config.maxJsonBytes,
     // R7: the SAME number the attachment manager enforces, so the route's body
     // limit and the manager's cap cannot drift.
@@ -1477,7 +1497,10 @@ async function main(): Promise<void> {
     config.authMode === 'login'
       ? loginHasUsers === true
         ? ' · user login: sign in at the web UI'
-        : ' · user login: create the account with `node tools/user.mjs add <name>`'
+        : config.signupMode === 'invite'
+          ? ' · user login: no account yet — mint an invite with `node tools/signup-link.mjs`' +
+            ' (or create one with `node tools/user.mjs add <name>`)'
+          : ' · user login: create the account with `node tools/user.mjs add <name>`'
       : config.demo
         ? ' · dev pairing code: GET /v1/dev/pair-code'
         : config.deviceSecret !== undefined

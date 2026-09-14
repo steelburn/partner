@@ -36,6 +36,14 @@ services:
       ALLOWED_HOSTS: ${PARTNER_HOST:?set PARTNER_HOST in .env — the public hostname}
       # M22: user login (the hosted shape), and the deployment-owned files root.
       AUTH_MODE: ${AUTH_MODE:-login}
+      # M22 sign-up: `off` (default — an account is an operator act) or `invite`,
+      # which lets a person create their OWN account from the web UI with a
+      # single-use invite minted on the machine:
+      #   docker compose exec partner node tools/signup-link.mjs
+      # The operator never sees the passphrase they choose. Invites expire after
+      # SIGNUP_TTL_MS (default 24h) and are invalidated by a restart.
+      SIGNUP_MODE: ${SIGNUP_MODE:-off}
+      SIGNUP_TTL_MS: ${SIGNUP_TTL_MS:-}
       FIXED_ROOTS: ${FIXED_ROOTS:-/files}
       # Optional tuning, forwarded only when set (an empty value is treated as
       # unset by loadConfig, so the core's own defaults apply).

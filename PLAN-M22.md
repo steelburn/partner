@@ -165,6 +165,64 @@ structural rather than a property of remembering to filter. Costs, stated:
   per-user cryptographic unlock (key wrapped by the passphrase) is S9 proper and
   is not built.
 
+## Sign-up — the invite lane (built 2026-09-14)
+
+**The gap this closes.** `tools/user.mjs add` is the operator's act, which is the
+right default — but it means the operator TYPES the passphrase, so every account on
+a hosted core starts life with a credential someone else has seen. For a core you
+share with family, that is the wrong shape: the honest thing is for each person to
+choose their own credential, while "may this person have an account here?" stays
+the operator's decision. That split is exactly the one the product already makes
+for device enrollment (pairing: proximity → a device; invite: a single-use secret →
+an account).
+
+**What was built.** `SIGNUP_MODE=off | invite` (default `off`; `invite` requires
+`AUTH_MODE=login`, and an unknown value is REFUSED at boot rather than defaulted):
+
+| Piece | Behaviour |
+|---|---|
+| `POST /v1/signup/code` | **Loopback-only** mint of a 256-bit single-use invite. `tools/signup-link.mjs` calls it from inside the container and prints `https://<host>/#signup=<code>`. |
+| `POST /v1/auth/signup` | `{code, username, password}` from anywhere → creates the users row + scrypt credential exactly as `tools/user.mjs add` does (first account gets id `0`, others slug from the name) and answers `201` with the new id. **No session is minted** — `/v1/auth/session` stays the only authority path. |
+| `/v1/health` | gains `signupMode`, so the gate knows whether to offer the invite path at all. |
+| `shared/src/accounts.ts` | the name/passphrase rules and their sentences, used by BOTH the browser (before spending a request) and the core (on the request). A form that promises what the server refuses is the failure this prevents. |
+| `docker/server/tools/signup-link.mjs` | the operator tool; prints the enable-instruction when sign-up is off rather than a stack trace. |
+
+**Deliberate choices, with their costs:**
+
+- **There is no `open` mode.** Self-service registration on a hostname the internet
+  can reach is a different product (tenant onboarding), not this one; the operator
+  minting an invite IS the admission decision. Cost: one command per person.
+- **The invite is consumed even when the name is taken** (the operator mints
+  another). Shape errors — a short passphrase, an unusable name, a missing code —
+  are refused BEFORE the code is spent, so a typo does not burn it.
+- **A name must survive slugging into a partition directory** (`con`, `nul`, `..`,
+  punctuation-only are refused with a message that says why), and a name that is
+  already taken is a 409 — sign-in matches the label case-insensitively against the
+  first match, so two accounts differing only in case would make one unreachable.
+- **No audit row carries the name, the passphrase or the code**: rows name the
+  action and (on success) the new id.
+- **The credential is the person's, not the operator's** — which also means the
+  operator's recovery path is `tools/user.mjs passwd <name>`, as for any account.
+
+**Found while walking it in a browser (the bug the unit tests could not see):**
+opening the invite link in a FRESH tab rendered the form with the code field
+EMPTY while its hint said "filled in from the link you opened" — the fresh-load
+path seeded only the intent, not the form, and only the tab-paste (`hashchange`)
+path filled the code, so a form that could never submit was shown to exactly the
+person who followed the instructions. One shared helper now answers for both paths
+(`initialSignupFields`), and the invariant (a good link always yields a code) is
+pinned in `web/test/signup.test.ts`. Recorded in `docs/VERIFY-M22.md`.
+
+**Verified:** `core/test/http/signup.test.ts` (19 — mint loopback-only and
+mode-gated, the created credential signing in at `/v1/auth/session`, first-account
+id, single use, expiry, lockout, per-peer budget separate from sign-in, shape
+refusals leaving the invite alive, duplicate names, audit rows naming ids only),
+`shared/test/accounts.test.ts` (9), `web/test/signup.test.ts` (12 — link
+validation, request shape/error mapping, SSR render states for both gates), the
+runtime `docker server` walk (invite → account → signed in → single-use refused →
+later sign-in) and `tests/deploy-files.test.ts` (the compose passthrough defaults
+to `off` and the tool is node-checkable).
+
 ## Recommended next (still open)
 
 | # | Change | Why it is not done here |

@@ -14,12 +14,20 @@ export interface LoginGateProps {
   error: string | null;
   /** True when the core reported that no account exists yet. */
   noAccountYet: boolean;
+  /**
+   * M22 sign-up: true when this core can create an account from here (an invite
+   * minted on its machine). Off by default, so a deployment that never opted in
+   * shows exactly the form it always had.
+   */
+  signupAvailable?: boolean;
   /** Host the page is served from — shown so the user knows WHERE they are. */
   host: string;
   onUsername: (value: string) => void;
   onPassword: (value: string) => void;
   onSubmit: () => void;
   onSessionOnly: () => void;
+  /** Offered only when `signupAvailable`; opens the invite form. */
+  onSignUp?: () => void;
 }
 
 export function LoginGate({
@@ -28,13 +36,20 @@ export function LoginGate({
   busy,
   error,
   noAccountYet,
+  signupAvailable = false,
   host,
   onUsername,
   onPassword,
   onSubmit,
   onSessionOnly,
+  onSignUp,
 }: LoginGateProps) {
   const canSubmit = username.trim() !== '' && password !== '' && !busy && !noAccountYet;
+  // With sign-up available, "no account yet" is an invitation rather than a
+  // dead end: the first account on a hosted core is created the same way as any
+  // other (an invite minted on the machine). The form is NOT rendered in that
+  // case — a sign-in attempt there could only ever answer 409.
+  const showSignUp = signupAvailable && onSignUp !== undefined;
 
   return (
     <section className="gate" aria-label="Sign in">
@@ -47,10 +62,25 @@ export function LoginGate({
         </p>
 
         {noAccountYet ? (
-          <p className="session-notice">
-            On the machine running Partner:{' '}
-            <code>docker compose exec partner node tools/user.mjs add &lt;your-name&gt;</code>
-          </p>
+          <>
+            <p className="session-notice">
+              On the machine running Partner:{' '}
+              <code>docker compose exec partner node tools/user.mjs add &lt;your-name&gt;</code>
+              {showSignUp
+                ? ` — or, with sign-up enabled, mint an invite instead (tools/signup-link.mjs) and open the link it prints.`
+                : null}
+            </p>
+            {showSignUp ? (
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                disabled={busy}
+                onClick={onSignUp}
+              >
+                I have an invite
+              </button>
+            ) : null}
+          </>
         ) : (
           <form
             className="gate-form"
@@ -106,6 +136,15 @@ export function LoginGate({
         </div>
 
         <p className="gate-alt">
+          {showSignUp && !noAccountYet ? (
+            <>
+              Have an invite?{' '}
+              <button type="button" className="btn-link" disabled={busy} onClick={onSignUp}>
+                Create an account
+              </button>
+              .{' '}
+            </>
+          ) : null}
           Signing in needs this server to be reachable — it is not the same as the{' '}
           <button type="button" className="btn-link" disabled={busy} onClick={onSessionOnly}>
             session-only chat

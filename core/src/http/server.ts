@@ -16,6 +16,11 @@
  *     (LOCAL-issued by POST /v1/pair/payload, accepted from anywhere, mints
  *     `mobile`) and mints a `web` session bound to the caller's (allowlisted)
  *     origin. Both paths are per-peer rate-limited. See M20-B S7 below.
+ *  3. Account lane (M22, login mode only) — POST /v1/auth/session signs a USER
+ *     in and POST /v1/auth/signup creates an account from a single-use INVITE
+ *     (minted loopback-only by POST /v1/signup/code, i.e. `compose exec
+ *     tools/signup-link.mjs`). Sign-up is OFF unless the deployment sets
+ *     SIGNUP_MODE=invite: creating an account is otherwise an operator act.
  *  4. Authed group (Bearer + origin) — POST /v1/chat (SSE), GET /v1/audit,
  *     the M1 provider API (/v1/providers…, /v1/models), the M2 tool surface
  *     (/v1/roots|/v1/grants|/v1/tools…, /v1/proposals…) and the M3
@@ -97,7 +102,14 @@ import { ProviderError } from '../providers/errors.js';
 import type { PairingManager } from './pairing.js';
 import type { UserManager } from '../users/manager.js';
 import type { CredentialManager } from '../users/credentials.js';
-import type { AuthMode } from '../config.js';
+import type { AuthMode, SignupMode } from '../config.js';
+import {
+  LEGACY_USER_ID,
+  accountIdForUsername,
+  isUsableAccountId,
+  passphraseProblem,
+  usernameProblem,
+} from '@partner/shared';
 import { createPairSecretManager } from './pairSecret.js';
 import type { PairSecretManager } from './pairSecret.js';
 import { buildPairPayload } from './pairPayload.js';
@@ -291,6 +303,31 @@ export interface CoreAppOptions {
    * that has not is meaningless after a restart.
    */
   pairSecrets?: PairSecretManager;
+  /**
+   * M22 sign-up: `off` (default) keeps account creation an operator act;
+   * `invite` lets a person create their OWN account with a single-use code the
+   * operator mints on the machine (`POST /v1/signup/code`). Ignored unless the
+   * app is in login mode — the pairing ceremony has no credential to create.
+   */
+  signupMode?: SignupMode;
+  /**
+   * How long a minted invite stays usable, when this app creates its own
+   * secret manager. Defaults to 24h (an invite is handed to a person).
+   */
+  signupTtlMs?: number;
+  /**
+   * The invite-secret manager. Defaults to a fresh in-memory
+   * {@link createPairSecretManager} — the same 256-bit single-use primitive as
+   * the networked-pairing secret (keyed HMAC at rest, one active record, dies
+   * with the process), which is exactly the lifetime an invite wants.
+   */
+  signupSecrets?: PairSecretManager;
+  /**
+   * Fixed-window budget for `POST /v1/auth/signup`, per network peer. Separate
+   * from the sign-in budget on purpose: a sign-up flood must not lock the
+   * owner out of signing in.
+   */
+  signupRateLimit?: { limit?: number; windowMs?: number };
   /**
    * M20-B S7: TEST SEAM — the network peer of a request. Defaults to the real
    * socket address (`req.socket.remoteAddress`), which is the only signal that
@@ -552,6 +589,15 @@ function defaultPairCoreUrl(hostAllowlist: readonly string[]): string | null {
  * limiter (`invalid_key`) rather than sharing an anonymous budget.
  */
 const PAIR_RATE_LIMIT_DEFAULT = { limit: 10, windowMs: 60_000 } as const;
+
+/**
+ * How long a minted sign-up invite stays usable when this app owns the manager
+ * (`config.signupTtlMs` overrides it). A day rather than the pairing secret's
+ * two minutes, because an invite is handed to a PERSON through a message and
+ * opened when they get to it — and it is single-use, single-active, and gone on
+ * restart regardless.
+ */
+const SIGNUP_TTL_DEFAULT_MS = 24 * 60 * 60 * 1000;
 
 const DEVICE_LABEL_MAX = 64;
 const PLATFORM_MAX = 32;
@@ -1531,6 +1577,23 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     windowMs: options.loginRateLimit?.windowMs ?? PAIR_RATE_LIMIT_DEFAULT.windowMs,
   });
 
+  // M22 sign-up: invite-gated self-service account creation. Deliberately the
+  // SAME secret primitive as the networked-pairing lane (256-bit, single use,
+  // only a keyed hash at rest, one active record, invalidated by a restart) and
+  // deliberately NOT the pairing lane's semantics: the mint is loopback-only,
+  // the code is consumed by a sign-up rather than by a session, and it is only
+  // reachable in login mode. `open` registration is not a mode — see
+  // `SignupMode` in config.ts for why.
+  const signupMode = options.signupMode ?? 'off';
+  const signupEnabled = loginMode && signupMode === 'invite';
+  const signupSecrets =
+    options.signupSecrets ??
+    createPairSecretManager({ ttlMs: options.signupTtlMs ?? SIGNUP_TTL_DEFAULT_MS });
+  const signupLimiter: RateLimiter = createRateLimiter({
+    limit: options.signupRateLimit?.limit ?? PAIR_RATE_LIMIT_DEFAULT.limit,
+    windowMs: options.signupRateLimit?.windowMs ?? PAIR_RATE_LIMIT_DEFAULT.windowMs,
+  });
+
   const app = express();
   app.disable('x-powered-by');
 
@@ -1559,6 +1622,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // failing every attempt with a 401.
       authMode: auth.mode,
       ...(loginMode ? { hasUsers: (auth.users?.list().length ?? 0) > 0 } : {}),
+      // M22 sign-up: `invite` when this core lets a person create their own
+      // account (with a code minted on the machine), `off` otherwise. Not a
+      // secret — it decides whether the gate offers a "Create an account" path
+      // at all, and the form still needs a live invite to succeed.
+      signupMode: signupEnabled ? 'invite' : 'off',
       // R7: the SPA reads this to refuse an over-size file BEFORE spending the
       // upload. It cannot be inferred client-side, and a refused upload that
       // already pushed megabytes over a phone connection is a bad trade for
@@ -1939,6 +2007,204 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       userId: resolution.user.id,
       expiresAt: created.expiresAt,
     });
+  });
+
+  // 3c-bis. M22 sign-up — ISSUE A SINGLE-USE INVITE (LOCAL ONLY).
+  //
+  // Why the mint is loopback-only and not a button: "may this person create an
+  // account here?" is an administrative decision, and a hostname the internet can
+  // reach is reachable by anyone. Shell access to the machine is the operator's
+  // proof of being at the machine (`docker compose exec partner node
+  // tools/signup-link.mjs`), which is the same reasoning as the pairing secret.
+  // The CODE is minted here; the link carrying it is built by the tool, because
+  // only the operator knows what URL the person should open.
+  app.post('/v1/signup/code', async (req: Request, res: Response) => {
+    if (!signupEnabled) {
+      res.status(403).json({
+        error: 'signup_disabled',
+        message:
+          'Sign-up is off. Set SIGNUP_MODE=invite in the deployment to enable it, ' +
+          'or create the account on the machine (tools/user.mjs add <name>).',
+      });
+      return;
+    }
+    if (!isLoopbackPeer(peerOf(req))) {
+      audit.log('auth', 'auth.signup_code', 'invite', { ok: false, reason: 'loopback_required' });
+      res.status(403).json({ error: 'loopback_required' });
+      return;
+    }
+    const code = await signupSecrets.issue();
+    // The code is never logged, echoed into an audit row, or written anywhere:
+    // it exists in this response and in the operator's terminal.
+    audit.log('auth', 'auth.signup_code', 'invite', { ok: true });
+    res.status(201).json({ code });
+  });
+
+  // 3c-ter. M22 sign-up — CREATE AN ACCOUNT WITH AN INVITE.
+  //
+  // The person chooses their own name and passphrase; the operator never sees
+  // either, which is the whole point of the invite lane (a CLI-created account
+  // means the operator typed the passphrase). What this route produces is
+  // byte-for-byte what `tools/user.mjs add` produces: a users row (id derived
+  // from the name, `0` for the first account so a pre-partition database keeps
+  // its owner) plus a scrypt credential — so a sign-up later, a CLI rotation and
+  // a partition unlock are all the same account.
+  app.post('/v1/auth/signup', async (req: Request, res: Response) => {
+    if (!loginMode || auth.users === undefined || auth.capabilities === undefined) {
+      res.status(403).json({
+        error: 'login_disabled',
+        message: 'This Partner authenticates by pairing (AUTH_MODE is not login)',
+      });
+      return;
+    }
+    if (!signupEnabled) {
+      res.status(403).json({
+        error: 'signup_disabled',
+        message:
+          'Sign-up is off. Ask whoever runs this Partner to create an account for you ' +
+          '(tools/user.mjs add <name>), or to enable invites with SIGNUP_MODE=invite.',
+      });
+      return;
+    }
+
+    const budget = signupLimiter.check(limitKeyOf(req));
+    if (!budget.allowed) {
+      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: budget.reason });
+      if (budget.reason === 'invalid_key') {
+        res.status(403).json({ error: 'forbidden_peer' });
+        return;
+      }
+      if (budget.reason === 'invalid_clock') {
+        res.status(503).json({ error: 'temporarily_unavailable' });
+        return;
+      }
+      const retryAfterMs = Math.max(0, Math.ceil(budget.retryAfterMs));
+      res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      res.status(429).json({ error: 'too_many_attempts', reason: 'rate_limited', retryAfterMs });
+      return;
+    }
+
+    const body = (req.body ?? {}) as { code?: unknown; username?: unknown; password?: unknown };
+    const code = typeof body.code === 'string' ? body.code : '';
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (code === '') {
+      res.status(400).json({
+        error: 'invalid_input',
+        reason: 'missing_invite',
+        message: 'This form needs the invite link you were sent — open that link, or paste its code.',
+      });
+      return;
+    }
+
+    // Shape checks BEFORE the invite is spent: a typo in the passphrase must not
+    // burn a one-time code. A username that is already taken still does (the
+    // operator mints another), which is why both halves validate the same rules
+    // (`@partner/shared/accounts`) — the browser shows exactly these sentences.
+    const nameProblem = usernameProblem(username);
+    if (nameProblem !== null) {
+      res.status(400).json({ error: 'invalid_input', reason: 'invalid_username', message: nameProblem });
+      return;
+    }
+    const passProblem = passphraseProblem(password);
+    if (passProblem !== null) {
+      res
+        .status(400)
+        .json({ error: 'invalid_input', reason: 'invalid_passphrase', message: passProblem });
+      return;
+    }
+
+    const verified = await signupSecrets.verify(code);
+    if (!verified.ok) {
+      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: verified.reason });
+      if (verified.reason === 'locked') {
+        const retryAfterMs = 5 * 60 * 1000;
+        res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+        res.status(429).json({ error: 'too_many_attempts', reason: verified.reason, retryAfterMs });
+        return;
+      }
+      res.status(401).json({
+        error: 'invite_failed',
+        reason: verified.reason,
+        message:
+          'That invite has already been used or has expired. Ask for a fresh one — ' +
+          'invites are single use.',
+      });
+      return;
+    }
+
+    // The label is what a person signs in with, and sign-in matches it
+    // case-insensitively against the FIRST match, so two accounts differing only
+    // in case would make one of them unreachable. Refuse the duplicate instead.
+    const wanted = username.toLowerCase();
+    const existing = auth.users.list();
+    if (
+      existing.some(
+        (candidate) =>
+          candidate.label.toLowerCase() === wanted || candidate.id.toLowerCase() === wanted,
+      )
+    ) {
+      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: 'duplicate_username' });
+      res.status(409).json({
+        error: 'username_taken',
+        message: 'That name is already taken on this Partner. Try another, or sign in instead.',
+      });
+      return;
+    }
+
+    // The first account owns the pre-partition database (the same rule the CLI
+    // uses): a hosted core that ran single-user keeps its history instead of
+    // appearing to start empty.
+    const id = existing.length === 0 ? LEGACY_USER_ID : accountIdForUsername(username);
+    if (!isUsableAccountId(id)) {
+      // Unreachable via `usernameProblem` (it checks the same rules) — kept so a
+      // future rule added in one place cannot produce an unusable partition id.
+      res.status(400).json({
+        error: 'invalid_input',
+        reason: 'invalid_username',
+        message: 'That name cannot be used for an account folder. Add a letter or digit.',
+      });
+      return;
+    }
+
+    const created = auth.users.create({ id, label: username });
+    if (!created.ok) {
+      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: created.reason });
+      if (created.reason === 'duplicate_id' || created.reason === 'duplicate_os_profile') {
+        res.status(409).json({
+          error: 'username_taken',
+          message: 'That name is already taken on this Partner. Try another, or sign in instead.',
+        });
+        return;
+      }
+      res.status(400).json({ error: 'invalid_input', reason: 'invalid_username' });
+      return;
+    }
+
+    // The credential is written under the new id. If this fails the account row
+    // is left WITHOUT a credential, which in login mode cannot be signed into at
+    // all — so it is reported as a server fault naming the id, and the operator
+    // fixes it with `tools/user.mjs passwd <name>` (the two shape refusals above
+    // make an ordinary failure here unreachable).
+    const stored = await auth.capabilities.create(created.user.id, password);
+    if (!stored.ok) {
+      audit.log('auth', 'auth.signup', created.user.id, { ok: false, reason: stored.reason });
+      res.status(500).json({
+        error: 'credential_not_stored',
+        message:
+          'The account was created but its passphrase could not be stored. Ask the ' +
+          'operator to run tools/user.mjs passwd ' +
+          created.user.id,
+      });
+      return;
+    }
+
+    signupLimiter.reset(limitKeyOf(req));
+    audit.log('auth', 'auth.signup', created.user.id, { ok: true });
+    // No session is minted here: signing in stays a single path (`/v1/auth/session`)
+    // so a bug in this route cannot hand out authority. The SPA signs in
+    // immediately with the credentials it just sent.
+    res.status(201).json({ ok: true, id: created.user.id });
   });
 
   // 3d. M22/R1: PER-USER PARTITION DELEGATION.

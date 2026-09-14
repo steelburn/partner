@@ -23,7 +23,7 @@ export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_DB_PATH = './data/partner.db';
 
 /** Semantic version of the core sidecar (independent of the npm package). */
-export const CORE_VERSION = '0.1.9';
+export const CORE_VERSION = '0.1.10';
 
 /**
  * Where secrets live. `native` = the OS keychain (the default, and the only
@@ -45,6 +45,13 @@ export type KeychainKind = 'fake' | 'native' | 'file';
  *    session that NAMES ITS USER, so authorization has an identity to work with.
  */
 export type AuthMode = 'pairing' | 'login';
+
+/**
+ * M22 sign-up: whether a person may create their own account (env SIGNUP_MODE).
+ * `off` (default) keeps creation an operator act; `invite` is gated on a
+ * single-use code the operator mints on the machine. See {@link CoreConfig}.
+ */
+export type SignupMode = 'off' | 'invite';
 
 /** Loaded TLS material: what index.ts serves and what SAN coverage validated. */
 export interface CoreTlsConfig {
@@ -86,6 +93,21 @@ export interface CoreConfig {
    * database (users + credentials) and disables the pairing routes entirely.
    */
   authMode: AuthMode;
+  /**
+   * M22 sign-up: whether a person can create their OWN account from the web UI
+   * (`SIGNUP_MODE`) — see {@link SignupMode}. `off` (default) is the position
+   * PLAN-M20-B §6/Q2 took: creating an account is an administrative act, and
+   * "who may reach this hostname" is not "who may create an account".
+   */
+  signupMode: SignupMode;
+  /**
+   * How long a minted invite stays usable (`SIGNUP_TTL_MS`, default 24h).
+   *
+   * Long on purpose: an invite is handed to a PERSON (a message, a note), not
+   * scanned in seconds like a pairing QR. It is still single-use, only the most
+   * recently minted one is live, and it dies with the process.
+   */
+  signupTtlMs: number;
   /**
    * M22: the client class a LOGIN session is minted with (env
    * LOGIN_SESSION_CLASS, default `desktop`). Login proves a *user*, so the
@@ -459,6 +481,26 @@ export function loadConfig(
     );
   }
   const authMode: AuthMode = authModeRaw;
+
+  // M22 sign-up: `off` unless the deployment asks for invite-gated
+  // self-service. Like AUTH_MODE, an unknown value is refused rather than
+  // defaulted — the wrong one lets strangers create accounts on a hostname that
+  // the internet can reach.
+  const signupModeRaw = env.SIGNUP_MODE?.trim().toLowerCase() || 'off';
+  if (signupModeRaw !== 'off' && signupModeRaw !== 'invite') {
+    throw new Error(
+      `SIGNUP_MODE must be off | invite (got "${signupModeRaw}") — an unknown mode is refused ` +
+        'rather than defaulted',
+    );
+  }
+  const signupMode: SignupMode = signupModeRaw;
+  if (signupMode !== 'off' && authMode !== 'login') {
+    throw new Error(
+      'SIGNUP_MODE needs AUTH_MODE=login: sign-up creates a user credential, and the ' +
+        'pairing ceremony has no credential to create',
+    );
+  }
+  const signupTtlMs = readInt(env.SIGNUP_TTL_MS, 24 * 60 * 60 * 1000, 60_000, 30 * 24 * 60 * 60 * 1000);
   const loginSessionClass = env.LOGIN_SESSION_CLASS?.trim().toLowerCase() || 'desktop';
   if (authMode === 'login' && !(CLIENT_CLASSES as readonly string[]).includes(loginSessionClass)) {
     throw new Error(
@@ -573,6 +615,8 @@ export function loadConfig(
     clientIpHeader,
     trustedProxyCidrs,
     authMode,
+    signupMode,
+    signupTtlMs,
     loginSessionClass,
     loginRateLimit: {
       limit: readInt(env.LOGIN_RATE_LIMIT, 10, 1, 10_000),

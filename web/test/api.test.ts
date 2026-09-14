@@ -88,13 +88,14 @@ describe('fetchCoreHealth (M15)', () => {
       jsonResponse({ status: 'ok', demo: false, version: '0.1.0', schemaVersion: 13 }),
     );
     const health = await fetchCoreHealth({ fetchImpl });
-    // M22: `authMode` is always present now (an older core that omits it reads
-    // as 'pairing', which is what it was).
+    // M22: `authMode` and `signupMode` are always present now (an older core that
+    // omits them reads as 'pairing' / 'off', which is what it was).
     expect(health).toEqual({
       demo: false,
       version: '0.1.0',
       schemaVersion: 13,
       authMode: 'pairing',
+      signupMode: 'off',
     });
     expect(calls[0]?.input).toBe('/v1/health');
   });

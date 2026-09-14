@@ -17,6 +17,7 @@ import { parseSseStream } from './sse.js';
 
 const PAIR_PATH = '/v1/pair';
 const AUTH_SESSION_PATH = '/v1/auth/session';
+const AUTH_SIGNUP_PATH = '/v1/auth/signup';
 const PAIR_PAYLOAD_PATH = '/v1/pair/payload';
 const HEALTH_PATH = '/v1/health';
 const CHAT_PATH = '/v1/chat';
@@ -51,6 +52,13 @@ export interface CoreHealth {
   authMode: 'pairing' | 'login';
   /** M22: only sent in login mode — false means "no account exists yet". */
   hasUsers?: boolean;
+  /**
+   * M22 sign-up: `invite` when this core lets a person create their own account
+   * with a code minted on its machine, `off` otherwise (and when a core is too
+   * old to say). Not a secret — it only decides whether the gate offers the
+   * create-an-account path at all.
+   */
+  signupMode: 'off' | 'invite';
 }
 
 /**
@@ -84,6 +92,7 @@ export async function fetchCoreHealth(
     schemaVersion: typeof record.schemaVersion === 'number' ? record.schemaVersion : 0,
     authMode: record.authMode === 'login' ? 'login' : 'pairing',
     ...(typeof record.hasUsers === 'boolean' ? { hasUsers: record.hasUsers } : {}),
+    signupMode: record.signupMode === 'invite' ? 'invite' : 'off',
   };
 }
 
@@ -145,6 +154,50 @@ export interface SignInResult {
   userId: string;
   clientClass: string;
   expiresAt: number;
+}
+
+/** M22 sign-up: the account the core created (its id, never a credential). */
+export interface SignUpResult {
+  id: string;
+}
+
+/**
+ * POST /v1/auth/signup {code, username, password} -> the created account.
+ *
+ * The invite is SINGLE USE, so a non-2xx here usually means the code is spent,
+ * expired, locked or was never valid — the server's own sentence says which, and
+ * the caller must show it rather than guess. 400 is a shape refusal carrying the
+ * shared rule's wording (the same sentence the form already checked, which is
+ * why a 400 here is a bug report rather than a user error).
+ *
+ * No session token comes back: signing in stays a single path.
+ */
+export async function signUp(
+  input: { code: string; username: string; password: string },
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SignUpResult> {
+  const fetchImpl: FetchLike = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(AUTH_SIGNUP_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  } catch {
+    throw new Error('network');
+  }
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorMessage(response));
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new ApiRequestError(response.status, 'Sign-up response was not valid JSON.');
+  }
+  const record = (body ?? {}) as Record<string, unknown>;
+  return { id: typeof record.id === 'string' ? record.id : '' };
 }
 
 /**

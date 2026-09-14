@@ -37,6 +37,41 @@ pairing routes answer 403.
 `stage.ps1` is the same thing for Windows PowerShell (it needs OpenSSL on PATH,
 which Git for Windows ships).
 
+## Sign-up (M22) — off by default, invite-gated when on
+
+The default is the operator creating every account (below), because "who may
+reach this hostname" is not "who may create an account here" — a public hostname
+is reachable by anyone.
+
+When you want someone to create their **own** account (so you never type their
+passphrase), turn on the invite lane:
+
+```bash
+# 1. enable it in the deployment
+printf '\nSIGNUP_MODE=invite\n' >> docker/server/.env
+docker compose up -d partner
+
+# 2. mint ONE single-use invite (loopback-only, so it runs in the container)
+docker compose exec partner node tools/signup-link.mjs
+```
+
+It prints `https://<PARTNER_HOST>/#signup=<code>` — send that link to the person.
+They choose their own name and passphrase, land signed in, and get their own
+partition like any other account. Notes:
+
+- **The invite is single use, expires (`SIGNUP_TTL_MS`, default 24h), only the most
+  recently minted one is live, and a restart invalidates it.** Mint one per person.
+  The code travels in the URL *fragment*, so it never reaches the core's log or any
+  proxy between you and them.
+- **A spent or damaged link fails loudly** on the form ("already been used or has
+  expired", "looks damaged") instead of doing nothing.
+- **`off` is the default and an unknown value is refused at boot**, so a typo cannot
+  leave self-service registration quietly enabled. There is deliberately no `open`
+  mode.
+- **Whoever signs up gets the same reach over their own partition as a
+  CLI-created account** (`LOGIN_SESSION_CLASS` narrows the class for every login,
+  sign-up included). Hand out an invite knowingly.
+
 ## Accounts (M22)
 
 The operator CLI runs inside the container — shell access *is* the "at the
@@ -51,6 +86,10 @@ docker compose exec partner node tools/user.mjs passwd ama          # forgot/rot
 docker compose exec partner node tools/user.mjs lock-account ama    # stop access, keep data
 docker compose exec partner node tools/user.mjs unlock-account ama
 ```
+
+Or let the person create their own account from a single-use invite — see
+**Sign-up** above. Either path produces the same shape of account: a users row
+plus a scrypt credential, with its own encrypted partition.
 
 - **Every account gets its own partition.** A user's second sign-in on another
   device sees the same data; a *different* user sees nothing of it — separate

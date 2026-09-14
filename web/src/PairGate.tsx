@@ -6,6 +6,7 @@ import {
   requestPair,
   requestPairSecret,
   signIn,
+  signUp,
 } from './lib/api.js';
 import {
   deviceLabelFrom,
@@ -14,8 +15,10 @@ import {
   stripPairHash,
 } from './lib/pair-link.js';
 import type { PairLinkResult } from './lib/pair-link.js';
+import { initialSignupFields, readSignupHash, stripSignupHash } from './lib/signup-link.js';
 import { PairLinkConfirm, PairLinkProblem } from './PairLinkNotice.js';
 import { LoginGate } from './LoginGate.js';
+import { SignUpGate } from './SignUpGate.js';
 import { rememberAuthMode } from './lib/auth-mode.js';
 import { storeToken } from './lib/token.js';
 import SessionChat from './SessionChat.js';
@@ -53,6 +56,25 @@ function readLinkFromLocation(): PairLinkResult | null {
 }
 
 /**
+ * The sign-up invite in the URL fragment (M22), or null when there is none.
+ *
+ * A well-formed one opens the sign-up form directly; a present-but-broken one
+ * becomes `{ code: '' , broken: true }` so the form can say WHY it will not work
+ * instead of offering a code field that can never succeed.
+ */
+interface SignupIntent {
+  code: string;
+  broken: boolean;
+}
+
+function readSignupIntentFromLocation(): SignupIntent | null {
+  if (typeof window === 'undefined') return null;
+  const parsed = readSignupHash(window.location.hash);
+  if (parsed.ok) return { code: parsed.code, broken: false };
+  return parsed.reason === 'invalid_code' ? { code: '', broken: true } : null;
+}
+
+/**
  * Pre-pairing gate. App renders this until a session token is stored; the
  * core displays the 6-digit code (tray notification / pairing page).
  *
@@ -79,6 +101,23 @@ export default function PairGate({ onPaired }: PairGateProps) {
   const [password, setPassword] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
 
+  /** M22 sign-up: does this core accept invites, and is one in hand? */
+  const [signupMode, setSignupMode] = useState<'off' | 'invite'>('off');
+  const [signupIntent, setSignupIntent] = useState<SignupIntent | null>(readSignupIntentFromLocation);
+  /** True once the person asked for the form (no link needed to type a code). */
+  const [signupRequested, setSignupRequested] = useState(false);
+  const [signingUp, setSigningUp] = useState(false);
+  const [signupForm, setSignupForm] = useState(() => ({
+    // Seeded from the link, through the SAME helper the hashchange path uses:
+    // a person who opens their invite in a fresh tab and one who pastes it into
+    // an open tab must get the same form.
+    code: initialSignupFields(typeof window === 'undefined' ? '' : window.location.hash).code,
+    username: '',
+    password: '',
+    confirm: '',
+    error: null as string | null,
+  }));
+
   /** M20-B S7: an incoming pairing link, if the page was opened with one. */
   const [link, setLink] = useState<PairLinkResult | null>(readLinkFromLocation);
   const [linkBusy, setLinkBusy] = useState(false);
@@ -103,6 +142,7 @@ export default function PairGate({ onPaired }: PairGateProps) {
         // probe, and it has to name the action the user will be offered.
         rememberAuthMode(health.authMode);
         setNoAccountYet(health.hasUsers === false);
+        setSignupMode(health.signupMode);
       }
     });
     return () => {
@@ -117,11 +157,20 @@ export default function PairGate({ onPaired }: PairGateProps) {
   // card appeared only after a manual reload. Re-reading on `hashchange` closes
   // that. It only ever ADDS a link (`not_a_link` leaves the gate alone), and
   // `cancelLink` uses history.replaceState, which fires no event.
+  //
+  // M22 sign-up rides the same event for the same reason: an invite opened in an
+  // already-open tab must reach the form without a reload.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onHashChange = (): void => {
       const parsed = readLinkFromLocation();
       if (parsed !== null) setLink(parsed);
+      const invite = readSignupIntentFromLocation();
+      if (invite !== null) setSignupIntent(invite);
+      const seeded = initialSignupFields(window.location.hash);
+      if (seeded.invited) {
+        setSignupForm((form) => ({ ...form, code: seeded.code, error: null }));
+      }
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -161,6 +210,58 @@ export default function PairGate({ onPaired }: PairGateProps) {
     } finally {
       setLoginBusy(false);
     }
+  };
+
+  /**
+   * M22 sign-up: create the account, then sign in with it.
+   *
+   * Two requests on purpose. The core deliberately mints NO session from the
+   * sign-up route (authority has one path: `/v1/auth/session`), and the person
+   * just typed the credential — so the follow-up sign-in is invisible to them and
+   * a bug in the create route cannot hand out a token.
+   */
+  const handleSignUp = async (): Promise<void> => {
+    setSigningUp(true);
+    setSignupForm((form) => ({ ...form, error: null }));
+    try {
+      const name = signupForm.username.trim();
+      await signUp({ code: signupForm.code, username: name, password: signupForm.password });
+      const result = await signIn(name, signupForm.password);
+      if (!storeToken(result.token)) {
+        setSignupForm((form) => ({
+          ...form,
+          error: 'The account exists, but the session could not be saved in this browser.',
+        }));
+        return;
+      }
+      // The invite is spent and is a secret: drop it from the address bar before
+      // the app renders behind this gate.
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', stripSignupHash(window.location.href));
+      }
+      setSignupIntent(null);
+      setSignupForm({ code: '', username: '', password: '', confirm: '', error: null });
+      onPaired();
+    } catch (cause) {
+      const message =
+        cause instanceof ApiRequestError
+          ? cause.status === 429
+            ? 'Too many attempts. Wait a few minutes and try again.'
+            : cause.message
+          : 'Could not reach the Partner core. Is it running?';
+      setSignupForm((form) => ({ ...form, error: message }));
+    } finally {
+      setSigningUp(false);
+    }
+  };
+
+  /** Leave the invite flow: drop the fragment so the code is gone. */
+  const cancelSignup = (): void => {
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', stripSignupHash(window.location.href));
+    }
+    setSignupIntent(null);
+    setSignupForm({ code: '', username: '', password: '', confirm: '', error: null });
   };
 
   const connect = async (): Promise<void> => {
@@ -271,6 +372,36 @@ export default function PairGate({ onPaired }: PairGateProps) {
 
   // --- M22: the hosted shape signs in (no pairing ceremony exists there) ---
   if (link === null && authMode === 'login') {
+    // Sign-up takes precedence over the sign-in form: either an invite arrived in
+    // the link, or the person asked for the form from it.
+    if (signupIntent !== null || signupRequested) {
+      return (
+        <SignUpGate
+          username={signupForm.username}
+          password={signupForm.password}
+          confirm={signupForm.confirm}
+          code={signupForm.code}
+          busy={signingUp}
+          error={
+            signupForm.error ??
+            (signupIntent?.broken === true
+              ? 'That invite link looks damaged — ask for a new one.'
+              : null)
+          }
+          host={servingHost}
+          invited={signupIntent !== null && !signupIntent.broken}
+          onUsername={(value) => setSignupForm((form) => ({ ...form, username: value }))}
+          onPassword={(value) => setSignupForm((form) => ({ ...form, password: value }))}
+          onConfirm={(value) => setSignupForm((form) => ({ ...form, confirm: value }))}
+          onCode={(value) => setSignupForm((form) => ({ ...form, code: value }))}
+          onSubmit={() => void handleSignUp()}
+          onSignIn={() => {
+            setSignupRequested(false);
+            cancelSignup();
+          }}
+        />
+      );
+    }
     return (
       <LoginGate
         username={username}
@@ -278,11 +409,13 @@ export default function PairGate({ onPaired }: PairGateProps) {
         busy={loginBusy}
         error={error}
         noAccountYet={noAccountYet}
+        signupAvailable={signupMode === 'invite'}
         host={servingHost}
         onUsername={setUsername}
         onPassword={setPassword}
         onSubmit={() => void handleSignIn()}
         onSessionOnly={() => setMode('session')}
+        onSignUp={() => setSignupRequested(true)}
       />
     );
   }
