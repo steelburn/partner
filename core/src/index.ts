@@ -1133,6 +1133,9 @@ export function createCore(
         : { mode: config.authMode, ...(appOptions?.auth ?? {}) },
     loginRateLimit: config.loginRateLimit,
     maxJsonBytes: config.maxJsonBytes,
+    // R7: the SAME number the attachment manager enforces, so the route's body
+    // limit and the manager's cap cannot drift.
+    maxUploadBytes: config.maxUploadBytes,
     // M22: a deployment-owned roots list makes the roots surface read-only.
     rootsFixed: config.fixedRoots.length > 0,
     // R4: the header is read only when the socket peer is a trusted proxy, and

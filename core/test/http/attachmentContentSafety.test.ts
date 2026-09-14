@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { ALLOWED_HOST, demoHarness } from '../helpers.js';
+import { ALLOWED_HOST, attachmentUploadHeaders, demoHarness } from '../helpers.js';
 import type { Harness } from '../helpers.js';
 import {
   attachmentContentHeaders,
@@ -45,12 +45,8 @@ async function uploadAndFetch(
   const conversationId = conv.body.id as string;
   const upload = await request(h.app)
     .post(`/v1/conversations/${conversationId}/attachments`)
-    .set(authed(token))
-    .send({
-      name: file.name,
-      mime: file.mime,
-      dataBase64: Buffer.from(file.body, 'utf8').toString('base64'),
-    });
+    .set(attachmentUploadHeaders(token, file.name, file.mime))
+    .send(Buffer.from(file.body, 'utf8'));
   expect(upload.status).toBe(201);
   return request(h.app)
     .get(`/v1/conversations/${conversationId}/attachments/${upload.body.id}/content`)
@@ -160,15 +156,38 @@ describe('attachment content over HTTP', () => {
         .send({ title: 'svg' });
       const res = await request(h.app)
         .post(`/v1/conversations/${conv.body.id}/attachments`)
-        .set(authed(token))
-        .send({
-          name: 'icon.svg',
-          mime: 'image/svg+xml',
-          dataBase64: Buffer.from('<svg onload="alert(1)"/>', 'utf8').toString('base64'),
-        });
+        .set(attachmentUploadHeaders(token, 'icon.svg', 'image/svg+xml'))
+        .send(Buffer.from('<svg onload="alert(1)"/>', 'utf8'));
       // SVG is script-bearing and is neither text/*, an allowed image type nor
       // PDF — the upload allowlist already refuses it.
       expect(res.status).toBe(415);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses an unconverted HEIC with the conversion instruction, not a bare 415', async () => {
+    // The SPA converts iPhone photos to JPEG before uploading
+    // (web/src/lib/image-convert.ts), so this answers a client that did not —
+    // the user-reported phone case must never come back as an opaque refusal.
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const conv = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ title: 'heic' });
+      for (const mime of ['image/heic', 'image/heif', 'image/heic-sequence']) {
+        const res = await request(h.app)
+          .post(`/v1/conversations/${conv.body.id}/attachments`)
+          .set(attachmentUploadHeaders(token, 'IMG_0001.HEIC', mime))
+          .send(Buffer.from('not really a heic', 'utf8'));
+        expect(res.status).toBe(415);
+        expect(res.body.error).toBe('unsupported');
+        expect(res.body.message).toBe(
+          `${mime} is not supported — attach the photo as JPEG (Safari converts iPhone photos automatically)`,
+        );
+      }
     } finally {
       h.close();
     }

@@ -8,8 +8,12 @@
  * staged ids. Text-ish uploads get a capped extraction used to enrich the
  * model's context for that turn. Binary payloads are served back through the
  * conversation-scoped content route for thumbnails/preview (F12).
+ *
+ * Payloads arrive as BYTES (the request body), not base64: an envelope costs a
+ * third more bytes and once forced every upload through the JSON body cap.
  */
 import { randomUUID, createHash } from 'node:crypto';
+import { attachmentTooLargeMessage } from '@partner/shared';
 import type { AttachmentMeta } from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
 import type { AttachmentRow, AttachmentStore, ChatBlobRow, ChatBlobStore } from '../stores/types.js';
@@ -37,15 +41,21 @@ export interface AttachmentManagerOptions {
   /**
    * R7: the per-attachment cap (default {@link MAX_ATTACHMENT_BYTES}). A hosted
    * deployment can tighten it without a code change — which is why it is an
-   * option rather than only a constant.
+   * option rather than only a constant. The HTTP layer sets the same number as
+   * the upload route's body limit, so the cap a client is refused at and the
+   * cap its 413 quotes are one value.
    */
   maxBytes?: number;
 }
 
 export interface AttachmentManager {
+  /**
+   * Stage one upload. `data` is the payload itself — the transport hands the
+   * manager bytes, never a base64 envelope (see `shared/src/attachments.ts`).
+   */
   upload(
     conversationId: string,
-    input: { name: string; mime: string; dataBase64: string },
+    input: { name: string; mime: string; data: Buffer },
   ): AttachmentMeta;
   list(conversationId: string): AttachmentMeta[];
   listByMessage(messageId: string): AttachmentMeta[];
@@ -106,6 +116,16 @@ function cleanName(raw: unknown): string {
 function assertAllowed(mime: unknown, name: string): string {
   const kind = typeof mime === 'string' ? mime.trim().toLowerCase() : '';
   if (kind === '') throw attachmentError('invalid_input', 'attachment mime is required');
+  if (kind.startsWith('image/heic') || kind.startsWith('image/heif')) {
+    // The one refusal a phone user can actually hit. The SPA converts HEIC to
+    // JPEG before uploading (lib/image-convert.ts); this answers a client that
+    // did not — including "Safari already did it for me", which is why the
+    // common case never sees this message.
+    throw attachmentError(
+      'unsupported',
+      `${kind} is not supported — attach the photo as JPEG (Safari converts iPhone photos automatically)`,
+    );
+  }
   const ok =
     kind.startsWith('text/') ||
     IMAGE_MIME.has(kind) ||
@@ -132,27 +152,22 @@ export function createAttachmentManager(
 
   function upload(
     conversationId: string,
-    input: { name: string; mime: string; dataBase64: string },
+    input: { name: string; mime: string; data: Buffer },
   ): AttachmentMeta {
     const name = cleanName(input.name);
     const mime = assertAllowed(input.mime, name);
-    if (typeof input.dataBase64 !== 'string' || input.dataBase64 === '') {
-      throw attachmentError('invalid_input', 'dataBase64 payload is required');
+    if (!Buffer.isBuffer(input.data)) {
+      throw attachmentError('invalid_input', 'attachment bytes are required');
     }
-    let data: Buffer;
-    try {
-      data = Buffer.from(input.dataBase64, 'base64');
-    } catch {
-      throw attachmentError('invalid_input', 'dataBase64 must be valid base64');
-    }
+    const data = input.data;
     if (data.length === 0) {
       throw attachmentError('invalid_input', 'attachment is empty');
     }
     if (data.length > maxBytes) {
-      throw attachmentError(
-        'too_large',
-        `attachments are capped at ${Math.round(maxBytes / (1024 * 1024))} MB`,
-      );
+      // The HTTP parser refuses a body over the same cap first, so this fires
+      // for in-process callers (tests, tools) and for any future transport
+      // that forgets the limit — the invariant, not the wire path.
+      throw attachmentError('too_large', attachmentTooLargeMessage(maxBytes, { name, size: data.length }));
     }
     const sha256 = createHash('sha256').update(data).digest('hex');
     if (blobs.find(sha256) === undefined) {

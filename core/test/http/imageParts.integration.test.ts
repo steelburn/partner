@@ -120,7 +120,7 @@ describe('M11 multimodal image parts + M13 vision handoff (route)', () => {
       const attachment = h.attachments?.upload(conv.id, {
         name: 'pixel.png',
         mime: 'image/png',
-        dataBase64: PNG_1PX,
+        data: Buffer.from(PNG_1PX, 'base64'),
       });
       const chat = await request(h.app)
         .post('/v1/chat')
@@ -159,7 +159,7 @@ describe('M11 multimodal image parts + M13 vision handoff (route)', () => {
       const attachment = h.attachments?.upload(conv.id, {
         name: 'pixel.png',
         mime: 'image/png',
-        dataBase64: PNG_1PX,
+        data: Buffer.from(PNG_1PX, 'base64'),
       });
       const chat = await request(h.app)
         .post('/v1/chat')
@@ -200,7 +200,7 @@ describe('M11 multimodal image parts + M13 vision handoff (route)', () => {
       const attachment = h.attachments?.upload(conv.id, {
         name: 'pixel.png',
         mime: 'image/png',
-        dataBase64: PNG_1PX,
+        data: Buffer.from(PNG_1PX, 'base64'),
       });
       const chat = await request(h.app)
         .post('/v1/chat')
@@ -241,7 +241,7 @@ describe('M11 multimodal image parts + M13 vision handoff (route)', () => {
       const attachment = h.attachments?.upload(conv.id, {
         name: 'pixel.png',
         mime: 'image/png',
-        dataBase64: PNG_1PX,
+        data: Buffer.from(PNG_1PX, 'base64'),
       });
       const chat = await request(h.app)
         .post('/v1/chat')

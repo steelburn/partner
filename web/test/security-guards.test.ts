@@ -577,13 +577,14 @@ describe('attachment bytes are fetched with the bearer header', () => {
     });
   });
 
-  it('uploads with the same bearer discipline', () => {
+  it('uploads with the same bearer discipline, and the filename rides a header — never the URL', () => {
     const calls: Call[] = [];
     const token = 'another-session-token';
+    const file = new Blob(['AAAA']);
     return uploadAttachment(
       token,
       'c1',
-      { name: 'a.txt', mime: 'text/plain', dataBase64: 'AAAA' },
+      { name: 'foto ção.png', mime: 'image/png', data: file },
       { fetchImpl: recordingFetch(calls, new Uint8Array([])) },
     )
       .catch(() => undefined)
@@ -593,6 +594,15 @@ describe('attachment bytes are fetched with the bearer header', () => {
         const headers = call.init?.headers as Record<string, string>;
         expect(headers.authorization).toBe(`Bearer ${token}`);
         expect(call.url).not.toContain(token);
+        // A filename is user data: it lands in history, referrers and access
+        // logs if it rides the URL, so it rides a percent-encoded header.
+        expect(call.url).not.toContain('?');
+        expect(call.url).not.toContain('foto');
+        expect(headers['x-attachment-name']).toBe(encodeURIComponent('foto ção.png'));
+        // R7: the payload IS the body — its own content type, no base64
+        // envelope that inflates the bytes and inherits the JSON body cap.
+        expect(headers['content-type']).toBe('image/png');
+        expect(call.init?.body).toBe(file);
       });
   });
 

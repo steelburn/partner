@@ -564,6 +564,19 @@ deployment owns the roots. In `AUTH_MODE=login` the whole pairing lane
 The M1 `/v1/self-service/*` routes and the `llm-self-service` import were
 **removed** (M22).
 
+M22/R7 also fixes the **upload transport**: `POST
+/v1/conversations/:id/attachments` takes the file as the **request body** (content
+type = the mime, `x-attachment-name` = the percent-encoded name), bounded by
+`MAX_UPLOAD_BYTES` via `express.raw`, and `/v1/health` republishes that cap as
+`maxUploadBytes` so the SPA can refuse before uploading. It replaced a base64
+JSON envelope that inflated every payload by a third and inherited the 1 MiB JSON
+cap — which is why the documented 8 MiB was really ~768 KiB
+(`docs/VERIFY-M22.md`). iPhone **HEIC/HEIF photos are converted to JPEG in the
+SPA** (`web/src/lib/image-convert.ts`: platform decode → canvas → JPEG, 4096px
+edge) because the core, the preview and the model providers cannot read HEIC;
+the core keeps refusing an unconverted `image/heic` with a message that says to
+attach it as JPEG.
+
 M20 adds a server surface (PLAN-M20-B.md). **Implemented:**
 `GET /v1/devices` + `POST /v1/devices/:id/revoke` + `POST /v1/devices/revoke-all`
 (S5, 404-not-403 across users, no token material in any body),
@@ -1218,7 +1231,15 @@ apps/partner/
       `CLIENT_IP_HEADER` + `TRUSTED_PROXY_CIDRS` give per-client auth rate limiting,
       believed only from a trusted peer and never used for a locality decision.
       **R6** `FIXED_ROOTS_READ_ONLY=1`. **R7** `MAX_UPLOAD_BYTES` /
-      `MAX_JSON_BYTES`. **R8** a verified backup tool (`VACUUM INTO` +
+      `MAX_JSON_BYTES` — and the upload cap is now the *upload* cap: the file
+      bytes are the request body (`express.raw`, content type = mime,
+      `x-attachment-name` = the name), so 8 MiB is reachable. Until 2026-09-14
+      uploads rode a base64 JSON envelope and were really capped at ~768 KiB by
+      the 1 MiB JSON limit, which is what refused iPhone photos; the 413 now
+      names the file, its size and the limit, and `/v1/health` publishes
+      `maxUploadBytes` so the SPA refuses before uploading
+      (`docs/VERIFY-M22.md`, `core/test/http/attachmentUploadLimit.test.ts`).
+      **R8** a verified backup tool (`VACUUM INTO` +
       `integrity_check`, exits non-zero when it cannot verify, prunes to `--keep`).
       **R9** the vocabulary gap is closed (`provider.configure`, `persona.run`).
       Root 1184 → **1204**, web 635, typechecks 0.

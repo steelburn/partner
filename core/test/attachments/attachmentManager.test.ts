@@ -6,8 +6,8 @@ import { auditLog } from '../../src/services/redaction.js';
 import { createAuditStore } from '../../src/stores/db.js';
 import { loadConfig } from '../../src/config.js';
 
-function b64(text: string): string {
-  return Buffer.from(text, 'utf8').toString('base64');
+function bytes(text: string): Buffer {
+  return Buffer.from(text, 'utf8');
 }
 
 function make() {
@@ -25,7 +25,7 @@ describe('M11 F1 attachment manager', () => {
   it('uploads a text file staged, extracts capped text, binds to a message', () => {
     const { db, manager } = make();
     try {
-      const meta = manager.upload('c-1', { name: 'notes.md', mime: 'text/markdown', dataBase64: b64('hello **world**\nsecond line') });
+      const meta = manager.upload('c-1', { name: 'notes.md', mime: 'text/markdown', data: bytes('hello **world**\nsecond line') });
       expect(meta.messageId).toBeNull();
       expect(meta.extractable).toBe(true);
 
@@ -46,9 +46,13 @@ describe('M11 F1 attachment manager', () => {
   it('rejects executables, oversized payloads and unknown staged ids', () => {
     const { db, manager } = make();
     try {
-      expect(() => manager.upload('c-1', { name: 'x.exe', mime: 'application/octet-stream', dataBase64: b64('x') })).toThrow(/cannot be uploaded/);
-      expect(() => manager.upload('c-1', { name: 'x.sh', mime: 'text/x-shellscript', dataBase64: b64('x') })).toThrow(/cannot be uploaded/);
-      expect(() => manager.upload('c-1', { name: 'big.bin', mime: 'application/octet-stream', dataBase64: b64('x'.repeat(9 * 1024 * 1024)) })).toThrow(/capped/);
+      expect(() => manager.upload('c-1', { name: 'x.exe', mime: 'application/octet-stream', data: bytes('x') })).toThrow(/cannot be uploaded/);
+      expect(() => manager.upload('c-1', { name: 'x.sh', mime: 'text/x-shellscript', data: bytes('x') })).toThrow(/cannot be uploaded/);
+      // The cap message names the file, its size and the limit (M22/R7): it is
+      // the same sentence the SPA shows before uploading.
+      expect(() =>
+        manager.upload('c-1', { name: 'big.bin', mime: 'application/octet-stream', data: bytes('x'.repeat(9 * 1024 * 1024)) }),
+      ).toThrow(/^big\.bin is 9 MB — the limit is 8 MB per file\.$/);
       expect(() => manager.bindToMessage('c-1', 'm-1', ['ghost'])).toThrow(/was not staged/);
     } finally {
       db.close();
@@ -58,9 +62,9 @@ describe('M11 F1 attachment manager', () => {
   it('dedupes blobs by sha256 and cleans up on delete', () => {
     const { db, manager } = make();
     try {
-      const data = b64('same content');
-      const a = manager.upload('c-1', { name: 'a.txt', mime: 'text/plain', dataBase64: data });
-      const b = manager.upload('c-1', { name: 'b.txt', mime: 'text/plain', dataBase64: data });
+      const data = bytes('same content');
+      const a = manager.upload('c-1', { name: 'a.txt', mime: 'text/plain', data });
+      const b = manager.upload('c-1', { name: 'b.txt', mime: 'text/plain', data });
       expect(a.id).not.toBe(b.id);
       manager.remove('c-1', a.id);
       // Second row still references the blob — content survives.
@@ -77,7 +81,7 @@ describe('M11 F1 attachment manager', () => {
     const { db, manager } = make();
     try {
       const png = Buffer.from('iVBORw0KGgoAAAANSUhEUg==', 'base64');
-      const meta = manager.upload('c-1', { name: 'p.png', mime: 'image/png', dataBase64: png.toString('base64') });
+      const meta = manager.upload('c-1', { name: 'p.png', mime: 'image/png', data: png });
       expect(meta.extractable).toBe(true);
       const bound = manager.bindToMessage('c-1', 'm-1', [meta.id]);
       void bound;
@@ -100,13 +104,14 @@ describe('R7 — the per-attachment cap is a deployment knob', () => {
         blobs: createChatBlobStore(db),
         attachments: createAttachmentStore(db),
         audit,
-        maxBytes: 64, // 0 MB in the message, but the enforcement is what matters
+        maxBytes: 64,
       });
+      // A sub-KB cap is quoted in bytes, never rounded down to "0 MB".
       expect(() =>
-        manager.upload('c-1', { name: 'big.txt', mime: 'text/plain', dataBase64: b64('x'.repeat(200)) }),
-      ).toThrow(/capped at 0 MB/);
+        manager.upload('c-1', { name: 'big.txt', mime: 'text/plain', data: bytes('x'.repeat(200)) }),
+      ).toThrow(/^big\.txt is 200 bytes — the limit is 64 bytes per file\.$/);
       // Under the cap still works.
-      const ok = manager.upload('c-1', { name: 'small.txt', mime: 'text/plain', dataBase64: b64('hi') });
+      const ok = manager.upload('c-1', { name: 'small.txt', mime: 'text/plain', data: bytes('hi') });
       expect(ok.name).toBe('small.txt');
     } finally {
       db.close();

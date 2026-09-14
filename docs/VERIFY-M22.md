@@ -130,7 +130,7 @@ volume — passphrase-wrapped keys are S9 proper, still open).
 | R3 | `rails.sweep()` + `PARTITION_IDLE_MS` (+ an unref'd timer in `startServer`, swept at `max(30s, idleMs/4)`); unit-tested in rails.test.ts |
 | R4 | `isIpInCidrs` / `rateLimitKeyFor` unit tests (8 in `core/test/http/peer.test.ts`): docker-bridge CIDR matching, the `::ffff:` mapped form, `/0`, unparsable entries failing closed, and the rule that an **untrusted** peer's header is ignored (it cannot mint buckets) |
 | R6 | `FIXED_ROOTS_READ_ONLY=1` registers roots read-only; a test proves a granted `files.edit` still answers `denied / read_only` (the root, not the grant, decides) |
-| R7 | `MAX_UPLOAD_BYTES` / `MAX_JSON_BYTES` config knobs; a tightened cap refuses with the configured size in the message |
+| R7 | `MAX_UPLOAD_BYTES` / `MAX_JSON_BYTES` config knobs; a tightened cap refuses with the configured size in the message. **Follow-up (2026-09-14): the cap was not the cap — see "The upload cap that was not the upload cap" below.** |
 | R8 | `tools/backup.mjs` run live against a scratch install: snapshots `system.db` **and** `users/ama/partner.db` via `VACUUM INTO`, both **verified** (`integrity_check` ok, 104 tables), keychain + skills copied, `BACKUP.json` written with `ok: true`, older backups pruned |
 | R9 | capability set is now 12 names; the enforcement test drives a mobile session at `/v1/providers/x/key`, `/v1/search/key`, `/v1/playbooks/x/run` and `/v1/personas/x/schedules/y/run-now` and gets `403 capability_denied` from each, while desktop passes the envelope for all four |
 
@@ -140,6 +140,112 @@ the destination is not initialised with the source's encryption key
 first version of the tool died on the first database. It now uses `VACUUM INTO`
 through the keyed connection — consistent, encrypted with the same key, and it
 works while the core runs.
+
+## The upload cap that was not the upload cap (R7 follow-up)
+
+**Reported by the user:** uploading a picture from an iPhone in Partner chat
+returned `payload_too_large`.
+
+**Diagnosis (measured, not deduced).** The 8 MiB `MAX_UPLOAD_BYTES` was
+unreachable over HTTP. Uploads rode a base64 JSON envelope
+(`{name,mime,dataBase64}`), so the body was 4/3 of the file and the limit that
+refused it was the 1 MiB JSON body cap. Probing the live route (demo harness →
+`POST /v1/conversations/:id/attachments`):
+
+| Raw file | JSON body | Result |
+|---|---|---|
+| 786,300 B | 1,048,452 B | **201** |
+| 786,396 B | 1,048,580 B | **413 `payload_too_large`** |
+| 8 MiB (advertised cap) | 11,184,864 B | **413** |
+
+So the real ceiling was **≈768 KiB (786,376 B)** — a 10.4× gap — and the 8 MiB
+check in `attachments/manager.ts` could never fire from the network. Phone
+photos (HEIC 1.5–3 MB, or the JPEG Safari transcodes to, 2–4 MB) always lost.
+The 413 body was also `{error:'payload_too_large'}` with **no `message` and no
+size**, and the SPA mapped nothing, so the user saw a bare token.
+
+**Fix (option b — the bytes are the body).**
+
+- `POST /v1/conversations/:id/attachments` now takes the file as the request
+  body: content type = the file's mime, `x-attachment-name` = the
+  percent-encoded name (a filename is user data; it must not land in a URL),
+  parsed by `express.raw({type:'*/*', limit: maxUploadBytes})`. No base64 on the
+  wire, no 1/3 overhead.
+- **One cap, three uses:** the same `MAX_UPLOAD_BYTES` sets the parser limit, the
+  manager's cap and — new — the `maxUploadBytes` field on the public
+  `/v1/health`, so the SPA refuses an over-size file *before* spending the
+  upload.
+- The 413 now carries a sentence naming the file, its size and the limit
+  (`huge.jpg is 8 MB — the limit is 8 MB per file.`), built by
+  `shared/src/attachments.ts::attachmentTooLargeMessage` — the same copy the SPA
+  shows. Sizes round **up** and caps round **down**, so a refused file can never
+  display as equal to the limit it exceeded.
+- An old base64-JSON client gets `400 invalid_input` telling it what an upload
+  must look like (version-skew answer, not a shape error).
+
+**Verified.** Tests: `core/test/http/attachmentUploadLimit.test.ts` (6) pins the
+default 8 MiB ceiling end-to-end — exactly 8 MiB → 201, 8 MiB + 1 → 413 with the
+named message — plus the header/mime contract, the tightened-cap path and
+`/v1/health`; `shared/test/attachments.test.ts` (5) and
+`web/test/attachment-upload-limit.test.ts` (5) cover the copy and the client
+read. Walked in a real browser against a demo core (SPA on :5173, core on :4390):
+
+| Step | Result |
+|---|---|
+| 2 MB JPEG attached | **201**; chip `IMG_4821….jpg · 2 MB`; the core's own `GET …/attachments` returned one staged row `{size: 2097152, mime: image/jpeg}` |
+| 9 MB JPEG attached | refused in the composer, **no request sent**: `IMG_9999_big….jpg is 9 MB — the limit is 8 MB per file.` |
+| `GET /v1/health` | `maxUploadBytes: 8388608` |
+
+*(Both probes used exactly the bytes the core reports back, so the stored size is
+the client's size — no encoding step in between.)*
+
+### HEIC: converted on the device, still refused at the core
+
+The follow-up — "can we ensure we upload JPEG, if user selected HEIC?" — has
+one honest answer, because only WebKit can decode HEIC: **the conversion happens
+in the SPA**, on the device that owns the codec. `web/src/lib/image-convert.ts`
+decodes the photo through the platform pipeline (`createImageBitmap` with
+`imageOrientation: 'from-image'`, falling back to an `<img>` object URL), draws
+it to a canvas and re-encodes JPEG, stepping a quality/edge ladder
+(4096px q0.9 → 4096px q0.75 → 2560px q0.75) until the bytes fit the cap the core
+publishes. Only the JPEG is uploaded.
+
+The core **still refuses `image/heic`/`image/heif`** — the allowlist is about what
+the product can actually serve and read (preview, and above all the provider),
+and accepting it would store a file that fails later and further from the user.
+Unconverted HEIC now gets a message instead of a bare 415: *"image/heic is not
+supported — attach the photo as JPEG (Safari converts iPhone photos
+automatically)"*.
+
+Walked in a browser against a demo core (the source file is PNG bytes named
+`.heic`, which is what makes this testable in Chromium: **its content sniffing
+decodes the pixels, so the whole pipeline runs — only the HEIC decoder itself is
+replaced by the platform's**, and that is the part only WebKit can provide):
+
+| Step | Result |
+|---|---|
+| Select `IMG_7788….heic` — **15,846,098 bytes (1.9× the cap)**, 4400×1200 | chip **`IMG_7788….jpg` · 3.3 MB**, uploaded in **425 ms** — a file that was over the cap became a small JPEG instead of a refusal |
+| Fetch the stored bytes back | `mime: image/jpeg`, `size: 3,368,863`, served `image/jpeg`, magic bytes `FF D8 FF`, `createImageBitmap` → **4096×1117** (4400×1200 fitted to the 4096px edge) — a real re-encode, not a rename |
+| Select a `.heic` this browser cannot decode | composer alert: *"…could not be converted to JPEG — this browser cannot read HEIC. Save it as a JPEG first, or attach it from Safari."*; nothing uploaded |
+| Select an ordinary 2 MB JPEG | stored under its own name at exactly 2,097,152 bytes — pass-through untouched |
+
+Two properties worth stating rather than discovering later:
+
+- **The re-encode drops EXIF, including GPS.** The uploaded JPEG contains only
+  what the canvas re-drew. A HEIC therefore leaks less location data than a
+  direct JPEG upload does — the two paths differ, and they differ in the safe
+  direction.
+- **The pre-upload cap check deliberately does not apply to HEIC.** A 9 MB
+  HEIC is a good photo that becomes a 2 MB JPEG; refusing it on size would
+  refuse exactly the file this path exists for. The cap is enforced on the
+  bytes actually produced (and if even the last rung cannot fit it, the user
+  gets the same "…is X — the limit is Y per file" sentence as any other file).
+
+Geometry (`fitWithin`), the ladder, the naming and every user-facing message are
+unit-tested in **node with no DOM** (`web/test/image-convert.test.ts`, 20 tests):
+the decode/encode are injected seams. The pixel work itself is the browser walk
+above, and a **real iPhone HEIC on real iOS Safari remains unverified here**
+(no handset on this machine) — the same gap already recorded for the phone walk.
 
 ## Gates after the R-slice
 
@@ -155,6 +261,17 @@ green · compose still renders (`docker compose config`) and the image builds.
   not exercised; only the pure layer and the config validation are proven.
 - **R8 restore** was not performed end-to-end (snapshot + verification were).
 - **R3 idle close** is unit-tested, not observed on a live install with the timer.
+- **A real HEIC on a real iPhone**: the conversion pipeline is proven end to end
+  in Chromium (which decodes the pixels by content sniffing) and in node (every
+  decision it makes), but no handset was available — the HEIC *decoder* is the
+  platform's, and only WebKit has one. The two things that can only be settled on
+  a phone are (a) iOS Safari's `createImageBitmap`/`<img>` HEIC path and (b) that
+  EXIF orientation is honoured for a portrait photo. The `<img>` fallback exists
+  precisely because (a) is unproven.
+- **A HEIC fresh from the iOS photo library** may never reach the conversion at
+  all: Safari usually transcodes to JPEG at the file input, so the path is
+  exercised by Files/iCloud picks and other browsers — which is the case that was
+  broken.
 
 ---
 

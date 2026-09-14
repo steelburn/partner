@@ -75,6 +75,7 @@ import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
+import { attachmentTooLargeMessage, describeBytes } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderPurpose, ProviderSource } from '@partner/shared';
@@ -135,6 +136,7 @@ import { SkillError, skillErrorStatus } from '../skills/errors.js';
 import type { FolderManager } from '../folders/manager.js';
 import { FolderError, folderErrorStatus } from '../folders/errors.js';
 import type { AttachmentManager } from '../attachments/manager.js';
+import { MAX_ATTACHMENT_BYTES } from '../attachments/manager.js';
 import { AttachmentError, attachmentErrorStatus } from '../attachments/errors.js';
 import type { AssetManager } from '../assets/manager.js';
 import { AssetError, assetErrorStatus } from '../assets/errors.js';
@@ -214,6 +216,14 @@ export interface CoreAppOptions {
   clientIp?: (req: Request) => string | undefined;
   /** R7: the JSON body cap in bytes (default 1 MiB). */
   maxJsonBytes?: number;
+  /**
+   * R7: the per-attachment upload cap in bytes (default
+   * {@link MAX_ATTACHMENT_BYTES}). It is the body limit of the upload route
+   * and the number its 413 quotes, so an operator tightening
+   * `MAX_UPLOAD_BYTES` tightens the wire, the message and the number the SPA
+   * checks before uploading — one value, no drift.
+   */
+  maxUploadBytes?: number;
   /** M22: fixed-window budget for POST /v1/auth/session, per network peer. */
   loginRateLimit?: { limit?: number; windowMs?: number };
   /**
@@ -938,6 +948,48 @@ function stagedInlineImage(attachments: AttachmentManager, conversationId: strin
   }
 }
 
+/**
+ * The upload caps apply to ONE route: the attachment POST streams the file
+ * itself as the body, everything else is still a JSON request. The error
+ * handler has to tell them apart to quote the right number (and body-parser's
+ * `err.limit` says which limit actually fired).
+ */
+const UPLOAD_PATH = /\/v1\/conversations\/[^/]+\/attachments\/?$/;
+
+/**
+ * The staged-upload filename rides a header, percent-encoded, because a
+ * filename is user data and user data must not reach a URL (browser history,
+ * referrers, proxy access logs). A value that is not valid percent-encoding is
+ * taken literally rather than refused, so a plain name still uploads.
+ */
+function attachmentNameHeader(raw: unknown): string {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== 'string' || value.trim() === '') return '';
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * The declared content type IS the mime (parameters such as `; charset=utf-8`
+ * are dropped). Empty means the client declared nothing — the manager refuses
+ * that with `invalid_input`, which is the honest answer.
+ */
+function attachmentMimeHeader(raw: unknown): string {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === 'string' ? (value.split(';')[0] ?? '').trim() : '';
+}
+
+/** What the 413 can honestly say: the declared size when the client sent one. */
+function attachmentTooLargeFor(req: Request, cap: number): string {
+  const name = attachmentNameHeader(req.headers['x-attachment-name']);
+  const declared = Number(req.headers['content-length']);
+  const size = Number.isFinite(declared) && declared > 0 ? declared : null;
+  return attachmentTooLargeMessage(cap, name !== '' && size !== null ? { name, size } : null);
+}
+
 /** M13: host label for purpose-bundle provider names (never the key). */
 const PURPOSE_LABELS: Record<ProviderPurpose, string> = {
   general: 'General',
@@ -1484,6 +1536,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
 
   // 1. Loopback guard + JSON body parsing (public routes may not send JSON).
   app.use(hostGuard(allowlist));
+  const uploadCap = options.maxUploadBytes ?? MAX_ATTACHMENT_BYTES;
   app.use(express.json({ limit: options.maxJsonBytes ?? 1024 * 1024 }));
 
   // Built SPA (optional at M0): serve static assets and index.html at /.
@@ -1506,6 +1559,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // failing every attempt with a 401.
       authMode: auth.mode,
       ...(loginMode ? { hasUsers: (auth.users?.list().length ?? 0) > 0 } : {}),
+      // R7: the SPA reads this to refuse an over-size file BEFORE spending the
+      // upload. It cannot be inferred client-side, and a refused upload that
+      // already pushed megabytes over a phone connection is a bad trade for
+      // not stating a limit that the server refuses by anyway.
+      maxUploadBytes: uploadCap,
     });
   });
 
@@ -3380,19 +3438,34 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.post(
     '/v1/conversations/:id/attachments',
     requireSession(sessions),
+    // R7: the file IS the body. `express.raw` (not `express.json`) is what
+    // makes `MAX_UPLOAD_BYTES` the real ceiling — the base64 JSON envelope it
+    // replaces spent a third of the bytes on encoding and was bounded by the
+    // 1 MiB JSON cap instead, so the advertised 8 MiB was unreachable.
+    express.raw({ type: '*/*', limit: uploadCap }),
     (req: Request, res: Response) => {
       const attachments = requireAttachments(options, res);
       if (!attachments) return;
       const conversationId = String(req.params.id ?? '');
       const manager = requireConversationManager(options, res);
       if (!manager) return;
+      if (!Buffer.isBuffer(req.body)) {
+        // Either no body at all, or a body some other parser claimed (an old
+        // client still sending the base64 JSON envelope). Say what an upload
+        // must look like instead of returning a shape error.
+        res.status(400).json({
+          error: 'invalid_input',
+          message:
+            'send the file bytes as the request body, with the file content type and an x-attachment-name header',
+        });
+        return;
+      }
       try {
         manager.get(conversationId); // 404 when the conversation is unknown
-        const body = (req.body ?? {}) as { name?: unknown; mime?: unknown; dataBase64?: unknown };
         const meta = attachments.upload(conversationId, {
-          name: typeof body.name === 'string' ? body.name : '',
-          mime: typeof body.mime === 'string' ? body.mime : '',
-          dataBase64: typeof body.dataBase64 === 'string' ? body.dataBase64 : '',
+          name: attachmentNameHeader(req.headers['x-attachment-name']),
+          mime: attachmentMimeHeader(req.headers['content-type']),
+          data: req.body,
         });
         res.status(201).json(meta);
       } catch (err) {
@@ -5473,14 +5546,26 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   });
 
   // JSON error handler — never HTML, never internal paths, never secrets.
-  const errorHandler: express.ErrorRequestHandler = (err, _req, res, _next) => {
-    const maybe = err as { type?: string };
+  const errorHandler: express.ErrorRequestHandler = (err, req, res, _next) => {
+    const maybe = err as { type?: string; limit?: unknown };
     if (maybe?.type === 'entity.parse.failed') {
       res.status(400).json({ error: 'bad_json' });
       return;
     }
     if (maybe?.type === 'entity.too.large') {
-      res.status(413).json({ error: 'payload_too_large' });
+      // Quote the cap that actually fired (`err.limit` is body-parser's) and
+      // only name a file on the upload route: a 413 the user can act on says
+      // how big the file was and how big it may be.
+      const fired = typeof maybe.limit === 'number' ? maybe.limit : null;
+      const upload =
+        UPLOAD_PATH.test((req.originalUrl ?? '').split('?')[0] ?? '') &&
+        (fired === null || fired === uploadCap);
+      res.status(413).json({
+        error: 'payload_too_large',
+        message: upload
+          ? attachmentTooLargeFor(req, fired ?? uploadCap)
+          : `request bodies are capped at ${describeBytes(fired ?? options.maxJsonBytes ?? 1024 * 1024)}`,
+      });
       return;
     }
     const message =

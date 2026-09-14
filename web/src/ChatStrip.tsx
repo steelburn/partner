@@ -7,7 +7,7 @@ import type {
   ConversationMessage,
   ProviderSummary,
 } from '@partner/shared';
-import { isImageCapableModel } from '@partner/shared';
+import { describeBytes, isImageCapableModel } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import { ApiRequestError, listProviders, streamChat, type StreamDoneMeta } from './lib/api.js';
 import { purposeLabel } from './lib/providers.js';
@@ -17,10 +17,11 @@ import { decidePending } from './lib/tools.js';
 import {
   deleteAttachment,
   fetchAttachmentContent,
-  fileToBase64,
+  fetchUploadLimit,
   listAttachments,
   uploadAttachment,
 } from './lib/attachments.js';
+import { prepareAttachmentForUpload, type PreparedUpload } from './lib/image-convert.js';
 import { readStoredToken } from './lib/token.js';
 import { concludeBrainstorm, getNote, listNotes, reopenBrainstorm } from './lib/notes.js';
 import { extractWikiLinks } from './lib/note-helpers.js';
@@ -202,6 +203,12 @@ export default function ChatStrip({
   const [attachError, setAttachError] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
   /**
+   * R7: the core's attachment cap, so an over-size file is refused here rather
+   * than after a phone has pushed megabytes at it (`null` = not stated yet, or
+   * the core did not say — the server's own 413 is the backstop either way).
+   */
+  const [maxUploadBytes, setMaxUploadBytes] = useState<number | null>(null);
+  /**
    * M13 per-turn model picker: explicit (providerId, model) for the NEXT
    * message; null = Auto (persona routing). When an image is staged and the
    * picker is still on Auto, a vision-capable suggestion is auto-applied
@@ -245,6 +252,21 @@ export default function ChatStrip({
   const [atBottom, setAtBottom] = useState(true);
   const [unseen, setUnseen] = useState(0);
   const seenLenRef = useRef(0);
+
+  // R7: read the upload cap once so the composer can refuse an over-size file
+  // before uploading it. A failure is not surfaced: nothing is broken, the
+  // pre-check is simply unavailable and the server still answers.
+  useEffect(() => {
+    let cancelled = false;
+    fetchUploadLimit()
+      .then((limit) => {
+        if (!cancelled) setMaxUploadBytes(limit);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // M11 F8: follow the latest text. While the user is at the bottom (or has
   // never scrolled up), every change pins the transcript to the newest line;
@@ -510,28 +532,49 @@ export default function ChatStrip({
     }
     setAttaching(true);
     setAttachError(null);
+    // R7: refusals are collected and shown together (per-file, first failure
+    // does not abandon the rest of the selection) instead of one setState per
+    // file, where the last message would silently win.
+    const problems: string[] = [];
+    let sessionLost = false;
     try {
       for (const file of Array.from(files)) {
-        const dataBase64 = await fileToBase64(file);
+        let prepared: PreparedUpload;
+        try {
+          // iPhone photos arrive as HEIC here and leave as JPEG (see
+          // lib/image-convert.ts); the cap is enforced on what is actually
+          // uploaded, so a huge HEIC is converted rather than refused.
+          prepared = await prepareAttachmentForUpload(file, maxUploadBytes);
+        } catch (cause) {
+          problems.push(
+            cause instanceof Error ? cause.message : 'Could not read that file.',
+          );
+          continue;
+        }
         const meta = await uploadAttachment(token, conversationId, {
-          name: file.name,
-          mime: file.type === '' ? 'application/octet-stream' : file.type,
-          dataBase64,
+          name: prepared.name,
+          mime: prepared.mime,
+          data: prepared.data,
         });
         setStaged((prev) => [...prev, meta]);
       }
     } catch (cause) {
-      if (isSessionLost(cause)) {
-        onUnpair();
-        return;
-      }
-      setAttachError(
-        cause instanceof Error ? cause.message : 'Could not attach the file — try a text, image, PDF, HTML or CSS file.',
-      );
+      if (isSessionLost(cause)) sessionLost = true;
+      else
+        problems.push(
+          cause instanceof Error ? cause.message : 'Could not attach the file — try a text, image, PDF, HTML or CSS file.',
+        );
     } finally {
       setAttaching(false);
       if (fileInputRef.current !== null) fileInputRef.current.value = '';
     }
+    // The session gate is answered only once the loop is unwound — a message
+    // about attachments on a view that is being left would be noise.
+    if (sessionLost) {
+      onUnpair();
+      return;
+    }
+    if (problems.length > 0) setAttachError(problems.join(' '));
   };
 
   const handleRemoveStaged = async (id: string): Promise<void> => {
@@ -1470,7 +1513,7 @@ export default function ChatStrip({
             className="attach-input"
             type="file"
             multiple
-            accept=".txt,.md,.csv,.json,.html,.css,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,image/*"
+            accept=".txt,.md,.csv,.json,.html,.css,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,image/*,.heic,.heif"
             disabled={
               conversationId === null || streaming || personaPaused || attaching
             }
@@ -1607,12 +1650,6 @@ function InChatApprovalRow({
 // uploads. Content bytes are fetched with the session token — never URLs.
 // ---------------------------------------------------------------------------
 
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function isImage(mime: string): boolean {
   return mime.startsWith('image/');
 }
@@ -1670,7 +1707,10 @@ function FileChip({ meta, conversationId, removable, onRemove, onPreview }: File
       <span className="attach-chip-name" title={meta.name}>
         {meta.name}
       </span>
-      <span className="attach-chip-meta">{formatBytes(meta.size)}</span>
+      {/* One byte formatter across the product (shared/src/attachments.ts): a
+        * chip's size and a cap's limit must not disagree about the same file,
+        * and a chip never understates the bytes it stands for. */}
+      <span className="attach-chip-meta">{describeBytes(meta.size, 'up')}</span>
       {previewable && onPreview ? (
         <button
           type="button"

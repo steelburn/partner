@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { demoHarness, ALLOWED_HOST } from '../helpers.js';
+import { demoHarness, ALLOWED_HOST, attachmentUploadHeaders } from '../helpers.js';
 import type { Harness } from '../helpers.js';
 
 async function pairToken(h: Harness): Promise<string> {
@@ -21,19 +21,28 @@ function authed(token: string): Record<string, string> {
   return { Host: ALLOWED_HOST, Authorization: `Bearer ${token}` };
 }
 
-function b64(text: string): string {
-  return Buffer.from(text, 'utf8').toString('base64');
+/** M22/R7: the file bytes are the body; name/mime ride headers. */
+function upload(
+  h: Harness,
+  token: string,
+  conversationId: string,
+  file: { name: string; mime: string; body: string },
+): request.Test {
+  return request(h.app)
+    .post(`/v1/conversations/${conversationId}/attachments`)
+    .set(attachmentUploadHeaders(token, file.name, file.mime))
+    .send(Buffer.from(file.body, 'utf8'));
 }
 
 describe('M11 F1 attachment routes', () => {
   it('401 without a token on the surface', async () => {
     const h = demoHarness();
     try {
-      const res = await request(h.app)
+      const unauthorized = await request(h.app)
         .post('/v1/conversations/x/attachments')
-        .set('Host', ALLOWED_HOST)
-        .send({ name: 'a.txt', mime: 'text/plain', dataBase64: b64('x') });
-      expect(res.status).toBe(401);
+        .set(attachmentUploadHeaders('', 'a.txt', 'text/plain'))
+        .send(Buffer.from('x', 'utf8'));
+      expect(unauthorized.status).toBe(401);
     } finally {
       h.close();
     }
@@ -49,17 +58,19 @@ describe('M11 F1 attachment routes', () => {
         .send({ title: 'files' });
       const conversationId = conv.body.id as string;
 
-      const upload = await request(h.app)
-        .post(`/v1/conversations/${conversationId}/attachments`)
-        .set(authed(token))
-        .send({ name: 'draft.md', mime: 'text/markdown', dataBase64: b64('# Draft\nbody text here') });
-      expect(upload.status).toBe(201);
-      expect(upload.body.messageId).toBeNull();
+      const uploaded = await upload(h, token, conversationId, {
+        name: 'draft.md',
+        mime: 'text/markdown',
+        body: '# Draft\nbody text here',
+      });
+      expect(uploaded.status).toBe(201);
+      expect(uploaded.body.messageId).toBeNull();
 
-      const bad = await request(h.app)
-        .post(`/v1/conversations/${conversationId}/attachments`)
-        .set(authed(token))
-        .send({ name: 'evil.exe', mime: 'application/octet-stream', dataBase64: b64('x') });
+      const bad = await upload(h, token, conversationId, {
+        name: 'evil.exe',
+        mime: 'application/octet-stream',
+        body: 'x',
+      });
       expect(bad.status).toBe(415);
 
       const chat = await request(h.app)
@@ -67,7 +78,7 @@ describe('M11 F1 attachment routes', () => {
         .set(authed(token))
         .send({
           conversationId,
-          attachmentIds: [upload.body.id],
+          attachmentIds: [uploaded.body.id],
           messages: [{ role: 'user', content: 'read the draft' }],
         });
       expect(chat.status).toBe(200);
@@ -102,11 +113,12 @@ describe('M11 F1 attachment routes', () => {
         .send({ title: 'other' });
       const otherId = other.body.id as string;
 
-      const upload = await request(h.app)
-        .post(`/v1/conversations/${conversationId}/attachments`)
-        .set(authed(token))
-        .send({ name: 'x.txt', mime: 'text/plain', dataBase64: b64('content bytes') });
-      const attId = upload.body.id as string;
+      const uploaded = await upload(h, token, conversationId, {
+        name: 'x.txt',
+        mime: 'text/plain',
+        body: 'content bytes',
+      });
+      const attId = uploaded.body.id as string;
 
       const content = await request(h.app)
         .get(`/v1/conversations/${conversationId}/attachments/${attId}/content`)

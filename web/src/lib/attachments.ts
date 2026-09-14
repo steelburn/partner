@@ -1,7 +1,10 @@
 /**
  * M11 F1 chat-attachment API client (PLAN-M11.md).
  *
- * Uploads are base64 JSON (no multipart dep), staged per conversation, and
+ * Uploads POST the file's own bytes as the request body (content type = the
+ * mime, `x-attachment-name` = the percent-encoded name, as JSON was the wrong
+ * envelope: base64 inflated the payload by a third and put every upload under
+ * the JSON body cap instead of the upload cap). Staged per conversation, and
  * bound server-side when /v1/chat names them. Payload bytes are fetched with
  * the Bearer token and turned into object URLs by consumers (thumbnails,
  * F12 preview); they are never inlined into URLs.
@@ -14,7 +17,8 @@ export type { FetchLike };
 export interface AttachmentUploadInput {
   name: string;
   mime: string;
-  dataBase64: string;
+  /** The payload as the request body — a File is a Blob, so it streams. */
+  data: Blob;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,7 +41,14 @@ function parseMetaList(value: unknown, status = 200): AttachmentMeta[] {
 const attachmentsPath = (conversationId: string): string =>
   `/v1/conversations/${encodeURIComponent(conversationId)}/attachments`;
 
-/** POST a staged upload. The caller reads the file to base64 first. */
+/**
+ * POST a staged upload. The caller passes the file itself (a `File` is a
+ * `Blob`, so fetch streams it).
+ *
+ * The filename rides a header rather than the query string (or the body, which
+ * is now the payload itself): a filename is user data, and user data in a URL
+ * lands in history, referrers and access logs.
+ */
 export async function uploadAttachment(
   token: string,
   conversationId: string,
@@ -49,10 +60,11 @@ export async function uploadAttachment(
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
+      'content-type': input.mime,
+      'x-attachment-name': encodeURIComponent(input.name),
       accept: 'application/json',
     },
-    body: JSON.stringify(input),
+    body: input.data,
   });
   return parseMeta(await expectJson<unknown>(response), response.status);
 }
@@ -118,16 +130,19 @@ async function readErrorSafe(response: Response): Promise<string> {
   }
 }
 
-/** Read a File to raw base64 (no data: prefix) for uploadAttachment. */
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file.'));
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(file);
-  });
+/**
+ * R7: the attachment cap, read from the core's public /v1/health. The SPA uses
+ * it to refuse an over-size file BEFORE spending the upload — a refusal that
+ * arrives mid-upload can surface as a network error on a phone, not as the
+ * server's message. `null` means "not stated" (an older core, or the request
+ * failed): the upload proceeds and the server's own 413 answers.
+ */
+export async function fetchUploadLimit(
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<number | null> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl('/v1/health', { headers: { accept: 'application/json' } });
+  const body = await expectJson<unknown>(response);
+  const value = isRecord(body) ? body.maxUploadBytes : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }

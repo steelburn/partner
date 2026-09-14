@@ -472,7 +472,13 @@ Also landed: **R2** rotation revokes that user's sessions; **R3**
 still holds the key, and the docs say so); **R4** `CLIENT_IP_HEADER` +
 `TRUSTED_PROXY_CIDRS` give per-client auth rate limiting, believed only from a
 trusted peer and never used to decide locality; **R6** `FIXED_ROOTS_READ_ONLY`;
-**R7** `MAX_UPLOAD_BYTES` / `MAX_JSON_BYTES`; **R8** a **verified** backup tool
+**R7** `MAX_UPLOAD_BYTES` / `MAX_JSON_BYTES` — with the upload cap now genuinely
+reachable: the file bytes ARE the body (content type = mime,
+`x-attachment-name` = name), `/v1/health` publishes `maxUploadBytes`, and the 413
+names the file, its size and the limit. Until 2026-09-14 uploads rode a base64
+JSON envelope and were really capped at ~768 KiB by the 1 MiB JSON limit, which
+refused iPhone photos with a bare `payload_too_large`
+(`docs/VERIFY-M22.md`); **R8** a **verified** backup tool
 (`tools/backup.mjs`: `VACUUM INTO` snapshots of the system DB and every partition,
 re-opened with the copied keychain + `integrity_check`, prunes to `--keep`, exits
 non-zero when it cannot verify — a half-backup is never reported as one); and

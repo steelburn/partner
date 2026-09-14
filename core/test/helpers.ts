@@ -162,6 +162,25 @@ export const ALLOWED_HOST = '127.0.0.1:4390';
 export const ALTERNATE_HOST = 'localhost:4390';
 export const ALLOWLIST = [ALLOWED_HOST, ALTERNATE_HOST];
 
+/**
+ * M22/R7: the attachment upload wire shape, in ONE place so every test posts
+ * what the SPA posts — the file bytes ARE the body, the content type is the
+ * mime, and the name rides `x-attachment-name` percent-encoded (a filename is
+ * user data and must not reach a URL).
+ */
+export function attachmentUploadHeaders(
+  token: string,
+  name: string,
+  mime: string,
+): Record<string, string> {
+  return {
+    Host: ALLOWED_HOST,
+    Authorization: `Bearer ${token}`,
+    'Content-Type': mime,
+    'x-attachment-name': encodeURIComponent(name),
+  };
+}
+
 /** The repo's checked-in sample catalog (skills-catalog/ at the repo root). */
 export const REPO_CATALOG = fileURLToPath(new URL('../../skills-catalog/', import.meta.url));
 
@@ -191,6 +210,12 @@ export interface HarnessOptions {
   pairRateLimit?: { limit?: number; windowMs?: number };
   /** M22: the deployment owns the project roots, so /v1/roots is read-only. */
   rootsFixed?: boolean;
+  /**
+   * R7: tighten the per-attachment upload cap (bytes) for both the route's
+   * body limit and the manager — the two are one value, and limit tests need
+   * a cap small enough to exceed without pushing 8 MiB through a socket.
+   */
+  maxUploadBytes?: number;
   staticDir?: string;
   /** M15: enable the header-guarded /v1/pair/device channel with this secret. */
   deviceSecret?: string;
@@ -439,6 +464,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       blobs: createChatBlobStore(db),
       attachments: createAttachmentStore(db),
       audit,
+      ...(options.maxUploadBytes === undefined ? {} : { maxBytes: options.maxUploadBytes }),
     });
   }
 
@@ -687,6 +713,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     deviceSecret: options.deviceSecret,
     // M22: pretend the deployment owns the roots (the route refusals).
     ...(options.rootsFixed === undefined ? {} : { rootsFixed: options.rootsFixed }),
+    ...(options.maxUploadBytes === undefined ? {} : { maxUploadBytes: options.maxUploadBytes }),
     // M20-B S7: the networked-pairing lane. `peer` is the TEST seam for the
     // network peer (sockets are loopback under supertest); the real default
     // reads `req.socket.remoteAddress`.

@@ -62,8 +62,12 @@ production build green):
       normal user turn)
 - [x] **F1 (uploads)** chat attachments: blob-deduped store, staged→bound on
       turn, text extraction into model context, conversation-scoped content
-      route, chips + image thumbs + attach UI (JSON-base64 upload, no
-      multipart dep)
+      route, chips + image thumbs + attach UI. Transport is the **raw request
+      body** (content type = mime, `x-attachment-name` = the name, capped by
+      `MAX_UPLOAD_BYTES`) — no multipart dep, and no base64 envelope: the
+      envelope cost a third of the bytes and put every upload under the JSON
+      body cap (M22/R7, `docs/VERIFY-M22.md`). iPhone **HEIC/HEIF is converted
+      to JPEG in the SPA** before upload (`web/src/lib/image-convert.ts`)
 - [x] **F12** hardened sandbox preview for HTML/CSS attachments (srcdoc +
       CSP + scripts-off default, external-ref strip/report; builder unit
       tests)
