@@ -86,3 +86,20 @@ export function mobileReachableViews(): ViewName[] {
 export function sidebarViews(): ViewName[] {
   return NAV_GROUPS.flatMap((group) => group.views);
 }
+
+/**
+ * The sidebar's minimize boundary (M20.A follow-up 10).
+ *
+ * At or below this width the shell's sidebar has no room for labels, so the
+ * **default** is the icon rail (M12: "no menu ever scrolls horizontally and the
+ * chat rails keep their usable widths at smaller viewports"). It is a state
+ * default, not a layout rule — above it the default is the labelled sidebar, and
+ * the user's minimize toggle overrides either one, in both directions. That
+ * matters most where the tier alone would be wrong: an iPad in landscape
+ * reports >1150 CSS px, so it gets the labelled sidebar, and this control is
+ * what returns the 164px it occupies.
+ *
+ * The number is mirrored by `--side-w` in app.css; `sidebar-collapse.test.ts`
+ * re-reads the stylesheet so the two cannot drift.
+ */
+export const SIDE_RAIL_MAX_WIDTH = 1150;

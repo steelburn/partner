@@ -21,6 +21,8 @@ import { NotesMini } from './NotesMini.js';
 import {
   IconAudit,
   IconChat,
+  IconChevronLeft,
+  IconChevronRight,
   IconClose,
   IconFiles,
   IconMemory,
@@ -64,8 +66,17 @@ import {
   MOBILE_TABS,
   NAV_GROUPS,
   NAV_LABELS,
+  SIDE_RAIL_MAX_WIDTH,
   type ViewName,
 } from './lib/nav.js';
+import {
+  LANE_OVERLAY_MAX_WIDTH,
+  PANEL_EXIT_MS,
+  PHONE_MAX_WIDTH,
+  dismissTarget,
+  floatsOverTranscript,
+  type OverlayPanel,
+} from './lib/panels.js';
 import { createConversation, deleteConversation, listConversations } from './lib/conversations.js';
 import { conversationOpenAction } from './lib/conversation-open.js';
 import {
@@ -144,10 +155,14 @@ function badgeFor(view: ViewName, attention: AttentionCounts): string | undefine
 function NavButton({
   item,
   current,
+  minimized,
   onSelect,
 }: {
   item: NavItem;
   current: ViewName;
+  /** Icon-only rail: the label is no longer on screen, so it becomes the
+   *  button's tooltip (the `aria-label` below is the name for every tier). */
+  minimized: boolean;
   onSelect: (view: ViewName) => void;
 }) {
   return (
@@ -157,6 +172,7 @@ function NavButton({
       onClick={() => onSelect(item.view)}
       aria-pressed={current === item.view}
       aria-label={attentionLabel(item.label, item.badge)}
+      title={minimized ? item.label : undefined}
     >
       {item.icon}
       <span className="side-label">{item.label}</span>
@@ -172,10 +188,12 @@ function NavButton({
 function SideNav({
   current,
   attention,
+  minimized,
   onSelect,
 }: {
   current: ViewName;
   attention: AttentionCounts;
+  minimized: boolean;
   onSelect: (view: ViewName) => void;
 }) {
   return (
@@ -190,6 +208,7 @@ function SideNav({
                 key={view}
                 item={{ view, label, icon: iconFor(view), badge: badgeFor(view, attention) }}
                 current={current}
+                minimized={minimized}
                 onSelect={onSelect}
               />
             );
@@ -882,6 +901,9 @@ const RAIL_W_KEY = 'partner.railWidth';
 const NOTES_W_KEY = 'partner.notesWidth';
 const ASSETS_LANE_KEY = 'partner.assetsLane';
 const ASSETS_W_KEY = 'partner.assetsWidth';
+/** M20.A follow-up 10 — the sidebar's icon-rail state, per session like the
+ *  rail/lane widths (a shell preference, not user data: nothing to sync). */
+const SIDE_MIN_KEY = 'partner.sideMinimized';
 
 const readSession = (key: string): string | null => {
   try {
@@ -905,6 +927,36 @@ const readIntSession = (key: string): number | null => {
 };
 const clampWidth = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(value)));
+
+/** A tier boundary as a media query, so the width itself lives in
+ *  `lib/panels.ts` (which `panels.test.ts` checks against app.css). */
+const maxWidthQuery = (px: number): string => `(max-width: ${px}px)`;
+
+/** `prefers-reduced-motion`, live: app.css disables the pane exit animation
+ *  under this query, so JS must not wait for a slide-out that never runs. */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState<boolean>(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = (): void => setReduced(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return reduced;
+}
+
+/** Workspace class that runs a floating pane's exit animation (app.css). Keyed
+ *  by pane so the class list in the DOM stays readable. */
+const PANEL_EXIT_CLASS: Record<OverlayPanel, string> = {
+  rail: 'rail-exiting',
+  notes: 'notes-lane-exiting',
+  assets: 'assets-pane-exiting',
+};
 
 interface ColumnDividerProps {
   label: string;
@@ -1025,14 +1077,119 @@ function ColumnDivider({
     writeSession(ASSETS_LANE_KEY, open ? '1' : '0');
     if (!open) setAssetsExpanded(false);
   }, []);
-  const toggleAssetsLane = useCallback((): void => {
-    const next = !assetsLaneOpen;
-    if (next && !panelsFit && notesLaneOpen) {
-      setNotesLaneOverride('0');
-      writeSession(NOTES_LANE_KEY, '0');
-    }
-    setAssetsLaneOpen(next);
-  }, [assetsLaneOpen, notesLaneOpen, panelsFit, setAssetsLaneOpen]);
+  /**
+   * M20.A follow-up — panes that float over the transcript.
+   *
+   * On a touch tier the conversation rail joins the two right-hand lanes as an
+   * overlay, so a tap on the transcript puts the pane away. The exit is a real
+   * slide-out to the pane's own edge (app.css), so leaving a pane looks like
+   * arriving in one instead of a pop.
+   *
+   * The panes are mutually exclusive while they float: at ≤640 two of them
+   * overlap (measured @390×844 the rail is 320px of 390 and a lane floats at
+   * 272px), so opening one dismisses the others and `dismissTarget` always has a
+   * single pane to put away. The tiers are `matchMedia` state defaults, never
+   * layout (app.css owns geometry); `lib/panels.ts` owns the decision, and
+   * `panels.test.ts` re-reads both files so the numbers cannot drift apart.
+   */
+  const reduceMotion = usePrefersReducedMotion();
+  const [exiting, setExiting] = useState<OverlayPanel | null>(null);
+  const exitTimer = useRef<number | null>(null);
+  const [phoneTier, setPhoneTier] = useState<boolean>(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia(maxWidthQuery(PHONE_MAX_WIDTH)).matches,
+  );
+  const [laneOverlayTier, setLaneOverlayTier] = useState<boolean>(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia(maxWidthQuery(LANE_OVERLAY_MAX_WIDTH)).matches,
+  );
+  /** Both tier booleans follow the same two queries app.css uses, so a
+   *  rotation or a resize lands on the same numbers as the paint. */
+  useEffect(() => {
+    const phone = window.matchMedia(maxWidthQuery(PHONE_MAX_WIDTH));
+    const lanes = window.matchMedia(maxWidthQuery(LANE_OVERLAY_MAX_WIDTH));
+    const sidebar = window.matchMedia(maxWidthQuery(SIDE_RAIL_MAX_WIDTH));
+    const sync = (): void => {
+      setPhoneTier(phone.matches);
+      setLaneOverlayTier(lanes.matches);
+      setSideRailTier(sidebar.matches);
+    };
+    sync();
+    phone.addEventListener('change', sync);
+    lanes.addEventListener('change', sync);
+    sidebar.addEventListener('change', sync);
+    return () => {
+      phone.removeEventListener('change', sync);
+      lanes.removeEventListener('change', sync);
+      sidebar.removeEventListener('change', sync);
+    };
+  }, []);
+  useEffect(
+    () => () => {
+      if (exitTimer.current !== null) window.clearTimeout(exitTimer.current);
+    },
+    [],
+  );
+
+  const closeRail = useCallback((): void => {
+    setRailOpen(false);
+    writeSession(RAIL_OPEN_KEY, '0');
+  }, []);
+  const closeNotesLane = useCallback((): void => {
+    setNotesLaneOverride('0');
+    writeSession(NOTES_LANE_KEY, '0');
+  }, []);
+  const closeAssetsLane = useCallback((): void => setAssetsLaneOpen(false), [setAssetsLaneOpen]);
+
+  /**
+   * Put a pane away. A floating pane slides out first and its state closes
+   * `PANEL_EXIT_MS` later, so the exit finishes before the element leaves the
+   * tree; a pane that owns a column (desktop/tablet) and a reduced-motion
+   * preference close at once, because nothing is going to move.
+   */
+  const dismissPane = useCallback(
+    (panel: OverlayPanel): void => {
+      const closeOf = (target: OverlayPanel): void => {
+        if (target === 'rail') closeRail();
+        else if (target === 'notes') closeNotesLane();
+        else closeAssetsLane();
+      };
+      if (
+        reduceMotion ||
+        !floatsOverTranscript(panel, { rail: phoneTier, lanes: laneOverlayTier })
+      ) {
+        closeOf(panel);
+        return;
+      }
+      // A second dismissal inside the exit window supersedes the first: the
+      // pane already leaving is closed at once rather than left open forever
+      // (its timer is about to be replaced).
+      if (exitTimer.current !== null) {
+        window.clearTimeout(exitTimer.current);
+        exitTimer.current = null;
+        if (exiting !== null && exiting !== panel) closeOf(exiting);
+      }
+      setExiting(panel);
+      exitTimer.current = window.setTimeout(() => {
+        exitTimer.current = null;
+        setExiting(null);
+        closeOf(panel);
+      }, PANEL_EXIT_MS);
+    },
+    [closeAssetsLane, closeNotesLane, closeRail, exiting, laneOverlayTier, phoneTier, reduceMotion],
+  );
+
+  /** Entering the phone tier turns the rail into an overlay too; close every
+   *  pane so a rotation to portrait cannot leave a sheet over the transcript.
+   *  Runs on mount too, which matches the phone default (rail closed). */
+  useEffect(() => {
+    if (!phoneTier) return;
+    closeRail();
+    closeNotesLane();
+    setAssetsLaneOpen(false);
+  }, [phoneTier, closeRail, closeNotesLane, setAssetsLaneOpen]);
 
   // Focus mode applies to one conversation's reading: switching chats
   // returns the workspace to side-by-side (the read asset is remembered per
@@ -1040,15 +1197,6 @@ function ColumnDivider({
   useEffect(() => {
     setAssetsExpanded(false);
   }, [activeConversationId]);
-
-  const toggleNotesLane = useCallback((): void => {
-    const next = !notesLaneOpen;
-    if (next && !panelsFit && assetsLaneOpen) {
-      setAssetsLaneOpen(false);
-    }
-    setNotesLaneOverride(next ? '1' : '0');
-    writeSession(NOTES_LANE_KEY, next ? '1' : '0');
-  }, [notesLaneOpen, panelsFit, assetsLaneOpen, setAssetsLaneOpen]);
 
   // Shrinking the window below the stack threshold with both panes open:
   // keep the pane the user just opened (Assets), release the Notes width.
@@ -1067,47 +1215,121 @@ function ColumnDivider({
     if (stored !== null) return stored === '1';
     // M20.A: on a phone the rail is an overlay over the transcript, so an open
     // rail on first paint would hide the very content the user opened. Default
-    // closed there; the desktop default stays open. Mirrors the ≤640 CSS tier.
-    return !(typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches);
+    // closed there; the desktop default stays open. The width comes from
+    // lib/panels.ts, so this default and the CSS tier are the same number.
+    return !(
+      typeof window !== 'undefined' && window.matchMedia(maxWidthQuery(PHONE_MAX_WIDTH)).matches
+    );
   });
+
+  /* M20.A follow-up 10: the sidebar minimize toggle. Above the tablet boundary
+   * the sidebar carries labels; at or below it there is no room for them, so the
+   * DEFAULT is the icon rail (M12) — and the toggle overrides that default in
+   * both directions, which is what makes it useful at every tier (an iPad in
+   * landscape reports >1150 CSS px and gets the labelled sidebar).
+   * `SIDE_RAIL_MAX_WIDTH` is mirrored by `--side-w` in app.css, and
+   * `sidebar-collapse.test.ts` re-reads the stylesheet so they cannot drift. */
+  const [sideMin, setSideMin] = useState<boolean>(() => {
+    const stored = readSession(SIDE_MIN_KEY);
+    if (stored !== null) return stored === '1';
+    return (
+      typeof window !== 'undefined' &&
+      window.matchMedia(maxWidthQuery(SIDE_RAIL_MAX_WIDTH)).matches
+    );
+  });
+  const [sideRailTier, setSideRailTier] = useState<boolean>(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia(maxWidthQuery(SIDE_RAIL_MAX_WIDTH)).matches,
+  );
+
+  /** Crossing INTO the tablet tier collapses the sidebar, because that is the
+   *  width at which M12's rule applies (no menu may clip a smaller viewport).
+   *  The user may expand it again at that width — a breakpoint is a default,
+   *  the toggle is a choice — so this fires on the crossing only. */
+  useEffect(() => {
+    if (!sideRailTier) return;
+    setSideMin(true);
+    writeSession(SIDE_MIN_KEY, '1');
+  }, [sideRailTier]);
+
+  const toggleSideMin = useCallback((): void => {
+    setSideMin((minimized) => {
+      writeSession(SIDE_MIN_KEY, minimized ? '0' : '1');
+      return !minimized;
+    });
+  }, []);
   const [railW, setRailW] = useState<number | null>(() => readIntSession(RAIL_W_KEY));
   const [notesW, setNotesW] = useState<number | null>(() => readIntSession(NOTES_W_KEY));
   const toggleRail = useCallback((): void => {
-    setRailOpen((open) => {
-      writeSession(RAIL_OPEN_KEY, open ? '0' : '1');
-      return !open;
-    });
-  }, []);
+    if (railOpen) {
+      dismissPane('rail');
+      return;
+    }
+    // Two floating panes overlap on a phone, so opening one puts the others
+    // away. Below the phone tier the rail is a column and keeps its width —
+    // only the two right-hand lanes swap there.
+    if (laneOverlayTier) {
+      if (notesLaneOpen) closeNotesLane();
+      if (assetsLaneOpen) setAssetsLaneOpen(false);
+    }
+    setRailOpen(true);
+    writeSession(RAIL_OPEN_KEY, '1');
+  }, [
+    railOpen,
+    laneOverlayTier,
+    notesLaneOpen,
+    assetsLaneOpen,
+    closeNotesLane,
+    setAssetsLaneOpen,
+    dismissPane,
+  ]);
   const commitRailW = useCallback((value: number): void => writeSession(RAIL_W_KEY, String(value)), []);
   const commitNotesW = useCallback((value: number): void => writeSession(NOTES_W_KEY, String(value)), []);
   const [assetsW, setAssetsW] = useState<number | null>(() => readIntSession(ASSETS_W_KEY));
 
-  /**
-   * M20.A phone tier (mirrors the ≤640 CSS breakpoint). Layout stays in CSS;
-   * this only drives *state* defaults, because on a phone the rails are
-   * overlays and an overlay left open covers the view — a behaviour CSS cannot
-   * correct on its own.
-   */
-  const [phoneTier, setPhoneTier] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 640px)');
-    const onChange = (): void => setPhoneTier(mq.matches);
-    onChange();
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
+  /** The two right-hand lane toggles. Each dismisses through `dismissPane`, so
+   *  a floating pane slides out rather than vanishing, and each puts a floating
+   *  sibling away before it opens (they would otherwise overlap). */
+  const toggleNotesLane = useCallback((): void => {
+    if (notesLaneOpen) {
+      dismissPane('notes');
+      return;
+    }
+    if (!panelsFit && assetsLaneOpen) setAssetsLaneOpen(false);
+    if (phoneTier && railOpen) closeRail();
+    setNotesLaneOverride('1');
+    writeSession(NOTES_LANE_KEY, '1');
+  }, [
+    notesLaneOpen,
+    panelsFit,
+    assetsLaneOpen,
+    setAssetsLaneOpen,
+    phoneTier,
+    railOpen,
+    closeRail,
+    dismissPane,
+  ]);
 
-  /** Entering the phone tier turns the rails into overlays; close them so a
-   *  rotation to portrait cannot leave a sheet covering the transcript.
-   *  Runs on mount too, which matches the closed default above. */
-  useEffect(() => {
-    if (!phoneTier) return;
-    setRailOpen(false);
-    setNotesLaneOverride('0');
-    setAssetsLaneOpen(false);
-  }, [phoneTier, setAssetsLaneOpen]);
+  const toggleAssetsLane = useCallback((): void => {
+    if (assetsLaneOpen) {
+      dismissPane('assets');
+      return;
+    }
+    if (!panelsFit && notesLaneOpen) closeNotesLane();
+    if (phoneTier && railOpen) closeRail();
+    setAssetsLaneOpen(true);
+  }, [
+    assetsLaneOpen,
+    panelsFit,
+    notesLaneOpen,
+    closeNotesLane,
+    phoneTier,
+    railOpen,
+    closeRail,
+    setAssetsLaneOpen,
+    dismissPane,
+  ]);
   const commitAssetsW = useCallback(
     (value: number): void => writeSession(ASSETS_W_KEY, String(value)),
     [],
@@ -1125,6 +1347,18 @@ function ColumnDivider({
   const notesDefaultW = 232;
   const assetsDefaultW = 300;
 
+  /** The floating pane a tap on the transcript puts away. `null` on a tier
+   *  where the panes are columns (a tap there must never close one) and `null`
+   *  while a pane is sliding out, so the transcript is live again the moment
+   *  the dismissing tap lands. */
+  const scrimPane =
+    exiting === null
+      ? dismissTarget(
+          { rail: railOpen, notes: notesLaneOpen, assets: assetsLaneOpen },
+          { rail: phoneTier, lanes: laneOverlayTier },
+        )
+      : null;
+
   /** M14: assets saved via the chat-bar flow while the pane is open — bump
    *  the lane's reload version so the new row appears without reopening. */
   const [assetsVersion, setAssetsVersion] = useState(0);
@@ -1138,11 +1372,25 @@ function ColumnDivider({
    * the transcript, or the Notes page Quick capture). */
 
   return (
-    <div className="app">
+    <div className={sideMin ? 'app side-minimized' : 'app'}>
       <aside className="app-side" aria-label="App">
-        <span className="app-brand side-brand">Partner</span>
+        <div className="side-head">
+          <span className="app-brand side-brand">Partner</span>
+          {/* Lives inside the sidebar, so the phone tier (where the sidebar is
+           *  hidden) cannot show a dead control. */}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm side-collapse"
+            onClick={toggleSideMin}
+            aria-pressed={sideMin}
+            aria-label={sideMin ? 'Expand menu' : 'Minimize menu'}
+            title={sideMin ? 'Expand menu' : 'Minimize menu'}
+          >
+            {sideMin ? <IconChevronRight /> : <IconChevronLeft />}
+          </button>
+        </div>
         {paired ? (
-          <SideNav current={view} attention={attention} onSelect={setView} />
+          <SideNav current={view} attention={attention} minimized={sideMin} onSelect={setView} />
         ) : null}
       </aside>
       <div className="app-col">
@@ -1242,11 +1490,24 @@ function ColumnDivider({
                 railOpen ? '' : 'rail-hidden',
                 assetsLaneOpen ? 'assets-pane-open' : '',
                 assetsExpanded ? 'assets-expanded' : '',
+                exiting === null ? '' : PANEL_EXIT_CLASS[exiting],
               ]
                 .filter(Boolean)
                 .join(' ')}
               style={workspaceStyle}
             >
+              {scrimPane !== null ? (
+                /* Decorative tap target, exactly like the More sheet's scrim:
+                 * the keyboard path is the top bar's toggles (and each pane's
+                 * own close control), which is why this carries no role and
+                 * stays out of the tab order. Scoped to the workspace, so those
+                 * toggles stay live and undimmed while it is up. */
+                <div
+                  className="panel-scrim"
+                  aria-hidden="true"
+                  onClick={() => dismissPane(scrimPane)}
+                />
+              ) : null}
               <ConversationRail
                   conversations={conversations}
                   folders={folders}
@@ -1314,10 +1575,7 @@ function ColumnDivider({
                       version={assetsVersion}
                       expanded={assetsExpanded}
                       onExpandedChange={setAssetsExpanded}
-                      onClose={() => {
-                        setAssetsLaneOpen(false);
-                        setAssetsExpanded(false);
-                      }}
+                      onClose={() => dismissPane('assets')}
                       onUnpair={handleSessionLost}
                       onDiscuss={openWithDraft}
                     />

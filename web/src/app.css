@@ -7053,12 +7053,16 @@ select {
  * ========================================================================== */
 
 .app {
+  /* The sidebar width, one knob for both of its states: the labelled menu and
+   * the icon rail (M12's icon-rail collapse, user-toggleable since M20.A
+   * follow-up 10). Retuned per tier below; the minimized state sets it too. */
+  --side-w: 224px;
   flex-direction: row;
 }
 
 .app-side {
   flex: none;
-  width: 224px;
+  width: var(--side-w);
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -7068,12 +7072,80 @@ select {
   overflow-y: auto;
 }
 
-.side-brand {
+/* Brand + the minimize toggle. The brand keeps no padding of its own so the
+ * two are one aligned row (the aside's padding is the gutter). */
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
+}
+
+.side-brand {
+  padding: 0;
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   color: var(--text);
   white-space: nowrap;
+}
+
+/* Never let the chevron be squeezed by a long brand on a narrow sidebar. */
+.side-collapse {
+  flex: none;
+}
+
+/* --------------------------------------------------------------------------
+ * M20.A follow-up 10 — the sidebar minimize toggle.
+ *
+ * The icon rail is a STATE (`.side-minimized` on `.app`), not a breakpoint:
+ * the tablet boundary below only decides the *default*, and the toggle wins in
+ * both directions. That is what makes it useful where the tier alone is wrong
+ * — an iPad in landscape reports >1150 CSS px, so it gets the 224px labelled
+ * sidebar, and 164px of that is what this control returns.
+ *
+ * Group titles and labels go; the attention badge STAYS. An icon rail that
+ * hides "waiting on you" would be a downgrade (M20.A shipped badges precisely
+ * so a blocked turn cannot sit unnoticed), so the badge rides the button's
+ * corner instead of being dropped — the same contract as the phone tab bar.
+ * The width snaps rather than transitions: the labels leave via `display:
+ * none`, so there is nothing to animate them with, and a half-slid rail would
+ * read as a glitch.
+ * ------------------------------------------------------------------------ */
+.app.side-minimized {
+  --side-w: 60px;
+}
+
+.app.side-minimized .app-side {
+  padding: var(--space-3) var(--space-1);
+  align-items: center;
+}
+
+.app.side-minimized .side-head {
+  justify-content: center;
+  padding: 0;
+}
+
+.app.side-minimized .side-brand,
+.app.side-minimized .side-group-title,
+.app.side-minimized .side-label {
+  display: none;
+}
+
+.app.side-minimized .side-nav {
+  width: 100%;
+}
+
+.app.side-minimized .side-tab {
+  position: relative;
+  justify-content: center;
+}
+
+.app.side-minimized .side-tab .tab-badge {
+  margin-left: 0;
+  position: absolute;
+  top: 0;
+  right: 0;
 }
 
 .side-nav {
@@ -7171,37 +7243,15 @@ select {
 }
 
 /* --------------------------------------------------------------------------
- * Icon-rail collapse: below 1150 the sidebar narrows to icon buttons (labels
- * and group titles hidden) so no menu ever scrolls horizontally and the
- * chat rails keep their usable widths at smaller viewports.
+ * Tablet tier: below 1150 the DEFAULT is the icon rail (M12 — no menu ever
+ * scrolls horizontally and the chat rails keep their usable widths at smaller
+ * viewports). The width if the user expands it here is 200px rather than the
+ * desktop 224, and the collapse itself is the state rule above — so the user
+ * can put it back without fighting a media query.
  * ------------------------------------------------------------------------ */
 @media (max-width: 1150px) {
-  .app-side {
-    width: 60px;
-    padding: var(--space-3) var(--space-1);
-    align-items: center;
-  }
-
-  .app-side .side-brand {
-    display: none;
-  }
-
-  .app-side .side-group-title {
-    display: none;
-  }
-
-  .app-side .side-nav {
-    width: 100%;
-  }
-
-  .app-side .side-tab {
-    justify-content: center;
-    padding: var(--space-2);
-  }
-
-  .app-side .side-label,
-  .app-side .side-tab .tab-badge {
-    display: none;
+  .app:not(.side-minimized) {
+    --side-w: 200px;
   }
 
   .app-topbar .picker-label {
@@ -7210,8 +7260,11 @@ select {
 }
 
 @media (max-width: 760px) {
-  .app-side {
-    width: 52px;
+  .app.side-minimized {
+    --side-w: 52px;
+  }
+
+  .app.side-minimized .app-side {
     padding: var(--space-3) var(--space-0);
   }
 }
@@ -8216,7 +8269,8 @@ select {
  * ========================================================================== */
 @media (max-width: 1150px) {
   .app-topbar .btn-sm,
-  .app-topbar .picker-trigger {
+  .app-topbar .picker-trigger,
+  .side-collapse {
     min-height: var(--target-min);
     min-width: var(--target-min);
   }
@@ -8461,6 +8515,11 @@ select {
  * "motion with no prefers-reduced-motion fallback", which is the failure mode
  * that would be real if the nesting were ever refactored. Stating it at the top
  * level makes the fallback independent of where the rule lives.
+ *
+ * M20.A follow-up 9 adds the floating panes: their entry/exit animations and
+ * the dismissal scrim are listed here for the same reason (the slide-out is
+ * what a reduced-motion user must not have to wait for — `PANEL_EXIT_MS` in
+ * `lib/panels.ts`, checked by `panels.test.ts`).
  * ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
   .more-sheet,
@@ -8469,7 +8528,11 @@ select {
   .mobile-tab,
   .more-item,
   .rail-item-del,
-  .rail-item-move {
+  .rail-item-move,
+  .panel-scrim,
+  .chat-workspace .rail,
+  .chat-workspace .notes-mini,
+  .chat-workspace .assets-lane {
     animation: none !important;
     transition: none !important;
   }
@@ -8846,4 +8909,103 @@ select {
 
 .attach-chip-meta {
   color: var(--text-muted);
+}
+
+/* ==========================================================================
+ * M20.A follow-up 9 — tap outside a floating pane to put it away.
+ *
+ * On a touch tier the conversation rail (≤640) and the two right-hand lanes
+ * (≤760) float over the transcript instead of owning a column. Until now the
+ * only way back to the transcript was the toggle that had opened the pane:
+ * measured @390×844 the open rail covers 320px of 390, and those toggles live
+ * in a horizontally scrolling top bar. Touch has no Escape key, so the gesture
+ * every touch user already knows — tap the content you can see — did nothing.
+ * It puts the pane away now, and the pane slides out to its own edge so the
+ * exit matches the entrance.
+ *
+ * Geometry is here; the decision ("is this pane floating?") is in
+ * `lib/panels.ts`, and `panels.test.ts` re-reads this block so the tier numbers
+ * (640 / 760) cannot drift apart. The reduced-motion fallback for every
+ * selector below is in the consolidated top-level block further up.
+ * ========================================================================== */
+
+/* The scrim is scoped to the workspace, not the viewport: the top bar (whose
+ * toggles opened the pane) and the tab bar stay live and undimmed, because
+ * neither is inside `.chat-workspace`. Its `z-index` sits under the panes' 30,
+ * so it is the tap target for exactly the space a pane does NOT cover. Tint is
+ * the same overlay expression as the More sheet and the phone persona sheet:
+ * the system has one scrim value, not three. */
+.panel-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
+@media (max-width: 760px) {
+  /* `.chat-workspace` is the scrim's containing block (and was already
+   * positioned at this tier); `overflow-x: clip` keeps the entry/exit travel
+   * from extending the document's horizontal scroll area at tablet widths —
+   * the phone tier is clipped by `.app` already. `clip` rather than `hidden`
+   * so the workspace does not become a scroll container. */
+  .chat-workspace {
+    position: relative;
+    overflow-x: clip;
+  }
+
+  /* Entry: a floating lane arrives from its own edge. The lane is
+   * `display: none` while closed, so the animation replays on every open with
+   * no extra state. */
+  .chat-workspace.notes-lane-open .notes-mini,
+  .chat-workspace.assets-pane-open .assets-lane {
+    animation: pane-in-right var(--motion-base) var(--motion-ease);
+  }
+
+  /* Exit. Declared AFTER the entry rules on purpose: while a pane is leaving,
+   * its "open" class is still on the workspace, so both rules match and they
+   * have equal specificity — file order is what decides. `panels.test.ts` pins
+   * that order. `pointer-events: none` retires the leaving pane immediately. */
+  .chat-workspace.notes-lane-exiting .notes-mini,
+  .chat-workspace.assets-pane-exiting .assets-lane {
+    animation: pane-out-right var(--motion-base) var(--motion-ease) forwards;
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 640px) {
+  /* The overlay rail slides in from the left. It is `display: none` while
+   * hidden (base `.rail-hidden` rule), so the animation replays on every open
+   * here too. */
+  .chat-workspace .rail {
+    animation: pane-in-left var(--motion-base) var(--motion-ease);
+  }
+
+  .chat-workspace.rail-exiting .rail {
+    animation: pane-out-left var(--motion-base) var(--motion-ease) forwards;
+    pointer-events: none;
+  }
+}
+
+@keyframes pane-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes pane-out-left {
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes pane-in-right {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes pane-out-right {
+  to {
+    transform: translateX(100%);
+  }
 }

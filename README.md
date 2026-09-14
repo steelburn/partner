@@ -74,12 +74,14 @@ app invisibly — the desktop reports the conflict and refuses to use it. Stop
 the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 “already serving …”, something else still holds :4390.
 
-## Status (2026-09-13)
+## Status (2026-09-14)
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1215 passed** (5 env-gated skips) · web **648 passed** · typechecks 0 ·
-web build green. Latest release: **v0.1.8** (mobile phone-tier UI + persona
-picker, top-bar chrome, note projects, chat multi-question forms,
+suite **1227 passed** (5 env-gated skips; plus the known Windows-only
+`userPartitions` hook failure, reproducible on a clean checkout) · web **699
+passed** · typechecks 0 · web build green. Latest release: **v0.1.9** (tap-outside
+pane dismissal + the sidebar minimize toggle, on top of the mobile phone-tier UI,
+persona picker, top-bar chrome, note projects, chat multi-question forms,
 persona-scoped memory). **M20 is partly done**: **M20.A (mobile/tablet UI) is
 implemented and measured**, **M20.B (server role) has landed through S7 + S9**
 (the capability envelope, networked pairing, per-user partitions) with **S8
@@ -264,6 +266,42 @@ rendering only when it has content. Measured after: phone transcript
 first screen on controls (toolbar 235px in 5 wrapped rows, scope bar 128px, the
 search field **405px below the fold**, 3 controls under the 44px floor) — see
 `PLAN-M20.md`.
+
+**M20.A follow-up 9 — tap outside a floating pane to put it away (2026-09-14).**
+Reported as a product gap: on a touch tier the panes *are* overlays, so the only
+way back to the transcript was the toggle that had opened them — measured, the
+open rail covers **320 of 390px** and those toggles live in a horizontally
+scrolling top bar. Touch has no Escape key, so tapping the content you can see
+did nothing; now it dismisses the pane, and the pane **slides out to its own
+edge** before its state closes (frame trace 0 → −83 → −204 → −273 → −306 →
+−319px over 180ms = `--motion-base`). The scrim is scoped to the workspace so the
+top-bar toggles stay live and undimmed, the desktop column model is untouched
+(**0** scrims at 1280, a click closes nothing), floating panes can no longer
+even overlap at the phone tier (they overlapped by **202px**), and a
+reduced-motion preference closes at once. Decision + tiers in
+`web/src/lib/panels.ts`; guards in `web/test/panels.test.ts` (+16), falsified.
+Web suite **673 → 689**; `ux_audit` PASSED; measurements in
+`docs/VERIFY-MOBILE.md`.
+
+**M20.A follow-up 10 — the sidebar minimize toggle, tablet AND desktop
+(2026-09-14).** Requested: *"for tablet view/desktop view, allow minimizing the
+side menu to icons only, so that when toggled, we can maximize usable view."* M12
+already collapsed the sidebar automatically below 1150px, so the labelled 224px
+menu survived on every wider viewport with no control to recover the space — and
+an iPad in landscape reports >1150 CSS px, which is why both tiers needed it. The
+rail is now a **state** (`.app.side-minimized`, one `--side-w` knob) that the
+tablet query only defaults: measured @1440×900 the sidebar goes **224 → 60px** and
+the content column **1216 → 1380px** (the 164px returned to the view), and at 1024
+the default is the rail with the toggle able to restore a 200px labelled menu.
+The **attention badge survives** collapse on the button's corner (verified with a
+real attention item: 24×28, inside both the 44px button and the 60px rail) — the
+old automatic rail hid badges at ≤1150, which is the exact failure M20.A shipped
+badges to prevent. The toggle lives inside the sidebar (the phone tier hides it,
+so it can never be a dead control), keeps the 44px touch floor, remembers the
+choice per session, and crossing into the tablet tier collapses once instead of
+fighting the user. Guards in `web/test/sidebar-collapse.test.ts` (+10), falsified
+four ways. Web suite **689 → 699**; `ux_audit` PASSED; measurements in
+`docs/VERIFY-MOBILE.md`.
 
 **M20.B is executable** — `PLAN-M20-B.md` §3–§5 has the slices, the tests to
 write first, the parallelization waves, and a recommended first slice. **Its first

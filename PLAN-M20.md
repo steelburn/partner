@@ -659,6 +659,155 @@ a page reload does not fix it. Two measurement passes in this session were taken
 on that unstyled page (16×21px buttons, `Times New Roman`) and had to be thrown
 away. Restart `npm run dev:web` after editing app.css.
 
+### M20.A follow-up 9 — tap outside a floating pane to put it away (DONE)
+
+**Reported as a product gap, not a bug:** “when side panel (either side) is
+opened, touching outside the panel should slide back the panel into hiding.”
+It was a real gap, and the numbers say why: on a touch tier the panes *are*
+overlays (rail ≤640, lanes ≤760), the open rail covers **320px of a 390px
+phone**, and the toggles that opened it live in a **horizontally scrolling top
+bar** (M20.A follow-up — the top bar owns the chrome). Touch has no Escape key,
+so the one gesture a touch user already knows — tap the content you can see —
+had no meaning at all. Nothing was broken; the exit simply did not exist.
+
+**What shipped** (geometry in app.css, decisions in `web/src/lib/panels.ts`):
+
+1. **A tap on the transcript dismisses the floating pane.** A single
+decorative scrim (`aria-hidden`, out of the tab order — same contract as the
+More sheet’s) is the tap target for exactly the space a pane does *not* cover.
+It is scoped to `.chat-workspace`, not the viewport, so the top-bar toggles
+that opened the pane stay **live and undimmed** (measured: the scrim starts at
+y=60, the top bar’s bottom edge) and the tab bar is untouched. The keyboard
+path stays the toggles plus each pane’s own close control.
+2. **The pane slides out to its own edge before its state closes.** The tap sets
+a `*-exiting` class, the pane animates over `--motion-base`, and only then does
+the pane’s own state close (`PANEL_EXIT_MS` = the same 180ms). Frame trace at
+390×844: **0 → −83 → −204 → −273 → −306 → −319px**, then the pane closed at
+208ms — i.e. the exit matches the entrance (panes also slide *in* now, which
+they never did). A pane that owns a column, and a reduced-motion preference,
+close **at once** rather than waiting for motion that is not going to run.
+3. **Two floating panes can no longer coexist.** At the phone tier the rail and
+a lane overlapped by **202px** (320 + 272 on a 390px viewport, one pane buried
+under the other). Opening a floating pane now puts its floating siblings away
+first, so `dismissTarget` always has exactly one pane to put away. Below the
+phone tier the rail is a column and keeps its width — measured @700×900: rail
+column 200px **stays**, the floating lane dismisses.
+4. **The scrim is the system’s one overlay value**
+(`color-mix(in srgb, var(--bg) 55%, transparent)` — the More sheet and the
+phone persona sheet already use it), now named as such in `DESIGN.md`, which
+also gains the dismissal contract under *Responsive & touch*. No new colour,
+shadow or radius was invented.
+
+**Why a module and not a `useState` in `App.tsx`:** the tier widths are geometry
+(app.css) but “is this pane floating?” is behaviour, and a source guard on a CSS
+string can prove neither that a tap closes anything nor that a desktop column is
+never closed by one. `app.css` is re-read by the test so the two copies of
+640/760 cannot drift, and `PANEL_EXIT_MS` is checked against
+`shared/src/theme.ts`.
+
+Measured in a real browser (`docs/VERIFY-MOBILE.md` §“Tap-outside dismissal”):
+
+| viewport | pane open | scrim | tap on the transcript |
+|---|---|---|---|
+| 390×844 | rail (320×728, x=0) | 390×728 at y=60 | rail slides to −319px then closes; `.chat` back to 390px wide |
+| 390×844 | notes (272×728, x=118) | 390×728 at y=60 | notes closes; `.chat` back to 390px |
+| 700×900 | notes floats, rail column | 700×828 | lane dismisses, **rail column keeps its 200px** |
+| 1280×900 | rail column + notes column | **none** | nothing closes (a column is not a target) |
+
+*Guards:* `web/test/panels.test.ts` (+16) — behavioural for the tier decision and
+`dismissTarget` (including the load-bearing `null` on desktop), source guards for
+the scrim wiring, the cascade order (the exit rule must be declared **after**
+the entry rule: while a pane leaves, both match at equal specificity), the one
+scrim value and the reduced-motion fallback that covers every moving selector.
+Both falsified: a tier predicate that returns `true` for everything failed 2
+tests; swapping the entry/exit animation order failed 2; re-wiring the scrim to
+`undefined` failed 1. Web suite **673 → 689**; typecheck 0; bundle green;
+`ux_audit` PASSED (run on the new block plus the extended consolidated
+reduced-motion block — the rest of the stylesheet is unchanged and was audited
+at HEAD).
+
+**Explicitly not verified:** no human or vision pass of the rendered frames
+(the proof frames are measured, not looked at — the repo’s own gap, unchanged
+here); `overflow-x: clip` on `.chat-workspace` (added so the 180ms travel cannot
+extend the document’s scroll area at tablet widths) is Safari 16+ — older
+engines degrade to the previous behaviour, i.e. a possible transient scrollbar,
+which is why it is `clip` and not a scroll-container `hidden`; and the
+reduced-motion branch was **not** runtime-exercised in this session (the code
+path is a single early return, and the CSS fallback is asserted).
+
+### M20.A follow-up 10 — the sidebar minimize toggle, tablet AND desktop (DONE)
+
+**Reported as a product gap:** “for tablet view/desktop view, allow minimizing the
+side menu to icons only, so that when toggled, we can maximize usable view.” The
+M12 shell already collapsed the sidebar to an icon rail *below 1150px*
+(automatically), which left two holes: the **labelled 224px sidebar on every wider
+viewport**, and **no way back to labels** once CSS had collapsed it. The first is
+the one that matters in the field — an iPad in landscape reports **>1150 CSS px**,
+so “tablet” and “desktop” both landed on a 224px menu with no control to reclaim
+it.
+
+**What shipped**
+
+1. **The icon rail is a state, not a breakpoint.** `.app.side-minimized` carries
+the collapsed geometry and the tablet media query only sets the *default*
+(`--side-w` 224px above, 200px when expanded inside the tier, 52px minimized below
+760). The toggle therefore wins in both directions, at every tier, instead of
+fighting a media query on the next resize.
+2. **One width knob.** `.app-side` is `width: var(--side-w)`; the base `.app` sets
+224px, `.app.side-minimized` 60px. Measured @1440×900: sidebar **224 → 60px**,
+content column **1216 → 1380px** — the **164px** the menu occupied goes back to the
+view — and every nav tab measures 44px with its icon centred (rail 60, padding 8).
+3. **The attention badge survives collapse.** The old automatic rail hid badges
+entirely at ≤1150, which is exactly the failure mode M20.A shipped badges to stop
+(a blocked turn with no visible mark). The badge moves to the button’s corner
+(precedent: the phone tab bar) — verified with a real attention item, measured
+24×28 inside both the 44px button and the 60px rail, painted (`elementFromPoint`
+returns it), not clipped.
+4. **The toggle cannot become a dead control.** It lives *inside* the sidebar head
+(`.side-head`: brand + chevron), so the phone tier — which hides the sidebar —
+cannot render it, and the top bar’s horizontally-scrolling row (M20.A follow-up:
+the top bar owns the chrome) does not gain a seventh control. It is
+`aria-pressed` + an action label (“Minimize menu” /“Expand menu”), 44×44 on touch
+tiers like every other control, and the icon-only items carry their label as a
+`title`.
+5. **Crossing into the tablet tier collapses it, once.** The M12 rule (no menu may
+clip a smaller viewport) is preserved as a *crossing* action keyed on the tier
+boolean, so a user who expands the rail at 1024 keeps it expanded through any
+further resize inside that tier.
+6. **The choice is remembered per session** (`partner.sideMinimized`, alongside
+the existing rail/lane preferences) — verified across a reload — and it is a
+layout preference, so it joins the storage allowlist rather than being a new
+content key.
+
+Measured in a real browser (`docs/VERIFY-MOBILE.md`, “Sidebar minimize toggle”):
+
+| viewport | state | measurement |
+|---|---|---|
+| 1440×900 | expanded (default) | sidebar 224px, all 10 labels + brand + group titles visible, control 49×33 (mouse tier), content 1216px |
+| 1440×900 | minimized | sidebar 60px, labels/brand/titles `display: none`, tabs 44px, icon at x=22, content 1380px, overflowX 0 |
+| 1440×900 | minimized + badge | memory badge `1`, 24×28, inside the button and the rail |
+| 1024×900 | fresh, no stored choice | **default is the rail** (60px), overflowX 0, **0** sidebar controls under 44×44 |
+| 1024×900 | expanded by the user | sidebar **200px** (the tier’s own width, not the desktop 224), labels visible, composer still 450px, overflowX 0 |
+
+*Guards:* `web/test/sidebar-collapse.test.ts` (**+10**) — behavioural only where a
+node test can be: the state/`--side-w` knob (no literal width may return on
+`.app-side`), the tier query changing the **default only**, the badge never being
+`display: none`, the touch floor, and the *absence* of a width transition; plus
+source guards for the wiring (toggle inside the sidebar, `aria-pressed`, action
+label, chevron direction, storage read/write, the tier-crossing effect, the
+tooltip). Falsified three ways, each reverted: hiding the badge in the rail failed
+**1**, turning `.app:not(.side-minimized)` back into a bare `.app-side` rule failed
+**1**, removing `aria-pressed` failed **1**, `readSession` → `null` failed **1**.
+Web suite **689 → 699**; typecheck 0; build green; `ux_audit` PASSED (the new
+block plus the stylesheet’s global reduced-motion fallback, without which the
+audit correctly complains — the sidebar itself adds no transition).
+
+**Explicitly not verified:** no vision pass (text-only session — the frames are
+measured, never seen); the 641–760 band was not re-measured with the sidebar
+expanded (the tier only lowers the width to 200px and the composer was measured at
+1024); and the badge’s *corner* placement is measured in the desktop rail, not at
+52px.
+
 ### M20.A follow-up — phone Notes view crowding (QUEUED · measured · NOT started)
 **State: measured 2026-09-13 at 390×844 with the demo persona; no code changed.**
 Reported as "mobile view is too crowded". A scan of all four phone tabs found

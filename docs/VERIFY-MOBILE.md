@@ -982,3 +982,156 @@ picker guard. Both files were restored byte-identical (verified with `diff`).
    the only write.
 
 Suites: typecheck 0 · web **648 passed** (43 files, was 642 in 42).
+
+## Tap-outside dismissal for the floating panes (M20.A follow-up 9)
+
+Requested behaviour: *"when side panel (either side) is opened, touching outside
+the panel should slide back the panel into hiding."* Verified 2026-09-14 with a
+throwaway demo core (`PORT=4391 DEMO_MODE=1`) plus
+`VITE_CORE_URL=http://127.0.0.1:4391 npx vite --port 5199`, paired in the
+persistent browser profile, measured with `getBoundingClientRect` +
+`getComputedStyle` + `elementFromPoint`.
+
+### Measured, per tier
+
+| viewport | state probed | measurement |
+|---|---|---|
+| 390×844 | rail open (left) | `.rail` absolute, z-index 30, **320×728 at x=0**; `.panel-scrim` **390×728 at y=60** (the top bar's bottom edge), z-index 25 → the toggles stay live and undimmed |
+| 390×844 | tap at (370, 500) | `rail-exiting` on the workspace, **scrim gone on the tap**, `elementFromPoint` = `.chat-transcript`; then `.rail` `display:none`, `.chat` **390px wide**, toggle reads "Show conversations" |
+| 390×844 | notes open (right) | `.notes-mini` absolute, z-index 30, **272×728 at x=118**; scrim 390×728 → the transcript reserves no column |
+| 390×844 | tap at (30, 500) | notes `display:none`, **0** scrims, `.chat` back to 390px, toggle reads "Show notes panel" |
+| 390×844 | rail open → open notes | rail closed, notes open (**1** scrim) — the two overlays overlap by 202px, so they never coexist |
+| 390×844 | notes open → open rail | notes closed, rail open (**1** scrim) |
+| 700×900 | notes floating + rail column | scrim present; tap dismisses the lane and the **200px rail column survives** (the mutex is tier-gated, not global) |
+| 1280×900 | rail column + notes column | **0** scrims; click at (640, 500) closes nothing (288px + 232px columns unchanged) |
+
+### Frame-by-frame exit (rAF sampling, 390×844)
+
+Tap → `rail-exiting` → rail x: **0 → −83 (−39ms) → −204 (−72ms) → −273 (−106ms)
+→ −306 (−139ms) → −319 (−173ms)** → at **208ms** the state closed
+(`rail-hidden`, `display:none`). The travel is the pane's own width, i.e. the
+exit mirrors the entrance; `--motion-base` is 180ms and `PANEL_EXIT_MS` is
+asserted equal to it. `overflowX` was **0** at every sample (the `overflow-x:
+clip` on `.chat-workspace` keeps the travel out of the document's scroll area).
+
+### Suites and gates
+
+**M20.A geometry gate re-checked** after the change (the added `overflow-x: clip`
+and the entry/exit animations touch the workspace box): overflowX **0** and
+**0** controls under 44×44 at 360/375/390/430/768/1024; `.chat` full-bleed at
+every phone width (360/375/390/430); composer input **192 / 207 / 222 / 262px**
+at 360/375/390/430 — the same numbers as the top-bar follow-up, so the gate
+("composer width ≥ 296px at 360, ≥ 320px at 390" on `.chat-form`, measured
+328/358) still holds and nothing was traded for the dismissal.
+
+typecheck **0** · web **689 passed / 46 files** (was 673 in 45; `panels.test.ts`
++16) · `npm run build -w web` green · root suite unchanged except the
+**pre-existing** Windows-only `core/test/http/userPartitions.test.ts` hook
+failure (reproduced identically on a clean checkout: `EPERM` removing its temp
+dir, plus a 10s `afterEach` timeout) · `ux_audit` **PASSED** on the new block and
+the extended consolidated reduced-motion block.
+
+### Guards and falsification
+
+`web/test/panels.test.ts` — behavioural for `floatsOverTranscript` /
+`floatingPanels` / `dismissTarget` (including the load-bearing `null` on desktop,
+where a tap on the transcript must never close a column); source guards for the
+scrim wiring, the cascade order (the exit rule must be declared **after** the
+entry rule, since both match while a pane leaves at equal specificity), the one
+scrim value, and reduced-motion coverage of every moving selector; and a re-read
+of `app.css` + `shared/src/theme.ts` so 640/760/180ms cannot drift.
+
+**Falsified, not assumed:** `floatsOverTranscript` returning `true` failed **2**
+tests; swapping the entry/exit animation declarations failed **2**; wiring the
+scrim to `() => undefined` failed **1**. All three were reverted (the tree is
+back to the reviewed diff).
+
+### Honest limitations
+
+1. **No vision check** (text-only session) — the proof frames are measured, never
+   seen, exactly as noted above. The scrim's *tint* is therefore unverified by
+   eye; it is the same expression as the More sheet and the phone persona sheet.
+2. **`prefers-reduced-motion` was not runtime-exercised** — the browser was not
+   switched into that mode. The branch is a single early return
+   (`reduceMotion || !floatsOverTranscript(...)`) and the CSS half is asserted;
+   the *wait* half is not measured.
+3. **`overflow-x: clip` is Safari 16+** — older engines lose the clip (the exit
+   travel could briefly extend the document's scroll area at tablet widths, which
+   is the pre-change behaviour, not a new failure). Not exercised on Safari.
+4. **Touch input was simulated** with a mouse click at the tap coordinates (the
+   scrim is a plain `onClick` surface, so the synthetic path matches; a real
+   touch was not available in this session).
+5. **The `assets` pane's open path was not re-measured** at phone width (it is
+   gated on an active conversation and the demo store has none) — its overlay and
+   dismissal share the same `panel-scrim` + `assets-pane-exiting` rules as the
+   notes lane, which *were* measured.
+
+## Sidebar minimize toggle (M20.A follow-up 10)
+
+Requested behaviour: *"for tablet view/desktop view, allow minimizing the side
+menu to icons only, so that when toggled, we can maximize usable view."* Verified
+2026-09-14 against the same throwaway demo core (`PORT=4391 DEMO_MODE=1` +
+`VITE_CORE_URL=http://127.0.0.1:4391 npx vite --port 5199`), measured with
+`getBoundingClientRect` / `getComputedStyle` / `elementFromPoint`.
+
+### Measured
+
+| viewport | state | measurement |
+|---|---|---|
+| 1440×900 | expanded (default) | `.app-side` **224px**, `.app-col` **1216px**, 10/10 labels + brand + group titles visible, control **49×33** at x=143 (mouse tier, no 44px floor above 1150), label "Minimize menu" `aria-pressed=false` |
+| 1440×900 | after **Minimize menu** | class `app side-minimized`, `.app-side` **60px**, `.app-col` **1380px** (**+164px** reclaimed), 10/10 labels + brand + titles computed `display: none`, each `.side-tab` **44×49** at x=8, its icon at **x=22** (centred), toggle "Expand menu" `aria-pressed=true`, `overflowX` 0 |
+| 1440×900 | minimized, one attention item present | memory badge **`1`, 24×28**, `display: block`, inside the 44px button **and** inside the 60px rail (`elementFromPoint` at its centre returns the badge → painted, not clipped) |
+| 1440×900 | minimized after a **reload** | `sessionStorage['partner.sideMinimized'] = '1'` and the shell came back `app side-minimized` — the choice is session-persisted |
+| 1024×900 | fresh load, storage key removed | **default is `app side-minimized`** (60px rail), 10/10 labels hidden, toggle **49×44** (touch floor), **0** sidebar controls under 44×44, `overflowX` 0, badge still `1` |
+| 1024×900 | after **Expand menu** | `.app-side` **200px** (the ≤1150 tuning, *not* the desktop 224), labels + brand + titles visible, `.app-col` 824px, composer **450px**, `overflowX` 0 |
+
+The attention item used for the badge row was a real one created through the
+app's own API (`POST /v1/memory/profile` with `source: 'partner_suggestion'`,
+HTTP **201**) — not a stubbed DOM node. Getting there also re-paired the browser
+against this core: the profile's stored token belonged to an earlier demo run, and
+`POST` answered **401** until the demo pairing code was re-entered. Worth knowing
+before trusting a stale tab.
+
+### Suites and gates
+
+typecheck **0** · web **699 passed / 47 files** (was 689 in 47; the new
+`sidebar-collapse.test.ts` is +10) · `npm run build -w web` green · root suite
+unchanged except the **pre-existing** Windows-only
+`core/test/http/userPartitions.test.ts` hook failure (identical on a clean
+checkout) · `ux_audit` **PASSED** on the new block (with the stylesheet's global
+`prefers-reduced-motion` fallback included — without it the audit correctly
+reports "motion with no fallback"; the sidebar adds no transition of its own).
+
+### Guards and falsification
+
+`web/test/sidebar-collapse.test.ts` — the state/`--side-w` knob (no literal width
+on `.app-side`), the tier changing **only the default** (a bare `.app-side` rule
+in the media query fails it), the badge never being `display: none` in any block,
+the 44px floor on the toggle, the *absence* of a width transition, and source
+guards for the wiring (toggle inside the sidebar head, `aria-pressed`, action
+label, chevron direction, `readSession`/`writeSession`, the tier-crossing effect,
+the `title` on icon-only items).
+
+**Falsified, not assumed:** adding `display: none` to the minimized badge failed
+**1**; collapsing the tier rule back into a bare `.app-side` failed **1**;
+removing `aria-pressed={sideMin}` failed **1**; `readSession(SIDE_MIN_KEY)` →
+`null` failed **1**. All four were reverted (the tree is back to the reviewed
+diff). Useful trap found while doing this: the working copy has **CRLF** endings,
+so a `\n`-based mutation script silently changes nothing — the first "falsified"
+attempts were no-ops until the patterns were made newline-agnostic.
+
+### Honest limitations
+
+1. **No vision check** (text-only session) — every number is a bounding-box or
+   computed-style read; the rail's badge in its corner is measured, not seen.
+2. **The 641–760 band with the sidebar expanded was not re-measured.** The
+   expanded width there is the same 200px the tablet tier sets, and the composer
+   was measured at 1024 (450px); at 700px an expanded sidebar would leave much
+   less room, which is why the *default* at that width stays the rail.
+3. **The badge corner at the 52px rail width (≤760) was not measured.** It is the
+   same absolute rule that measured 24×28 inside a 44px button at 60px.
+4. **`pointer: coarse` was not emulated** — the touch floor asserted here is the
+   viewport-based ≤1150 rule, not the coarse-pointer one.
+5. **The tier-crossing effect was exercised only by the fresh-load path** (clearing
+   the stored key and reloading at 1024, which is the same code path as a resize
+   across the boundary); a live drag-resize across 1150 was not performed.

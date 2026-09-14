@@ -1003,6 +1003,49 @@ apps/partner/
       phone: the **level** chip yields its 31px (`Paused` never does). Guards in
       `assets-lane-controls.test.ts` (5) + `picker-mobile.test.ts` (+1), both
       falsified. Web suite now **648**.
+      **M20.A follow-up 9 — tap outside a floating pane to put it away (DONE,
+      measured in-browser @390×844 / 700×900 / 1280×900).** On a touch tier the
+      rail (≤640) and the two right-hand lanes (≤760) float over the transcript,
+      so until now the only way back was the toggle that had opened the pane:
+      measured the open rail covers **320 of 390px** and those toggles live in a
+      horizontally scrolling top bar — the one gesture a touch user knows (tap
+      the content you can see) did nothing. It does now, and the pane **slides
+      out to its own edge** before its state closes (frame trace 0 → −83 → −204
+      → −273 → −306 → −319px over 180ms = `--motion-base`, then the pane
+      closes), so leaving looks like arriving. The scrim is scoped to
+      `.chat-workspace` (measured 390×728 from y=60 — the top bar's bottom
+      edge), so the toggles that opened the pane stay live and undimmed, and the
+      desktop column model is untouched (**0** scrims at 1280 and a click on the
+      transcript closes nothing). Floating panes are mutually exclusive at the
+      phone tier (they overlap by **202px** there), and a reduced-motion
+      preference closes at once rather than waiting for motion that is disabled.
+      Decision + tier numbers in `web/src/lib/panels.ts`; `panels.test.ts` (+16)
+      anchors them to app.css, pins the cascade order (exit declared after
+      entry), the one scrim value and the reduced-motion fallback — both
+      falsified (a tier predicate returning `true` failed 2, swapping the
+      animation order failed 2). Web suite **673 → 689**; typecheck 0;
+      `ux_audit` PASSED; bundle green.
+      **M20.A follow-up 10 — the sidebar minimize toggle, tablet AND desktop
+      (DONE, measured in-browser @1440×900 / 1024×900).** M12 collapsed the
+      sidebar to an icon rail automatically below 1150px, which left the
+      labelled **224px** menu on every wider viewport with no control to reclaim
+      it — and an iPad in landscape reports **>1150 CSS px**, so “tablet” and
+      “desktop” both meant 224px. The rail is now a **state**
+      (`.app.side-minimized`, one `--side-w` knob) that the tablet query only
+      *defaults*: measured sidebar **224 → 60px** and content column
+      **1216 → 1380px** (the 164px returned to the view), tabs 44px with a
+      centred icon, and at 1024 the default is the rail with the toggle able to
+      restore a 200px labelled menu. The **attention badge survives** collapse on
+      the button's corner (verified with a real attention item: 24×28, inside the
+      44px button and the 60px rail) — the old rail hid badges at ≤1150, the
+      exact failure M20.A shipped badges to prevent. The toggle lives inside the
+      sidebar (so the phone tier cannot show a dead control), is 44×44 on touch
+      tiers, remembers the choice per session, and crossing into the tablet tier
+      collapses once rather than fighting the user. Decision + tiers in
+      `web/src/lib/nav.ts`; `sidebar-collapse.test.ts` (+10) pins the state/knob,
+      the tier-only *default*, the badge, the touch floor and the absence of a
+      width transition — falsified 4 ways. Web suite **689 → 699**; typecheck 0;
+      `ux_audit` PASSED; bundle green.
       **M20.A follow-up — phone Notes view crowding (QUEUED, measured, NOT
       started).** Reported as "mobile view is too crowded"; a scan of all four
       phone tabs found Chat/Files/Personas clean and **Notes is the offender** —

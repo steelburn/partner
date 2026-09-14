@@ -128,13 +128,25 @@ Three tiers. A reader should be able to name the tier from any screenshot.
 
 | Tier | Width | Shell | Navigation | Rails (conversations/notes/assets) |
 |---|---|---|---|---|
-| **phone** | ≤ 640 | single column: top bar, content, tab bar | bottom tab bar + More sheet | **overlays** over the transcript |
-| **tablet** | 641–1150 | content column, icon rail | icon rail (labels hidden) | columns below 900, overlays at ≤ 760 |
-| **desktop** | > 1150 | sidebar + content column | full sidebar with group labels | columns |
+| **phone** | ≤ 640 | single column: top bar, content, tab bar | bottom tab bar + More sheet (the sidebar is hidden) | **overlays** over the transcript |
+| **tablet** | 641–1150 | content column, icon rail (the **default** — the user may expand it to 200px) | icon rail; the toggle restores labels | columns below 900, overlays at ≤ 760 |
+| **desktop** | > 1150 | sidebar (224px) + content column | full sidebar with group labels; the toggle collapses it | columns |
 
 The tier breakpoints are mirrored in code by `matchMedia` constants
 (`App.tsx`, `web/src/lib/nav.ts`) used **only for state defaults** — never for
 layout, which stays in CSS so there is one source of truth per form factor.
+
+**The sidebar's icon rail is a state, not a breakpoint** (M20.A follow-up 10).
+`.app.side-minimized` collapses it to 60px via the single `--side-w` knob; the
+tablet tier only decides the *default* (collapsed below 1150), and the user's
+toggle wins in both directions — an iPad in landscape reports >1150 CSS px, so
+the tier alone would hand it a 224px sidebar with no way to reclaim it. Group
+titles and labels leave (`display: none`); **the attention badge stays** (moved
+to the button's corner, the phone tab bar's contract), because an icon rail that
+hides "waiting on you" trades a blocked turn for 164px. The width snaps —
+nothing to animate text with, and a half-slid rail reads as a glitch. The toggle
+lives *inside* the sidebar, so the phone tier (which hides it) cannot show a dead
+control.
 
 Rules that hold on any touch tier:
 
@@ -153,6 +165,16 @@ Rules that hold on any touch tier:
   tab bar. Zero on desktop, so the same rule needs no media query.
 - **One nav per form factor.** Above the phone tier the tab bar is hidden by
   CSS, not unmounted, so no JS breakpoint can disagree with the paint.
+- **A floating pane is dismissed by a tap outside it.** Where a rail/lane is an
+  overlay (≤640 rail, ≤760 lanes), tapping the transcript puts it away: the
+  scrim retires on the tap and the pane slides out to its own edge over
+  `--motion-base`, so the exit matches the entrance. The scrim is the one
+  overlay value (below), scoped to the workspace so the top-bar toggles that
+  opened the pane stay live and undimmed, and it is decorative (`aria-hidden`,
+  out of the tab order) with those toggles as the keyboard path. A pane that
+  owns a column is **not** dismissable this way — geometry decides, not state.
+  Two floating panes never coexist (they overlap at the phone tier); a reduced-
+  motion preference closes at once instead of waiting for motion that is off.
 
 Measured gates (a gate that only asserts “no horizontal overflow” is not
 enough — at HEAD the phone layout never overflowed, it *crushed* content):
@@ -180,7 +202,7 @@ v1 inventory (built from M3 onward; states are part of every component):
 | Input / textarea | surface-2 fill, 1px border on hover/focus only, focus ring; error state pairs message w/ `--danger`. |
 | Card | bg `--surface` or `--bg` + elevation-sm at most; separation first by bg. |
 | Chat transcript | user bubbles on accent (contrast text), partner on surface; system/status rows muted. |
-| Sidebar nav | active item: accent text on surface-2 pill; icons 16–20px, no glow. |
+| Sidebar nav | active item: accent text on surface-2 pill; icons 16–20px, no glow. Collapses to the 60px icon rail (one `--side-w` knob, `.app.side-minimized`); icon-only items carry the label as a `title`, and the badge sits in the button's corner rather than being hidden. |
 | Badge/chip | surface-2 with muted text; status tints from semantic tokens only.
             M12 P0.3: chips carrying accent-colored text use `--surface`
             (light) or `--surface-2` (dark) fills — see the usage rule under
@@ -188,7 +210,7 @@ v1 inventory (built from M3 onward; states are part of every component):
 | Context label (kicker) | uppercase, `--fs-xs` / weight 600, `--track-label` 0.08em, `--text-muted`; sits only on `--bg`/`--surface` (APCA Lc ≥75 at 12px/600 in both modes, audited). One short word or phrase ("files", "providers", "live session") flush left above the page title. Never a sentence; never colour-tinted; never on `--surface-2`. |
 | Page header | composition contract: [optional context label] + `--fs-xxl` title + actions row on the right. One per screen, flush left; no page headers inside cards. |
 | Empty state | title + role-scoped reason + named primary action (+ numbered mini-guide ≤4 steps on true first runs). See the empty-state contract below. |
-| Modal / popover | elevation-lg, scrim from a named overlay token, focus trapped. |
+| Modal / popover | elevation-lg, the one scrim value — `color-mix(in srgb, var(--bg) 55%, transparent)`, scoped to what it covers (More sheet, phone persona sheet, a floating rail) — focus trapped. |
 | Toast | surface + elevation-md + semantic left edge. |
 | Toggle / checkbox / radio | accent when on, surface-2 when off; disabled = faint. |
 | Choice / form card | transcript controls from `:::partner.*` containers: a choice is a radio/checkbox set, a form is one textarea per open-ended question with a **single** submit. Confirm sends one labelled user turn; inert while a turn streams. Surface fill + `--radius-lg`, no border. |
