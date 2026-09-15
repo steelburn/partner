@@ -63,6 +63,14 @@ export interface ProviderSummary {
   /** Full OpenAI-compatible base URL, e.g. https://api.ne1.dev/v1 */
   endpoint: string;
   defaultModels: string[];
+  /**
+   * Model ids the user DECLARED image-capable for this profile, on top of what
+   * the name heuristic recognises. Necessary because an OpenAI-compatible
+   * gateway's model ids are operator-chosen aliases (LiteLLM's `model_name`),
+   * so a model that can see may have a name nothing can recognise — and
+   * without this the chat turn silently drops the photo. See `shared/vision.ts`.
+   */
+  visionModels: string[];
   enabled: boolean;
   /** Optional per-session spend cap in USD cents (null = off). */
   budgetCents: number | null;
@@ -79,8 +87,51 @@ export interface ProviderInput {
   purpose?: ProviderPurpose;
   endpoint: string;
   defaultModels?: string[];
+  /** Model ids to declare image-capable (see `ProviderSummary.visionModels`). */
+  visionModels?: string[];
   enabled?: boolean;
   budgetCents?: number | null;
+}
+
+/**
+ * The model ids a provider profile DECLARES it can see with — the input to
+ * `isImageCapableModel`. Two sources, both explicit user decisions:
+ *
+ *  - `visionModels`: the per-model ticks on the profile.
+ *  - every `defaultModels` entry when the profile's purpose is `vision`: the
+ *    M13 purpose bundle asks the user to pin models to a purpose, so pinning
+ *    a model to Vision *is* a declaration that it can see.
+ *
+ * Exported because core (handoff + chat gating) and web (picker suggestion,
+ * capability chips) must read capability the same way.
+ */
+export function declaredVisionModels(
+  provider:
+    | {
+        purpose?: ProviderPurpose | string;
+        defaultModels?: readonly string[] | null;
+        visionModels?: readonly string[] | null;
+      }
+    | null
+    | undefined,
+): string[] {
+  if (!provider) return [];
+  const declared = [...(provider.visionModels ?? [])];
+  if (provider.purpose === 'vision') declared.push(...(provider.defaultModels ?? []));
+  return [...new Set(declared.map((model) => model.trim()).filter((model) => model !== ''))];
+}
+
+/** PATCH body for an existing profile (M24: vision declarations are editable
+ *  without deleting and re-adding the provider). Absent keys are untouched. */
+export interface ProviderPatch {
+  name?: string;
+  purpose?: ProviderPurpose;
+  endpoint?: string;
+  enabled?: boolean;
+  budgetCents?: number | null;
+  defaultModels?: string[];
+  /** Replace the declared image-capable ids (an empty array clears them). */
+  visionModels?: string[];
 }
 
 // ---------------------------------------------------------------------------

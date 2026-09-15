@@ -90,16 +90,24 @@ export interface ChatToolSpec {
   };
 }
 
+/** One inline image carried to a provider for a single turn. */
+export interface ChatImagePart {
+  mime: string;
+  /** Raw base64 (no `data:` prefix) — the adapter builds the data URL. */
+  dataBase64: string;
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
   /**
-   * M11 multimodal: an inline image payload rides the message to the
-   * provider ONLY (never persisted). Adapters serialize it into an OpenAI
-   * content array when the target model is image-capable; plain text
-   * messages are untouched.
+   * M11 multimodal: inline image payloads ride the message to the provider
+   * ONLY (never persisted), in attach order. Adapters serialize them into an
+   * OpenAI content array when the target model is image-capable; plain text
+   * messages are untouched. A LIST because a turn can carry several photos —
+   * serializing only the first silently dropped the rest.
    */
-  image?: { mime: string; dataBase64: string };
+  images?: ChatImagePart[];
 }
 
 export interface ChatRequest {
@@ -134,7 +142,7 @@ export interface ProviderClient {
 // Versioning
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 export const WIRE_VERSION = 'v1';
 
 /**

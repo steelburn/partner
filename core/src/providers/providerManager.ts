@@ -9,11 +9,19 @@
  * secret lives exclusively in the keychain.
  */
 import { randomUUID } from 'node:crypto';
-import type { Keychain, ProviderHealth, ProviderInput, ProviderPurpose, ProviderSource, ProviderSummary } from '@partner/shared';
+import type {
+  Keychain,
+  ProviderHealth,
+  ProviderInput,
+  ProviderPatch,
+  ProviderPurpose,
+  ProviderSource,
+  ProviderSummary,
+} from '@partner/shared';
 import { isProviderPurpose } from '@partner/shared';
 import { KEYCHAIN_SERVICE } from '../keychain/keychain.js';
 import type { AuditService } from '../services/redaction.js';
-import type { ProviderRow, ProviderStore } from '../stores/types.js';
+import type { ProviderRow, ProviderRowPatch, ProviderStore } from '../stores/types.js';
 import { createOpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import { safeUpstreamMessage } from '../gateway/openaiCompatible.js';
@@ -69,12 +77,29 @@ export function toSummary(row: ProviderRow): ProviderSummary {
     purpose,
     endpoint: row.endpoint,
     defaultModels: parseJsonArray(row.defaultModels),
+    visionModels: parseJsonArray(row.visionModels ?? null),
     enabled: row.enabled === 1,
     budgetCents: row.budgetCents,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     health: parseHealth(row.lastHealth),
   };
+}
+
+/** Validate a list of model ids: array of non-empty strings, trimmed, deduped. */
+function normalizeModelIds(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new ProviderError('invalid_input', `${field} must be an array of model id strings`);
+  }
+  const ids: string[] = [];
+  for (const entry of value as unknown[]) {
+    if (typeof entry !== 'string') {
+      throw new ProviderError('invalid_input', `${field} must be an array of model id strings`);
+    }
+    const trimmed = entry.trim();
+    if (trimmed !== '' && !ids.includes(trimmed)) ids.push(trimmed);
+  }
+  return ids;
 }
 
 /** Validate + normalize a provider endpoint: trim, https or loopback http, ONE trailing slash stripped. */
@@ -123,6 +148,12 @@ export interface ProviderManagerOptions {
 export interface ProviderManager {
   /** Validate + store a profile; returns a summary with NO key material. */
   create(input: ProviderInput, source?: ProviderSource): Promise<ProviderSummary>;
+  /**
+   * M24: edit a profile's non-secret fields (model lists, purpose, name,
+   * enabled, budget). `undefined` leaves a field alone; the endpoint and the
+   * key are never touched here (the key lives in the keychain under the id).
+   */
+  update(id: string, patch: ProviderPatch): ProviderSummary;
   /** All profiles in creation order — never keyRef/key. */
   list(): ProviderSummary[];
   get(id: string): ProviderSummary | null;
@@ -163,6 +194,13 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
       throw new ProviderError('invalid_input', 'defaultModels must be an array of model id strings');
     }
     const defaultModels = rawModels as string[];
+    // M24: the vision declaration is optional; absent = nothing declared (the
+    // name heuristic alone decides). A bad shape is refused rather than stored
+    // half-valid, because a silently-dropped declaration is the bug this fixes.
+    const visionModels =
+      body.visionModels === undefined || body.visionModels === null
+        ? []
+        : normalizeModelIds(body.visionModels, 'visionModels');
 
     let budgetCents: number | null;
     if (body.budgetCents === null || body.budgetCents === undefined) {
@@ -189,6 +227,7 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
       purpose,
       endpoint,
       defaultModels: defaultModels.length > 0 ? JSON.stringify(defaultModels) : null,
+      visionModels: visionModels.length > 0 ? JSON.stringify(visionModels) : null,
       enabled: enabled ? 1 : 0,
       budgetCents,
       keyRef: id,
@@ -203,6 +242,7 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
       source,
       purpose,
       enabled,
+      visionDeclared: visionModels.length,
     });
     return toSummary(row);
   }
@@ -214,6 +254,72 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
   function get(id: string): ProviderSummary | null {
     const row = store.findById(id);
     return row ? toSummary(row) : null;
+  }
+
+  /**
+   * M24 — edit a profile's non-secret fields. Exists so a vision declaration
+   * can be fixed on a WORKING provider: before this the only way to tell
+   * Partner "this model can see" was to delete the profile and re-add it.
+   * Audit records field names and counts, never model lists or endpoints.
+   */
+  function update(id: string, patch: ProviderPatch): ProviderSummary {
+    const row = store.findById(id);
+    if (!row) throw new ProviderError('not_found', 'provider not found');
+    const body = (patch ?? {}) as ProviderPatch;
+    const next: ProviderRowPatch = { updatedAt: now() };
+    const fields: string[] = [];
+    let visionDeclared: number | null = null;
+
+    if (body.name !== undefined) {
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (name === '') throw new ProviderError('invalid_input', 'name must be a non-empty string');
+      next.name = name;
+      fields.push('name');
+    }
+    if (body.purpose !== undefined) {
+      if (!isProviderPurpose(body.purpose)) {
+        throw new ProviderError('invalid_input', 'purpose is not a known purpose tag');
+      }
+      next.purpose = body.purpose;
+      fields.push('purpose');
+    }
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== 'boolean') {
+        throw new ProviderError('invalid_input', 'enabled must be a boolean');
+      }
+      next.enabled = body.enabled ? 1 : 0;
+      fields.push('enabled');
+    }
+    if (body.budgetCents !== undefined) {
+      if (
+        body.budgetCents !== null &&
+        !(typeof body.budgetCents === 'number' && Number.isFinite(body.budgetCents) && body.budgetCents >= 0)
+      ) {
+        throw new ProviderError('invalid_input', 'budgetCents must be a non-negative number of cents or null');
+      }
+      next.budgetCents = body.budgetCents === null ? null : Math.round(body.budgetCents);
+      fields.push('budgetCents');
+    }
+    if (body.defaultModels !== undefined) {
+      const models = normalizeModelIds(body.defaultModels, 'defaultModels');
+      next.defaultModels = models.length > 0 ? JSON.stringify(models) : null;
+      fields.push('defaultModels');
+    }
+    if (body.visionModels !== undefined) {
+      const models = normalizeModelIds(body.visionModels, 'visionModels');
+      next.visionModels = models.length > 0 ? JSON.stringify(models) : null;
+      visionDeclared = models.length;
+      fields.push('visionModels');
+    }
+
+    if (fields.length === 0) return toSummary(row);
+    store.update(id, next);
+    if (visionDeclared !== null) {
+      audit.log('provider', 'provider.vision_declared', id, { count: visionDeclared });
+    }
+    audit.log('provider', 'provider.update', id, { fields });
+    const updated = store.findById(id);
+    return toSummary(updated ?? row);
   }
 
   async function remove(id: string): Promise<void> {
@@ -345,5 +451,5 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
     });
   }
 
-  return { create, list, get, remove, setKey, getKey, test, clientFor };
+  return { create, list, get, update, remove, setKey, getKey, test, clientFor };
 }

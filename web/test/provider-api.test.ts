@@ -21,6 +21,7 @@ function providerSummary(overrides: Partial<ProviderSummary> = {}): ProviderSumm
     source: 'manual',
     endpoint: 'https://api.ne1.dev/v1',
     defaultModels: [],
+    visionModels: [],
     enabled: true,
     budgetCents: null,
     createdAt: 1,

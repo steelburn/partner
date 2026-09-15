@@ -196,6 +196,14 @@ export interface ProviderRow {
   endpoint: string;
   /** JSON array of model ids reported by the last probe (null = none). */
   defaultModels: string | null;
+  /**
+   * M24 (v20) JSON array of model ids the user declared image-capable for this
+   * profile (null = none declared). Read alongside `defaultModels`: a model
+   * listed here rides chat turns as an inline image part even when its id
+   * matches no vision-name hint — which is the normal case behind a gateway
+   * that aliases models (LiteLLM `model_name`).
+   */
+  visionModels: string | null;
   /** 0 | 1. */
   enabled: number;
   /** Optional per-session spend cap in USD cents (null = off). */
@@ -218,6 +226,7 @@ export type ProviderRowPatch = Partial<
     | 'purpose'
     | 'endpoint'
     | 'defaultModels'
+    | 'visionModels'
     | 'enabled'
     | 'budgetCents'
     | 'keyRef'

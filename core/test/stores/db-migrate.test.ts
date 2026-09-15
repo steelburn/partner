@@ -30,10 +30,13 @@ describe('M11 schema v12 (guarded columns)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(19);
+      expect(SCHEMA_VERSION).toBe(20);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');
+      // M24 v20: the per-provider vision declaration (models the user says can
+      // see, so a gateway alias is no longer decided by name).
+      expect(columnNames(db, 'providers')).toContain('vision_models');
       expect(columnNames(db, 'conversations')).toContain('folder_id');
       expect(columnNames(db, 'messages')).toContain('content_type');
       // M16 v14: lineage columns + version/graph tables (PLAN-M16.md).
@@ -117,12 +120,15 @@ describe('M11 schema v12 (guarded columns)', () => {
         .prepare('SELECT content_type AS contentType FROM messages WHERE id = ?')
         .get('m-x') as { contentType: string };
       const provider = db
-        .prepare('SELECT purpose FROM providers WHERE id = ?')
-        .get('p-x') as { purpose: string };
+        .prepare('SELECT purpose, vision_models AS visionModels FROM providers WHERE id = ?')
+        .get('p-x') as { purpose: string; visionModels: string | null };
 
       expect(conversation.folderId).toBeNull();
       expect(message.contentType).toBe('text');
       expect(provider.purpose).toBe('general');
+      // M24: a pre-v20 row declares nothing, which is exactly the old behaviour
+      // (name hints only) — an upgrade must not invent a vision capability.
+      expect(provider.visionModels).toBeNull();
     } finally {
       db.close();
     }

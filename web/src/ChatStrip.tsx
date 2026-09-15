@@ -7,7 +7,7 @@ import type {
   ConversationMessage,
   ProviderSummary,
 } from '@partner/shared';
-import { describeBytes, isImageCapableModel } from '@partner/shared';
+import { describeBytes, declaredVisionModels, isImageCapableModel, MAX_INLINE_IMAGES_PER_TURN } from '@partner/shared';
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import { ApiRequestError, listProviders, streamChat, type StreamDoneMeta } from './lib/api.js';
 import { purposeLabel } from './lib/providers.js';
@@ -17,7 +17,7 @@ import { decidePending } from './lib/tools.js';
 import {
   deleteAttachment,
   fetchAttachmentContent,
-  fetchUploadLimit,
+  fetchUploadCaps,
   listAttachments,
   uploadAttachment,
 } from './lib/attachments.js';
@@ -209,6 +209,12 @@ export default function ChatStrip({
    */
   const [maxUploadBytes, setMaxUploadBytes] = useState<number | null>(null);
   /**
+   * M24: the core's INLINE image budget (smaller than the upload cap). Images
+   * over it are re-encoded before upload, because a photo the turn cannot send
+   * is a photo the persona will tell you never arrived.
+   */
+  const [maxInlineImageBytes, setMaxInlineImageBytes] = useState<number | null>(null);
+  /**
    * M13 per-turn model picker: explicit (providerId, model) for the NEXT
    * message; null = Auto (persona routing). When an image is staged and the
    * picker is still on Auto, a vision-capable suggestion is auto-applied
@@ -221,13 +227,53 @@ export default function ChatStrip({
   const suggestApplied = useRef(false);
   /** M13: an inline image is staged for the next message. */
   const stagedHasImage = staged.some((meta) => meta.mime.startsWith('image/'));
+  /**
+   * M24: can this pick actually receive the photo? Answers with the serving
+   * profile's DECLARATIONS in hand (models ticked image-capable, or any model
+   * pinned to a `vision` purpose), not the model name alone — behind a gateway
+   * the id is an alias the core cannot judge. Falls back to the name heuristic
+   * when the provider is not in the picker list.
+   */
+  const pickSeesImages = (model: string, providerId?: string): boolean => {
+    const provider =
+      (providerId !== undefined
+        ? availableProviders.find((p) => p.id === providerId)
+        : undefined) ??
+      availableProviders.find((p) => p.defaultModels.includes(model));
+    return isImageCapableModel(model, declaredVisionModels(provider));
+  };
+  /**
+   * M24: an attached photo bigger than the core's inline budget cannot ride the
+   * turn. The composer re-encodes on the way in, so this only fires when the
+   * core states a smaller budget than the encode used — say so instead of
+   * letting the persona be the one to report a missing image.
+   */
+  const oversizedStagedImage =
+    maxInlineImageBytes === null
+      ? null
+      : staged.find(
+          (meta) => meta.mime.startsWith('image/') && meta.size > maxInlineImageBytes,
+        ) ?? null;
+  /**
+   * M24: a turn carries at most `MAX_INLINE_IMAGES_PER_TURN` photos to the
+   * model. Staging more is not an error, but the extras must not be mistaken
+   * for sent ones — that silence is the whole bug this milestone closes.
+   */
+  const stagedImageCount = staged.filter((meta) => meta.mime.startsWith('image/')).length;
+  const unbilledImageCount = Math.max(0, stagedImageCount - MAX_INLINE_IMAGES_PER_TURN);
   /** M13: one-line explanation of what the next message will use. */
   const stagedInlineImageNote = stagedHasImage
-    ? turnModel === null
-      ? 'Auto — a vision-capable model reads attached photos when the persona model cannot.'
-      : `Photo attached — this turn uses ${turnModel.model}${
-          isImageCapableModel(turnModel.model) ? ' (vision)' : ''
-        }.`
+    ? oversizedStagedImage !== null
+      ? `${oversizedStagedImage.name} is larger than the core can send to a model — remove it or attach a smaller copy.`
+      : unbilledImageCount > 0
+        ? `Only ${MAX_INLINE_IMAGES_PER_TURN} photos can ride one message — ${unbilledImageCount} of the ${stagedImageCount} attached will not be sent.`
+        : turnModel === null
+          ? 'Auto — a vision-capable model reads attached photos when the persona model cannot.'
+          : `Photo attached — this turn uses ${turnModel.model}${
+              pickSeesImages(turnModel.model, turnModel.providerId)
+                ? ' (vision).'
+                : ', which cannot receive photos — pick a vision model (or declare one in Providers) so the persona is actually shown it.'
+            }`
     : turnModel === null
       ? null
       : `Sending with ${turnModel.model} for this turn.`;
@@ -253,14 +299,18 @@ export default function ChatStrip({
   const [unseen, setUnseen] = useState(0);
   const seenLenRef = useRef(0);
 
-  // R7: read the upload cap once so the composer can refuse an over-size file
-  // before uploading it. A failure is not surfaced: nothing is broken, the
-  // pre-check is simply unavailable and the server still answers.
+  // R7/M24: read BOTH byte budgets once. The upload cap lets the composer
+  // refuse an over-size file before uploading it; the inline cap is what an
+  // image is encoded down to, so the attached photo is small enough to ride to
+  // the model. A failure is not surfaced: nothing is broken, the pre-check is
+  // simply unavailable and the server still answers.
   useEffect(() => {
     let cancelled = false;
-    fetchUploadLimit()
-      .then((limit) => {
-        if (!cancelled) setMaxUploadBytes(limit);
+    fetchUploadCaps()
+      .then((caps) => {
+        if (cancelled) return;
+        setMaxUploadBytes(caps.maxUploadBytes);
+        setMaxInlineImageBytes(caps.maxInlineImageBytes);
       })
       .catch(() => undefined);
     return () => {
@@ -541,10 +591,16 @@ export default function ChatStrip({
       for (const file of Array.from(files)) {
         let prepared: PreparedUpload;
         try {
-          // iPhone photos arrive as HEIC here and leave as JPEG (see
-          // lib/image-convert.ts); the cap is enforced on what is actually
-          // uploaded, so a huge HEIC is converted rather than refused.
-          prepared = await prepareAttachmentForUpload(file, maxUploadBytes);
+          // iPhone photos arrive as HEIC here and leave as JPEG; an image too
+          // heavy to ride to the model is re-encoded to the inline budget as
+          // well (see lib/image-convert.ts). The cap is enforced on what is
+          // actually uploaded, so a huge HEIC is converted rather than refused.
+          prepared = await prepareAttachmentForUpload(
+            file,
+            maxUploadBytes,
+            {},
+            maxInlineImageBytes,
+          );
         } catch (cause) {
           problems.push(
             cause instanceof Error ? cause.message : 'Could not read that file.',
@@ -986,7 +1042,8 @@ export default function ChatStrip({
       (a, b) => (b.purpose === 'vision' ? 1 : 0) - (a.purpose === 'vision' ? 1 : 0),
     );
     for (const p of ordered) {
-      const model = p.defaultModels.find((m) => isImageCapableModel(m));
+      const declared = declaredVisionModels(p);
+      const model = p.defaultModels.find((m) => isImageCapableModel(m, declared));
       if (model !== undefined) return { providerId: p.id, model };
     }
     return null;
@@ -1473,7 +1530,9 @@ export default function ChatStrip({
                   {provider.defaultModels.map((model) => (
                     <option key={`${provider.id}:${model}`} value={`${provider.id}::${model}`}>
                       {model}
-                      {isImageCapableModel(model) ? ' · vision' : ''}
+                      {isImageCapableModel(model, declaredVisionModels(provider))
+                        ? ' · vision'
+                        : ''}
                     </option>
                   ))}
                 </optgroup>

@@ -781,6 +781,38 @@ textarea {
   color: var(--text-muted);
 }
 
+/* M24: a model chip the user can declare image-capable. Same chip, made
+   pressable — the border is what signals "this one is a decision", and the
+   accent state is the decision made. */
+.chip-toggle {
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.chip-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.chip-toggle:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.chip-vision-on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.provider-vision-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
 .row-form {
   margin-top: var(--space-1);
   display: flex;

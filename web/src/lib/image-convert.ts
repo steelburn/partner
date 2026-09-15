@@ -1,25 +1,30 @@
 /**
- * R7 follow-up — attach iPhone photos as JPEG.
+ * Chat image preparation — attach what the model will actually receive.
  *
- * HEIC/HEIF is what an iPhone camera writes, but almost nothing downstream can
- * read it: the core's allowlist refuses it, the transcript preview cannot
- * render it outside WebKit, and most model providers cannot decode
- * `image/heic` at all. iOS Safari usually transcodes on a file input, which is
- * why the common case appeared to work — but a `.heic` from Files/iCloud, a
- * drag-and-drop on macOS, or any other browser arrives unconverted.
+ * Two jobs, one seam:
  *
- * So the CONVERSION happens here, on the device that has the codec: the photo
- * is decoded through the platform image pipeline (WebKit reads HEIC), drawn to
- * a canvas and re-encoded as JPEG. Only the JPEG is ever uploaded.
+ *  1. **HEIC/HEIF → JPEG.** That is what an iPhone camera writes, and almost
+ *     nothing downstream reads it: the core's allowlist refuses it, the
+ *     transcript cannot render it outside WebKit, and most providers cannot
+ *     decode `image/heic` at all. iOS Safari usually transcodes on a file input
+ *     — but a `.heic` from Files/iCloud, a macOS drag-and-drop, or any other
+ *     browser arrives unconverted. The conversion happens HERE, on the device
+ *     that has the codec.
+ *  2. **Fitting the inline budget (M24).** The core stores files up to
+ *     `maxUploadBytes` but only inlines an image up to `maxInlineImageBytes`.
+ *     Encoding to the larger number produced photos that uploaded, thumbnailed,
+ *     and were then silently dropped from the turn — the persona said "no image
+ *     was sent" while the user could see it attached. Anything image-shaped and
+ *     over the INLINE budget is re-encoded here until it fits, so the bytes that
+ *     arrive are the bytes the model reads.
  *
  * Two consequences worth stating plainly:
  *  - the re-encode drops the original metadata, including GPS EXIF. Nothing is
  *    uploaded that the canvas did not re-draw.
  *  - the geometry is decided here (`fitWithin`), so a 48 MP photo is resized to
- *    a sane edge BEFORE the upload cap is consulted, and the cap is then
- *    enforced on the bytes actually produced.
+ *    a sane edge BEFORE either cap is consulted.
  */
-import { attachmentTooLargeMessage } from '@partner/shared';
+import { attachmentTooLargeMessage, MAX_INLINE_IMAGE_BYTES } from '@partner/shared';
 
 /** A decoded source: `createImageBitmap` output, or an `<img>` fallback. */
 export type DecodedImage = ImageBitmap | HTMLImageElement;
@@ -47,16 +52,21 @@ export interface EncodeAttempt {
 }
 
 /**
- * The quality/size ladder, tried in order until the result fits the cap. The
- * first two attempts keep the full 4096px edge (iPhone 12 MP is 4032px, so it
- * is NOT resized) and give up quality first; only the third trades resolution,
- * because a blurry photo is worse than a slightly-compressed one. `MAX_EDGE`
- * also stays inside the iOS canvas-area limit.
+ * The quality/size ladder, tried in order until the result fits the budget. It
+ * starts where the old three-rung ladder started (so a 12 MP iPhone photo keeps
+ * its full 4032px edge and gives up quality first — a blurry photo is worse
+ * than a slightly-compressed one) and now KEEPS GOING: the budget to hit is the
+ * inline one (3 MB), which a 4096px q0.9 JPEG of a detailed scene can exceed,
+ * and stopping early meant that photo was stored, thumbnailed, and never sent.
+ * `MAX_EDGE` also stays inside the iOS canvas-area limit.
  */
 const ATTEMPTS: ReadonlyArray<EncodeAttempt> = [
   { maxEdge: 4096, quality: 0.9 },
-  { maxEdge: 4096, quality: 0.75 },
-  { maxEdge: 2560, quality: 0.75 },
+  { maxEdge: 4096, quality: 0.8 },
+  { maxEdge: 3072, quality: 0.8 },
+  { maxEdge: 2048, quality: 0.8 },
+  { maxEdge: 2048, quality: 0.7 },
+  { maxEdge: 1536, quality: 0.7 },
 ];
 
 const HEIC_TYPES: ReadonlySet<string> = new Set([
@@ -170,8 +180,10 @@ async function encodeWithPlatform(source: DecodedImage, attempt: EncodeAttempt):
   return blob;
 }
 
-function unreadableMessage(name: string): string {
-  return `${name} could not be converted to JPEG — this browser cannot read HEIC. Save it as a JPEG first, or attach it from Safari.`;
+function unreadableMessage(name: string, heic: boolean): string {
+  return heic
+    ? `${name} could not be converted to JPEG — this browser cannot read HEIC. Save it as a JPEG first, or attach it from Safari.`
+    : `${name} could not be resized to fit the image limit — this browser could not decode it. Try attaching a JPEG or PNG.`;
 }
 
 /**
@@ -184,21 +196,36 @@ export async function convertToJpeg(
   cap: number | null,
   deps: ConvertDeps = {},
 ): Promise<PreparedUpload> {
+  return reEncodeToJpeg(file, cap, deps);
+}
+
+/**
+ * Decode `file`, then re-encode it as JPEG trying each rung of the ladder until
+ * the result fits `budget` (null = no budget: one good attempt).
+ *
+ * Exported as `convertToJpeg` for the HEIC path and used internally for any
+ * over-budget image — the mechanics are identical, only the reason differs.
+ */
+async function reEncodeToJpeg(
+  file: { name: string; size: number } & Blob,
+  budget: number | null,
+  deps: ConvertDeps = {},
+): Promise<PreparedUpload> {
   const decode = deps.decode ?? decodeWithPlatform;
   const encode = deps.encode ?? encodeWithPlatform;
   let source: DecodedImage;
   try {
     source = await decode(file);
   } catch {
-    throw new Error(unreadableMessage(file.name));
+    throw new Error(unreadableMessage(file.name, isHeicLike(file)));
   }
   try {
-    // With no stated cap there is nothing to fit: one good attempt.
-    const attempts = cap === null ? ATTEMPTS.slice(0, 1) : ATTEMPTS;
+    // With no stated budget there is nothing to fit: one good attempt.
+    const attempts = budget === null ? ATTEMPTS.slice(0, 1) : ATTEMPTS;
     let smallest: Blob | null = null;
     for (const attempt of attempts) {
       const blob = await encode(source, attempt);
-      if (cap === null || blob.size <= cap) {
+      if (budget === null || blob.size <= budget) {
         return {
           data: blob,
           name: jpegName(file.name),
@@ -210,30 +237,59 @@ export async function convertToJpeg(
       if (smallest === null || blob.size < smallest.size) smallest = blob;
     }
     const name = jpegName(file.name);
-    throw new Error(attachmentTooLargeMessage(cap as number, { name, size: smallest?.size ?? 0 }));
+    throw new Error(
+      attachmentTooLargeMessage(budget as number, { name, size: smallest?.size ?? 0 }),
+    );
   } finally {
     if (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) source.close();
   }
 }
 
+/** Is this the kind of file the model receives as an image part? */
+export function isImageFile(file: { name: string; type: string }): boolean {
+  const mime = file.type.trim().toLowerCase();
+  if (mime.startsWith('image/')) return true;
+  // Untyped downloads and some pickers hand over `""`/octet-stream; the
+  // extension is the only signal left, and a mis-typed photo is common enough
+  // to be worth catching (the core allowlists by declared mime, so a file that
+  // is not really an image still cannot sneak through).
+  return /\.(png|jpe?g|webp|gif|heic|heif)$/i.test(file.name.trim());
+}
+
 /**
  * What the composer should upload for one chosen file.
  *
- * NON-HEIC files pass through untouched (a JPEG has already been through the
- * camera's encoder; re-encoding it would only lose quality), and the cap is
- * checked against the real byte count. HEIC files are converted first — and
- * deliberately NOT size-checked first: a 9 MB HEIC is a perfectly good photo
- * that becomes a 2 MB JPEG, so refusing it on size would refuse exactly the
- * file this whole path exists for.
+ * Images that already fit the INLINE budget pass through untouched (a JPEG has
+ * been through the camera's encoder; re-encoding it would only lose quality).
+ * Everything image-shaped that does NOT fit is decoded and re-encoded until it
+ * does — that is the only way the attached photo can ride to the model, and
+ * silently uploading bytes the turn will drop is the bug this closes.
+ *
+ * HEIC is always converted (nothing downstream decodes it) and deliberately NOT
+ * size-checked first: a 9 MB HEIC is a perfectly good photo that becomes a small
+ * JPEG, so refusing it on size would refuse exactly the file this path exists
+ * for.
  */
 export async function prepareAttachmentForUpload(
   file: File,
   cap: number | null,
   deps: ConvertDeps = {},
+  /**
+   * M24: the core's inline image budget. Defaults to the shared constant so a
+   * caller that never learned the server's value still produces sendable
+   * photos; the composer passes `/v1/health`'s number when it has one.
+   */
+  inlineCap: number | null = MAX_INLINE_IMAGE_BYTES,
 ): Promise<PreparedUpload> {
-  if (isHeicLike(file)) return convertToJpeg(file, cap, deps);
+  if (isHeicLike(file)) return reEncodeToJpeg(file, effectiveImageBudget(cap, inlineCap), deps);
   if (cap !== null && file.size > cap) {
     throw new Error(attachmentTooLargeMessage(cap, { name: file.name, size: file.size }));
+  }
+  const budget = effectiveImageBudget(cap, inlineCap);
+  if (isImageFile(file) && budget !== null && file.size > budget) {
+    // Not a refusal: the photo is real, it is just too heavy to ride. Shrink it
+    // to the budget instead of storing a file the model will never be shown.
+    return reEncodeToJpeg(file, budget, deps);
   }
   return {
     data: file,
@@ -242,4 +298,11 @@ export async function prepareAttachmentForUpload(
     size: file.size,
     converted: false,
   };
+}
+
+/** The byte budget an image must fit: the tighter of store-cap and inline-cap. */
+function effectiveImageBudget(cap: number | null, inlineCap: number | null): number | null {
+  if (cap === null) return inlineCap;
+  if (inlineCap === null) return cap;
+  return Math.min(cap, inlineCap);
 }

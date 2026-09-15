@@ -22,6 +22,7 @@
  * configured" result.
  */
 import type { Persona, ProviderPurpose, ProviderSummary, TaskClass } from '@partner/shared';
+import { declaredVisionModels } from '@partner/shared';
 import { isImageCapableModel } from './vision.js';
 import type { ProviderManager } from '../providers/providerManager.js';
 
@@ -46,10 +47,16 @@ export function purposeOrderForTaskClass(taskClass: TaskClass): ProviderPurpose[
  * M13 image-turn vision upgrade (see PLAN-M13.md). When a turn carries an
  * inline image but routing landed on a model that cannot see it, find the
  * best vision-capable replacement: (1) the persona's own `vision` task-class
- * mapping when it resolves to an image-capable model, else (2) the first
+ * mapping when it can see, else (2) the first
  * image-capable model among the enabled providers' default model lists,
  * preferring the persona's pinned provider, then a purpose-'vision'
  * provider, then creation order. Returns null when nothing can see images.
+ *
+ * "Can see" is `isImageCapableModel` against the candidate provider's
+ * DECLARATIONS (M24): a model ticked as image-capable, or any model pinned to
+ * a `vision`-purpose profile, qualifies even when its id is an unrecognisable
+ * gateway alias. Without that, a photo attached to a turn routed by name-only
+ * heuristics found no vision model at all and the image was dropped.
  */
 export interface ImageTurnUpgrade {
   provider: ProviderSummary;
@@ -69,7 +76,8 @@ export function resolveImageTurnUpgrade(options: {
   const personaVision = persona?.model.taskClasses.vision;
   if (personaVision !== undefined && personaVision.trim() !== '') {
     const routed = resolveChatModel({ persona, providers: options.providers, taskClass: 'vision' });
-    if (routed.provider !== null && isImageCapableModel(routed.model)) {
+    const declared = declaredVisionModels(routed.provider);
+    if (routed.provider !== null && isImageCapableModel(routed.model, declared)) {
       return { provider: routed.provider, model: routed.model };
     }
   }
@@ -81,7 +89,8 @@ export function resolveImageTurnUpgrade(options: {
     p.id === pinnedId ? 3 : p.purpose === 'vision' ? 2 : 1;
   const ordered = [...enabled].sort((a, b) => rank(b) - rank(a));
   for (const p of ordered) {
-    const model = p.defaultModels.find((m) => isImageCapableModel(m));
+    const declared = declaredVisionModels(p);
+    const model = p.defaultModels.find((m) => isImageCapableModel(m, declared));
     if (model !== undefined) return { provider: p, model };
   }
   return null;

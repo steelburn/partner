@@ -74,11 +74,19 @@ app invisibly — the desktop reports the conflict and refuses to use it. Stop
 the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 “already serving …”, something else still holds :4390.
 
-## Status (2026-09-14)
+## Status (2026-09-16)
 
-M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1292 passed** (5 env-gated skips) · web **733 passed** · typechecks 0 ·
-web build green. An **M11 F12 follow-up** renders a fenced ```html code block
+M0–M24 implemented (PLAN.md §15): schema **v20**; current root
+suite **1333 passed** (5 env-gated skips) · web **742 passed** · typechecks 0 ·
+web build green. **M24 fixes attached photos never reaching the model** — the
+partner replied "I didn't receive an image" for a model that reads it fine when
+tested directly against LiteLLM. Capability is now *declared* per provider
+(`providers.vision_models`, click a model chip on the provider card, or any model
+on a `vision` profile) instead of guessed from the model id, images are encoded to
+the inline budget (3 MiB, published as `maxInlineImageBytes`) rather than the
+upload cap (8 MiB) so a stored photo is also a sent one, and a turn can carry
+several photos instead of one. M24's locally-green exit is recorded; the live
+walk against a real gateway is still open (§15). An **M11 F12 follow-up** renders a fenced ```html code block
 inline beside its sandboxed result in chat, the assets read view and the new
 note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
 fact detection a user-level setting independent of each persona's private-memory
@@ -692,6 +700,42 @@ provenance chip. Suites after the pass: core **893 passed** (5 env-gated
 skips) · web **541 passed** · typechecks 0 · web build green · `ux_audit`
 green; later follow-ups (turn-target fallback, independent global consent)
 kept the suites green. Spec: `PLAN-M19.md`.
+
+### M24 — attached photos actually reach the model (2026-09-16, fix)
+
+The bug: a photo attached in chat produced “I didn’t receive an image” from a
+model that reads the same image fine when tested directly against LiteLLM. Three
+independent causes, all silent:
+
+1. **Capability was guessed from the model id.** A name list (`VISION_HINTS`)
+   decided whether a turn attached an `image_url` part — so an operator-chosen
+   gateway alias (`my-photo-model`, `pixtral-12b`, any LiteLLM `model_name`)
+   counted as text-only. The persona was handed nothing but the descriptor line
+   `[Image attachment: photo.jpg …]` and answered truthfully that no image
+   arrived; the M13 reroute and the chat picker could not find a vision model
+   either, because both applied the same name test. Capability is now
+   **declared**: model ids ticked image-capable on their provider
+   (`providers.vision_models`, schema **v20**), or any model on a `vision`
+   purpose profile, read through one shared rule that the core gate, the
+   resolver, the picker and the capability chips all use. Name hints stay as the
+   zero-config default, and a declaration can only ever *add* capability — an
+   upgrade never invents it (a pre-v20 row declares nothing).
+2. **The two byte budgets were conflated.** Upload fits `maxUploadBytes` (8 MiB)
+   but only `maxInlineImageBytes` (3 MiB, now shared and published on
+   `/v1/health`) can ride a turn. A normal phone photo stored, thumbnailed and
+   was then dropped from the request. The composer now re-encodes any
+   over-budget image to the inline budget — so what you attach is what the model
+   sees — and an image that still cannot ride is described to the model as
+   **NOT sent** rather than reading like a successful attachment.
+
+Declarations are editable on a working provider (`PUT /v1/providers/:id`, plus
+clickable model chips on the provider card); a model the name already recognises
+and a `vision`-purpose profile are not un-tickable, because clicking would do
+nothing. A third, smaller silent loss went with it: the image part was singular,
+so a turn attaching two photos sent one — it is now a list (up to 4 per message,
+and the composer says outright when staged photos exceed that).
+Suiting after the fix: shared **90** · root **1333 passed** · web **742 passed**
+· typechecks 0 · web build green.
 
 ### M23 — scorecard chat answers (2026-09-15, implemented)
 

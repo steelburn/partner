@@ -682,6 +682,7 @@ const AUDIT_COLUMNS = `
 
 const PROVIDER_COLUMNS = `
   id, name, kind, source, purpose, endpoint, default_models AS defaultModels,
+  vision_models AS visionModels,
   enabled, budget_cents AS budgetCents, key_ref AS keyRef,
   last_health AS lastHealth, created_at AS createdAt, updated_at AS updatedAt`;
 
@@ -739,6 +740,7 @@ type ProviderPatchKey =
   | 'purpose'
   | 'endpoint'
   | 'defaultModels'
+  | 'visionModels'
   | 'enabled'
   | 'budgetCents'
   | 'keyRef'
@@ -751,6 +753,7 @@ const PROVIDER_UPDATE_COLUMNS: Readonly<Record<string, ProviderPatchKey>> = {
   purpose: 'purpose',
   endpoint: 'endpoint',
   default_models: 'defaultModels',
+  vision_models: 'visionModels',
   enabled: 'enabled',
   budget_cents: 'budgetCents',
   key_ref: 'keyRef',
@@ -822,6 +825,10 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   ['personas', 'schedules', 'schedules TEXT'],
   // Provider purpose tag (F4). Legacy rows read as 'general'.
   ['providers', 'purpose', "purpose TEXT NOT NULL DEFAULT 'general'"],
+  // M24 (v20) vision declarations: JSON array of model ids the user marked
+  // image-capable for this profile. Legacy rows read NULL = nothing declared,
+  // which is exactly the pre-M24 behaviour (name hints only).
+  ['providers', 'vision_models', 'vision_models TEXT'],
   // Chat folder binding (F11); NULL = Inbox.
   ['conversations', 'folder_id', 'folder_id TEXT'],
   // M16 F4 discuss lineage (PLAN-M16.md); NULL = top-level discussion.
@@ -1164,9 +1171,11 @@ export function createSettingsStore(db: Database.Database): SettingsStore {
  */
 export function createProviderStore(db: Database.Database): ProviderStore {
   const insert = db.prepare(
-    `INSERT INTO providers (id, name, kind, source, purpose, endpoint, default_models, enabled,
+    `INSERT INTO providers (id, name, kind, source, purpose, endpoint, default_models,
+                            vision_models, enabled,
                             budget_cents, key_ref, last_health, created_at, updated_at)
-     VALUES (@id, @name, @kind, @source, @purpose, @endpoint, @defaultModels, @enabled,
+     VALUES (@id, @name, @kind, @source, @purpose, @endpoint, @defaultModels,
+             @visionModels, @enabled,
              @budgetCents, @keyRef, @lastHealth, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`);

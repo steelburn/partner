@@ -8,7 +8,7 @@
  * would have sent (`attachmentTooLargeMessage`).
  */
 import { describe, expect, it } from 'vitest';
-import { fetchUploadLimit, type FetchLike } from '../src/lib/attachments.js';
+import { fetchUploadCaps, fetchUploadLimit, type FetchLike } from '../src/lib/attachments.js';
 
 function healthFetch(body: unknown, calls: string[] = [], status = 200): FetchLike {
   return (async (input: string | URL | Request) => {
@@ -52,5 +52,43 @@ describe('fetchUploadLimit', () => {
     await expect(
       fetchUploadLimit({ fetchImpl: healthFetch({ error: 'nope' }, [], 500) }),
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * M24 — the composer needs BOTH budgets. Storing a file and sending a photo to
+ * a model are different limits, and the SPA previously only knew the first: it
+ * encoded a phone photo to 8 MB, uploaded it, thumbnailed it — and the turn
+ * then dropped the part over 3 MB, so the persona said "no image was sent"
+ * while the user could see the photo attached.
+ */
+describe('fetchUploadCaps', () => {
+  it('reads both budgets from one health call', async () => {
+    const calls: string[] = [];
+    const caps = await fetchUploadCaps({
+      fetchImpl: healthFetch(
+        { status: 'ok', maxUploadBytes: 8 * 1024 * 1024, maxInlineImageBytes: 3 * 1024 * 1024 },
+        calls,
+      ),
+    });
+    expect(caps).toEqual({
+      maxUploadBytes: 8 * 1024 * 1024,
+      maxInlineImageBytes: 3 * 1024 * 1024,
+    });
+    expect(calls).toEqual(['/v1/health']);
+  });
+
+  it('reports a missing inline budget as "not stated" (an older core)', async () => {
+    const caps = await fetchUploadCaps({
+      fetchImpl: healthFetch({ maxUploadBytes: 8 * 1024 * 1024 }),
+    });
+    expect(caps.maxUploadBytes).toBe(8 * 1024 * 1024);
+    expect(caps.maxInlineImageBytes).toBeNull();
+  });
+
+  it('keeps fetchUploadLimit answering with the STORE cap', async () => {
+    const caps = { maxUploadBytes: 2 * 1024 * 1024, maxInlineImageBytes: 1024 };
+    const limit = await fetchUploadLimit({ fetchImpl: healthFetch(caps) });
+    expect(limit).toBe(2 * 1024 * 1024);
   });
 });

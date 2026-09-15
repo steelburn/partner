@@ -120,6 +120,92 @@ describe('prepareAttachmentForUpload', () => {
     expect(prepared.mime).toBe('image/jpeg');
   });
 
+  // -------------------------------------------------------------------
+  // M24 — the INLINE budget, not the upload cap, decides what an image
+  // becomes. Storing a 6 MB photo a turn cannot send produced a thumbnail, a
+  // confident "photo attached" note, and a persona reporting that no image had
+  // arrived.
+  // -------------------------------------------------------------------
+
+  it('re-encodes a JPEG over the inline budget instead of uploading bytes the model never sees', async () => {
+    const big = file('photo.jpg', 'image/jpeg', 6 * 1024 * 1024);
+    const attempts: EncodeAttempt[] = [];
+    const prepared = await prepareAttachmentForUpload(
+      big,
+      8 * 1024 * 1024,
+      {
+        decode: async () => fakeSource(4032, 3024),
+        encode: async (_source, attempt) => {
+          attempts.push(attempt);
+          // Full size at top quality overshoots 3 MB; the next rung fits.
+          const first = attempt.maxEdge === 4096 && attempt.quality === 0.9;
+          return new Blob([new Uint8Array(first ? 4_000_000 : 2_000_000)]);
+        },
+      },
+      3 * 1024 * 1024,
+    );
+    expect(prepared.converted).toBe(true);
+    expect(prepared.mime).toBe('image/jpeg');
+    expect(prepared.size).toBeLessThanOrEqual(3 * 1024 * 1024);
+    expect(attempts.length).toBe(2);
+  });
+
+  it('leaves an image inside the inline budget exactly as it came', async () => {
+    const ok = file('small.png', 'image/png', 1024);
+    const prepared = await prepareAttachmentForUpload(ok, 8 * 1024 * 1024, {}, 3 * 1024 * 1024);
+    expect(prepared.converted).toBe(false);
+    expect(prepared.data).toBe(ok);
+    expect(prepared.mime).toBe('image/png');
+  });
+
+  it('tightens to the core\u2019s smaller stated inline budget, not the upload cap', async () => {
+    // A hosted core that stores 8 MB but inlines 1 MB: 2 MB must be re-encoded.
+    const prepared = await prepareAttachmentForUpload(
+      file('photo.jpg', 'image/jpeg', 2 * 1024 * 1024),
+      8 * 1024 * 1024,
+      {
+        decode: async () => fakeSource(3000, 2000),
+        encode: async () => new Blob([new Uint8Array(900_000)]),
+      },
+      1024 * 1024,
+    );
+    expect(prepared.converted).toBe(true);
+    expect(prepared.size).toBe(900_000);
+  });
+
+  it('refuses an over-UPLOAD-cap file outright, without decoding it', async () => {
+    // The two budgets stay distinct: over the store cap is a refusal — never a
+    // silent resize of a file the user meant to attach as-is.
+    await expect(
+      prepareAttachmentForUpload(file('huge.jpg', 'image/jpeg', 9 * 1024 * 1024), 8 * 1024 * 1024, {
+        decode: async () => {
+          throw new Error('must not decode a refused file');
+        },
+      }),
+    ).rejects.toThrow('huge.jpg is 9 MB — the limit is 8 MB per file.');
+  });
+
+  it('treats an untyped .JPG by extension, so a photo from Files still fits', async () => {
+    const prepared = await prepareAttachmentForUpload(
+      file('IMG_0002.JPG', '', 5 * 1024 * 1024),
+      8 * 1024 * 1024,
+      {
+        decode: async () => fakeSource(4000, 3000),
+        encode: async () => new Blob([new Uint8Array(1200)]),
+      },
+      3 * 1024 * 1024,
+    );
+    expect(prepared.converted).toBe(true);
+    expect(prepared.size).toBe(1200);
+  });
+
+  it('leaves a non-image alone however big it is (under the upload cap)', async () => {
+    const pdf = file('long.pdf', 'application/pdf', 5 * 1024 * 1024);
+    const prepared = await prepareAttachmentForUpload(pdf, 8 * 1024 * 1024, {}, 3 * 1024 * 1024);
+    expect(prepared.converted).toBe(false);
+    expect(prepared.data).toBe(pdf);
+  });
+
   it('names the mime for a file the OS could not type', async () => {
     const prepared = await prepareAttachmentForUpload(file('note.bin', ''), null);
     expect(prepared.mime).toBe('application/octet-stream');
@@ -157,42 +243,52 @@ describe('prepareAttachmentForUpload', () => {
     expect(prepared.size).toBe(2_000_000);
   });
 
-  it('steps down the ladder until the JPEG fits the cap', async () => {
+  it('steps down the ladder until the JPEG fits the budget', async () => {
     const attempts: EncodeAttempt[] = [];
     const prepared = await prepareAttachmentForUpload(file('a.heic', 'image/heic'), 1024, {
       decode: async () => fakeSource(8000, 6000),
       encode: async (_source, attempt) => {
         attempts.push(attempt);
         // Only the last rung — reduced edge AND reduced quality — fits.
-        const fits = attempt.maxEdge === 2560;
+        const fits = attempt.maxEdge === 1536;
         return new Blob([new Uint8Array(fits ? 900 : 5000)]);
       },
     });
-    // Quality is traded before resolution: the full 4096px edge is kept twice.
-    expect(attempts.map((a) => a.maxEdge)).toEqual([4096, 4096, 2560]);
-    expect(attempts.map((a) => a.quality)).toEqual([0.9, 0.75, 0.75]);
+    // Quality is traded before resolution: the full 4096px edge is kept twice —
+    // and the ladder now KEEPS GOING past it. A 12 MP photo at 4096/q0.9 can
+    // overshoot the 3 MB inline budget, and stopping there stored a photo the
+    // turn then refused to send.
+    expect(attempts.map((a) => a.maxEdge)).toEqual([4096, 4096, 3072, 2048, 2048, 1536]);
+    expect(attempts.map((a) => a.quality)).toEqual([0.9, 0.8, 0.8, 0.8, 0.7, 0.7]);
     expect(prepared.size).toBe(900);
   });
 
-  it('reports the smallest attempt when even the ladder cannot fit the cap', async () => {
+  it('reports the smallest attempt when even the ladder cannot fit the budget', async () => {
     await expect(
       prepareAttachmentForUpload(file('huge.heic', 'image/heic'), 1024, {
         decode: async () => fakeSource(8000, 6000),
         encode: async (_source, attempt) =>
-          new Blob([new Uint8Array(attempt.maxEdge === 2560 ? 1500 : 9000)]),
+          new Blob([new Uint8Array(attempt.maxEdge === 1536 ? 1500 : 9000)]),
       }),
     ).rejects.toThrow('huge.jpg is 1.5 KB — the limit is 1 KB per file.');
   });
 
-  it('makes one good attempt when the core states no cap', async () => {
+  it('makes one good attempt when the caller states no budget at all', async () => {
     const attempts: EncodeAttempt[] = [];
-    const prepared = await prepareAttachmentForUpload(file('a.heic', 'image/heic'), null, {
-      decode: async () => fakeSource(4032, 3024),
-      encode: async (_source, attempt) => {
-        attempts.push(attempt);
-        return new Blob([new Uint8Array(10_000_000)]);
+    const prepared = await prepareAttachmentForUpload(
+      file('a.heic', 'image/heic'),
+      null,
+      {
+        decode: async () => fakeSource(4032, 3024),
+        encode: async (_source, attempt) => {
+          attempts.push(attempt);
+          return new Blob([new Uint8Array(10_000_000)]);
+        },
       },
-    });
+      // Explicitly budget-free: the inline budget is a floor the composer
+      // normally honours, so "no budget at all" has to be asked for.
+      null,
+    );
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toEqual({ maxEdge: 4096, quality: 0.9 });
     expect(prepared.size).toBe(10_000_000);

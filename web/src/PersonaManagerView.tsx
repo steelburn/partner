@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import { PersonaCompare } from './PersonaCompare.js';
-import { isImageCapableModel } from '@partner/shared';
+import { declaredVisionModels, isImageCapableModel } from '@partner/shared';
 import type {
   Folder,
   IndependenceLevel,
@@ -863,16 +863,25 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
                     {currentListed ? null : (
                       <option value={current}>{current} — saved, not in your providers</option>
                     )}
-                    {groups.map((group) => (
-                      <optgroup key={group.providerId} label={group.label}>
-                        {group.models.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                            {isImageCapableModel(model) ? ' · vision' : ''}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
+                    {groups.map((group) => {
+                      // M24: the "vision" mark has to agree with what the core
+                      // decides at send time, which includes the models this
+                      // profile DECLARES capable (ticks, or a `vision`
+                      // purpose) — not just what the id looks like.
+                      const declared = declaredVisionModels(
+                        providers?.find((p) => p.id === group.providerId),
+                      );
+                      return (
+                        <optgroup key={group.providerId} label={group.label}>
+                          {group.models.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                              {isImageCapableModel(model, declared) ? ' · vision' : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
                   </select>
                 ) : (
                   <span className="persona-model-auto">{option.hint}</span>

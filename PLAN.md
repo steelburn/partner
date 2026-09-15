@@ -168,6 +168,17 @@ user enabled. All tool execution funnels through one permission broker.
   vision / cheap); Partner resolves it to a concrete model per provider,
   with fallback chain (primary → secondary → user prompt). Overridable per
   persona and per conversation.
+- **Vision capability is declared, not guessed (M24).** A model receives an
+  attached photo when the user declared it capable on its provider — the
+  per-model ticks (`providers.vision_models`), or any model pinned to a
+  `vision`-purpose profile — or when its id matches a known vision family
+  (`shared/src/vision.ts`). The declaration must win because an
+  OpenAI-compatible gateway's model ids are **operator-chosen aliases**
+  (LiteLLM's `model_name`): a name-only rule decided "text" for models that
+  can see, the image part was never attached, and the persona reported that
+  no image had been sent. One decision function (`isImageCapableModel` +
+  `declaredVisionModels`) serves the core's gate, the reroute resolver, the
+  chat picker and the capability chips.
 - Streaming (SSE), tool-call loop, and usage telemetry are surfaced in the UI
   so the user sees cost/model per turn against any budget they set.
 
@@ -482,7 +493,7 @@ any Partner-owned server (there is none in v1).
 
 | Table | Purpose |
 |---|---|
-| `providers` | endpoint profile (no key material; `keyRef` only) |
+| `providers` | endpoint profile (no key material; `keyRef` only) + declared image-capable model ids (M24) |
 | `personas` | persona JSON (§5) + independence/schedules, capability policy |
 | `profile_entries` | user Profile facts (confirmed/suggested/rejected; `persona_scope` null = global) |
 | `episodes` | conversation summaries (persona namespace) |
@@ -511,15 +522,19 @@ any Partner-owned server (there is none in v1).
 | `pairings` / `sessions` | device/origin pairing + session tokens; sessions gain `user_id`, client class, device label/platform and `rotated_at` (M20) — **`kind` is deliberately NOT widened**: it is the audit actor for 7 routes |
 | `audit_log` | append-only activity |
 
-Schema is `v19` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
-`personas.policy`/`home_folder`/`schedules`, `providers.purpose`,
-`conversations.folder_id`/`parent_id`/`source_asset_id`,
+Schema is `v20` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+`personas.policy`/`home_folder`/`schedules`, `providers.purpose`/
+`vision_models`, `conversations.folder_id`/`parent_id`/`source_asset_id`,
 `messages.content_type`, `pending_tools.conversation_id`/`persona_id`, and —
 M20.B — `sessions.user_id`/`client_class`/`device_label`/`platform`/`rotated_at`).
 `v17` added the `users` + `user_credentials` tables; `v18` added the session
 columns; `v19` (M20-B S9) added `key_wraps` (the passphrase-wrapped partition key)
 and `users.keep_unlocked` (the per-user, audited opt-in that keeps a key in the
-keychain so that user's schedules can run while nobody is signed in).
+keychain so that user's schedules can run while nobody is signed in); `v20` (M24)
+added `providers.vision_models` — the models the user declares image-capable, so
+a gateway alias can receive photos. A pre-v20 row reads `NULL` = nothing
+declared, which is exactly the old name-only behaviour (an upgrade never invents
+a capability).
 
 **M20 partitions by user and by trust tier:** one whole-file-encrypted DB +
 cipher key + skills dir per user under `data/users/<id>/` (generalizing the
@@ -561,7 +576,9 @@ REST + SSE + WebSocket events, all behind pairing/session auth:
 function calls) and `{noPersist:true}` (A/B compare — streams, saves nothing)
 
 Later milestones extend this surface: providers by purpose
-(`/v1/providers/discover`, `/v1/providers/purposes` — M13); live desktop
+(`/v1/providers/discover`, `/v1/providers/purposes` — M13) and edited in place
+(`PUT /v1/providers/:id` — M24, non-secret fields only: model lists, vision
+declarations, purpose, name, enabled, budget); live desktop
 pairing (`/v1/pair/device`, `/v1/boot` — M15); notes knowledge workspace
 (`/v1/notes/graph` + `/graph/positions`, `/v1/notes/:id/versions` +
 `/restore`, `/v1/notes/brainstorm`, `/v1/conversations/:id/assets` +
@@ -604,6 +621,16 @@ SPA** (`web/src/lib/image-convert.ts`: platform decode → canvas → JPEG, 4096
 edge) because the core, the preview and the model providers cannot read HEIC;
 the core keeps refusing an unconverted `image/heic` with a message that says to
 attach it as JPEG.
+
+M24 separates the **two byte budgets a photo meets**, which is what made photos
+vanish: `maxUploadBytes` (8 MiB) is what the core will *store*,
+`maxInlineImageBytes` (`MAX_INLINE_IMAGE_BYTES`, 3 MiB, shared) is what can
+*ride a turn to the model*. Fitting the first produced files that stored,
+thumbnailed and were then dropped from the request. `/v1/health` now publishes
+both, and the composer encodes any image-shaped upload down to the smaller one
+(a 6 MB JPEG is resized rather than silently withheld), so what you attach is
+what the model receives. An image that still cannot ride is described to the
+model as **NOT sent** instead of reading like a successful attachment.
 
 M20 adds a server surface (PLAN-M20-B.md). **Implemented:**
 `GET /v1/devices` + `POST /v1/devices/:id/revoke` + `POST /v1/devices/revoke-all`
@@ -741,7 +768,8 @@ apps/partner/
       `PLAN-M13.md`).** Image-turn vision handoff (implicit text-model
       turns with an attached photo reroute to a vision-capable model;
       explicit picks never overridden; shared vision capability in
-      `shared/src/vision.ts`); per-message model picker in chat
+      `shared/src/vision.ts` — NOTE: the capability RULE changed in M24,
+      which made it declared-per-provider rather than name-matching only); per-message model picker in chat
       (`providerId` + `model` per turn); purpose-provider bundle with model
       assignment (`POST /v1/providers/discover` + `/v1/providers/purposes`
       `modelPins`: one endpoint + key → one profile per purpose carrying
@@ -1413,6 +1441,50 @@ apps/partner/
       green. (The root suite's scrypt-heavy auth/partition files time out under
       parallel CPU load both at HEAD and here — a pre-existing environment
       flake, green in isolation with a raised timeout.)*
+
+- [ ] **M24 — Make attached photos actually reach the model (fix; 2026-09-16).**
+      Fixes the reported failure "the partner says it never received the image"
+      while the same model reads the image fine when tested directly against
+      LiteLLM. Three independent causes, all silent:
+      **(1) capability was guessed from the model name.** `VISION_HINTS` decided
+      whether a turn attached an `image_url` part, so an operator-chosen gateway
+      alias (`my-photo-model`, `pixtral-12b`, any LiteLLM `model_name`) counted
+      as text-only: the persona was handed just the descriptor line
+      `[Image attachment: …]` and correctly answered that no image arrived — and
+      neither the M13 reroute nor the chat picker could find a vision model, both
+      applying the same name test. Capability is now DECLARED: `providers.vision_models`
+      (schema **v20**) plus every model on a `vision`-purpose profile, read through
+      one shared function (`declaredVisionModels` + `isImageCapableModel(model,
+      declared)`) used by the core's gate, the reroute resolver, the chat picker
+      and the capability chips; hints remain the zero-config default and a
+      declaration can only ADD capability. Edited in place via
+      `PUT /v1/providers/:id` and model chips on the provider card (a
+      name-recognised model and a vision-purpose profile are not un-tickable —
+      clicking would be a no-op). **(2) the two byte budgets were conflated.**
+      Upload fits `maxUploadBytes` (8 MiB) but only `MAX_INLINE_IMAGE_BYTES`
+      (3 MiB, now shared + published on `/v1/health` as `maxInlineImageBytes`)
+      can ride a turn, so a normal phone photo stored, thumbnailed and was then
+      dropped from the request; the composer now re-encodes any over-budget image
+      (ladder extended to 6 rungs) to the inline budget, and an image that still
+      cannot ride is described to the model as **NOT sent** rather than reading
+      like a success. **(3) a multi-photo turn sent only one image.** The part
+      was singular (`ChatMessage.image`, `metas[0]`), so a second attached photo
+      was silently withheld; it is now `ChatMessage.images`, serialized as one
+      `image_url` per photo in attach order and bounded by
+      `MAX_INLINE_IMAGES_PER_TURN` (4) — with the composer stating outright when
+      staged photos exceed that. Also closes a latent trap:
+      `isImageCapableModel` is used as a bare `filter` callback, so it must
+      ignore the extra index/array arguments.
+      *Exit: shared 90 · root 1333 · web 742 · typechecks 0 · web build green
+      (6 new route-level image cases, incl. alias-on-vision-provider,
+      declared-alias-on-general, handoff-to-alias, no-invented-capability,
+      both-photos-ride, and the over-budget NOT-sent descriptor). Env-gated
+      remains: a real api.ne1.dev walk attaching a photo to a turn and reading it
+      back.*
+      *State: implemented + locally green (suites/typechecks/build above). The
+      live packaged walk against the user's own LiteLLM endpoint is env-gated and
+      has not been executed — that is the case this fix was written for, so it is
+      the one worth walking.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

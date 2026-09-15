@@ -326,7 +326,7 @@ describe('M11 multimodal image parts', () => {
       client.chatStream(
         chatRequest({
           messages: [
-            { role: 'user', content: 'what is this?', image: { mime: 'image/png', dataBase64: 'QUJD' } },
+            { role: 'user', content: 'what is this?', images: [{ mime: 'image/png', dataBase64: 'QUJD' }] },
           ],
         }),
       ),
@@ -339,6 +339,74 @@ describe('M11 multimodal image parts', () => {
         { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
       ],
     });
+  });
+
+  it('serializes EVERY image of a multi-photo turn, in order', async () => {
+    // Attaching two photos and having only the first leave the machine is the
+    // same class of silent loss as dropping the image entirely.
+    let body: { messages?: unknown[] } | undefined;
+    const s = await captureServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      req.on('end', () => {
+        body = JSON.parse(raw) as { messages?: unknown[] };
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    await collect(
+      client.chatStream(
+        chatRequest({
+          messages: [
+            {
+              role: 'user',
+              content: 'compare these',
+              images: [
+                { mime: 'image/png', dataBase64: 'QUJD' },
+                { mime: 'image/jpeg', dataBase64: 'REVD' },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    expect((body?.messages ?? [])[0]).toMatchObject({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'compare these' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+        { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,REVD' } },
+      ],
+    });
+    await new Promise<void>((done) => s.server.close(() => done()));
+  });
+
+  it('an empty images list stays a plain text message', async () => {
+    let body: { messages?: unknown[] } | undefined;
+    const s = await captureServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      req.on('end', () => {
+        body = JSON.parse(raw) as { messages?: unknown[] };
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('data:\n');
+      });
+    });
+    const client = createOpenAICompatibleClient({ endpoint: s.base, apiKey: KEY });
+    await collect(
+      client.chatStream(
+        chatRequest({
+          messages: [{ role: 'user', content: 'hello', images: [] }],
+        }),
+      ),
+    );
+    expect((body?.messages ?? [])[0]).toEqual({ role: 'user', content: 'hello' });
+    await new Promise<void>((done) => s.server.close(() => done()));
   });
 
   it('leaves plain text messages byte-identical', async () => {

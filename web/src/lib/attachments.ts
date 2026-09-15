@@ -140,9 +140,40 @@ async function readErrorSafe(response: Response): Promise<string> {
 export async function fetchUploadLimit(
   options: { fetchImpl?: FetchLike } = {},
 ): Promise<number | null> {
+  return (await fetchUploadCaps(options)).maxUploadBytes;
+}
+
+/**
+ * M24: BOTH byte budgets the composer has to respect, from one /v1/health read.
+ *
+ * They are different numbers, and conflating them is a silent-data-loss bug:
+ * `maxUploadBytes` is what the core will STORE, `maxInlineImageBytes` is what
+ * can RIDE to the model. Fitting a phone photo to the upload cap produced a
+ * 4 MB JPEG that stored fine, rendered a lovely thumbnail, and was then dropped
+ * from the turn — so the persona answered "I didn't receive an image" while the
+ * user could see the photo attached. The composer now encodes images to the
+ * SMALLER budget, so what you attach is what the model sees.
+ */
+export interface UploadCaps {
+  /** Largest file the core stores (null = not stated). */
+  maxUploadBytes: number | null;
+  /** Largest image the core inlines into a turn (null = not stated). */
+  maxInlineImageBytes: number | null;
+}
+
+function positiveNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export async function fetchUploadCaps(
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<UploadCaps> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl('/v1/health', { headers: { accept: 'application/json' } });
   const body = await expectJson<unknown>(response);
-  const value = isRecord(body) ? body.maxUploadBytes : undefined;
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  const record = isRecord(body) ? body : {};
+  return {
+    maxUploadBytes: positiveNumber(record.maxUploadBytes),
+    maxInlineImageBytes: positiveNumber(record.maxInlineImageBytes),
+  };
 }

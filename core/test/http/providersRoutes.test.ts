@@ -1049,3 +1049,203 @@ describe('M13 purpose-provider bundle route', () => {
     }
   });
 });
+
+/**
+ * M24 — declaring which models can read photos, over HTTP.
+ *
+ * The route exists so a WORKING provider can be fixed in place: before it, the
+ * only way to tell Partner that a gateway alias (LiteLLM's `model_name`) can
+ * see was to delete the profile and re-add it — and until it was declared, a
+ * chat turn with an attached photo dropped the image and the persona reported
+ * that no image had been sent.
+ */
+describe('M24 vision declaration route', () => {
+  /** Minimal /models-only upstream (module scope so both M13 and M24 can use it). */
+  async function startModelsUpstreamForBundle(
+    models: string[],
+  ): Promise<{ base: string; close(): Promise<void> }> {
+    return new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        const path = (req.url ?? '').split('?')[0] ?? '';
+        if (path === '/models') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+          return;
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'nf' }));
+      });
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server.address() as AddressInfo;
+        resolve({
+          base: `http://127.0.0.1:${port}`,
+          close(): Promise<void> {
+            return new Promise((done) => {
+              server.closeAllConnections();
+              server.close(() => done());
+            });
+          },
+        });
+      });
+    });
+  }
+
+  async function createdProvider(token: string, h: Harness): Promise<string> {
+    const res = await request(h.app)
+      .post('/v1/providers')
+      .set(authed(token))
+      .send({
+        name: 'litellm',
+        endpoint: 'https://api.ne1.dev/v1',
+        defaultModels: ['my-photo-model', 'some-text-model'],
+      });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  it('PUT stores the declaration, returns the summary, and leaves everything else alone', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const id = await createdProvider(token, h);
+      await request(h.app)
+        .post(`/v1/providers/${id}/key`)
+        .set(authed(token))
+        .send({ key: 'sk-declare-route-123456' });
+
+      const res = await request(h.app)
+        .put(`/v1/providers/${id}`)
+        .set(authed(token))
+        .send({ visionModels: ['my-photo-model'] });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        id,
+        name: 'litellm',
+        purpose: 'general',
+        enabled: true,
+        defaultModels: ['my-photo-model', 'some-text-model'],
+        visionModels: ['my-photo-model'],
+      });
+      // The key is untouched and never echoed.
+      expect(JSON.stringify(res.body)).not.toContain('sk-declare-route-123456');
+      expect(JSON.stringify(res.body)).not.toContain('keyRef');
+      await expect(h.keychain.get('partner', `provider:${id}`)).resolves.toBe(
+        'sk-declare-route-123456',
+      );
+      // It survives a re-read (persisted, not just echoed).
+      const listed = await request(h.app).get('/v1/providers').set(authed(token));
+      const providers = (listed.body as { providers: Array<{ id: string; visionModels: string[] }> })
+        .providers;
+      expect(providers.find((p) => p.id === id)?.visionModels).toEqual(['my-photo-model']);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('PUT clears the declaration with an empty list', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const id = await createdProvider(token, h);
+      await request(h.app)
+        .put(`/v1/providers/${id}`)
+        .set(authed(token))
+        .send({ visionModels: ['my-photo-model'] });
+      const cleared = await request(h.app)
+        .put(`/v1/providers/${id}`)
+        .set(authed(token))
+        .send({ visionModels: [] });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.visionModels).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('PUT is authed (401), refuses an unknown id (404) and a malformed body (400)', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const id = await createdProvider(token, h);
+
+      const anonymous = await request(h.app)
+        .put(`/v1/providers/${id}`)
+        .set({ Host: ALLOWED_HOST })
+        .send({ visionModels: ['x'] });
+      expect(anonymous.status).toBe(401);
+
+      const missing = await request(h.app)
+        .put('/v1/providers/does-not-exist')
+        .set(authed(token))
+        .send({ visionModels: ['x'] });
+      expect(missing.status).toBe(404);
+
+      for (const body of [
+        { visionModels: 'my-photo-model' },
+        { visionModels: [1, 2] },
+        { purpose: 'hype' },
+        { budgetCents: -5 },
+        { name: '   ' },
+      ]) {
+        const bad = await request(h.app)
+          .put(`/v1/providers/${id}`)
+          .set(authed(token))
+          .send(body);
+        expect(bad.status, JSON.stringify(body)).toBe(400);
+      }
+      // No partial damage: the profile is exactly as created.
+      expect(h.providerManager.get(id)).toMatchObject({
+        name: 'litellm',
+        purpose: 'general',
+        budgetCents: null,
+        visionModels: [],
+      });
+    } finally {
+      h.close();
+    }
+  });
+
+  it('the purpose bundle declares the models pinned to Vision', async () => {
+    const upstream = await startModelsUpstreamForBundle(['my-photo-model', 'some-text-model']);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const res = await request(h.app)
+        .post('/v1/providers/purposes')
+        .set(authed(token))
+        .send({
+          endpoint: upstream.base,
+          key: 'sk-bundle-secret-1234567890',
+          purposes: ['vision', 'general'],
+          modelPins: { vision: ['my-photo-model'], general: ['some-text-model'] },
+        });
+      expect(res.status).toBe(201);
+      const created = (res.body as { created: Array<{ purpose: string; visionModels: string[] }> })
+        .created;
+      // The user pinned it FOR vision, which is the declaration.
+      expect(created.find((p) => p.purpose === 'vision')?.visionModels).toEqual([
+        'my-photo-model',
+      ]);
+      // A non-vision purpose declares nothing it cannot already see.
+      expect(created.find((p) => p.purpose === 'general')?.visionModels).toEqual([]);
+    } finally {
+      await upstream.close();
+      h.close();
+    }
+  });
+
+  it('/v1/health states the inline image budget next to the upload cap', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const res = await request(h.app).get('/v1/health').set({ Host: ALLOWED_HOST });
+      expect(res.status).toBe(200);
+      // The composer must encode images to the SMALLER number; quoting only the
+      // upload cap is what let a 4 MB photo "attach" and then never be sent.
+      expect(res.body.maxInlineImageBytes).toBe(3 * 1024 * 1024);
+      expect(res.body.maxUploadBytes).toBeGreaterThan(res.body.maxInlineImageBytes);
+    } finally {
+      h.close();
+    }
+  });
+});

@@ -18,6 +18,7 @@ function provider(overrides: Partial<ProviderSummary> & { id: string }): Provide
     purpose: 'general',
     endpoint: `https://${overrides.id}.example/v1`,
     defaultModels: [],
+    visionModels: [],
     enabled: true,
     budgetCents: null,
     createdAt: 1,

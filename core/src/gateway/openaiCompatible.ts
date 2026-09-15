@@ -171,20 +171,23 @@ function textOfChoice(raw: unknown): string | null {
 }
 
 /** Serialize chat messages for the wire: plain text messages pass through
- *  unchanged; messages with an inline image become an OpenAI content array. */
+ *  unchanged; messages with inline images become an OpenAI content array with
+ *  ONE part per photo (a turn may attach several — dropping all but the first
+ *  was a silent version of the same "I got no image" bug). */
 function openAiMessages(messages: ChatMessage[]): unknown[] {
   return messages.map((message) => {
-    if (message.image !== undefined) {
+    const images = message.images ?? [];
+    if (images.length > 0) {
       return {
         role: message.role,
         content: [
           { type: 'text', text: message.content === '' ? '(image)' : message.content },
-          {
+          ...images.map((image) => ({
             type: 'image_url',
             image_url: {
-              url: `data:${message.image.mime};base64,${message.image.dataBase64}`,
+              url: `data:${image.mime};base64,${image.dataBase64}`,
             },
-          },
+          })),
         ],
       };
     }

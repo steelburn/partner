@@ -10,6 +10,7 @@
 import type {
   ChatEvent,
   ProviderInput,
+  ProviderPatch,
   ProviderPurpose,
   ProviderSummary,
 } from '@partner/shared';
@@ -720,6 +721,32 @@ export async function createProvider(
       accept: 'application/json',
     },
     body: JSON.stringify(input),
+  });
+  return expectJson<ProviderSummary>(response);
+}
+
+/**
+ * M24 — edit a profile's non-secret fields (`PUT /v1/providers/:id`). Used to
+ * declare which models can see images: a gateway's model ids are operator-chosen
+ * aliases, so the user is the only authority on whether one can read a photo,
+ * and the profile they already configured is the one that needs fixing. The
+ * endpoint and the key are not editable through here.
+ */
+export async function updateProvider(
+  token: string,
+  id: string,
+  patch: ProviderPatch,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<ProviderSummary> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${PROVIDERS_PATH}/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(patch),
   });
   return expectJson<ProviderSummary>(response);
 }

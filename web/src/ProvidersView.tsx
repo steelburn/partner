@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { sessionLostAction,sessionLostSentence } from './lib/auth-mode.js';
 import type { ProviderPurpose, ProviderSummary } from '@partner/shared';
-import { isImageCapableModel, PROVIDER_PURPOSES } from '@partner/shared';
+import {
+  declaredVisionModels,
+  isImageCapableModel,
+  matchesVisionHint,
+  PROVIDER_PURPOSES,
+} from '@partner/shared';
 import {
   ApiRequestError,
   createPurposeProviders,
@@ -10,6 +15,7 @@ import {
   listProviders,
   setProviderKey,
   testProvider,
+  updateProvider,
 } from './lib/api.js';
 import {
   budgetLabel,
@@ -212,7 +218,7 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
 // Provider row
 // ---------------------------------------------------------------------------
 
-type RowOp = 'test' | 'set-key' | 'delete';
+type RowOp = 'test' | 'set-key' | 'delete' | 'vision';
 
 interface ProviderRowProps {
   provider: ProviderSummary;
@@ -296,6 +302,35 @@ function ProviderRow({ provider, onUpdated, onRemoved, onSessionLost }: Provider
     }
   };
 
+  /**
+   * M24 — declare (or un-declare) that one model on THIS profile can read
+   * photos. Exists because an OpenAI-compatible gateway's model ids are
+   * operator-chosen aliases: the user knows `my-photo-model` sees images, the
+   * name does not, and until it is declared the chat turn drops the attached
+   * photo and the persona reports that no image arrived.
+   */
+  const toggleVision = async (model: string): Promise<void> => {
+    if (busy) return;
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    const next = visionDeclaredFor(model)
+      ? provider.visionModels.filter((m) => m !== model)
+      : [...provider.visionModels, model];
+    setConfirming(false);
+    setBusy('vision');
+    setRowError(null);
+    try {
+      onUpdated(await updateProvider(token, provider.id, { visionModels: next }));
+    } catch (cause) {
+      handleOpError(cause);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleDelete = async (): Promise<void> => {
     if (busy) return;
     // Two-step confirm: the first press arms the button, the second deletes.
@@ -322,6 +357,12 @@ function ProviderRow({ provider, onUpdated, onRemoved, onSessionLost }: Provider
   };
 
   const chips = provider.defaultModels.length > 0 ? provider.defaultModels : provider.health.models;
+  // M24: what this profile DECLARES it can see with, and whether a click here
+  // is what decides it (a `vision` purpose declares all of its models, and a
+  // name the core recognises needs no declaration — neither is un-tickable).
+  const declared = declaredVisionModels(provider);
+  const declaresByPurpose = provider.purpose === 'vision';
+  const visionDeclaredFor = (model: string): boolean => provider.visionModels.includes(model);
   const modelCount = provider.defaultModels.length || provider.health.models.length;
   const health = describeHealth(provider.health, modelCount);
   const budget = budgetLabel(provider.budgetCents);
@@ -380,12 +421,53 @@ function ProviderRow({ provider, onUpdated, onRemoved, onSessionLost }: Provider
 
       {chips.length > 0 ? (
         <div className="model-chips" aria-label="Default models">
-          {chips.map((model) => (
-            <span key={model} className="chip">
-              {model}
-            </span>
-          ))}
+          {chips.map((model) => {
+            const sees = isImageCapableModel(model, declared);
+            const suffix = sees ? ' · vision' : '';
+            const toggleable = !declaresByPurpose && !matchesVisionHint(model);
+            if (!toggleable) {
+              return (
+                <span
+                  key={model}
+                  className={sees ? 'chip chip-vision-on' : 'chip'}
+                  title={
+                    sees
+                      ? 'Can read attached photos'
+                      : 'Text only — this model cannot receive attached photos'
+                  }
+                >
+                  {model}
+                  {suffix}
+                </span>
+              );
+            }
+            return (
+              <button
+                key={model}
+                type="button"
+                className={sees ? 'chip chip-toggle chip-vision-on' : 'chip chip-toggle'}
+                aria-pressed={sees}
+                disabled={!idle}
+                onClick={() => void toggleVision(model)}
+                title={
+                  sees
+                    ? `Declared able to read attached photos — click to undo that`
+                    : `Not recognised by name. Click to declare that ${model} can read attached photos.`
+                }
+              >
+                {model}
+                {suffix}
+              </button>
+            );
+          })}
         </div>
+      ) : null}
+      {chips.length > 0 && !declaresByPurpose ? (
+        <p className="provider-vision-hint">
+          Click a model to say whether it can read attached photos. A gateway alias Partner
+          cannot recognise stays text-only until you declare it — and a photo attached to a
+          text-only model is never sent to it.
+        </p>
       ) : null}
 
       <p className={`health health-${health.tone}`}>{health.text}</p>
@@ -506,7 +588,7 @@ function PurposeBundleCard({ disabled, onAddedMany, onSessionLost, providers }: 
     purposes: ProviderPurpose[],
     list: string[],
   ): Partial<Record<ProviderPurpose, string[]>> => {
-    const visionModels = list.filter(isImageCapableModel);
+    const visionModels = list.filter((model) => isImageCapableModel(model));
     const next: Partial<Record<ProviderPurpose, string[]>> = {};
     for (const purpose of purposes) {
       next[purpose] =

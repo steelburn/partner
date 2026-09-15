@@ -13,7 +13,7 @@
  * third more bytes and once forced every upload through the JSON body cap.
  */
 import { randomUUID, createHash } from 'node:crypto';
-import { attachmentTooLargeMessage } from '@partner/shared';
+import { attachmentTooLargeMessage, MAX_INLINE_IMAGE_BYTES } from '@partner/shared';
 import type { AttachmentMeta } from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
 import type { AttachmentRow, AttachmentStore, ChatBlobRow, ChatBlobStore } from '../stores/types.js';
@@ -265,7 +265,16 @@ export function createAttachmentManager(
       if (row.extractText !== null) {
         parts.push(`[Attachment ${row.name}]\n${row.extractText}`);
       } else if (IMAGE_MIME.has(row.mime)) {
-        parts.push(`[Image attachment: ${row.name} (${row.mime}, ${row.size} bytes)]`);
+        // M24: say OUT LOUD when the photo cannot ride to the model. The
+        // inline budget is smaller than the upload cap, so an image used to
+        // read identically either way — the turn looked like it had attached a
+        // photo, the model was handed only this line, and it answered that no
+        // image arrived. With the clause the persona can tell the user.
+        parts.push(
+          row.size > MAX_INLINE_IMAGE_BYTES
+            ? `[Image attachment: ${row.name} (${row.mime}, ${row.size} bytes) — NOT sent: it is over the ${MAX_INLINE_IMAGE_BYTES} byte image limit for one message. Ask for a smaller or compressed copy.]`
+            : `[Image attachment: ${row.name} (${row.mime}, ${row.size} bytes)]`,
+        );
       } else {
         parts.push(`[Attachment: ${row.name} (${row.mime}, ${row.size} bytes)]`);
       }

@@ -79,11 +79,11 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import type { ChatEvent, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
+import type { ChatEvent, ChatImagePart, ChatMessage, ChatRequest, ConversationMessage, ProviderClient, ProviderSummary, ToolCall } from '@partner/shared';
 import { attachmentTooLargeMessage, describeBytes } from '@partner/shared';
 import type { NoteInput, Persona } from '@partner/shared';
 import type { PlanInput, TaskStatusInput } from '@partner/shared';
-import type { ProviderInput, ProviderPurpose, ProviderSource } from '@partner/shared';
+import type { ProviderInput, ProviderPatch, ProviderPurpose, ProviderSource } from '@partner/shared';
 import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import type { SiteScope } from '@partner/shared';
@@ -93,7 +93,12 @@ import { createBudgetTracker } from '../gateway/budget.js';
 import { centsForTokens } from '../gateway/pricing.js';
 import type { SpendLedgerManager } from '../gateway/spend.js';
 import { resolveChatModel, resolveImageTurnUpgrade } from '../gateway/resolver.js';
-import { isImageCapableModel } from '../gateway/vision.js';
+import {
+  isImageCapableModel,
+  declaredVisionModels,
+  MAX_INLINE_IMAGE_BYTES,
+  MAX_INLINE_IMAGES_PER_TURN,
+} from '../gateway/vision.js';
 import { UpstreamError, createOpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import type { OpenAICompatibleClient } from '../gateway/openaiCompatible.js';
 import { normalizeEndpoint } from '../providers/providerManager.js';
@@ -988,7 +993,10 @@ function stagedInlineImage(attachments: AttachmentManager, conversationId: strin
   try {
     return attachments
       .list(conversationId)
-      .some((m) => m.messageId === null && m.mime.startsWith('image/') && m.size <= 3 * 1024 * 1024);
+      .some(
+        (m) =>
+          m.messageId === null && m.mime.startsWith('image/') && m.size <= MAX_INLINE_IMAGE_BYTES,
+      );
   } catch {
     return false;
   }
@@ -1632,6 +1640,12 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // already pushed megabytes over a phone connection is a bad trade for
       // not stating a limit that the server refuses by anyway.
       maxUploadBytes: uploadCap,
+      // M24: the cap that decides whether an attached photo reaches the MODEL.
+      // It is smaller than the upload cap, and the SPA cannot infer it: without
+      // it the composer encoded a phone photo to fit 8 MB, uploaded it happily,
+      // and the turn then dropped the part over 3 MB — so the persona answered
+      // that no image had been sent. The SPA encodes images to THIS number.
+      maxInlineImageBytes: MAX_INLINE_IMAGE_BYTES,
     });
   });
 
@@ -2613,12 +2627,17 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         requestedModel === undefined &&
         taskClassRaw === undefined &&
         requestedProviderId === undefined;
+      // M24: can this (model, serving profile) pair actually receive a photo?
+      // Name heuristics alone decide "no" for a gateway alias the user has
+      // assigned, so the profile's declarations are part of every answer here.
+      const modelSeesImages = (provider: ProviderSummary | null, id: string): boolean =>
+        isImageCapableModel(id, declaredVisionModels(provider));
       if (
         implicitTurn &&
         conversationId !== null &&
         options.attachments &&
         stagedInlineImage(options.attachments, conversationId) &&
-        !isImageCapableModel(model)
+        !modelSeesImages(managedProvider, model)
       ) {
         const upgrade = resolveImageTurnUpgrade({ persona: routingPersona, providers });
         if (
@@ -2640,6 +2659,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         if (sendProviderError(res, err)) return;
         throw err;
       }
+      // Decided AFTER the handoff: `managedProvider`/`model` are what will serve
+      // the turn, and this is the gate for riding the photo upstream.
+      const imageTurnSupported = modelSeesImages(managedProvider, model);
 
       // M10 cumulative budget (PLAN-M10 W3): a provider WITH a budgetCents
       // cap is refused BEFORE this turn streams when its rolling-window
@@ -2756,27 +2778,45 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // M11 multimodal: a bound IMAGE attachment rides the newest user turn
       // as an inline image part — but ONLY to an image-capable model in the
       // managed path. The persisted turn stays plain text.
-      if (persistedUserMessageId !== null && options.attachments && isImageCapableModel(model)) {
+      //
+      // "Image-capable" includes what the user DECLARED on the serving profile
+      // (M24): behind an OpenAI-compatible gateway the model ids are
+      // operator-chosen aliases, so a name-only heuristic silently decided that
+      // a model which can see cannot, and the photo never left the machine —
+      // the model was handed just the text descriptor and answered that no
+      // image arrived.
+      if (persistedUserMessageId !== null && options.attachments && imageTurnSupported) {
         try {
-          const metas = options.attachments
-            .metaForMessage(persistedUserMessageId)
-            .filter((meta) => meta.mime.startsWith('image/') && meta.size <= 3 * 1024 * 1024);
-          const meta = metas[0] ?? null;
-          if (meta !== null && conversationId !== null) {
-            const image = options.attachments.content(conversationId, meta.id);
+          // EVERY qualifying photo rides, in attach order — taking only the
+          // first silently withheld the rest of a multi-photo turn. Bounded by
+          // count and per-image size; anything left behind is still named in
+          // the descriptor context, which now says it was not sent.
+          const metas =
+            conversationId === null
+              ? []
+              : options.attachments
+                  .metaForMessage(persistedUserMessageId)
+                  .filter(
+                    (meta) =>
+                      meta.mime.startsWith('image/') && meta.size <= MAX_INLINE_IMAGE_BYTES,
+                  )
+                  .slice(0, MAX_INLINE_IMAGES_PER_TURN);
+          const parts: ChatImagePart[] = [];
+          for (const meta of metas) {
+            const image =
+              conversationId === null
+                ? null
+                : options.attachments.content(conversationId, meta.id);
             if (image !== null) {
-              for (let index = requestMessages.length - 1; index >= 0; index -= 1) {
-                const message = requestMessages[index];
-                if (message && message.role === 'user') {
-                  requestMessages[index] = {
-                    ...message,
-                    image: {
-                      mime: image.mime,
-                      dataBase64: image.data.toString('base64'),
-                    },
-                  };
-                  break;
-                }
+              parts.push({ mime: image.mime, dataBase64: image.data.toString('base64') });
+            }
+          }
+          if (parts.length > 0) {
+            for (let index = requestMessages.length - 1; index >= 0; index -= 1) {
+              const message = requestMessages[index];
+              if (message && message.role === 'user') {
+                requestMessages[index] = { ...message, images: parts };
+                break;
               }
             }
           }
@@ -3178,6 +3218,26 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
   });
 
+  /**
+   * M24 — edit a profile's non-secret fields (the model lists, purpose, name,
+   * enabled, budget). The one the vision fix turns on: a photo attached to a
+   * turn routed by a name the core does not recognise needs the user to be able
+   * to SAY "this model can see", on a provider that already works — not to
+   * delete and re-add it. The endpoint and the key are not editable here (the
+   * secret lives in the keychain under the provider id); audit carries field
+   * names and counts only.
+   */
+  api.put('/v1/providers/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const manager = requireProviderManager(options, res);
+    if (!manager) return;
+    try {
+      res.json(manager.update(String(req.params.id ?? ''), (req.body ?? {}) as ProviderPatch));
+    } catch (err) {
+      if (sendProviderError(res, err)) return;
+      throw err;
+    }
+  });
+
   // M13 purpose-provider bundle (PLAN-M13.md F2): one OpenAI-compatible
   // endpoint + one key -> one provider profile PER purpose (general | cheap |
   // deep | coding | vision | research), so purpose routing has real profiles
@@ -3240,7 +3300,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       const key = body.key.trim();
       const client = createOpenAICompatibleClient({ endpoint, apiKey: key });
       const models = await client.listModels();
-      const visionModels = models.filter(isImageCapableModel);
+      const visionModels = models.filter((model) => isImageCapableModel(model));
       if (modelPins !== null) {
         const missing = purposes.filter((p) => modelPins[p] === undefined || modelPins[p].length === 0);
         if (missing.length > 0) {
@@ -3264,6 +3324,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       const created: ProviderSummary[] = [];
       for (const purpose of purposes) {
         const pinned = modelPins?.[purpose];
+        // What this profile's models are for, decided by the user: a `vision`
+        // purpose means every model pinned to it can see (M24 declares them
+        // explicitly, so the declaration also survives the purpose tag later
+        // changing to something else). Other purposes declare only the models
+        // the shared hints recognise.
+        const visionForPurpose =
+          purpose === 'vision'
+            ? (pinned ?? models.filter((m) => isImageCapableModel(m)))
+            : [];
         const summary = await manager.create({
           name: `${PURPOSE_LABELS[purpose]} · ${endpointHost(endpoint)}`,
           purpose,
@@ -3275,6 +3344,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           defaultModels:
             pinned ??
             (purpose === 'vision' && visionModels.length > 0 ? visionModels : models),
+          visionModels: visionForPurpose,
         });
         await manager.setKey(summary.id, key);
         created.push(summary);

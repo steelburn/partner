@@ -93,6 +93,31 @@ describe('M11 F1 attachment manager', () => {
       db.close();
     }
   });
+
+  it('M24: an image over the inline budget says so, instead of reading as sent', () => {
+    const { db, manager } = make();
+    try {
+      // Under the 8 MB upload cap, over the 3 MB inline budget: it stores, it
+      // previews, and the turn cannot send it. The descriptor is the only thing
+      // the model sees, so it must not read like a successful attachment.
+      const big = Buffer.alloc(4 * 1024 * 1024, 7);
+      const meta = manager.upload('c-1', { name: 'scan.png', mime: 'image/png', data: big });
+      manager.bindToMessage('c-1', 'm-1', [meta.id]);
+      const ctx = manager.contextForMessage('m-1');
+      expect(ctx).toContain('[Image attachment: scan.png');
+      expect(ctx).toContain('NOT sent');
+      expect(ctx).toContain(String(big.length));
+
+      // And an image that DOES fit is described plainly, with no false alarm.
+      const small = manager.upload('c-1', { name: 'ok.png', mime: 'image/png', data: bytes('x') });
+      manager.bindToMessage('c-1', 'm-2', [small.id]);
+      const ok = manager.contextForMessage('m-2');
+      expect(ok).toContain('[Image attachment: ok.png');
+      expect(ok).not.toContain('NOT sent');
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe('R7 — the per-attachment cap is a deployment knob', () => {

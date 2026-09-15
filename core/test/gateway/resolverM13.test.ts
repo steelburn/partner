@@ -17,6 +17,7 @@ function provider(overrides: Partial<ProviderSummary> & { id: string }): Provide
     purpose: 'general',
     endpoint: `https://${overrides.id}.example/v1`,
     defaultModels: [],
+    visionModels: [],
     enabled: true,
     budgetCents: null,
     createdAt: 1,
@@ -133,5 +134,61 @@ describe('resolveImageTurnUpgrade', () => {
     expect(resolveImageTurnUpgrade({ persona: p, providers: [general] })).toBeNull();
     expect(resolveImageTurnUpgrade({ providers: [] })).toBeNull();
     expect(resolveImageTurnUpgrade({ providers: [provider({ id: 'off', enabled: false, defaultModels: ['gpt-4o'] })] })).toBeNull();
+  });
+});
+
+/**
+ * M24 — the upgrade has to see the user's DECLARATIONS. An OpenAI-compatible
+ * gateway hands out operator-chosen aliases, so "is there a vision model
+ * enabled?" cannot be answered from model names: if it is not, an implicit
+ * image turn finds no target and the photo is dropped.
+ */
+describe('resolveImageTurnUpgrade — declared vision models (M24)', () => {
+  it('upgrades to an aliased model the profile declares image-capable', () => {
+    const general = provider({ id: 'prov-general', defaultModels: ['llama-3.1-8b'] });
+    const alias = provider({ id: 'prov-alias', defaultModels: ['my-photo-model'] });
+    const withDeclaration = provider({
+      id: 'prov-alias',
+      defaultModels: ['my-photo-model'],
+      visionModels: ['my-photo-model'],
+    });
+    // Undeclared: nothing can see, exactly the pre-M24 dead end.
+    expect(resolveImageTurnUpgrade({ providers: [general, alias] })).toBeNull();
+    // Declared: the handoff finds it even though the id matches no hint.
+    const up = resolveImageTurnUpgrade({ providers: [general, withDeclaration] });
+    expect(up?.provider.id).toBe('prov-alias');
+    expect(up?.model).toBe('my-photo-model');
+  });
+
+  it('treats every model of a vision-purpose profile as declared', () => {
+    const general = provider({ id: 'prov-general', defaultModels: ['llama-3.1-8b'] });
+    const vision = provider({
+      id: 'prov-vision',
+      purpose: 'vision',
+      defaultModels: ['pixtral-12b', 'alias-2'],
+    });
+    const up = resolveImageTurnUpgrade({ providers: [general, vision] });
+    expect(up?.provider.id).toBe('prov-vision');
+    expect(up?.model).toBe('pixtral-12b');
+  });
+
+  it('honours a declared persona vision mapping that the name would have rejected', () => {
+    const general = provider({
+      id: 'prov-general',
+      defaultModels: ['llama-3.1-8b', 'my-photo-model'],
+      visionModels: ['my-photo-model'],
+    });
+    const p = persona({ id: 'p1', model: { taskClasses: { vision: 'my-photo-model' } } });
+    const up = resolveImageTurnUpgrade({ persona: p, providers: [general] });
+    expect(up?.model).toBe('my-photo-model');
+  });
+
+  it('still skips an undeclared persona vision mapping and looks elsewhere', () => {
+    const general = provider({ id: 'prov-general', defaultModels: ['llama-3.1-8b'] });
+    const vision = provider({ id: 'prov-vision', purpose: 'vision', defaultModels: ['gpt-4o'] });
+    const p = persona({ id: 'p1', model: { taskClasses: { vision: 'some-alias' } } });
+    const up = resolveImageTurnUpgrade({ persona: p, providers: [general, vision] });
+    expect(up?.provider.id).toBe('prov-vision');
+    expect(up?.model).toBe('gpt-4o');
   });
 });
