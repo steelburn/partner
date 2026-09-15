@@ -857,15 +857,28 @@ Suites: typecheck 0 · root **1215 passed** + 5 skipped (150 files) · web
 
 ## Environment observation — **DIAGNOSED and FIXED** (was: "undiagnosed")
 
+*What was recorded at the time (2026-09-14), kept verbatim because the reasoning
+matters more than the conclusion:*
+
 With a **dev core already running** on :4390 (`npm run dev:core`),
 `core/test/http/userPartitions.test.ts` failed **5/5** at
 `(server.address() as { port: number }).port` — `address()` was `null`, i.e.
 `startServer` resolved with a server that was not listening. With no dev core
 running the same file passed **5/5** with no other change. The interval behaviour
 is a real observation, not a guess about its cause; the config asks for `PORT:
-'0'`, so an ephemeral-port clash does not obviously explain it. Recorded here
-because it cost time to distinguish from a genuine regression — **run the root
-suite with no dev core up**, or expect these five to fail.
+'0'`, so an ephemeral-port clash does not obviously explain it.
+
+*That reading was half right, and the half it got wrong is the interesting part:*
+the port clash WAS the cause — but through `PORT=0` being silently ignored, not
+through the port the test asked for. **The five failures were fixed in v0.1.11**,
+so the old workaround ("run the root suite with no dev core up") is obsolete.
+
+*Re-run to prove it, with the very process that used to break it*: a `tsx watch
+src/index.ts` dev core (started the previous morning) was holding :4390 while
+`core/test/http/userPartitions.test.ts` ran — **5/5 passed**, and a second core
+told to bind 4390 in that state now says `partner-core failed to start: listen
+EADDRINUSE: address already in use 127.0.0.1:4390` instead of printing an "up on
+…" banner it could not honour.
 
 **The two causes, found 2026-09-15 by starting from the observation above (two
 real defects, not a test quirk):**
