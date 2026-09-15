@@ -16,9 +16,10 @@
  * improvement if it cannot be used to send a partial answer set.
  */
 import { useCallback, useMemo, useState } from 'react';
-import type { ChoiceBlock, FormBlock } from '@partner/shared';
+import type { ChoiceBlock, FormBlock, ScorecardBlock } from '@partner/shared';
 import { ChoiceCard } from './ChoiceCard.js';
 import { FormCard } from './FormCard.js';
+import { ScorecardCard } from './ScorecardCard.js';
 import {
   composeGroupedAnswer,
   groupReadiness,
@@ -28,7 +29,7 @@ import {
 
 export interface AnswerGroupProps {
   /** The answerable containers of ONE message, in the order they appeared. */
-  blocks: readonly (ChoiceBlock | FormBlock)[];
+  blocks: readonly (ChoiceBlock | FormBlock | ScorecardBlock)[];
   /** A turn is streaming: the group is inert. */
   busy: boolean;
   /**
@@ -126,11 +127,27 @@ export function AnswerGroup({ blocks, busy, live = true, onAnswer }: AnswerGroup
               />
             );
           }
+          if (block.kind === 'form') {
+            return (
+              <FormCard
+                key={key}
+                title={block.title}
+                questions={block.questions}
+                busy={locked}
+                showSubmit={false}
+                requireAllAnswers
+                answered={answered}
+                onAnswerChange={(text) => reportPart(key, block.title, text)}
+              />
+            );
+          }
           return (
-            <FormCard
+            <ScorecardCard
               key={key}
               title={block.title}
-              questions={block.questions}
+              items={block.items}
+              scale={block.scale}
+              labels={block.labels}
               busy={locked}
               showSubmit={false}
               requireAllAnswers

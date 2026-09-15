@@ -8,7 +8,7 @@
  * submission that carries every part or is blocked.
  */
 import { describe, expect, it } from 'vitest';
-import type { AssetBlock, ChoiceBlock, FormBlock } from '@partner/shared';
+import type { AssetBlock, ChoiceBlock, FormBlock, ScorecardBlock } from '@partner/shared';
 import {
   answerableCount,
   composeGroupedAnswer,
@@ -36,20 +36,31 @@ const form = (over: Partial<FormBlock> = {}): FormBlock => ({
   ...over,
 });
 
+const scorecard = (over: Partial<ScorecardBlock> = {}): ScorecardBlock => ({
+  kind: 'scorecard',
+  title: 'Rate the launch',
+  items: ['Onboarding flow', 'Pricing clarity'],
+  scale: 5,
+  labels: null,
+  ...over,
+});
+
 const asset: AssetBlock = { kind: 'asset', assetKind: 'code', title: 'Snippet', body: 'x' };
 
 describe('which blocks ask a question', () => {
-  it('counts choice and form, and never an asset', () => {
+  it('counts choice, form and scorecard, and never an asset', () => {
     expect(isAnswerable(choice())).toBe(true);
     expect(isAnswerable(form())).toBe(true);
+    expect(isAnswerable(scorecard())).toBe(true);
     expect(isAnswerable(asset)).toBe(false);
-    expect(answerableCount([choice(), form(), asset])).toBe(2);
+    expect(answerableCount([choice(), form(), scorecard(), asset])).toBe(3);
   });
 
   it('leaves a single-container message on its own card button', () => {
     // `> 1`, not `>= 1`: the common case must not change behaviour at all.
     expect(shouldGroupAnswers([choice()])).toBe(false);
     expect(shouldGroupAnswers([form()])).toBe(false);
+    expect(shouldGroupAnswers([scorecard()])).toBe(false);
     expect(shouldGroupAnswers([asset])).toBe(false);
     expect(shouldGroupAnswers([])).toBe(false);
   });
@@ -58,6 +69,9 @@ describe('which blocks ask a question', () => {
     expect(shouldGroupAnswers([choice(), form()])).toBe(true);
     expect(shouldGroupAnswers([form(), form()])).toBe(true);
     expect(shouldGroupAnswers([choice(), choice(), form()])).toBe(true);
+    // A scorecard is a question set too — a choice + scorecard must group.
+    expect(shouldGroupAnswers([choice(), scorecard()])).toBe(true);
+    expect(shouldGroupAnswers([form(), scorecard()])).toBe(true);
   });
 
   it('ignores assets when deciding, since they ask nothing', () => {

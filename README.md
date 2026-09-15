@@ -77,11 +77,12 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 ## Status (2026-09-14)
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1262 passed** (5 env-gated skips) · web **712 passed** · typechecks 0 ·
+suite **1267 passed** (5 env-gated skips) · web **722 passed** · typechecks 0 ·
 web build green. Latest release: **v0.1.11** (the silent-bind fix, on top of hosted
 sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
 mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat
-multi-question forms, persona-scoped memory). **M20 is partly done**: **M20.A
+multi-question forms, scorecard ratings, persona-scoped memory). **M20 is partly
+done**: **M20.A
 (mobile/tablet UI) is implemented and measured**, **M20.B (server role) has
 landed through S7 + S9**
 (the capability envelope, networked pairing, per-user partitions) with **S8
@@ -675,6 +676,25 @@ provenance chip. Suites after the pass: core **893 passed** (5 env-gated
 skips) · web **541 passed** · typechecks 0 · web build green · `ux_audit`
 green; **global auto-remember follow-up** kept core and web green (web 712).
 Spec: `PLAN-M19.md`.
+
+### M23 — scorecard chat answers (2026-09-15, implemented)
+
+A fourth answerable container joins clickable choices and free-text forms:
+`:::partner.scorecard` rates several named items on one shared numeric scale, so
+a multi-item review is answered in one pass. Grammar: one item per bullet line,
+`scale=<2–10>` (default 5) sets the highest score with scores running 1..scale,
+and an optional `labels="Low|High"` names the ends. Each item is its own radio
+group, so one score per item is structural rather than a validation rule.
+Submitting once sends a single labelled user turn (`Q: <item>` /
+`A: <score>/<scale>`) through the normal chat path — nothing client-only, the
+persisted text unchanged. The parser shares the `:::partner.*` grammar
+(`shared/src/structured.ts`): closed-container-only materialization,
+malformed/unclosed containers degrade to prose, and an out-of-range scale
+clamps rather than dropping the card. Inside the M20.A one-submit group a
+scorecard must have every item rated; standalone it accepts any non-empty
+rating set. Pending ratings survive conversation switches (client-side
+per-conversation UI memory). The `scorecards` guidance ships in the default
+structured feature set; styles are token-only.
 
 ### M18 — chat multi-question forms (2026-09-11, implemented)
 

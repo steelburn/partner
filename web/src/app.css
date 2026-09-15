@@ -5113,6 +5113,132 @@ select {
   justify-content: flex-end;
 }
 
+/* --- M23 scorecard cards (:::partner.scorecard) -------------------------- */
+
+.scorecard-card {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 0;
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.scorecard-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  padding: 0;
+}
+
+.scorecard-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.scorecard-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.scorecard-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.scorecard-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+
+.scorecard-scores {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+/* The input is visually replaced by its label; keeping the real input in the
+   tree preserves the radio semantics, keyboard path and one-score-per-row
+   guarantee. */
+.scorecard-score {
+  position: relative;
+  display: inline-flex;
+}
+
+.scorecard-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.scorecard-score-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--target-min);
+  min-height: var(--target-min);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.scorecard-score:hover .scorecard-score-label {
+  color: var(--text);
+}
+
+.scorecard-input:checked + .scorecard-score-label {
+  background: var(--accent-emphasis);
+  color: var(--accent-contrast);
+  font-weight: var(--fw-semibold);
+}
+
+.scorecard-input:focus-visible + .scorecard-score-label {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.scorecard-card[disabled] .scorecard-score-label,
+.scorecard-input:disabled + .scorecard-score-label {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scorecard-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Phone: the item label takes the full row so the score buttons get the whole
+   width and the floor-sized targets never overflow. */
+@media (max-width: 640px) {
+  .scorecard-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+}
+
 .chat {
   position: relative;
 }
@@ -8823,21 +8949,24 @@ select {
 }
 
 .answer-group .choice-card,
-.answer-group .form-card {
+.answer-group .form-card,
+.answer-group .scorecard-card {
   margin: 0;
   padding: 0;
   background: transparent;
   border: 0;
 }
 
-.answer-group .form-card {
+.answer-group .form-card,
+.answer-group .scorecard-card {
   gap: var(--space-2);
 }
 
 /* A grouped card renders no submit, leaving an empty actions row. `:empty`
    removes the element so it cannot contribute phantom gap spacing. */
 .answer-group .choice-actions:empty,
-.answer-group .form-actions:empty {
+.answer-group .form-actions:empty,
+.answer-group .scorecard-actions:empty {
   display: none;
 }
 

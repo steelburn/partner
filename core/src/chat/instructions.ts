@@ -55,6 +55,26 @@ const INSTRUCTIONS: ReadonlyArray<readonly [string, string]> = [
     ].join('\n'),
   ],
   [
+    'scorecards',
+    [
+      'When you want the user to RATE several separate things on one shared scale ',
+      '(a review, a prioritisation, a comparison), emit them as a scorecard so each ',
+      'item gets its own score in one pass:',
+      '',
+      ':::partner.scorecard title="Rate the launch" scale=5',
+      '- Onboarding flow',
+      '- Pricing clarity',
+      '- Support responsiveness',
+      ':::',
+      '',
+      'Rules: one item to rate per bullet line; scale is the highest score (an ',
+      'integer 2-10, default 5) with scores running 1..scale; add ',
+      'labels="Low|High" to name the ends; use a scorecard when the answer is a ',
+      'number per item, a choice container when each answer is one of a fixed set ',
+      'of options.',
+    ].join('\n'),
+  ],
+  [
     'assets',
     [
       'When you produce a deliberate artifact the user may want to keep (a decision, a ',
@@ -95,6 +115,7 @@ export function structuredInstructions(enabled: ReadonlySet<string>): string {
 export const DEFAULT_STRUCTURED_FEATURES: ReadonlySet<string> = new Set([
   'choices',
   'forms',
+  'scorecards',
   'assets',
 ]);
 

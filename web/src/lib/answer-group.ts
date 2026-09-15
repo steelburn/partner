@@ -22,7 +22,7 @@ import type { StructuredBlock } from '@partner/shared';
 
 /** Blocks that ask the user something and can therefore carry an answer. */
 export function isAnswerable(block: StructuredBlock): boolean {
-  return block.kind === 'choice' || block.kind === 'form';
+  return block.kind === 'choice' || block.kind === 'form' || block.kind === 'scorecard';
 }
 
 /** How many answerable containers one message carries. */

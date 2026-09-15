@@ -112,4 +112,66 @@ describe('partner structured containers (C3)', () => {
     expect(attrs.get('title')).toBe('hello world');
     expect(attrs.get('lang')).toBe('ts');
   });
+
+  it('parses a scorecard with one rated item per bullet', () => {
+    const text =
+      'How did we do?\n\n:::partner.scorecard title="Rate the launch" scale=5\n- Onboarding flow\n- Pricing clarity\n- Support responsiveness\n:::\n\nThanks.';
+    const hit = findStructuredBlock(text);
+    expect(hit?.block.kind).toBe('scorecard');
+    if (hit?.block.kind === 'scorecard') {
+      expect(hit.block.title).toBe('Rate the launch');
+      expect(hit.block.scale).toBe(5);
+      expect(hit.block.labels).toBeNull();
+      expect(hit.block.items).toEqual([
+        'Onboarding flow',
+        'Pricing clarity',
+        'Support responsiveness',
+      ]);
+    }
+    expect(text.slice(0, hit?.start ?? 0)).toContain('How did we do?');
+    expect(text.slice(hit?.end ?? 0)).toContain('Thanks.');
+  });
+
+  it('defaults the scorecard scale to 5 and accepts low/high labels', () => {
+    const bare = findStructuredBlock(':::partner.scorecard\n- a\n- b\n::: ');
+    if (bare?.block.kind === 'scorecard') expect(bare.block.scale).toBe(5);
+
+    const labelled = findStructuredBlock(
+      ':::partner.scorecard scale=10 labels="Poor|Excellent"\n- a\n- b\n::: ',
+    );
+    if (labelled?.block.kind === 'scorecard') {
+      expect(labelled.block.scale).toBe(10);
+      expect(labelled.block.labels).toEqual(['Poor', 'Excellent']);
+    }
+  });
+
+  it('clamps a malformed scorecard scale instead of dropping the container', () => {
+    const at = (raw: string) => {
+      const hit = findStructuredBlock(`:::partner.scorecard ${raw}\n- a\n- b\n::: `);
+      return hit?.block.kind === 'scorecard' ? hit.block.scale : null;
+    };
+    // Out of range clamps to the nearest bound; junk falls back to the default.
+    expect(at('scale=1')).toBe(2);
+    expect(at('scale=99')).toBe(10);
+    expect(at('scale=many')).toBe(5);
+    expect(at('scale=')).toBe(5);
+  });
+
+  it('drops scorecard labels that are not exactly two non-empty ends', () => {
+    const labels = (raw: string) => {
+      const hit = findStructuredBlock(`:::partner.scorecard ${raw}\n- a\n- b\n::: `);
+      return hit?.block.kind === 'scorecard' ? hit.block.labels : undefined;
+    };
+    expect(labels('labels="Poor|Excellent"')).toEqual(['Poor', 'Excellent']);
+    expect(labels('labels="only"')).toBeNull();
+    expect(labels('labels="a|b|c"')).toBeNull();
+    expect(labels('labels=" | "')).toBeNull();
+    // A comma stays part of a label (the separator is `|`).
+    expect(labels('labels="Not good, really|Great"')).toEqual(['Not good, really', 'Great']);
+  });
+
+  it('ignores a scorecard with no items and one left unclosed', () => {
+    expect(findStructuredBlock(':::partner.scorecard title="x"\njust prose\n:::')).toBeNull();
+    expect(findStructuredBlock(':::partner.scorecard\n- a\n- b')).toBeNull();
+  });
 });

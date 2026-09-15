@@ -12,6 +12,7 @@ import { createElement as h } from 'react';
 import { PartnerMarkdown } from '../src/Markdown.js';
 import { ChoiceCard } from '../src/ChoiceCard.js';
 import { FormCard, formatFormAnswers } from '../src/FormCard.js';
+import { ScorecardCard, formatScorecardAnswers } from '../src/ScorecardCard.js';
 
 function render(props: {
   text: string;
@@ -166,6 +167,69 @@ describe('formatFormAnswers', () => {
 
   it('returns an empty string when nothing was answered', () => {
     expect(formatFormAnswers(['a?'], ['  '])).toBe('');
+  });
+});
+
+describe('PartnerMarkdown scorecard containers', () => {
+  it('renders one score row per item and a single submit, keeping prose', () => {
+    const html = render({
+      text:
+        'Quick pulse check:\n\n:::partner.scorecard title="Rate the launch" scale=5\n- Onboarding flow\n- Pricing clarity\n- Support responsiveness\n:::\n\nThanks!',
+    });
+    expect(html).not.toContain(':::partner.scorecard');
+    expect(html).not.toContain(':::');
+    expect(html).toContain('scorecard-card');
+    expect(html).toContain('Rate the launch');
+    expect(html).toContain('Onboarding flow');
+    expect(html).toContain('Pricing clarity');
+    expect(html).toContain('Support responsiveness');
+    // Three items x five scores = fifteen radios, but only one submit.
+    expect(html.match(/type="radio"/g)?.length).toBe(15);
+    expect(html.match(/Submit ratings/g)?.length).toBe(1);
+    expect(html).toContain('Quick pulse check:');
+    expect(html).toContain('Thanks!');
+  });
+
+  it('honours the scale and the optional low/high labels', () => {
+    const html = render({
+      text: ':::partner.scorecard scale=10 labels="Poor|Excellent"\n- Onboarding\n- Pricing\n:::',
+    });
+    expect(html.match(/type="radio"/g)?.length).toBe(20);
+    expect(html).toContain('1 = Poor');
+    expect(html).toContain('10 = Excellent');
+  });
+
+  it('keeps an unclosed scorecard container as visible text (never materialized)', () => {
+    const html = render({ text: ':::partner.scorecard\n- a\n- b' });
+    expect(html).toContain(':::partner.scorecard');
+  });
+
+  it('busy scorecards disable every score and the submit', () => {
+    const html = renderToStaticMarkup(
+      h(ScorecardCard, {
+        title: 'T',
+        items: ['a', 'b'],
+        scale: 5,
+        busy: true,
+        onConfirm: () => undefined,
+      }),
+    );
+    expect(html).toMatch(/disabled/);
+  });
+});
+
+describe('formatScorecardAnswers', () => {
+  it('labels each rated item with its score and joins them once', () => {
+    const message = formatScorecardAnswers(
+      ['Onboarding flow', 'Pricing clarity', 'Support'],
+      [4, 2, null],
+      5,
+    );
+    expect(message).toBe('Q: Onboarding flow\nA: 4/5\n\nQ: Pricing clarity\nA: 2/5');
+  });
+
+  it('returns an empty string when nothing is rated', () => {
+    expect(formatScorecardAnswers(['a', 'b'], [null, null], 5)).toBe('');
   });
 });
 

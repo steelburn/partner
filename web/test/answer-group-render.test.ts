@@ -21,10 +21,11 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement as h } from 'react';
-import type { ChoiceBlock, FormBlock } from '@partner/shared';
+import type { ChoiceBlock, FormBlock, ScorecardBlock } from '@partner/shared';
 import { AnswerGroup } from '../src/AnswerGroup.js';
 import { ChoiceCard } from '../src/ChoiceCard.js';
 import { FormCard } from '../src/FormCard.js';
+import { ScorecardCard } from '../src/ScorecardCard.js';
 import { PartnerMarkdown } from '../src/Markdown.js';
 
 const CHOICE: ChoiceBlock = {
@@ -38,6 +39,14 @@ const FORM: FormBlock = {
   kind: 'form',
   title: 'A few questions',
   questions: ['What problem are you solving?', 'Who is the primary user?'],
+};
+
+const SCORECARD: ScorecardBlock = {
+  kind: 'scorecard',
+  title: 'Rate the launch',
+  items: ['Onboarding flow', 'Pricing clarity'],
+  scale: 5,
+  labels: null,
 };
 
 /** The one submit's markup, or null when it is absent. */
@@ -118,6 +127,67 @@ describe('a single-container message keeps the card\'s own submit', () => {
     expect(html).toContain('answer-group');
     expect((html.match(/Send answers/g) ?? []).length).toBe(1);
     expect(html).not.toContain('Submit answers');
+  });
+});
+
+describe('a scorecard is answerable too', () => {
+  it('renders as a grouped section with no submit of its own', () => {
+    // The bug this guards: a scorecard that kept its own submit button next to a
+    // choice's would send only its ratings and discard the choice.
+    const html = renderToStaticMarkup(
+      h(AnswerGroup, { blocks: [CHOICE, SCORECARD], busy: false, onAnswer: () => undefined }),
+    );
+    expect(html).toContain('scorecard-card');
+    expect(html).toContain('Rate the launch');
+    expect(html).toContain('Onboarding flow');
+    expect(html).toContain('Pricing clarity');
+    expect((html.match(/Send answers/g) ?? []).length).toBe(1);
+    expect(html).not.toContain('Submit ratings');
+    expect(html).not.toContain('Confirm');
+  });
+
+  it('renders one radio group per item so each item takes exactly one score', () => {
+    const html = renderToStaticMarkup(
+      h(AnswerGroup, { blocks: [CHOICE, SCORECARD], busy: false, onAnswer: () => undefined }),
+    );
+    // Choice (2 options) + two scorecard items x five scores = 12 radios.
+    expect((html.match(/type="radio"/g) ?? []).length).toBe(12);
+    // Three distinct radio groups: the choice plus one per scorecard item.
+    const names = [...html.matchAll(/name="([^"]+)"/g)].map((match) => match[1]);
+    expect(new Set(names).size).toBe(3);
+  });
+});
+
+describe('a single scorecard keeps its own submit', () => {
+  it('renders the card standalone with a gated submit', () => {
+    const text = [
+      ':::partner.scorecard title="Rate the launch" scale=5 labels="Poor|Excellent"',
+      '- Onboarding flow',
+      '- Pricing clarity',
+      ':::',
+    ].join('\n');
+    const html = renderToStaticMarkup(h(PartnerMarkdown, { text, onAnswer: () => undefined }));
+    expect(html).not.toContain(':::partner.scorecard');
+    expect(html).toContain('scorecard-card');
+    expect(html).toContain('Submit ratings');
+    expect(html).toContain('1 = Poor');
+    expect(html).toContain('5 = Excellent');
+    // No rating yet, so the submit starts disabled.
+    expect(submitButton(html, 'Submit ratings')).toContain('disabled');
+    expect(html.match(/Submit ratings/g)?.length).toBe(1);
+  });
+
+  it('ScorecardCard renders no submit when the group owns it', () => {
+    const html = renderToStaticMarkup(
+      h(ScorecardCard, {
+        title: SCORECARD.title,
+        items: SCORECARD.items,
+        scale: SCORECARD.scale,
+        busy: false,
+        showSubmit: false,
+      }),
+    );
+    expect(html).not.toContain('Submit ratings');
   });
 });
 

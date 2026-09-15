@@ -1361,6 +1361,31 @@ apps/partner/
       R4 against the real Cloudflare edge, an R8 restore, and R3's live timer. See
       `docs/VERIFY-M22.md`.*
 
+- [x] **M23 — Scorecard chat answers (implemented + verified 2026-09-15).**
+      A fourth answerable container joins choices and free-text forms:
+      `:::partner.scorecard` rates several named items on one shared numeric
+      scale so the user answers a multi-item review in a single pass. Grammar:
+      one item per bullet line, `scale=<2–10>` (default 5) is the highest score
+      with scores running 1..scale, and an optional `labels="Low|High"` names
+      the ends. One radio group per item makes one-score-per-item structural.
+      Submitting once sends a single labelled user turn
+      (`Q: <item>` / `A: <score>/<scale>`) through the normal chat path —
+      nothing client-only, persisted text unchanged. The parser lives in
+      `shared/src/structured.ts` beside the other containers
+      (closed-container-only materialization; malformed or unclosed blocks
+      degrade to prose; a bad scale clamps rather than dropping the card).
+      `ScorecardCard` is answerable in the M20.A one-submit group — grouped
+      scorecards require every item rated, while a standalone card accepts any
+      non-empty rating set — and pending ratings survive conversation switches
+      via the existing per-conversation UI memory. The `scorecards` guidance
+      ships in the default structured feature set; styles are token-only
+      (`accent-emphasis`/`accent-contrast` selected state, `--target-min`
+      targets, one column on phones). *Exit: shared 16 · web
+      722 · core `instructions.test.ts` green · typechecks 0 · web build
+      green. (The root suite's scrypt-heavy auth/partition files time out under
+      parallel CPU load both at HEAD and here — a pre-existing environment
+      flake, green in isolation with a raised timeout.)*
+
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
 credentials. Never in production builds.

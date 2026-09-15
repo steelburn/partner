@@ -22,10 +22,11 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markd
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
-import type { ChoiceBlock, ChoiceMode, FormBlock } from '@partner/shared';
+import type { ChoiceBlock, ChoiceMode, FormBlock, ScorecardBlock } from '@partner/shared';
 import { AnswerGroup } from './AnswerGroup.js';
 import { ChoiceCard } from './ChoiceCard.js';
 import { FormCard } from './FormCard.js';
+import { ScorecardCard } from './ScorecardCard.js';
 import { isAnswerable, shouldGroupAnswers } from './lib/answer-group.js';
 import { WikiLinkChip, type WikiNoteTarget } from './WikiLinkChip.js';
 import { codeAssetBody, codeAssetPreview } from './lib/code-assets.js';
@@ -203,7 +204,9 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
         groupRendered = true;
         const answerable = hits
           .map((other) => other.block)
-          .filter((other): other is ChoiceBlock | FormBlock => isAnswerable(other))
+          .filter((other): other is ChoiceBlock | FormBlock | ScorecardBlock =>
+            isAnswerable(other),
+          )
           .map((other) =>
             other.kind === 'choice'
               ? { ...other, mode: other.mode === 'multi' ? ('multi' as const) : ('single' as const) }
@@ -255,6 +258,20 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
           key={`form-${index}`}
           title={block.title}
           questions={block.questions}
+          busy={busy === true}
+          onConfirm={(message) => onAnswer?.(message)}
+        />,
+      );
+    } else if (block.kind === 'scorecard') {
+      // Several items rated on one shared scale: one radio group per item,
+      // submit once. A standalone scorecard accepts any non-empty rating set.
+      segments.push(
+        <ScorecardCard
+          key={`scorecard-${index}`}
+          title={block.title}
+          items={block.items}
+          scale={block.scale}
+          labels={block.labels}
           busy={busy === true}
           onConfirm={(message) => onAnswer?.(message)}
         />,

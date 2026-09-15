@@ -20,6 +20,11 @@
  *   - Who is the primary user?
  *   :::
  *
+ *   :::partner.scorecard title="Rate these" scale=5
+ *   - Onboarding flow
+ *   - Pricing clarity
+ *   :::
+ *
  *   :::partner.asset kind=code title="Swap two numbers"
  *   ...raw markdown body (verbatim, trimmed at both ends)...
  *   :::
@@ -33,6 +38,22 @@ export type ChoiceMode = 'single' | 'multi';
 
 export interface ChoiceOption {
   label: string;
+}
+
+/**
+ * M23 scorecard container: several named items the user rates on one shared
+ * numeric scale (one score per item). `scale` is the highest score and is
+ * always at least 2; scores run from 1..scale. `labels` optionally names the
+ * low/high ends (e.g. ["Poor", "Excellent"]) for display only.
+ */
+export interface ScorecardBlock {
+  kind: 'scorecard';
+  title: string | null;
+  items: string[];
+  /** Highest score; scores run 1..scale. */
+  scale: number;
+  /** Optional [low, high] end labels, or null. */
+  labels: [string, string] | null;
 }
 
 export interface ChoiceBlock {
@@ -61,7 +82,7 @@ export interface AssetBlock {
   body: string;
 }
 
-export type StructuredBlock = ChoiceBlock | FormBlock | AssetBlock;
+export type StructuredBlock = ChoiceBlock | FormBlock | ScorecardBlock | AssetBlock;
 
 /** One complete container: the block + its absolute text range [start, end). */
 export interface StructuredBlockHit<T extends StructuredBlock = StructuredBlock> {
@@ -106,6 +127,38 @@ export function fenceTailTitle(tail: string): string | null {
   return cleaned === '' ? null : cleaned;
 }
 
+/** Bounds and default for a scorecard's 1..scale rating range. */
+export const SCORECARD_MIN_SCALE = 2;
+export const SCORECARD_MAX_SCALE = 10;
+export const SCORECARD_DEFAULT_SCALE = 5;
+
+/**
+ * Parse a scorecard `scale=` attribute into an integer rating ceiling.
+ * Invalid or out-of-range values fall back to the default / nearest bound so
+ * a malformed attribute degrades to a usable control rather than losing the
+ * whole container. Scores always run 1..scale.
+ */
+export function parseScorecardScale(raw: string | undefined): number {
+  if (raw === undefined) return SCORECARD_DEFAULT_SCALE;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed)) return SCORECARD_DEFAULT_SCALE;
+  return Math.min(SCORECARD_MAX_SCALE, Math.max(SCORECARD_MIN_SCALE, parsed));
+}
+
+/**
+ * Parse a scorecard `labels=` attribute into exactly two end labels. The
+ * separator is `|` (labels may themselves contain commas); anything that is
+ * not two non-empty labels is dropped, since the labels are presentation only.
+ */
+export function parseScorecardLabels(raw: string | undefined): [string, string] | null {
+  if (raw === undefined) return null;
+  const parts = raw.split('|').map((part) => part.trim());
+  if (parts.length !== 2) return null;
+  const [low, high] = parts;
+  if (low === undefined || high === undefined || low === '' || high === '') return null;
+  return [low, high];
+}
+
 /**
  * Find the first COMPLETE partner container in `text`.
  *
@@ -119,7 +172,9 @@ export function findStructuredBlock(text: string): StructuredBlockHit | null {
     const open = OPEN_FENCE.exec(lines[index] ?? '');
     if (!open) continue;
     const kind = (open[1] ?? '').toLowerCase();
-    if (kind !== 'choice' && kind !== 'asset' && kind !== 'form') continue;
+    if (kind !== 'choice' && kind !== 'asset' && kind !== 'form' && kind !== 'scorecard') {
+      continue;
+    }
 
     // Find the closing fence; unclosed containers are invisible to parsers.
     let endLine = -1;
@@ -178,6 +233,28 @@ export function findStructuredBlock(text: string): StructuredBlockHit | null {
         kind: 'form',
         title: attrs.get('title') ?? fenceTailTitle(tail) ?? fallbackTitle,
         questions,
+      };
+    } else if (kind === 'scorecard') {
+      const attrs = parseFenceAttrs(tail);
+      const items: string[] = [];
+      let fallbackTitle: string | null = null;
+      for (const line of body) {
+        const bullet = BULLET.exec(line ?? '');
+        if (bullet) {
+          const item = (bullet[1] ?? '').trim();
+          if (item !== '') items.push(item);
+          continue;
+        }
+        const trimmed = (line ?? '').trim();
+        if (trimmed !== '' && fallbackTitle === null) fallbackTitle = trimmed;
+      }
+      if (items.length === 0) continue; // not a usable scorecard — leave as text
+      block = {
+        kind: 'scorecard',
+        title: attrs.get('title') ?? fenceTailTitle(tail) ?? fallbackTitle,
+        items,
+        scale: parseScorecardScale(attrs.get('scale')),
+        labels: parseScorecardLabels(attrs.get('labels')),
       };
     } else if (kind === 'asset') {
       const attrs = parseFenceAttrs(tail);

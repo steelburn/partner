@@ -28,9 +28,15 @@ export interface FormDraft {
   answers: string[];
 }
 
+/** Scorecard drafts hold one optional 1..scale score per item (null = unrated). */
+export interface ScorecardDraft {
+  scores: (number | null)[];
+}
+
 const modelPicks = new Map<string, ModelPick>();
 const choiceSelections = new Map<string, Map<string, ChoiceSelection>>();
 const formDrafts = new Map<string, Map<string, FormDraft>>();
+const scorecardDrafts = new Map<string, Map<string, ScorecardDraft>>();
 const assetOpens = new Map<string, string | null>();
 
 export const conversationUi = {
@@ -100,6 +106,30 @@ export const conversationUi = {
     }
     forms.set(key, draft);
   },
+  // ---- scorecards (:::partner.scorecard) --------------------------------
+  /** Stable per-scorecard key: its own identity (title + scale + items). */
+  getScorecardKey(title: string | null, scale: number, items: string[]): string {
+    return `${title ?? ''}\u001f${scale}\u001f${items.join('\u001f')}`;
+  },
+  getScorecard(conversationId: string | null, key: string): ScorecardDraft | null {
+    if (conversationId === null) return null;
+    return scorecardDrafts.get(conversationId)?.get(key) ?? null;
+  },
+  setScorecard(conversationId: string | null, key: string, draft: ScorecardDraft | null): void {
+    if (conversationId === null) return;
+    if (draft === null) {
+      const cards = scorecardDrafts.get(conversationId);
+      cards?.delete(key);
+      if (cards !== undefined && cards.size === 0) scorecardDrafts.delete(conversationId);
+      return;
+    }
+    let cards = scorecardDrafts.get(conversationId);
+    if (cards === undefined) {
+      cards = new Map<string, ScorecardDraft>();
+      scorecardDrafts.set(conversationId, cards);
+    }
+    cards.set(key, draft);
+  },
   // ---- assets lane open row ---------------------------------------------
   getAssetOpen(conversationId: string | null): string | null {
     if (conversationId === null) return null;
@@ -116,6 +146,7 @@ export const conversationUi = {
     modelPicks.delete(conversationId);
     choiceSelections.delete(conversationId);
     formDrafts.delete(conversationId);
+    scorecardDrafts.delete(conversationId);
     assetOpens.delete(conversationId);
   },
 };
