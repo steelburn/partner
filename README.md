@@ -78,11 +78,11 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
 suite **1267 passed** (5 env-gated skips) · web **722 passed** · typechecks 0 ·
-web build green. Latest release: **v0.1.11** (the silent-bind fix, on top of hosted
+web build green. Latest release: **v0.1.12** (per-provider search keys, global
+auto-remember, and scorecard ratings — on top of the silent-bind fix, hosted
 sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
 mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat
-multi-question forms, scorecard ratings, persona-scoped memory). **M20 is partly
-done**: **M20.A
+multi-question forms, persona-scoped memory). **M20 is partly done**: **M20.A
 (mobile/tablet UI) is implemented and measured**, **M20.B (server role) has
 landed through S7 + S9**
 (the capability envelope, networked pairing, per-user partitions) with **S8
