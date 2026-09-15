@@ -15,6 +15,7 @@ import {
 } from './lib/notes.js';
 import { folderTreeRows, parseTags } from './lib/note-helpers.js';
 import { readStoredToken } from './lib/token.js';
+import { PartnerMarkdown } from './Markdown.js';
 import { timeAgo } from './lib/persona-helpers.js';
 
 /**
@@ -88,6 +89,9 @@ export default function NoteEditor({
   const [folderIds, setFolderIds] = useState<string[]>(() => [...initialFolderIds]);
   const [busy, setBusy] = useState<'save' | 'delete' | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
+  // M11 F7 follow-up: a markdown preview of the draft, so an HTML code block
+  // in a note renders its result inline beside its source while writing.
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [backlinks, setBacklinks] = useState<NoteBacklink[] | null>(null);
@@ -460,9 +464,20 @@ export default function NoteEditor({
           />
         </div>
         <div className="form-field">
-          <label className="label" htmlFor="note-content">
-            Content <span className="label-optional">(markdown)</span>
-          </label>
+          <div className="n-content-head">
+            <label className="label" htmlFor="note-content">
+              Content <span className="label-optional">(markdown)</span>
+            </label>
+            <button
+              type="button"
+              className="btn-link n-preview-toggle"
+              aria-pressed={previewOpen}
+              aria-controls="note-preview"
+              onClick={() => setPreviewOpen((open) => !open)}
+            >
+              {previewOpen ? 'Hide preview' : 'Preview'}
+            </button>
+          </div>
           <div className="n-editor-body">
             <textarea
               ref={textRef}
@@ -502,6 +517,15 @@ export default function NoteEditor({
               </div>
             ) : null}
           </div>
+          {previewOpen ? (
+            <div className="n-editor-preview" id="note-preview" aria-label="Rendered note preview">
+              {content.trim() === '' ? (
+                <p className="n-editor-preview-empty">Nothing to preview yet.</p>
+              ) : (
+                <PartnerMarkdown text={content} />
+              )}
+            </div>
+          ) : null}
           <p className="form-hint">
             Notes that name another note with [[Title]] link to it — type [[ to see matching
             titles. Press Enter to complete, Escape to dismiss.

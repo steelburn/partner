@@ -308,6 +308,39 @@ describe('PartnerMarkdown asset containers (F10 — body readable inline)', () =
   });
 });
 
+describe('PartnerMarkdown inline HTML code preview (F12 follow-up)', () => {
+  it('renders both the code and a sandboxed result for an html fence', () => {
+    const html = render({ text: 'Look:\n\n```html\n<h1>Hello</h1>\n```' });
+    // The source stays visible...
+    expect(html).toContain('&lt;h1&gt;Hello&lt;/h1&gt;');
+    expect(html).toContain('md-code-block');
+    expect(html).toContain('md-code-lang');
+    // ...and the rendered document rides an inline sandboxed iframe.
+    expect(html).toContain('md-code-preview-frame');
+    expect(html).toContain('srcDoc');
+    expect(html).toContain('sandbox');
+  });
+
+  it('previews an untagged fence whose text reads as HTML', () => {
+    const html = render({ text: '```\n<div class="card">Hi</div>\n```' });
+    expect(html).toContain('md-code-preview-frame');
+    expect(html).toContain('&lt;div class=&quot;card&quot;&gt;Hi&lt;/div&gt;');
+  });
+
+  it('leaves non-HTML fences as a plain pre (no preview)', () => {
+    const html = render({ text: '```js\nconst x = 1;\n```' });
+    expect(html).toContain('const x = 1;');
+    expect(html).toContain('md-pre');
+    expect(html).not.toContain('md-code-preview-frame');
+  });
+
+  it('never executes scripts outside the sandbox (source is inert text)', () => {
+    const html = render({ text: '```html\n<script>alert(1)</script>\n```' });
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});
+
 describe('M11 F2 tool-directive display filter', () => {
   it('hides [[partner:tool …]] lines from rendered bubbles', () => {
     const html = render({

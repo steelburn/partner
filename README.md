@@ -77,8 +77,10 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 ## Status (2026-09-14)
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1267 passed** (5 env-gated skips) · web **722 passed** · typechecks 0 ·
-web build green. Latest release: **v0.1.12** (per-provider search keys, global
+suite **1267 passed** (5 env-gated skips) · web **730 passed** · typechecks 0 ·
+web build green. An **M11 F12 follow-up** renders a fenced ```html code block
+inline beside its sandboxed result in chat, the assets read view and the new
+note-editor preview toggle. Latest release: **v0.1.12** (per-provider search keys, global
 auto-remember, and scorecard ratings — on top of the silent-bind fix, hosted
 sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
 mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat

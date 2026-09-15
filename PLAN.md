@@ -713,7 +713,9 @@ apps/partner/
       Assets (save/copy/promote-to-note); chat folders + drag-to-move +
       persona home folders; per-conversation themes (D6) + extension-chrome
       theme stream; Notes promoted (tab order, ＋Note/Ctrl+K, Notes lane);
-      A/B persona studio; sandboxed HTML/CSS preview; schema v12. *Exit:
+      A/B persona studio; sandboxed HTML/CSS preview (F12 follow-up: an
+      ```html code block in chat, the assets read view or the note-editor
+      preview renders inline beside its source); schema v12. *Exit:
       core 683 · web 440 · extension 57 · typechecks 0 · NSIS packaged app
       boots env-free (demo, schema v12); live + packaged UI sweeps green.*
 - [x] **M12 — UI readability & polish pass (detailed spec: `PLAN-M12.md`).**

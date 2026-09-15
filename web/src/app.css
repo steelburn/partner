@@ -2679,6 +2679,40 @@ select {
 
 /* --- Note editor -------------------------------------------------------- */
 
+.n-content-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.n-preview-toggle {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.n-preview-toggle[aria-pressed='true'] {
+  color: var(--accent-hover);
+}
+
+/* Markdown preview of the draft — the same renderer the chat uses, so an
+ * HTML code block offers the inline sandboxed result here too. */
+.n-editor-preview {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.n-editor-preview-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
 .n-editor-body {
   position: relative;
   display: flex;
@@ -4839,10 +4873,72 @@ select {
   font-size: var(--fs-sm);
 }
 
+/* An HTML fenced code block: source + inline sandboxed render, so the reader
+ * compares code and result without leaving the message. The iframe canvas is
+ * the user's document (--surface-doc, unthemed by design); the chrome is. */
 .md-code-block {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  margin: var(--space-2) 0;
 }
+
+.md-code-block > .md-pre {
+  margin: 0;
+}
+
+.md-code-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.md-code-lang {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.md-code-block-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.md-code-block-toggle {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.md-code-block-toggle[aria-pressed='true'] {
+  color: var(--accent-hover);
+}
+
+.md-code-preview {
+  margin-top: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-doc);
+}
+
+.md-code-preview-frame {
+  display: block;
+  width: 100%;
+  height: 320px;
+  border: 0;
+  background: var(--surface-doc);
+}
+
+.md-code-preview-note {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
 .md-table-wrap {
   margin: var(--space-2) 0;
   overflow-x: auto;

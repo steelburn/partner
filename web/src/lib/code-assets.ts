@@ -78,3 +78,32 @@ export function codeAssetPreview(body: string): CodePreviewSource | null {
   if (raw) return { source: trimmed, lang: 'html' };
   return null;
 }
+
+const HTML_LANGS: ReadonlySet<string> = new Set(['html', 'htm']);
+
+/**
+ * A previewable source for a marked-down FENCED code block (the triple
+ * backtick case), given the fence's info-string language and its inner
+ * code. HTML wins by tag (`html`/`htm`); an UNTAGGED block whose text still
+ * starts like an HTML element is previewed too, so a model that forgets the
+ * tag is not punished. Unlike `codeAssetPreview` this never treats css as
+ * previewable: a lone stylesheet renders a blank page, which reads as broken
+ * next to the code the reader is comparing it with.
+ */
+export function codeBlockPreview(
+  lang: string | null,
+  code: string,
+): CodePreviewSource | null {
+  if (code.trim() === '') return null;
+  const normalized = lang === null ? null : lang.trim().toLowerCase().replace(/^language-/, '');
+  if (normalized !== null && HTML_LANGS.has(normalized)) {
+    return { source: code, lang: 'html' };
+  }
+  if (normalized === null) {
+    const trimmed = code.trim();
+    if (RAW_HTML_START.test(trimmed)) {
+      return { source: trimmed, lang: 'html' };
+    }
+  }
+  return null;
+}

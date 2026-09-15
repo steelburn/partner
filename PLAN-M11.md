@@ -711,9 +711,10 @@ preview, memory episodes, playbook transcripts).
    level; a message is re-rendered only on closed blocks during stream
    (full parse on turn end). Keep caret/live-region behavior sane
    (`aria-live` + follow-latest §F8).
-4. Progressive rollout: chat first; Notes/Plans editor gets a preview toggle
-   (edit stays plain textarea until a proper editor milestone — not in
-   scope here).
+4. Progressive rollout: chat first; all markdown surfaces follow (the
+   assets read view reuses the same renderer). Notes now has a live
+   preview toggle beside the textarea (edit stays plain textarea until a
+   proper editor milestone); Plans is untouched.
 
 **Tests.** Component tests: sanitization (raw `<script>`, event-handler
 attrs stripped), GFM tables/code/links, partner-file interception,
@@ -935,11 +936,24 @@ inside a hardened sandbox; the content never leaves the machine.
 5. The preview canvas is deliberately **outside the token system** (it is
    the user's document — a browser viewport, not app chrome); the toolbar,
    toggles and code view around it are token-only.
+6. **Inline code-block preview (follow-up)**: a fenced ```html block in any
+   markdown surface (chat transcript, saved-asset read view, Note-editor
+   preview) renders the code AND an inline sandboxed iframe of its result by
+   default, so the reader compares source and render without leaving the
+   message. Same sandbox policy as above (scripts OFF with a per-block
+   opt-in; never `allow-same-origin`). `web/src/CodeBlock.tsx` +
+   `codeBlockPreview()` in `lib/code-assets.ts` accept an `html`/`htm` tag
+   or an untagged fence whose text reads as HTML; css alone is *not*
+   previewed inline (a lone stylesheet renders a blank page). The F12
+   overlay keeps serving attachments and `kind=code` containers.
 
 **Tests.** `preview.ts`: link-inlining with sibling map, external strip +
 notice, data: images kept, size-cap fallback. Component: sandbox attrs
 (scripts off by default; opt-in adds only `allow-scripts`; never
-`allow-same-origin`), CSP meta present, toggle resets on switch. Route:
+`allow-same-origin`), CSP meta present, toggle resets on switch.
+`codeBlockPreview`: html/htm + `language-` prefix, untagged HTML, css/js
+refused. `PartnerMarkdown`: an `html` fence renders both the escaped source
+and a sandboxed `srcDoc` iframe; a `js` fence stays a plain `md-pre`. Route:
 content endpoint access control + text-only allowlist. **Exit:** attach
 `index.html` + `styles.css` → preview renders the styled page, network
 blocked, scripts off; opting in runs scripts in an opaque origin with no

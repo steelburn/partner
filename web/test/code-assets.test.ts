@@ -4,7 +4,12 @@
  * containers rendered in the transcript.
  */
 import { describe, expect, it } from 'vitest';
-import { codeAssetBody, codeAssetPreview, singleFencedCode } from '../src/lib/code-assets.js';
+import {
+  codeAssetBody,
+  codeAssetPreview,
+  codeBlockPreview,
+  singleFencedCode,
+} from '../src/lib/code-assets.js';
 
 describe('singleFencedCode', () => {
   it('extracts a single fenced block with its language', () => {
@@ -56,6 +61,31 @@ describe('codeAssetBody (display)', () => {
 
   it('shows unfenced code verbatim', () => {
     expect(codeAssetBody('const x = 1;')).toEqual({ lang: null, code: 'const x = 1;' });
+  });
+});
+
+describe('codeBlockPreview (inline fenced-code viewer)', () => {
+  it('previews an html-tagged fence', () => {
+    expect(codeBlockPreview('html', '<h1>Hi</h1>')).toEqual({
+      lang: 'html',
+      source: '<h1>Hi</h1>',
+    });
+  });
+
+  it('accepts htm aliases and a language- prefix, case-insensitively', () => {
+    expect(codeBlockPreview('HTML', '<p>x</p>')?.lang).toBe('html');
+    expect(codeBlockPreview('language-htm', '<p>x</p>')?.lang).toBe('html');
+  });
+
+  it('previews an untagged fence whose text reads as HTML', () => {
+    expect(codeBlockPreview(null, '<div>hi</div>')?.source).toBe('<div>hi</div>');
+  });
+
+  it('refuses css/js/prose — css alone would render a blank page', () => {
+    expect(codeBlockPreview('css', 'p { color: red }')).toBeNull();
+    expect(codeBlockPreview('js', 'const x = 1;')).toBeNull();
+    expect(codeBlockPreview(null, 'plain prose')).toBeNull();
+    expect(codeBlockPreview('html', '   ')).toBeNull();
   });
 });
 

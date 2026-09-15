@@ -24,6 +24,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
 import type { ChoiceBlock, ChoiceMode, FormBlock, ScorecardBlock } from '@partner/shared';
 import { AnswerGroup } from './AnswerGroup.js';
+import { CodeBlock } from './CodeBlock.js';
 import { ChoiceCard } from './ChoiceCard.js';
 import { FormCard } from './FormCard.js';
 import { ScorecardCard } from './ScorecardCard.js';
@@ -93,7 +94,7 @@ function MarkdownLink(props: React.ComponentProps<'a'>) {
 
 const COMPONENTS: Components = {
   a: MarkdownLink,
-  pre: (props) => <pre className="md-pre">{props.children}</pre>,
+  pre: (props) => <CodeBlock {...props} />,
   code: (props) => <code className="md-code">{props.children}</code>,
   table: (props) => (
     <div className="md-table-wrap">
