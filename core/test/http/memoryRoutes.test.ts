@@ -660,7 +660,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
   it('files auto-detected suggestions for a memory-on persona after a turn', async () => {
     const upstream = await startChatUpstream({
       suggestReply:
-        '[{"kind":"identity","value":"Works as a backend engineer"},{"kind":"preference","value":"Prefers bullet lists"}]',
+        '[{"kind":"identity","value":"Works as a backend engineer","scope":"global"},{"kind":"preference","value":"Prefers bullet lists","scope":"persona"}]',
     });
     upstreams.push(upstream);
     const h = demoHarness({ demo: false });
@@ -690,15 +690,76 @@ describe('M19 persona-scoped memory + automatic remember', () => {
 
       const listed = await request(h.app).get('/v1/memory/profile').set(authed(token));
       expect(listed.status).toBe(200);
-      const entries = (listed.body.profile as Array<Record<string, unknown>>).filter(
-        (entry) => entry.status === 'suggested',
-      );
+      const entries = listed.body.profile as Array<Record<string, unknown>>;
       expect(entries).toHaveLength(2);
-      expect(entries.every((entry) => entry.personaScope === 'p-researcher')).toBe(true);
       expect(entries.every((entry) => entry.source === 'partner_suggestion')).toBe(true);
+      const globalEntry = entries.find((entry) => entry.value === 'Works as a backend engineer');
+      const personaEntry = entries.find((entry) => entry.value === 'Prefers bullet lists');
+      // `scope:"global"` -> personaScope null (tailors every persona);
+      // `scope:"persona"` -> scoped to the extracting persona.
+      expect(globalEntry?.personaScope).toBeNull();
+      expect(personaEntry?.personaScope).toBe('p-researcher');
       const values = entries.map((entry) => entry.value);
       expect(values).toContain('Works as a backend engineer');
       expect(values).toContain('Prefers bullet lists');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('a confirmed global suggestion tailors a DIFFERENT persona', async () => {
+    const upstream = await startChatUpstream({
+      suggestReply: '[{"kind":"identity","value":"Lives in Berlin","scope":"global"}]',
+    });
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      h.personas.update('p-researcher', { memory: { personaMemory: 'on' } });
+      const provider = await h.providerManager.create({
+        name: 'm19-global',
+        endpoint: upstream.server.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19global');
+
+      // Persona A (private memory on) learns a global fact.
+      const first = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          personaId: 'p-researcher',
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'I just moved to Berlin' }],
+        });
+      expect(first.status).toBe(200);
+      await h.memory?.remember.idle();
+
+      const listed = await request(h.app).get('/v1/memory/profile').set(authed(token));
+      const suggestion = (listed.body.profile as Array<Record<string, unknown>>)[0];
+      expect(suggestion?.personaScope).toBeNull();
+      const id = String(suggestion?.id);
+
+      // Confirm it, then chat with persona B (private memory OFF).
+      const confirmed = await request(h.app)
+        .put(`/v1/memory/profile/${id}`)
+        .set(authed(token))
+        .send({ status: 'confirmed' });
+      expect(confirmed.status).toBe(200);
+
+      const bodiesBefore = upstream.bodies.length;
+      const second = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          personaId: 'p-scribe',
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'hello' }],
+        });
+      expect(second.status).toBe(200);
+      // The chat turn is the first body after the extraction call.
+      const sent = upstream.bodies[bodiesBefore];
+      expect(String(sent?.messages?.[0]?.content ?? '')).toContain('Lives in Berlin');
     } finally {
       h.close();
     }

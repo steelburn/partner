@@ -236,8 +236,9 @@ export default function MemoryView({
               Memory is stored locally in the core on this machine — never on a Partner server.
               Entries show their provenance, and you can forget or export all of it at any time.
               Only confirmed profile entries tailor replies, and only when a persona is routed
-              through a provider. A persona with private memory on remembers facts scoped to
-              itself and honors them only while you are chatting with it.
+              through a provider. A persona with private memory on notices durable facts: those
+              that apply everywhere arrive as global suggestions, and facts tied to that persona
+              stay scoped to it.
             </p>
           </>
         ) : null}

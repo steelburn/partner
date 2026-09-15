@@ -50,13 +50,26 @@ function makeRemember(
 }
 
 describe('parseRememberReply', () => {
-  it('parses a clean JSON array', () => {
+  it('parses a clean JSON array (scope defaults to persona)', () => {
     const parsed = parseRememberReply(
       '[{"kind":"identity","value":"Goes by Sam"},{"kind":"preference","value":"Wants TL;DR first","evidence":"asked twice"}]',
     );
     expect(parsed).toEqual([
-      { kind: 'identity', value: 'Goes by Sam' },
-      { kind: 'preference', value: 'Wants TL;DR first', evidence: 'asked twice' },
+      { kind: 'identity', value: 'Goes by Sam', scope: 'persona' },
+      { kind: 'preference', value: 'Wants TL;DR first', scope: 'persona', evidence: 'asked twice' },
+    ]);
+  });
+
+  it('parses an explicit scope and defaults unknown scopes to persona', () => {
+    const parsed = parseRememberReply(
+      '[{"kind":"identity","value":"Lives in Berlin","scope":"global"},' +
+        '{"kind":"rule","value":"Uses tabs","scope":"persona"},' +
+        '{"kind":"style","value":"Lowercase headings","scope":"everywhere"}]',
+    );
+    expect(parsed.map((p) => [p.value, p.scope])).toEqual([
+      ['Lives in Berlin', 'global'],
+      ['Uses tabs', 'persona'],
+      ['Lowercase headings', 'persona'],
     ]);
   });
 
@@ -64,14 +77,14 @@ describe('parseRememberReply', () => {
     const parsed = parseRememberReply(
       'Here you go:\n```json\n[{"kind":"rule","value":"Never use emoji"}]\n```\nDone.',
     );
-    expect(parsed).toEqual([{ kind: 'rule', value: 'Never use emoji' }]);
+    expect(parsed).toEqual([{ kind: 'rule', value: 'Never use emoji', scope: 'persona' }]);
   });
 
   it('drops malformed entries, unknown kinds and empty values', () => {
     const parsed = parseRememberReply(
       '[{"kind":"secret","value":"nope"},{"kind":"style","value":"   "},{"kind":"style","value":"Lowercase headers"},{"kind":"rule"}]',
     );
-    expect(parsed).toEqual([{ kind: 'style', value: 'Lowercase headers' }]);
+    expect(parsed).toEqual([{ kind: 'style', value: 'Lowercase headers', scope: 'persona' }]);
   });
 
   it('caps at the item limit and dedupes within the batch', () => {
@@ -104,9 +117,9 @@ describe('looksLikeSecret', () => {
 });
 
 describe('remember manager (fake provider)', () => {
-  it('files suggestions scoped to the persona and sends the fixed prompt', async () => {
+  it('files persona-scoped suggestions and sends the fixed prompt', async () => {
     const fake = fakeProvider(
-      '[{"kind":"identity","value":"Works as a backend engineer"},{"kind":"preference","value":"Prefers bullet lists","evidence":"used them throughout"}]',
+      '[{"kind":"identity","value":"Works as a backend engineer","scope":"persona"},{"kind":"preference","value":"Prefers bullet lists","scope":"persona","evidence":"used them throughout"}]',
     );
     const env = makeMemoryEnv();
     const remember = makeRemember(env, { target: fake.target });
@@ -135,6 +148,56 @@ describe('remember manager (fake provider)', () => {
       });
       expect(String(fake.requests[0]?.messages[1]?.content)).toContain('backend engineer');
       expect(REMEMBER_SYSTEM_PROMPT).not.toContain('backend engineer');
+    } finally {
+      env.close();
+    }
+  });
+
+  it('files global findings with personaScope null and persona findings scoped', async () => {
+    const fake = fakeProvider(
+      '[{"kind":"identity","value":"Lives in Berlin","scope":"global"},' +
+        '{"kind":"rule","value":"Ship on Fridays","scope":"persona"},' +
+        '{"kind":"identity","value":"Speaks German","scope":"global"}]',
+    );
+    const env = makeMemoryEnv();
+    const remember = makeRemember(env, { target: fake.target });
+    try {
+      const outcome = await remember.extract({
+        personaId: 'p-builder',
+        userText: 'I live in Berlin',
+        assistantText: 'Noted.',
+      });
+      expect(outcome).toMatchObject({ status: 'saved', suggested: 3 });
+      const entries = env.profile.list({ includeRejected: true });
+      const globals = entries.filter((e) => e.personaScope === null).map((e) => e.value);
+      const scoped = entries.filter((e) => e.personaScope === 'p-builder').map((e) => e.value);
+      expect(globals.sort()).toEqual(['Lives in Berlin', 'Speaks German']);
+      expect(scoped).toEqual(['Ship on Fridays']);
+
+      // Audit stays content-free and records the scope split as counts.
+      const row = env.auditStore.list(50).find((r) => r.action === 'memory.remember');
+      expect(row).toBeDefined();
+      expect(JSON.stringify(row)).not.toContain('Berlin');
+      const details = JSON.parse(row?.details ?? '{}') as Record<string, unknown>;
+      expect(details).toMatchObject({ globals: 2, personaScoped: 1 });
+    } finally {
+      env.close();
+    }
+  });
+
+  it('dedupes a global finding against an existing global entry', async () => {
+    const fake = fakeProvider('[{"kind":"identity","value":"lives in BERLIN","scope":"global"}]');
+    const env = makeMemoryEnv();
+    const remember = makeRemember(env, { target: fake.target });
+    try {
+      env.profile.add({ kind: 'identity', value: 'Lives in Berlin' });
+      const outcome = await remember.extract({
+        personaId: 'p-builder',
+        userText: 'x',
+        assistantText: 'y',
+      });
+      expect(outcome).toEqual({ status: 'empty' });
+      expect(env.profile.list()).toHaveLength(1);
     } finally {
       env.close();
     }

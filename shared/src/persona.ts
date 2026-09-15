@@ -47,14 +47,19 @@ export interface PersonaIndependence {
 }
 
 export interface PersonaMemoryFlags {
-  /** Global user-profile facts (shared across personas) this persona may read. */
+  /** Global user-profile facts (shared across personas) this persona may read.
+   *  NOTE: reserved — confirmed global facts currently tailor every persona
+   *  (M4); this grant is stored and validated but not yet enforced. */
   userProfile: 'read' | 'none';
   episodes: 'read+write' | 'none';
   /**
-   * M19 persona-private memory about the user. 'on' = this persona keeps its
-   * own facts (auto-detected, user-confirmed) and recalls them ONLY while
-   * chatting with it; 'off'/absent = neither reads nor writes them (privacy
-   * default). Global profile facts stay governed by {@link userProfile}.
+   * M19 automatic remember consent + persona-private memory. 'on' = this
+   * persona notices durable facts about the user after a persisted turn.
+   * Findings that apply everywhere (name, language, standing tone) are filed
+   * global (`personaScope: null`) as suggestions; facts tied to this persona
+   * stay scoped to it. Nothing is applied until the user confirms it in the
+   * Memory view. 'off'/absent = neither reads nor writes auto-detected facts
+   * (privacy default).
    */
   personaMemory?: 'on' | 'off';
 }

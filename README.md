@@ -657,10 +657,15 @@ loops never see it. Global confirmed facts still tailor every persona (M4).
 persona's cheap-task-class model (out of band, AFTER the client's response has
 ended, so the turn never waits) whether the finished exchange holds anything
 durable about the user. Findings are filed as `partner_suggestion` /
-`suggested` entries scoped to that persona for the user to confirm, edit or
-reject in the Memory view — alongside the existing explicit add-a-fact path.
-The extractor prompt is fixed and never user-derived; parsing is defensive
-(fence/JSON guard, kind whitelist, caps, obvious-secret filter); dedupe covers
+`suggested` entries for the user to confirm, edit or reject in the Memory
+view — alongside the existing explicit add-a-fact path. Each finding is
+labeled **global** (a truth about the user in every conversation: name, role,
+language, standing tone/format rules; filed `personaScope: null` so it tailors
+**every** persona once confirmed) or **persona** (only meaningful while
+working with this persona; filed scoped to it), so the partner learns a
+universal fact once instead of per persona. The extractor prompt is fixed and
+never user-derived; parsing is defensive (fence/JSON guard, kind + scope
+whitelist with a persona default, caps, obvious-secret filter); dedupe covers
 global + same-scope entries, rejected included, so a rejected fact is never
 re-suggested; demo/no-provider turns skip; audit rows carry ids/counts/model
 only. No schema change (M4's `profile_entries.persona_scope`/`source` and the
@@ -668,7 +673,8 @@ only. No schema change (M4's `profile_entries.persona_scope`/`source` and the
 persona editor, a persona-aware “in use” marker, and an “Auto-detected”
 provenance chip. Suites after the pass: core **893 passed** (5 env-gated
 skips) · web **541 passed** · typechecks 0 · web build green · `ux_audit`
-green. Spec: `PLAN-M19.md`.
+green; **global auto-remember follow-up** kept core and web green (web 712).
+Spec: `PLAN-M19.md`.
 
 ### M18 — chat multi-question forms (2026-09-11, implemented)
 

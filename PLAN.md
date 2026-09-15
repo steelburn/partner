@@ -353,7 +353,7 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
 
 | Store | Contents | Written by | Notes |
 |---|---|---|---|
-| **Profile** | Facts & preferences: name, languages, timezone, tone/verbosity/format prefs, "do/don't" rules, writing style samples | Partner **auto-detects** suggestions; **user confirms each**; manual edits | Highest trust; drives tailoring; `persona_scope` null = global, else one persona (M19) |
+| **Profile** | Facts & preferences: name, languages, timezone, tone/verbosity/format prefs, "do/don't" rules, writing style samples | Partner **auto-detects** suggestions (global or persona-scoped); **user confirms each**; manual edits | Highest trust; drives tailoring; `persona_scope` null = global, else one persona (M19) |
 | **Episodes** | Summaries of past conversations/tasks with outcome | Partner, on demand (per conversation) | Namespaced per persona unless shared |
 | **Retrieval** | FTS5 full-text over profile/episodes (and notes/plans) | Store writes | The semantic (vector) index is deferred until an embeddings provider is pinned (M4 deviation) |
 
@@ -366,9 +366,11 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
 - **Automatic remember (M19):** after a persisted persona turn whose private
   memory is on, the core asks the persona's cheap-task-class model — out of
   band, after the response has ended — whether the exchange holds a durable
-  user fact; findings land as `suggested` entries scoped to that persona. The
-  extractor prompt is fixed, parsing/caps/secret-filter are defensive, and
-  audit rows carry ids/counts only.
+  user fact; findings land as `suggested` entries the user confirms. Each
+  finding is **global** (`personaScope: null` — name, role, language, standing
+  tone/format rules, so it tailors every persona) or **persona-scoped** (only
+  that persona). The extractor prompt is fixed, parsing/caps/secret-filter are
+  defensive, and audit rows carry ids/counts only.
 - **Forgetting:** per-entry delete, per-store wipe, or "forget everything
   before <date>". Memory exports as JSON/Markdown. A rejected fact is never
   re-suggested.
@@ -557,7 +559,8 @@ pairing (`/v1/pair/device`, `/v1/boot` — M15); notes knowledge workspace
 `PUT /v1/notes/:id/folders` — M17); and schedules (`POST
 /v1/personas/:id/schedules/:scheduleId/run-now`, `GET /v1/schedules/runs` +
 `/runs/:runId` — M14). M19 adds **no route**: automatic remember runs on the
-chat path and only widens `/v1/memory/profile` with persona-scoped entries.
+chat path and only widens `/v1/memory/profile` with global and persona-scoped
+suggested entries.
 
 M22 adds the **account lane** for the hosted shape: `POST /v1/auth/session`
 ({username, password} → a session that carries `user_id` and `LOGIN_SESSION_CLASS`),
@@ -843,10 +846,10 @@ apps/partner/
       core asks the persona's cheap-task-class model — out of band, AFTER the
       client's response has ended — whether the finished exchange holds
       anything durable about the user, and files findings as
-      `partner_suggestion` / `suggested` entries **scoped to that persona**
-      for confirmation in the Memory view (alongside the existing explicit
-      add-a-fact path). The extractor prompt is fixed and never user-derived;
-      parsing is defensive (fence/JSON guard, kind whitelist, caps,
+      `partner_suggestion` / `suggested` entries **labeled global or
+      persona-scoped** for confirmation in the Memory view (alongside the
+      existing explicit add-a-fact path). The extractor prompt is fixed and
+      never user-derived; parsing is defensive (fence/JSON guard, kind whitelist, caps,
       obvious-secret filter); dedupe covers global + same-scope entries,
       rejected included, so a rejected fact is never re-suggested;
       demo/no-provider turns skip; audit rows carry ids/counts/model only. Web:
@@ -856,6 +859,15 @@ apps/partner/
       JSON were enough). *Exit: core 893 passed (5 env-gated skips) · web 541
       passed · typechecks 0 · web build green · `ux_audit` green (APCA
       light + dark).*
+      **Follow-up (global auto-remember):** the extractor now labels each
+      finding `scope: "global"|"persona"` (missing/unknown → persona). Global
+      findings file `personaScope: null` and, once confirmed, tailor **every**
+      persona — so the partner learns a fact once (name, language, standing
+      tone) instead of per persona; persona findings stay scoped. Dedupe
+      covers both scopes and never files the same value twice. `memory.remember`
+      audit gains `globals`/`personaScoped` counts (still content-free). Web
+      copy (persona-editor Memory hint, Memory privacy note) explains the two
+      scopes. *Exit: core suite green · web 712 passed · typechecks 0.*
 - [ ] **M20 — Client-server, multi-user & mobile (detailed spec:
       `PLAN-M20.md`; decisions locked 2026-09-12; M20.A in progress).**
       Partner grows a remote, multi-device, multi-user server role.

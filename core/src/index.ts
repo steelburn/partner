@@ -269,6 +269,7 @@ export {
   REMEMBER_VALUE_CAP,
   REMEMBER_EVIDENCE_CAP,
   REMEMBER_INPUT_CAP,
+  REMEMBER_SCOPES,
 } from './memory/remember.js';
 export type {
   RememberManager,
@@ -276,6 +277,7 @@ export type {
   RememberInput,
   RememberOutcome,
   RememberCandidate,
+  RememberScope,
   RememberTarget,
 } from './memory/remember.js';
 

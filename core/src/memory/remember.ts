@@ -4,16 +4,26 @@
  * After a persisted persona turn, the core asks the persona's model — out of
  * band, AFTER the client's response has ended — whether the exchange holds
  * anything durable about the user worth remembering. Findings are filed as
- * `partner_suggestion` / `suggested` profile entries scoped to that persona,
- * waiting for the user to confirm, edit or reject them in the Memory view.
+ * `partner_suggestion` / `suggested` profile entries, waiting for the user to
+ * confirm, edit or reject them in the Memory view.
+ *
+ * Scope: the extractor labels each finding `global` (true of the user in
+ * every conversation: name, role, language, standing tone/format rules) or
+ * `persona` (only meaningful while chatting with this persona). Global
+ * findings are filed with `personaScope: null` so they tailor every persona;
+ * persona findings stay scoped to the persona that heard them. The whole
+ * extraction stays gated on that persona's private-memory toggle — the
+ * toggle is the conversation-level consent, and nothing is applied until the
+ * user confirms the suggestion.
  *
  * Discipline:
  *   - The extractor instruction is FIXED and never user-derived; the
  *     transcript is user data that only ever sits in the payload.
  *   - Parsing is defensive: fences stripped, first '[' → last ']', kind
- *     whitelist, length caps, an obvious-secret filter, and dedupe against
- *     every existing entry in the scope (rejected included — a fact the user
- *     rejected is never re-suggested).
+ *     whitelist, scope whitelist (unknown/missing -> persona), length caps, an
+ *     obvious-secret filter, and dedupe against every existing entry the
+ *     persona would honor — global + same-scope, rejected included — so a
+ *     fact the user rejected anywhere is never re-suggested.
  *   - Audit rows carry ids/counts/model only — never the fact text.
  *   - Demo / no-provider turns skip entirely (returns a typed outcome).
  *
@@ -34,6 +44,11 @@ export const REMEMBER_EVIDENCE_CAP = 200;
 /** Per-message transcript cap fed to the extractor (prompt stays bounded). */
 export const REMEMBER_INPUT_CAP = 4000;
 
+/** Where a remembered fact applies: every persona (`global`) or only one. */
+export type RememberScope = 'global' | 'persona';
+/** Whitelist for the extractor's `scope` field; unknown -> `persona`. */
+export const REMEMBER_SCOPES: readonly RememberScope[] = ['global', 'persona'];
+
 /**
  * Fixed extractor instruction — NEVER user-derived. The transcript only ever
  * appears as the user payload after this instruction.
@@ -45,7 +60,10 @@ export const REMEMBER_SYSTEM_PROMPT =
   'rules, and stable style notes. Return ONLY a JSON array of at most ' +
   String(REMEMBER_MAX_ITEMS) +
   ' objects, each {"kind":"preference"|"identity"|"rule"|"style","value":"<short fact>",' +
-  '"evidence":"<why>"}. Return [] when nothing is worth keeping. Never include secrets ' +
+  '"scope":"global"|"persona","evidence":"<why>"}. Use "global" for a durable truth about ' +
+  'the user that applies in EVERY conversation (name, role, language, tone/verbosity/format ' +
+  'defaults, standing rules); use "persona" when it only matters while working with this ' +
+  'persona. Return [] when nothing is worth keeping. Never include secrets ' +
   '(passwords, API keys, tokens, payment data), transient task details, or facts about anyone ' +
   'other than the user.';
 
@@ -65,6 +83,8 @@ export interface RememberInput {
 export interface RememberCandidate {
   kind: ProfileEntryKind;
   value: string;
+  /** `global` = every persona; `persona` = only the extracting persona. */
+  scope: RememberScope;
   key?: string;
   evidence?: string;
 }
@@ -157,6 +177,12 @@ export function parseRememberReply(text: string): RememberCandidate[] {
     if (!(PROFILE_KINDS as readonly string[]).includes(kind)) continue;
     const value = trimToCap(item.value, REMEMBER_VALUE_CAP);
     if (value === '') continue;
+    // Unknown or missing scope is persona (the conservative default: a fact
+    // is never broadcast to every persona unless the model says so).
+    const rawScope = typeof item.scope === 'string' ? item.scope.trim().toLowerCase() : '';
+    const scope: RememberScope = (REMEMBER_SCOPES as readonly string[]).includes(rawScope)
+      ? (rawScope as RememberScope)
+      : 'persona';
     const key = trimToCap(item.key, 60);
     const evidence = trimToCap(item.evidence, REMEMBER_EVIDENCE_CAP);
     const dedupe = dedupeKey(value);
@@ -165,6 +191,7 @@ export function parseRememberReply(text: string): RememberCandidate[] {
     out.push({
       kind: kind as ProfileEntryKind,
       value,
+      scope,
       ...(key !== '' ? { key } : {}),
       ...(evidence !== '' ? { evidence } : {}),
     });
@@ -259,7 +286,9 @@ export function createRememberManager(options: RememberManagerOptions): Remember
 
     // Dedupe against every existing entry the persona would honor: global
     // facts and its own scoped facts, rejected included (a fact the user
-    // rejected — anywhere — is never re-suggested).
+    // rejected — anywhere — is never re-suggested). The same value is never
+    // filed on both scopes either: a global fact keeps a persona candidate
+    // from duplicating it, and vice versa.
     const existing = new Set(
       profile
         .list({ includeRejected: true })
@@ -268,6 +297,7 @@ export function createRememberManager(options: RememberManagerOptions): Remember
     );
 
     const entryIds: string[] = [];
+    let globalSuggested = 0;
     for (const candidate of candidates) {
       const dedupe = dedupeKey(candidate.value);
       if (existing.has(dedupe)) continue;
@@ -279,9 +309,12 @@ export function createRememberManager(options: RememberManagerOptions): Remember
           ...(candidate.key !== undefined ? { key: candidate.key } : {}),
           ...(candidate.evidence !== undefined ? { evidence: candidate.evidence } : {}),
           source: 'partner_suggestion',
-          personaScope: personaId,
+          // `global` files personaScope null so the fact tailors every
+          // persona once confirmed; `persona` stays private to this one.
+          personaScope: candidate.scope === 'global' ? null : personaId,
         } satisfies ProfileEntryInput);
         entryIds.push(entry.id);
+        if (candidate.scope === 'global') globalSuggested += 1;
       } catch {
         // A single bad candidate must not sink the batch.
       }
@@ -292,6 +325,8 @@ export function createRememberManager(options: RememberManagerOptions): Remember
       conversationId: input.conversationId ?? null,
       candidates: candidates.length,
       suggested: entryIds.length,
+      globals: globalSuggested,
+      personaScoped: entryIds.length - globalSuggested,
       // Ids only — never the fact text.
       entryIds,
     });
