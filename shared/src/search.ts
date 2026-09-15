@@ -11,14 +11,22 @@ export type SearchProvider = 'tavily' | 'brave';
 export interface SearchConfig {
   enabled: boolean;
   provider: SearchProvider;
-  /** Defaults to the provider's endpoint when null. */
-  endpoint: string | null;
+  /** Per-provider endpoint overrides; null = the provider's default endpoint. */
+  endpoints: Record<SearchProvider, string | null>;
 }
+
+/**
+ * Which providers currently hold a keychain-stored key. Keys are stored per
+ * provider, so a user who holds both a Tavily and a Brave key can keep both
+ * and switch the active one without re-entering either.
+ */
+export type SearchKeyStatus = Record<SearchProvider, boolean>;
 
 export interface SearchConfigInput {
   enabled?: boolean;
   provider?: SearchProvider;
-  endpoint?: string | null;
+  /** Per-provider overrides; setting a provider to null clears its override. */
+  endpoints?: Partial<Record<SearchProvider, string | null>>;
 }
 
 export interface SearchHit {

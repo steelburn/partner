@@ -1,13 +1,14 @@
 /**
  * M11 F2 search panel (PLAN-M11.md).
  *
- * Configure the optional API-key search backend (Tavily/Brave): enable,
- * endpoint override, keychain-held key, and a manual test search. Enabling
- * also lets an auto+ persona use the `search` tool in chat. Token-styled.
+ * Two provider cards (Tavily/Brave). Each card owns its keychain-held key and
+ * optional endpoint override; the radio picks which provider is active for
+ * chat and the manual test search. Enabling unlocks the `search` tool for
+ * auto+ personas. Token-styled.
  */
 import { useEffect, useState } from 'react';
 import type { SearchProvider, SearchResult } from '@partner/shared';
-import { SEARCH_PROVIDERS } from '@partner/shared';
+import { SEARCH_DEFAULT_ENDPOINTS, SEARCH_PROVIDERS } from '@partner/shared';
 import {
   getSearchConfig,
   removeSearchKey,
@@ -27,11 +28,26 @@ function providerHint(provider: SearchProvider): string {
     : 'api.search.brave.com — GET /res/v1/web/search with a subscription token';
 }
 
+interface SearchConfigLike {
+  enabled: boolean;
+  provider: SearchProvider;
+  endpoints: Record<SearchProvider, string | null>;
+  hasKey: boolean;
+  keys: Record<SearchProvider, boolean>;
+}
+
+const emptyDrafts = (): Record<SearchProvider, string> => ({ tavily: '', brave: '' });
+
+function isAuthError(cause: unknown): boolean {
+  const status = (cause as { status?: number }).status;
+  return status === 401 || status === 403;
+}
+
 export function SearchPanel({ onUnpair }: SearchPanelProps) {
-  const [config, setConfig] = useState<(SearchConfigLike) | null>(null);
+  const [config, setConfig] = useState<SearchConfigLike | null>(null);
   const [provider, setProvider] = useState<SearchProvider>('tavily');
-  const [endpoint, setEndpoint] = useState('');
-  const [keyDraft, setKeyDraft] = useState('');
+  const [endpointDrafts, setEndpointDrafts] = useState<Record<SearchProvider, string>>(emptyDrafts);
+  const [keyDrafts, setKeyDrafts] = useState<Record<SearchProvider, string>>(emptyDrafts);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -39,12 +55,16 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
   const [result, setResult] = useState<SearchResult | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  interface SearchConfigLike {
-    enabled: boolean;
-    provider: SearchProvider;
-    endpoint: string | null;
-    hasKey: boolean;
-  }
+  const applyConfig = (next: SearchConfigLike, resetEndpoints = false): void => {
+    setConfig(next);
+    setProvider(next.provider);
+    if (resetEndpoints) {
+      setEndpointDrafts({
+        tavily: next.endpoints.tavily ?? '',
+        brave: next.endpoints.brave ?? '',
+      });
+    }
+  };
 
   const load = async (): Promise<void> => {
     const token = readStoredToken();
@@ -54,12 +74,10 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
     }
     try {
       const cfg = await getSearchConfig(token);
-      setConfig(cfg);
-      setProvider(cfg.provider);
-      setEndpoint(cfg.endpoint ?? '');
+      applyConfig(cfg, true);
       setError(null);
     } catch (cause) {
-      if ((cause as { status?: number }).status === 401 || (cause as { status?: number }).status === 403) {
+      if (isAuthError(cause)) {
         onUnpair();
         return;
       }
@@ -81,20 +99,13 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
     return token;
   };
 
-  const saveConfig = async (enabled: boolean): Promise<void> => {
+  const saveEnabled = async (enabled: boolean): Promise<void> => {
     const token = tokenOf();
     if (token === '') return;
     setBusy(true);
     setError(null);
     try {
-      const next = await updateSearchConfig(token, {
-        enabled,
-        provider,
-        endpoint: endpoint.trim() === '' ? null : endpoint.trim(),
-      });
-      setConfig(next);
-      setProvider(next.provider);
-      setEndpoint(next.endpoint ?? '');
+      applyConfig(await updateSearchConfig(token, { enabled, provider }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not save the search config.');
     } finally {
@@ -102,15 +113,53 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
     }
   };
 
-  const storeKey = async (): Promise<void> => {
+  const selectProvider = async (option: SearchProvider): Promise<void> => {
+    if (option === config?.provider) return;
     const token = tokenOf();
     if (token === '') return;
+    const previous = provider;
+    setProvider(option);
     setBusy(true);
     setError(null);
     try {
-      await setSearchKey(token, keyDraft.trim());
-      setKeyDraft('');
-      await load();
+      applyConfig(await updateSearchConfig(token, { provider: option }));
+    } catch (cause) {
+      setProvider(previous);
+      setError(cause instanceof Error ? cause.message : 'Could not select the search provider.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveEndpoint = async (target: SearchProvider): Promise<void> => {
+    const token = tokenOf();
+    if (token === '') return;
+    const trimmed = endpointDrafts[target].trim();
+    setBusy(true);
+    setError(null);
+    try {
+      applyConfig(
+        await updateSearchConfig(token, { endpoints: { [target]: trimmed === '' ? null : trimmed } }),
+        true,
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save the endpoint.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const storeKey = async (target: SearchProvider): Promise<void> => {
+    const token = tokenOf();
+    if (token === '') return;
+    const draft = keyDrafts[target].trim();
+    if (draft === '') return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setSearchKey(token, draft, target);
+      setKeyDrafts((current) => ({ ...current, [target]: '' }));
+      setConfig(await getSearchConfig(token));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not store the API key.');
     } finally {
@@ -118,14 +167,14 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
     }
   };
 
-  const clearKey = async (): Promise<void> => {
+  const clearKey = async (target: SearchProvider): Promise<void> => {
     const token = tokenOf();
     if (token === '') return;
     setBusy(true);
     setError(null);
     try {
-      await removeSearchKey(token);
-      await load();
+      await removeSearchKey(token, target);
+      setConfig(await getSearchConfig(token));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not remove the API key.');
     } finally {
@@ -152,11 +201,12 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
     <section className="card add-card" aria-label="Search">
       <h2 className="card-title">Internet search</h2>
       <p className="card-copy">
-        One optional API-key search backend. OFF until you enable it and store a key. When
-        enabled: <strong>auto</strong> and <strong>autonomous</strong> personas can use the{' '}
+        Two optional API-key search backends. Each keeps its own key, so you can store both and
+        pick which one to use. OFF until you enable it and store a key. When enabled:{' '}
+        <strong>auto</strong> and <strong>autonomous</strong> personas can use the{' '}
         <code className="md-code-inline">search</code> tool in chat directly; at{' '}
         <strong>suggest</strong> the persona asks and you approve from the Files queue; assist
-        never runs tools. You can also search right here. Your key lives in the OS keychain.
+        never runs tools. You can also search right here. Your keys live in the OS keychain.
       </p>
 
       {error !== null ? (
@@ -170,72 +220,106 @@ export function SearchPanel({ onUnpair }: SearchPanelProps) {
         <button
           type="button"
           className="btn btn-secondary btn-sm"
-          onClick={() => void saveConfig(!config?.enabled)}
+          onClick={() => void saveEnabled(!config?.enabled)}
           disabled={busy}
         >
           {config?.enabled ? 'Disable' : 'Enable'}
         </button>
-        <label className="search-provider-field">
-          Provider
-          <select
-            className="field"
-            value={provider}
-            disabled={busy}
-            onChange={(event) => setProvider(event.target.value as SearchProvider)}
-          >
-            {SEARCH_PROVIDERS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="search-endpoint-field">
-          Endpoint (optional)
-          <input
-            className="field"
-            type="text"
-            value={endpoint}
-            disabled={busy}
-            onChange={(event) => setEndpoint(event.target.value)}
-            placeholder="https://api.tavily.com/search"
-          />
-        </label>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={() => void saveConfig(config?.enabled ?? false)}
-          disabled={busy}
-        >
-          Save config
-        </button>
+        <span className="form-hint">Choosing a provider saves it right away.</span>
       </div>
-      <p className="form-hint">{providerHint(provider)}</p>
 
-      <div className="search-key-row">
-        {config?.hasKey ? (
-          <>
-            <span className="source-badge">API key stored</span>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void clearKey()} disabled={busy}>
-              Remove key
-            </button>
-          </>
-        ) : (
-          <>
-            <input
-              className="field"
-              type="password"
-              value={keyDraft}
-              disabled={busy}
-              onChange={(event) => setKeyDraft(event.target.value)}
-              placeholder="API key (sk-…)"
-              aria-label="Search API key"
-            />
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void storeKey()} disabled={busy || keyDraft.trim() === ''}>
-              Store key
-            </button>
-          </>
-        )}
+      <div className="search-provider-cards" role="radiogroup" aria-label="Search provider">
+        {SEARCH_PROVIDERS.map((option) => {
+          const selected = provider === option;
+          const stored = config?.keys?.[option] === true;
+          const savedEndpoint = config?.endpoints[option] ?? '';
+          const endpointDirty = endpointDrafts[option].trim() !== savedEndpoint.trim();
+          return (
+            <div
+              key={option}
+              className={`search-provider-card${selected ? ' is-selected' : ''}`}
+            >
+              <div className="search-provider-head">
+                <label className="search-provider-choice">
+                  <input
+                    type="radio"
+                    name="search-provider"
+                    value={option}
+                    checked={selected}
+                    disabled={busy}
+                    onChange={() => void selectProvider(option)}
+                  />
+                  <span className="search-provider-name">{option}</span>
+                </label>
+                {selected ? <span className="source-badge">In use</span> : null}
+              </div>
+              <p className="search-provider-hint">{providerHint(option)}</p>
+
+              <div className="search-key-row">
+                {stored ? (
+                  <>
+                    <span className="source-badge">Key stored</span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => void clearKey(option)}
+                      disabled={busy}
+                    >
+                      Remove key
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      className="field"
+                      type="password"
+                      value={keyDrafts[option]}
+                      disabled={busy}
+                      onChange={(event) =>
+                        setKeyDrafts((current) => ({ ...current, [option]: event.target.value }))
+                      }
+                      placeholder="API key (sk-…)"
+                      aria-label={`${option} API key`}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => void storeKey(option)}
+                      disabled={busy || keyDrafts[option].trim() === ''}
+                    >
+                      Store key
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <label className="search-endpoint-field">
+                Endpoint (optional)
+                <input
+                  className="field"
+                  type="text"
+                  value={endpointDrafts[option]}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setEndpointDrafts((current) => ({ ...current, [option]: event.target.value }))
+                  }
+                  placeholder={SEARCH_DEFAULT_ENDPOINTS[option]}
+                  aria-label={`${option} endpoint`}
+                />
+              </label>
+              <div className="search-endpoint-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => void saveEndpoint(option)}
+                  disabled={busy || !endpointDirty}
+                >
+                  Save endpoint
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="search-try-row">

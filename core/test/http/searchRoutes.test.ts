@@ -76,4 +76,41 @@ describe('M11 F2 search routes', () => {
       h.close();
     }
   });
+
+  it('keeps a Tavily and a Brave key side by side and removes them independently', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const tavily = await request(h.app)
+        .put('/v1/search/key')
+        .set(authed(token))
+        .send({ key: 'sk-tavily-0000000000', provider: 'tavily' });
+      expect(tavily.status).toBe(204);
+      const brave = await request(h.app)
+        .put('/v1/search/key')
+        .set(authed(token))
+        .send({ key: 'sk-brave-0000000000', provider: 'brave' });
+      expect(brave.status).toBe(204);
+
+      // Both keys survive; the active provider's hasKey stays true.
+      const cfg = await request(h.app).get('/v1/search/config').set(authed(token));
+      expect(cfg.body.keys).toEqual({ tavily: true, brave: true });
+      expect(cfg.body.hasKey).toBe(true);
+
+      const badProvider = await request(h.app)
+        .put('/v1/search/key')
+        .set(authed(token))
+        .send({ key: 'sk-x', provider: 'yandex' });
+      expect(badProvider.status).toBe(400);
+
+      const removed = await request(h.app)
+        .delete('/v1/search/key?provider=brave')
+        .set(authed(token));
+      expect(removed.status).toBe(204);
+      const after = await request(h.app).get('/v1/search/config').set(authed(token));
+      expect(after.body.keys).toEqual({ tavily: true, brave: false });
+    } finally {
+      h.close();
+    }
+  });
 });

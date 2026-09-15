@@ -5932,22 +5932,16 @@ select {
   margin: var(--space-2) 0;
 }
 
-.search-provider-field,
 .search-endpoint-field {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 
-.search-provider-field .field {
-  width: auto;
-  font-size: var(--fs-sm);
-}
-
 .search-endpoint-field .field {
-  min-width: 260px;
+  width: 100%;
   font-size: var(--fs-sm);
 }
 
@@ -5955,6 +5949,73 @@ select {
 .search-try-row .field {
   min-width: 240px;
   font-size: var(--fs-sm);
+}
+
+/* Two provider cards; the radio picks the active one. */
+.search-provider-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+
+.search-provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.search-provider-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.search-provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.search-provider-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.search-provider-choice input[type='radio'] {
+  accent-color: var(--accent);
+}
+
+.search-provider-name {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  text-transform: capitalize;
+  color: var(--text);
+}
+
+.search-provider-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.search-provider-card .search-key-row,
+.search-provider-card .search-endpoint-field,
+.search-provider-card .search-endpoint-actions {
+  margin: 0;
+}
+
+.search-endpoint-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .search-results {

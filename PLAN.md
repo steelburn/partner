@@ -325,7 +325,11 @@ persona that gains `research` inherits sensible defaults the user can tighten.
   (§17.8).
 - **API-key search** (user-supplied key — Tavily/Brave/SerpAPI class) is a
   later, optional provider implementing the same `search` tool contract — a
-  toggle, not a rewrite.
+  toggle, not a rewrite. Keys are held per provider (`search:tavily`,
+  `search:brave`) so both may be stored at once; endpoint overrides are per
+  provider too (`SearchConfig.endpoints`), the active provider is a config
+  field chosen by a radio in the UI, and the keychain never carries more than
+  one provider's key in a single account.
 
 ---
 

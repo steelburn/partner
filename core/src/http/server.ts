@@ -87,7 +87,7 @@ import type { ProviderInput, ProviderPurpose, ProviderSource } from '@partner/sh
 import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
 import type { SiteScope } from '@partner/shared';
-import { redactString, isProviderPurpose, PROVIDER_PURPOSES } from '@partner/shared';
+import { redactString, isProviderPurpose, isSearchProvider, PROVIDER_PURPOSES } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
 import { createBudgetTracker } from '../gateway/budget.js';
 import { centsForTokens } from '../gateway/pricing.js';
@@ -4067,9 +4067,11 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   api.get('/v1/search/config', requireSession(sessions), (_req: Request, res: Response) => {
     const search = requireSearch(options, res);
     if (!search) return;
-    void search.hasKey().then((hasKey) => {
-      res.status(200).json({ ...search.config(), hasKey });
-    });
+    void (async () => {
+      const config = search.config();
+      const keys = await search.keyStatus();
+      res.status(200).json({ ...config, hasKey: keys[config.provider], keys });
+    })();
   });
 
   api.put('/v1/search/config', requireSession(sessions), (req: Request, res: Response) => {
@@ -4077,9 +4079,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     if (!search) return;
     try {
       const next = search.updateConfig((req.body ?? {}) as SearchConfigInput);
-      void search.hasKey().then((hasKey) => {
-        res.status(200).json({ ...next, hasKey });
-      });
+      void (async () => {
+        const keys = await search.keyStatus();
+        res.status(200).json({ ...next, hasKey: keys[next.provider], keys });
+      })();
     } catch (err) {
       if (sendSearchError(res, err)) return;
       throw err;
@@ -4093,9 +4096,14 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     (req: Request, res: Response) => {
     const search = requireSearch(options, res);
     if (!search) return;
-    const body = (req.body ?? {}) as { key?: unknown };
+    const body = (req.body ?? {}) as { key?: unknown; provider?: unknown };
+    const provider = body.provider;
+    if (provider !== undefined && !isSearchProvider(provider)) {
+      res.status(400).json({ error: 'invalid_input', message: 'provider must be tavily or brave' });
+      return;
+    }
     void search
-      .setKey(typeof body.key === 'string' ? body.key : '')
+      .setKey(typeof body.key === 'string' ? body.key : '', provider)
       .then(() => res.status(204).end())
       .catch((err) => {
         if (sendSearchError(res, err)) return;
@@ -4103,11 +4111,21 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       });
   });
 
-  api.delete('/v1/search/key', requireSession(sessions), (_req: Request, res: Response) => {
-    const search = requireSearch(options, res);
-    if (!search) return;
-    void search.removeKey().then(() => res.status(204).end());
-  });
+  api.delete(
+    '/v1/search/key',
+    requireSession(sessions),
+    capability('provider.configure'),
+    (req: Request, res: Response) => {
+      const search = requireSearch(options, res);
+      if (!search) return;
+      const provider = req.query.provider;
+      if (provider !== undefined && !isSearchProvider(provider)) {
+        res.status(400).json({ error: 'invalid_input', message: 'provider must be tavily or brave' });
+        return;
+      }
+      void search.removeKey(provider).then(() => res.status(204).end());
+    },
+  );
 
   api.post('/v1/search/query', requireSession(sessions), (req: Request, res: Response) => {
     const search = requireSearch(options, res);

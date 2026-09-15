@@ -10,15 +10,32 @@
  * or the results (owner data).
  */
 import { KEYCHAIN_SERVICE } from '../keychain/keychain.js';
-import type { SearchConfig, SearchConfigInput, SearchHit, SearchProvider, SearchResult } from '@partner/shared';
-import { SEARCH_DEFAULT_ENDPOINTS, isSearchProvider } from '@partner/shared';
+import type {
+  SearchConfig,
+  SearchConfigInput,
+  SearchHit,
+  SearchKeyStatus,
+  SearchProvider,
+  SearchResult,
+} from '@partner/shared';
+import { SEARCH_DEFAULT_ENDPOINTS, SEARCH_PROVIDERS, isSearchProvider } from '@partner/shared';
 import type { Keychain } from '@partner/shared';
 import type { SettingsStore } from '../stores/types.js';
 import type { AuditService } from '../services/redaction.js';
 import { SearchError, searchError } from './errors.js';
 
 export const SEARCH_SETTINGS_KEY = 'search_config';
-export const KEYCHAIN_ACCOUNT = 'search';
+/**
+ * Keys are held per provider (`search:tavily`, `search:brave`) so holding both
+ * a Brave and a Tavily key works. `search` (no suffix) is the legacy single
+ * account written before per-provider keys existed; it is migrated onto the
+ * configured provider on first read.
+ */
+export const SEARCH_KEYCHAIN_PREFIX = 'search:';
+const LEGACY_KEYCHAIN_ACCOUNT = 'search';
+const SEARCH_AUDIT_TARGET = 'search';
+export const searchKeychainAccount = (provider: SearchProvider): string =>
+  `${SEARCH_KEYCHAIN_PREFIX}${provider}`;
 export const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_HITS = 5;
 const MAX_SNIPPET_CHARS = 600;
@@ -35,28 +52,45 @@ export interface SearchManagerOptions {
 
 export interface SearchManager {
   config(): SearchConfig;
-  hasKey(): Promise<boolean>;
+  /** True when the given provider (default: the configured one) holds a key. */
+  hasKey(provider?: SearchProvider): Promise<boolean>;
+  /** Key presence per provider, so the UI can manage both keys at once. */
+  keyStatus(): Promise<SearchKeyStatus>;
   updateConfig(input: SearchConfigInput): SearchConfig;
-  setKey(key: string): Promise<void>;
-  removeKey(): Promise<void>;
+  setKey(key: string, provider?: SearchProvider): Promise<void>;
+  removeKey(provider?: SearchProvider): Promise<void>;
   /** Run one query; requires enabled + key (default-deny). */
   search(query: string, maxResults?: number): Promise<SearchResult>;
 }
 
-const DEFAULT_CONFIG: SearchConfig = { enabled: false, provider: 'tavily', endpoint: null };
+const DEFAULT_ENDPOINTS: Record<SearchProvider, string | null> = { tavily: null, brave: null };
+const DEFAULT_CONFIG: SearchConfig = {
+  enabled: false,
+  provider: 'tavily',
+  endpoints: { ...DEFAULT_ENDPOINTS },
+};
 
 function parseConfig(raw: string | null): SearchConfig {
-  if (raw === null || raw === '') return { ...DEFAULT_CONFIG };
+  if (raw === null || raw === '') return { ...DEFAULT_CONFIG, endpoints: { ...DEFAULT_ENDPOINTS } };
   try {
-    const parsed = JSON.parse(raw) as Partial<SearchConfig>;
+    const parsed = JSON.parse(raw) as Partial<SearchConfig> & { endpoint?: unknown };
     const provider: SearchProvider = isSearchProvider(parsed.provider) ? parsed.provider : 'tavily';
-    return {
-      enabled: parsed.enabled === true,
-      provider,
-      endpoint: typeof parsed.endpoint === 'string' && parsed.endpoint !== '' ? parsed.endpoint : null,
-    };
+    const endpoints: Record<SearchProvider, string | null> = { ...DEFAULT_ENDPOINTS };
+    const stored = parsed.endpoints;
+    if (stored !== null && typeof stored === 'object') {
+      const record = stored as Record<string, unknown>;
+      for (const option of SEARCH_PROVIDERS) {
+        const value = record[option];
+        endpoints[option] = typeof value === 'string' && value !== '' ? value : null;
+      }
+    } else if (typeof parsed.endpoint === 'string' && parsed.endpoint !== '') {
+      // Legacy single override (pre per-provider endpoints) belonged to the
+      // provider that was configured when it was written.
+      endpoints[provider] = parsed.endpoint;
+    }
+    return { enabled: parsed.enabled === true, provider, endpoints };
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return { ...DEFAULT_CONFIG, endpoints: { ...DEFAULT_ENDPOINTS } };
   }
 }
 
@@ -95,8 +129,53 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
     return parseConfig(settings.get(SEARCH_SETTINGS_KEY));
   }
 
-  async function hasKey(): Promise<boolean> {
-    return (await keychain.get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)) !== null;
+  function accountFor(provider: SearchProvider): string {
+    return searchKeychainAccount(provider);
+  }
+
+  function providerOrConfigured(provider?: SearchProvider): SearchProvider {
+    const target = provider ?? config().provider;
+    if (!isSearchProvider(target)) {
+      throw searchError('invalid_input', 'provider must be tavily or brave');
+    }
+    return target;
+  }
+
+  // One-time best-effort migration of the legacy shared `search` key onto the
+  // configured provider's account. Memoized so concurrent reads do it once.
+  let legacyMigrated: Promise<void> | null = null;
+  function migrateLegacyKey(): Promise<void> {
+    if (legacyMigrated === null) {
+      legacyMigrated = (async () => {
+        const legacy = await keychain.get(KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_ACCOUNT);
+        if (legacy === null || legacy === '') return;
+        const provider = config().provider;
+        const existing = await keychain.get(KEYCHAIN_SERVICE, accountFor(provider));
+        if (existing === null || existing === '') {
+          await keychain.set(KEYCHAIN_SERVICE, accountFor(provider), legacy);
+        }
+        await keychain.delete(KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_ACCOUNT);
+      })().catch(() => {
+        // Best effort: a keychain failure must not break config/search reads.
+      });
+    }
+    return legacyMigrated;
+  }
+
+  async function hasKey(provider?: SearchProvider): Promise<boolean> {
+    await migrateLegacyKey();
+    const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(providerOrConfigured(provider)));
+    return key !== null && key !== '';
+  }
+
+  async function keyStatus(): Promise<SearchKeyStatus> {
+    await migrateLegacyKey();
+    const status = {} as SearchKeyStatus;
+    for (const provider of SEARCH_PROVIDERS) {
+      const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(provider));
+      status[provider] = key !== null && key !== '';
+    }
+    return status;
   }
 
   function updateConfig(input: SearchConfigInput): SearchConfig {
@@ -109,28 +188,40 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
       }
       next.provider = body.provider;
     }
-    if (body.endpoint !== undefined) {
-      next.endpoint = normalizeEndpoint(body.endpoint);
+    if (body.endpoints !== undefined) {
+      if (body.endpoints === null || typeof body.endpoints !== 'object') {
+        throw searchError('invalid_input', 'endpoints must be an object');
+      }
+      const record = body.endpoints as Record<string, unknown>;
+      for (const option of SEARCH_PROVIDERS) {
+        if (Object.prototype.hasOwnProperty.call(record, option)) {
+          next.endpoints = { ...next.endpoints, [option]: normalizeEndpoint(record[option]) };
+        }
+      }
     }
     if (body.enabled !== undefined) next.enabled = body.enabled === true;
     settings.set(SEARCH_SETTINGS_KEY, JSON.stringify(next), now());
-    audit.log('web', 'search.config', KEYCHAIN_ACCOUNT, {
+    audit.log('web', 'search.config', SEARCH_AUDIT_TARGET, {
       provider: next.provider,
       enabled: next.enabled,
     });
     return next;
   }
 
-  async function setKey(key: string): Promise<void> {
+  async function setKey(key: string, provider?: SearchProvider): Promise<void> {
+    const target = providerOrConfigured(provider);
     const trimmed = typeof key === 'string' ? key.trim() : '';
     if (trimmed === '') throw searchError('invalid_input', 'API key is required');
-    await keychain.set(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, trimmed);
-    audit.log('web', 'search.setkey', KEYCHAIN_ACCOUNT, { keyLength: trimmed.length });
+    await migrateLegacyKey();
+    await keychain.set(KEYCHAIN_SERVICE, accountFor(target), trimmed);
+    audit.log('web', 'search.setkey', accountFor(target), { provider: target, keyLength: trimmed.length });
   }
 
-  async function removeKey(): Promise<void> {
-    await keychain.delete(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
-    audit.log('web', 'search.unsetkey', KEYCHAIN_ACCOUNT, {});
+  async function removeKey(provider?: SearchProvider): Promise<void> {
+    const target = providerOrConfigured(provider);
+    await migrateLegacyKey();
+    await keychain.delete(KEYCHAIN_SERVICE, accountFor(target));
+    audit.log('web', 'search.unsetkey', accountFor(target), { provider: target });
   }
 
   async function search(query: string, maxResults?: number): Promise<SearchResult> {
@@ -140,7 +231,8 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
     if (!cfg.enabled) {
       throw searchError('disabled', 'internet search is disabled — enable it and store an API key');
     }
-    const key = await keychain.get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    await migrateLegacyKey();
+    const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(cfg.provider));
     if (key === null || key === '') {
       throw searchError('disabled', 'no search API key stored — add one to enable search');
     }
@@ -158,7 +250,7 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
       const message = err instanceof Error ? err.message : 'search failed';
       throw searchError('upstream', `search backend failed: ${safe(message)}`);
     }
-    audit.log('web', 'search.exec', KEYCHAIN_ACCOUNT, {
+    audit.log('web', 'search.exec', accountFor(cfg.provider), {
       provider: cfg.provider,
       queryLength: trimmed.length,
       hits: hits.length,
@@ -169,7 +261,7 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
 
   function endpointFor(provider: SearchProvider): string {
     const cfg = config();
-    return cfg.endpoint ?? SEARCH_DEFAULT_ENDPOINTS[provider];
+    return cfg.endpoints[provider] ?? SEARCH_DEFAULT_ENDPOINTS[provider];
   }
 
   function snippet(text: unknown): string | null {
@@ -258,7 +350,7 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
     }
   }
 
-  return { config, hasKey, updateConfig, setKey, removeKey, search };
+  return { config, hasKey, keyStatus, updateConfig, setKey, removeKey, search };
 }
 
 function safe(message: string): string {

@@ -808,6 +808,11 @@ exact directive grammar to call it:
 - **assist** — chat/proposals only; never offered the tool and never asked
   to approve (approvals start at Suggest).
 
+Providers → Internet search shows **two provider cards** (Tavily and Brave).
+Each card stores its own keychain key and endpoint override, and a radio on
+the card picks the active provider — so a user holding both keys can keep
+both and switch without re-entering either.
+
 ### M12.6 — approvals live where the ask happened + the chat continues (2026-09-06)
 
 Suggest-level asks now surface **on the chat screen itself**: pending rows

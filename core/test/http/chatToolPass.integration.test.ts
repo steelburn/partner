@@ -343,7 +343,7 @@ describe('M11 F2 chat search tool (route)', () => {
         },
       });
       const search = h.search as NonNullable<Harness['search']>;
-      search.updateConfig({ enabled: true, provider: 'tavily', endpoint: `http://127.0.0.1:${port}/search` });
+      search.updateConfig({ enabled: true, provider: 'tavily', endpoints: { tavily: `http://127.0.0.1:${port}/search` } });
       await search.setKey('sk-chat-search-1234567890');
 
       const upstream = await startDirectiveUpstream(
@@ -483,7 +483,7 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
     });
 
     const search = h.search as NonNullable<Harness['search']>;
-    search.updateConfig({ enabled: true, provider: 'tavily', endpoint: `http://127.0.0.1:${port}` });
+    search.updateConfig({ enabled: true, provider: 'tavily', endpoints: { tavily: `http://127.0.0.1:${port}` } });
     await search.setKey('sk-approval-flow-1234567890');
 
     // Default partner at SUGGEST (medium-risk external -> approval queue).
@@ -633,7 +633,7 @@ describe('M12 search approval flow (suggest persona → queue → decide)', () =
       );
       expect(row).toBeDefined();
       const search = h.search as NonNullable<Harness['search']>;
-      search.updateConfig({ enabled: false, provider: 'tavily', endpoint: null });
+      search.updateConfig({ enabled: false, provider: 'tavily', endpoints: { tavily: null } });
 
       const decided = await request(h.app)
         .post(`/v1/tools/pending/${row?.id as string}`)
@@ -744,7 +744,7 @@ describe('M12.6 chat approval continuation (decide in chat → continueTurn)', (
     });
 
     const search = h.search as NonNullable<Harness['search']>;
-    search.updateConfig({ enabled: true, provider: 'tavily', endpoint: `http://127.0.0.1:${port}` });
+    search.updateConfig({ enabled: true, provider: 'tavily', endpoints: { tavily: `http://127.0.0.1:${port}` } });
     await search.setKey('sk-continue-flow-1234567890');
 
     const dp = h.personas.get('p-default');

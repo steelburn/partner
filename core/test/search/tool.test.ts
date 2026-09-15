@@ -11,9 +11,10 @@ import type { SearchManager } from '../../src/search/manager.js';
 
 function stubManager(over: Partial<SearchManager>): SearchManager {
   return {
-    config: () => ({ enabled: true, provider: 'tavily', endpoint: null }),
+    config: () => ({ enabled: true, provider: 'tavily', endpoints: { tavily: null, brave: null } }),
     hasKey: async () => true,
-    updateConfig: () => ({ enabled: true, provider: 'tavily', endpoint: null }),
+    keyStatus: async () => ({ tavily: true, brave: false }),
+    updateConfig: () => ({ enabled: true, provider: 'tavily', endpoints: { tavily: null, brave: null } }),
     setKey: async () => undefined,
     removeKey: async () => undefined,
     search: async () => ({
@@ -33,7 +34,7 @@ describe('M11 F2 search chat tool', () => {
 
   it('allow() gates on the backend enabled flag (default deny)', () => {
     const on = searchToolExternal(stubManager({}));
-    const off = searchToolExternal(stubManager({ config: () => ({ enabled: false, provider: 'tavily', endpoint: null }) }));
+    const off = searchToolExternal(stubManager({ config: () => ({ enabled: false, provider: 'tavily', endpoints: { tavily: null, brave: null } }) }));
     expect(on?.allow('search')).toBe(true);
     expect(on?.allow('files.read')).toBe(false);
     expect(off?.allow('search')).toBe(false);

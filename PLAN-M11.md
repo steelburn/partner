@@ -159,11 +159,21 @@ production build green):
       titles/urls/snippets in the persisted note. Route-integration tests
       cover enabled-execute and disabled-refuse.
 
-- [x] **F2 search UI panel** — Providers gains an Internet-search card:
-      enable/disable, provider select, endpoint override, keychain key
-      store/remove, and an inline test search with result list (client
-      `lib/search.ts`, token-styled). Enabling unlocks the chat `search`
-      tool at auto+ personas.
+- [x] **F2 search UI panel** — Providers gains an Internet-search section
+      with **two provider cards** (Tavily/Brave). Each card carries its own
+      keychain key (store/remove) and its own optional endpoint override;
+      a **radio on the card selects the active provider** and saves
+      immediately. Enabling (top row) unlocks the chat `search` tool at
+      auto+ personas; an inline test search with result list stays below
+      (client `lib/search.ts`, token-styled). State is per provider:
+      keys live at `search:tavily`/`search:brave`, overrides in
+      `SearchConfig.endpoints: {tavily, brave}`, and the config response
+      carries `keys: {tavily, brave}` plus `hasKey` for the active
+      provider. `PUT /v1/search/key` takes an optional `provider`,
+      `DELETE /v1/search/key?provider=` targets one, and
+      `PUT /v1/search/config` accepts `endpoints` patches. A legacy shared
+      `search` key is migrated onto the configured provider and a legacy
+      single `endpoint` is read as that provider's override.
 
 - [x] **Persona MCP auto-calls (F2)** — the tool-pass external seam now
       takes an ARRAY of providers; `mcp:<serverId>/<tool>` ids resolve

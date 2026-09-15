@@ -107,6 +107,12 @@ function protectedRoutes(ctx: { dir: string; rootId: string }): ProtectedRoute[]
       capability: 'provider.configure',
     },
     {
+      method: 'delete',
+      path: '/v1/search/key',
+      body: {},
+      capability: 'provider.configure',
+    },
+    {
       method: 'post',
       path: '/v1/playbooks/x/run',
       body: {},
