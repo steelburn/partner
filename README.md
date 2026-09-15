@@ -82,7 +82,10 @@ web build green. An **M11 F12 follow-up** renders a fenced ```html code block
 inline beside its sandboxed result in chat, the assets read view and the new
 note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
 fact detection a user-level setting independent of each persona's private-memory
-tick. Latest release: **v0.1.12** (per-provider search keys, global
+tick. Latest release: **v0.1.13** (inline HTML code-block previews in chat,
+assets and notes; global auto-remember independent of the per-persona toggle;
+the turn-model fallback so extraction never silently no-ops). It builds on
+v0.1.12 (per-provider search keys, global
 auto-remember, and scorecard ratings — on top of the silent-bind fix, hosted
 sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
 mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat

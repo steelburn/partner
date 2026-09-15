@@ -1,6 +1,6 @@
 {
   "name": "@partner/extension",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "Partner MV3 browser extension - native-messaging bridge to the desktop core (M7)",
   "scripts": {
