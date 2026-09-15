@@ -1322,6 +1322,25 @@ apps/partner/
       found the fresh-tab invite path rendering an empty code field; seeded from
       one shared helper now, with the invariant pinned in `web/test/signup.test.ts`).
       Record: `docs/VERIFY-M22.md`.
+      **The Windows `userPartitions` failure — two real defects, both fixed
+      (2026-09-15).** Five partition tests failed on every `verify (windows)` run
+      while linux passed, with `Cannot read properties of null (reading 'port')`
+      in the test's own boot helper. **(1) `listen()` resolved a core that was
+      never listening:** `app.listen(port, host, cb)` calls `cb` even when the bind
+      FAILED (Windows/Node 25), so a taken port resolved the boot, printed "up on
+      …" and served nobody, and the real `EADDRINUSE` was discarded (its `reject`
+      ran after the promise had settled). Readiness now comes from the `listening`
+      event and failure from `error`, so a taken port rejects the boot by name
+      (`core/test/listen.test.ts`). **(2) `PORT=0` silently became 4390**
+      (`readInt` falls back to the default for anything out of range), which is why
+      three core test files depended on 4390 being free — a leak from an earlier
+      e2e run, or a dev core, broke them. `loadConfig` now REFUSES a malformed or
+      out-of-range `PORT` (0 included) with the reason a caller must name the port
+      (the loopback allowlist is derived from it), and those tests bind a **named
+      free port** (`freePort()`); teardown drops keep-alive sockets before waiting
+      (`closeServer`), which also removed the `EPERM` on the temp dir. Windows root
+      suite **1254 passed / 5 failed → 1262 passed / 0 failed** (5 env-gated
+      skips); no assertion was weakened.
       *State: still open — S8, a device/sign-out UI, per-user quotas; unverified — a two-user browser walk,
       R4 against the real Cloudflare edge, an R8 restore, and R3's live timer. See
       `docs/VERIFY-M22.md`.*

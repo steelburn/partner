@@ -10,6 +10,8 @@
  * test.
  */
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { createServer } from 'node:net';
+import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,6 +189,50 @@ export const REPO_CATALOG = fileURLToPath(new URL('../../skills-catalog/', impor
 /** A fresh real directory under the OS tmpdir (cleaned by the caller). */
 export function makeTempRoot(): string {
   return mkdtempSync(join(tmpdir(), 'partner-core-root-'));
+}
+
+/**
+ * A port the OS says is free, released and returned for the caller to bind.
+ *
+ * Why not just `PORT=0`: the loopback allowlist is DERIVED from the configured
+ * port (`127.0.0.1:<port>`), so a test that wants to SEND a request must name the
+ * port it will listen on — an ephemeral bind would be allowlisted as
+ * `127.0.0.1:0` and every request would be refused. `loadConfig` therefore
+ * refuses `PORT=0` outright, and a test that needs a dynamic port asks for one
+ * here (Node cannot transfer a port from one server to another, so there is a
+ * nanosecond-wide window in which someone else could take it — which is fine:
+ * a failed bind now REJECTS the boot instead of reporting a phantom core).
+ */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      if (address === null || typeof address === 'string') {
+        probe.close();
+        reject(new Error('the OS handed back no port'));
+        return;
+      }
+      probe.close(() => resolve(address.port));
+    });
+  });
+}
+
+/**
+ * Close a listener and WAIT for it, dropping its connections first.
+ *
+ * `server.close()` alone waits for existing connections to end, so a keep-alive
+ * socket left by a request keeps the callback from firing until `keepAlive
+ * timeout` — which blew a 10s test hook on Windows and, because the hook aborted,
+ * left the per-user SQLite handles open for the temp-dir cleanup to hit EPERM.
+ * `closeAllConnections()` makes the close deterministic.
+ */
+export function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  });
 }
 
 export interface HarnessOptions {

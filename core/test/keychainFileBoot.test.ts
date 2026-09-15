@@ -15,16 +15,17 @@
  * open fails (wrong key), it does not overwrite the database.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, startServer } from '../src/index.js';
 import { KEYCHAIN_SERVICE } from '../src/keychain/keychain.js';
+import { closeServer, freePort, removeTempRoot } from './helpers.js';
 
 const dirs: string[] = [];
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeTempRoot(dir);
 });
 
 function tempDir(): string {
@@ -34,7 +35,11 @@ function tempDir(): string {
 }
 
 /** A live config whose secrets live in a JSON file inside `dir`. */
-function configFor(dir: string) {
+async function configFor(dir: string) {
+  // A NAMED free port: `PORT=0` is refused by loadConfig (the loopback
+  // allowlist is derived from this number), and the old silent fallback to 4390
+  // made these boots depend on 4390 being free.
+  const port = await freePort();
   return {
     ...loadConfig({
       DEMO_MODE: '0',
@@ -42,7 +47,7 @@ function configFor(dir: string) {
       KEYCHAIN_FILE: join(dir, 'keychain.json'),
       DB_PATH: join(dir, 'partner.db'),
       DATA_ROOT: dir,
-      PORT: '0',
+      PORT: String(port),
       SCHEDULER_TICK_MS: '0',
     }),
   };
@@ -51,7 +56,7 @@ function configFor(dir: string) {
 describe('live boot with KEYCHAIN_KIND=file', () => {
   it('keys an encrypted DB from the file and reopens it on a second boot', async () => {
     const dir = tempDir();
-    const config = configFor(dir);
+    const config = await configFor(dir);
     expect(config.keychain).toBe('file');
 
     const first = await startServer(config);
@@ -60,7 +65,10 @@ describe('live boot with KEYCHAIN_KIND=file', () => {
       first.bundle.settingsStore.set('deploy.marker', 'first-boot', 1);
       expect(readFileSync(join(dir, 'keychain.json'), 'utf8')).toContain('db-key');
     } finally {
-      first.server.close();
+      // Awaited: the second boot below binds the SAME port, and a listener that
+      // is still closing would now fail the boot loudly (EADDRINUSE) instead of
+      // being papered over.
+      await closeServer(first.server);
       first.bundle.close();
     }
 
@@ -74,18 +82,18 @@ describe('live boot with KEYCHAIN_KIND=file', () => {
       const bytes = readFileSync(join(dir, 'partner.db'));
       expect(bytes.subarray(0, 15).toString('utf8')).not.toBe('SQLite format 3');
     } finally {
-      second.server.close();
+      await closeServer(second.server);
       second.bundle.close();
     }
   });
 
   it('a lost keychain FAILS the open instead of minting a key beside the data', async () => {
     const dir = tempDir();
-    const config = configFor(dir);
+    const config = await configFor(dir);
 
     const first = await startServer(config);
     first.bundle.settingsStore.set('deploy.marker', 'keep-me', 1);
-    first.server.close();
+    await closeServer(first.server);
     first.bundle.close();
 
     // Simulate the operator deleting the secrets file (or mounting a fresh
@@ -103,7 +111,7 @@ describe('live boot with KEYCHAIN_KIND=file', () => {
 
   it('the file keychain also backs provider secrets (service partner)', async () => {
     const dir = tempDir();
-    const config = configFor(dir);
+    const config = await configFor(dir);
     const { bundle, server } = await startServer(config);
     try {
       await bundle.keychain.set(KEYCHAIN_SERVICE, 'provider:demo', 'sk-test-value');
@@ -113,7 +121,7 @@ describe('live boot with KEYCHAIN_KIND=file', () => {
       >;
       expect(onDisk[KEYCHAIN_SERVICE]?.['provider:demo']).toBe('sk-test-value');
     } finally {
-      server.close();
+      await closeServer(server);
       bundle.close();
     }
   });

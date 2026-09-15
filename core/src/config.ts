@@ -23,7 +23,7 @@ export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_DB_PATH = './data/partner.db';
 
 /** Semantic version of the core sidecar (independent of the npm package). */
-export const CORE_VERSION = '0.1.10';
+export const CORE_VERSION = '0.1.11';
 
 /**
  * Where secrets live. `native` = the OS keychain (the default, and the only
@@ -286,7 +286,30 @@ export function loadConfig(
   env: Record<string, string | undefined> = process.env,
   deps: ConfigDeps = {},
 ): CoreConfig {
-  const port = readInt(env.PORT, DEFAULT_PORT, 1, 65535);
+  // The port, VALIDATED rather than clamped. `readInt` would silently fall back
+  // to 4390 for anything out of range — including `PORT=0`, which a caller
+  // reasonably reads as "let the OS choose" — and that produced two real
+  // failures: a deployment that typo'd its port bound somewhere it did not
+  // intend, and three tests asking for an ephemeral port silently got 4390, so
+  // they passed only while 4390 happened to be free (a leaked dev core on that
+  // port turned one of them into "Cannot read properties of null"). An
+  // ephemeral port is refused EXPLICITLY because the loopback allowlist is
+  // derived from this number (`127.0.0.1:0` would allowlist nothing): a caller
+  // that wants one picks a free port and names it, so the allowlist agrees with
+  // the listener (see `core/test/helpers.ts` `freePort()`).
+  const portRaw = env.PORT?.trim() ?? '';
+  let port = DEFAULT_PORT;
+  if (portRaw !== '') {
+    const parsed = Number.parseInt(portRaw, 10);
+    if (!/^\d+$/.test(portRaw) || parsed < 1 || parsed > 65535) {
+      throw new Error(
+        `PORT must be an integer between 1 and 65535 (got "${portRaw}") — refused rather than ` +
+          'defaulted, because the wrong port binds somewhere you did not intend (0 means "any ' +
+          'free port", which the loopback allowlist cannot name)',
+      );
+    }
+    port = parsed;
+  }
   const demo = readBool(env.DEMO_MODE, true);
   const host = env.HOST?.trim() || DEFAULT_HOST;
 

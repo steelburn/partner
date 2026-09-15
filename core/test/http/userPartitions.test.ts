@@ -13,13 +13,14 @@
  * feature: the rails are only interesting if the LISTENING app uses them.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import type { Server } from 'node:http';
 import { loadConfig, openAccounts, startServer } from '../../src/index.js';
 import type { CoreBundle } from '../../src/index.js';
+import { closeServer, freePort, removeTempRoot } from '../helpers.js';
 
 const dirs: string[] = [];
 const servers: Server[] = [];
@@ -28,15 +29,18 @@ const bundles: CoreBundle[] = [];
 /**
  * Close the listener FIRST and wait for it: the rails close their partitions from
  * the server's 'close' event, so deleting the data dir too early leaves Windows
- * with open SQLite handles (EPERM). The retry window covers the WAL files.
+ * with open SQLite handles (EPERM). `closeServer` also drops keep-alive sockets —
+ * without that, `close()` waits for the connection to idle out, the hook exceeds
+ * its budget, and the aborted teardown leaves exactly the handles this comment is
+ * about. The retry window covers the WAL files.
  */
 afterEach(async () => {
   for (const server of servers.splice(0)) {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServer(server);
   }
   for (const bundle of bundles.splice(0)) bundle.close();
   for (const dir of dirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    removeTempRoot(dir);
   }
 });
 
@@ -47,6 +51,12 @@ function tempDir(): string {
 }
 
 async function bootLoginCore(dir: string) {
+  // A NAMED free port, not `PORT=0`: the loopback allowlist is derived from the
+  // configured port, and these tests send real requests with
+  // `Host: 127.0.0.1:<port>`. (That value used to be silently replaced by 4390,
+  // which made the whole file depend on 4390 being free — it is not, on a
+  // machine running a dev core, and the failure looked like a null address.)
+  const port = await freePort();
   const config = {
     ...loadConfig({
       DEMO_MODE: '0',
@@ -55,19 +65,26 @@ async function bootLoginCore(dir: string) {
       KEYCHAIN_FILE: join(dir, 'keychain.json'),
       DB_PATH: join(dir, 'partner.db'),
       DATA_ROOT: dir,
-      PORT: '0',
+      PORT: String(port),
       SCHEDULER_TICK_MS: '0',
     }),
   };
   const { bundle, server, accounts } = await startServer(config);
   bundles.push(bundle);
   servers.push(server);
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    // A boot that resolves without a listening socket is the bug this guard
+    // exists for (see `listen()` in src/index.ts): say so here rather than
+    // crashing on `address.port` three frames later.
+    throw new Error('the core resolved without a listening socket');
+  }
   return {
     config,
     bundle,
     server,
     accounts,
-    origin: `127.0.0.1:${(server.address() as { port: number }).port}`,
+    origin: `127.0.0.1:${address.port}`,
   };
 }
 

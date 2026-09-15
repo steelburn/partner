@@ -855,7 +855,7 @@ Suites: typecheck 0 · root **1215 passed** + 5 skipped (150 files) · web
 **642 passed** (42 files, was 635 in 41) · `ux_audit` **PASSED** (picker rules,
 8 pairs).
 
-## Environment observation (undiagnosed, reported as seen)
+## Environment observation — **DIAGNOSED and FIXED** (was: "undiagnosed")
 
 With a **dev core already running** on :4390 (`npm run dev:core`),
 `core/test/http/userPartitions.test.ts` failed **5/5** at
@@ -866,6 +866,31 @@ is a real observation, not a guess about its cause; the config asks for `PORT:
 '0'`, so an ephemeral-port clash does not obviously explain it. Recorded here
 because it cost time to distinguish from a genuine regression — **run the root
 suite with no dev core up**, or expect these five to fail.
+
+**The two causes, found 2026-09-15 by starting from the observation above (two
+real defects, not a test quirk):**
+
+1. **`app.listen(port, host, callback)` calls that callback even when the bind
+   FAILED** (Windows, Node 25), and `core/src/index.ts` `listen()` took readiness
+   from it — so a core whose port was taken resolved `startServer`, printed "up on
+   …" and served nothing, and the real `EADDRINUSE` was swallowed because its
+   `reject` arrived after the promise had already settled. That is the `null`
+   address: **the "ephemeral-port clash" did explain it** — just not through the
+   port the test asked for. Fixed: readiness comes from the `listening` event and
+   failure from `error`, so a taken port now **rejects the boot by name**
+   (`core/test/listen.test.ts`).
+2. **`PORT: '0'` was silently 4390.** `readInt` falls back to the default for any
+   out-of-range value, so three core test files (and this one) asked for an
+   ephemeral port and got the default — which is exactly why a dev core on 4390
+   broke them, and why they passed on a quiet machine. `loadConfig` now REFUSES a
+   malformed or out-of-range `PORT` (0 included, with the reason: the loopback
+   allowlist is derived from it), and those tests bind a **named free port**
+   (`freePort()` in `core/test/helpers.ts`).
+
+Teardown in that file also needed `closeServer()` (close **and drop keep-alive
+sockets**): `server.close()` alone waits for a socket to idle out, which blew the
+10s hook budget and left the SQLite handles open for the temp-dir cleanup to hit
+`EPERM`. Windows root suite: **1254 passed / 5 failed → 1262 passed / 0 failed**.
 
 ---
 
@@ -1028,8 +1053,9 @@ typecheck **0** · web **689 passed / 46 files** (was 673 in 45; `panels.test.ts
 +16) · `npm run build -w web` green · root suite unchanged except the
 **pre-existing** Windows-only `core/test/http/userPartitions.test.ts` hook
 failure (reproduced identically on a clean checkout: `EPERM` removing its temp
-dir, plus a 10s `afterEach` timeout) · `ux_audit` **PASSED** on the new block and
-the extended consolidated reduced-motion block.
+dir, plus a 10s `afterEach` timeout) — **since diagnosed and fixed, v0.1.11: see
+“Environment observation — DIAGNOSED and FIXED” above** · `ux_audit` **PASSED** on
+the new block and the extended consolidated reduced-motion block.
 
 ### Guards and falsification
 
@@ -1098,9 +1124,11 @@ typecheck **0** · web **699 passed / 47 files** (was 689 in 47; the new
 `sidebar-collapse.test.ts` is +10) · `npm run build -w web` green · root suite
 unchanged except the **pre-existing** Windows-only
 `core/test/http/userPartitions.test.ts` hook failure (identical on a clean
-checkout) · `ux_audit` **PASSED** on the new block (with the stylesheet's global
-`prefers-reduced-motion` fallback included — without it the audit correctly
-reports "motion with no fallback"; the sidebar adds no transition of its own).
+checkout) — **since diagnosed and fixed, v0.1.11: see “Environment observation —
+DIAGNOSED and FIXED” above** · `ux_audit` **PASSED** on the new block (with the
+stylesheet's global `prefers-reduced-motion` fallback included — without it the
+audit correctly reports "motion with no fallback"; the sidebar adds no transition
+of its own).
 
 ### Guards and falsification
 

@@ -77,12 +77,11 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 ## Status (2026-09-14)
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1254 passed** (5 env-gated skips; plus the known Windows-only
-`userPartitions` hook failure, reproducible on a clean checkout) · web **712
-passed** · typechecks 0 · web build green. Latest release: **v0.1.10** (hosted
-**sign-up by invite**, on top of tap-outside pane dismissal, the sidebar minimize
-toggle, the mobile phone-tier UI, persona picker, top-bar chrome, note projects,
-chat multi-question forms, persona-scoped memory). **M20 is partly done**: **M20.A
+suite **1262 passed** (5 env-gated skips) · web **712 passed** · typechecks 0 ·
+web build green. Latest release: **v0.1.11** (the silent-bind fix, on top of hosted
+sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
+mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat
+multi-question forms, persona-scoped memory). **M20 is partly done**: **M20.A
 (mobile/tablet UI) is implemented and measured**, **M20.B (server role) has
 landed through S7 + S9**
 (the capability envelope, networked pairing, per-user partitions) with **S8
@@ -566,6 +565,34 @@ instructions literally got a form that could never submit. Root **1227 → 1254*
 briefcase caps are a boundary where a half-implementation is worse than none (the
 slice's first test is "a runner bundle cannot open `vault.db`, asserted by
 attempting every Tier C op"). The plan stands as written in `PLAN-M20-B.md` §S8.
+
+**The Windows `userPartitions` failure was two real defects, both fixed
+(2026-09-15).** Every `verify (windows)` run had been failing five partition tests
+while `verify (linux)` passed, and the local suite reproduced it — the symptom was
+`TypeError: Cannot read properties of null (reading 'port')` in the test's own boot
+helper. The cause was **not** the isolation code:
+
+1. **`listen()` resolved a core that was never listening.** On Windows,
+   `app.listen(port, host, callback)` invokes that callback *even when the bind
+   failed*, and readiness was taken from it — so a core whose port was taken
+   resolved `startServer`, printed "up on …" and served nothing, while the real
+   `EADDRINUSE` was swallowed (its `reject` arrived after the promise settled).
+   Readiness now comes from the `listening` event and failure from `error`, so a
+   taken port rejects the boot by name. Guarded by `core/test/listen.test.ts`.
+2. **`PORT=0` silently became 4390.** `readInt` falls back to the default for
+   anything out of range, and three test files (plus one 800-line core test) asked
+   for an ephemeral port that way — so they only passed while 4390 happened to be
+   free. A leaked spawned-core from an earlier e2e run was holding it, which is
+   why the failure appeared suddenly and then persisted. `loadConfig` now refuses a
+   malformed or out-of-range `PORT` (0 included) with a message that says why an
+   ephemeral port cannot be allowlisted, and those tests bind a **named free port**
+   (`freePort()` in `core/test/helpers.ts`).
+
+The second defect is what made the first invisible; fixing only one would have
+left the other. Teardown in that file also drops keep-alive sockets before waiting
+(`closeServer`), which is what turned a 10s hook timeout into an EPERM on the temp
+dir. Root suite on Windows: **1254 passed / 5 failed → 1262 passed / 0 failed**
+(5 env-gated skips).
 Still open: S8, a device/sign-out UI, per-user quotas — and unverified: a two-user
 browser walk, R4 against the real edge, an R8 restore, R3's live timer, and S9's
 wrap roll-out on the live deployment.

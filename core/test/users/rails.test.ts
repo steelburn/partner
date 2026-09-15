@@ -32,6 +32,9 @@ function tempDir(): string {
 
 /** A config whose partitions live in `dir` under a file keychain. */
 function configFor(dir: string) {
+  // No PORT override: this file never opens a listener (the rails are exercised
+  // directly), so the default is the honest value — and `PORT=0` is refused by
+  // loadConfig, because the loopback allowlist is derived from the port.
   return {
     ...loadConfig({
       DEMO_MODE: '0',
@@ -39,7 +42,6 @@ function configFor(dir: string) {
       KEYCHAIN_FILE: join(dir, 'keychain.json'),
       DB_PATH: join(dir, 'partner.db'),
       DATA_ROOT: dir,
-      PORT: '0',
       SCHEDULER_TICK_MS: '0',
       AUTH_MODE: 'login',
     }),

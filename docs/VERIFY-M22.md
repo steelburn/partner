@@ -416,9 +416,10 @@ load seeds the code (verified above), and the spent-link refusal still shows.
 ### Gates for this change
 
 - `core/test/http/signup.test.ts` **19 passed** · `shared/test/accounts.test.ts`
-  **9** · `web/test/signup.test.ts` **12** · root suite **1229 passed** (5
-  env-gated skips, plus the pre-existing Windows-only `userPartitions` hook failure
-  that reproduces on this machine at `v0.1.8`) · web suite **712 passed** ·
+  **9** · `web/test/signup.test.ts` **13** · root suite **1229 passed** (5
+  env-gated skips, plus the Windows-only `userPartitions` hook failure that was
+  failing on every `verify (windows)` run at the time; **diagnosed and fixed the
+  next day** — see the closing section of this file) · web suite **712 passed** ·
   typechecks 0 · `npm run build -w web` green.
 - **No CSS in this diff**, so `ux_audit` was not re-run (the gates cover tokens,
   contrast, states and slop tells — none of which this change touches); the new
@@ -436,3 +437,50 @@ load seeds the code (verified above), and the spent-link refusal still shows.
   by `tests/deploy-files.test.ts`).
 - The invite's interaction with `LOGIN_SESSION_CLASS=mobile` (the class applies to
   the sign-in that follows, which is the same code path as any other login).
+
+## The Windows partition-test failure — diagnosed and fixed (2026-09-15)
+
+Every `verify (windows)` run had been failing five tests in
+`core/test/http/userPartitions.test.ts` — the M22/R1 isolation proof — while
+`verify (linux)` passed and the local suite reproduced it. The symptom was
+`TypeError: Cannot read properties of null (reading 'port')` inside the test's own
+boot helper, which reads like a broken test. It was **two product defects**, and
+the second is what hid the first:
+
+1. **`startServer` resolved a core that was never listening.**
+   `core/src/index.ts`'s `listen()` took readiness from
+   `app.listen(port, host, callback)`, and on Windows (Node 25) that callback is
+   ALSO invoked when the bind failed. So when the port was taken the boot
+   resolved, the banner printed a URL, nothing served it, `server.address()` was
+   `null` for any caller that looked, and the real `EADDRINUSE` was discarded —
+   its `reject` ran after the promise had already settled. A deployment in that
+   state is the worst kind: a process that looks up and answers nobody.
+   **Fixed:** readiness comes from the `listening` EVENT and failure from `error`,
+   registered before the events can fire. A taken port now rejects the boot by
+   name. Guarded by `core/test/listen.test.ts` (taken port → rejects; successful
+   boot → a numeric address, which is exactly what the old path violated).
+2. **`PORT=0` silently became 4390.** `readInt` falls back to the default for any
+   out-of-range value, and `core/test/http/userPartitions.test.ts`,
+   `core/test/keychainFileBoot.test.ts` and `core/test/users/rails.test.ts` all
+   asked for an ephemeral port that way — so they only passed while 4390 happened
+   to be free. It was not: a spawned core leaked by an earlier e2e run held 4390
+   (the same leak a developer has with `npm run dev:core`, which is how the
+   previous session observed this and could not explain it — see
+   `docs/VERIFY-MOBILE.md` §"Environment observation"). **Fixed:**
+   `loadConfig` REFUSES a malformed or out-of-range `PORT` (0 included) with a
+   message naming the reason an ephemeral port cannot be allowlisted (the loopback
+   allowlist is derived from the port); the tests bind a **named free port**
+   (`freePort()` in `core/test/helpers.ts`). `core/test/config.test.ts` pins the
+   refusal and that the allowlist follows a real port.
+
+Also fixed while there: the file's teardown used `server.close()` alone, which
+waits for keep-alive sockets to idle out — the 10s hook timed out and the aborted
+teardown left the per-user SQLite handles open, so the temp-dir cleanup errored
+with `EPERM`. `closeServer()` (close **and** `closeAllConnections()`) plus the
+shared `removeTempRoot()` retry window make it deterministic.
+
+**Result:** Windows root suite **1254 passed / 5 failed → 1262 passed / 0 failed**
+(5 env-gated skips), same 155 files, web 712, typechecks 0. The fix is in the core,
+not in the test's expectations: no assertion was weakened, and the isolation claims
+this file makes (separate databases/keys/skills/audit, a read that cannot cross)
+run exactly as before — now on a listener that is provably up.

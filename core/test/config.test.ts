@@ -32,6 +32,22 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...NO_ENV, HOST: '192.168.1.5', DEMO_MODE: '0' })).toThrow(/loopback/);
   });
 
+  it('refuses a malformed or out-of-range PORT instead of quietly binding 4390', () => {
+    // The old behaviour clamped through `readInt`, so `PORT=0` (read by a caller
+    // as "any free port"), `PORT=70000` and `PORT=http` all silently became 4390
+    // — three core test files asked for an ephemeral port and got the default,
+    // which is why they only passed while 4390 happened to be free. A wrong port
+    // is a misconfiguration an operator must see, not a fallback.
+    for (const value of ['0', '70000', '-1', 'http', '80x']) {
+      expect(() => loadConfig({ ...NO_ENV, PORT: value }), value).toThrow(/PORT must be an integer/);
+    }
+    // …and a real port is taken as given, with the loopback allowlist following
+    // it (the reason 0 cannot be supported implicitly).
+    const cfg = loadConfig({ ...NO_ENV, PORT: '8123' });
+    expect(cfg.port).toBe(8123);
+    expect(cfg.hostAllowlist).toEqual(['127.0.0.1:8123', 'localhost:8123']);
+  });
+
   it('demo mode MAY bind outward (container/dev webapp) with loopback still default', () => {
     const bound = loadConfig({ ...NO_ENV, HOST: '0.0.0.0' });
     expect(bound.host).toBe('0.0.0.0');
@@ -107,10 +123,15 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...NO_ENV, KEYCHAIN_KIND: 'fille' }).keychain).toBe('fake');
   });
 
-  it('garbage numbers fall back to defaults instead of crashing', () => {
-    const cfg = loadConfig({ ...NO_ENV, PORT: 'not-a-port', PAIR_MAX_ATTEMPTS: '-1' });
-    expect(cfg.port).toBe(4390);
+  it('garbage numbers fall back to defaults instead of crashing — EXCEPT the port', () => {
+    // Deliberate split: a tuning knob with a nonsense value can safely take its
+    // default (nothing outside the process depends on it), while the PORT is
+    // what a client, a tunnel or a container port-map points at — silently
+    // binding 4390 for `PORT=not-a-port` is how "the wrong port" happens, so it is
+    // refused (see the test above).
+    const cfg = loadConfig({ ...NO_ENV, PAIR_MAX_ATTEMPTS: '-1' });
     expect(cfg.maxAttempts).toBe(3);
+    expect(() => loadConfig({ ...NO_ENV, PORT: 'not-a-port' })).toThrow(/PORT must be an integer/);
   });
 
   it('honors pairing/session tuning knobs', () => {

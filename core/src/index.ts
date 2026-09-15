@@ -1281,12 +1281,19 @@ function listen(
     // HTTP).
     const server =
       tls === undefined
-        ? app.listen(port, host, () => resolve(server))
+        ? app.listen(port, host)
         : createHttpsServer(
             { cert: readFileSync(tls.certFile), key: readFileSync(tls.keyFile) },
             app,
-          ).listen(port, host, () => resolve(server));
-    server.on('error', reject);
+          ).listen(port, host);
+    // Readiness comes from the `listening` EVENT, not from `listen`'s callback:
+    // on Windows (Node 25) that callback is ALSO invoked when the bind failed,
+    // so the promise used to resolve with a server that was never listening —
+    // the core printed "up on …" and served nothing, and a caller reading
+    // `server.address()` got `null` instead of the EADDRINUSE it needed to see.
+    // `error` is registered first so a failed bind can only reject.
+    server.once('error', reject);
+    server.once('listening', () => resolve(server));
   });
 }
 
