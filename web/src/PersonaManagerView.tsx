@@ -955,10 +955,10 @@ function PersonaEditor({ persona, hasDefault, onSaved, onCancel, onOpenConversat
             Keep a private memory of me for this persona
           </label>
           <p className="form-hint">
-            When on, this persona notices durable facts about you. Facts that apply everywhere
-            (name, language, standing tone) arrive as <strong>All personas</strong> suggestions;
-            facts tied to this persona stay private to it. Nothing is used until you confirm it in
-            Memory.
+            When on, this persona notices durable facts tied to it and recalls them only while you
+            are chatting with it — never in another persona&apos;s chat. Facts that apply everywhere
+            (name, language, standing tone) are handled by the separate Automatic memory setting in
+            Memory, not this tick. New facts arrive as suggestions for you to confirm.
           </p>
         </fieldset>
 

@@ -363,19 +363,29 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   entries tailor every persona; **persona-scoped** entries (M19) are recalled
   ONLY in chats with that persona, and only when its private-memory toggle is
   on.
-- **Automatic remember (M19):** after a persisted persona turn whose private
-  memory is on, the core asks the persona's cheap-task-class model — out of
-  band, after the response has ended — whether the exchange holds a durable
-  user fact; findings land as `suggested` entries the user confirms. Each
-  finding is **global** (`personaScope: null` — name, role, language, standing
-  tone/format rules, so it tailors every persona) or **persona-scoped** (only
-  that persona). The extractor prompt is fixed, parsing/caps/secret-filter are
-  defensive, and audit rows carry ids/counts only.
+- **Automatic remember (M19):** after a persisted persona turn the core asks
+  the persona's cheap-task-class model — out of band, after the response has
+  ended — whether the exchange holds a durable user fact; findings land as
+  `suggested` entries the user confirms. Detection has **two independent
+  consents**: a user-level **global auto-remember** setting (settings table,
+  default **on**) files facts that apply to every persona regardless of which
+  persona spoke; each persona's **private-memory** toggle (default off) files
+  facts scoped to it. Extraction runs when either is on and drops findings for
+  a scope whose consent is off. If the cheap/chat target cannot be resolved
+  (no default model on the provider, an explicit per-message model),
+  extraction rides the exact model that served the turn, so a successful turn
+  never silently skips remembering. Each finding is **global**
+  (`personaScope: null` — name, role, language, standing tone/format rules,
+  so it tailors every persona) or **persona-scoped** (only that persona). The
+  extractor prompt is fixed, parsing/caps/secret-filter are defensive, and
+  audit rows carry ids/counts only.
 - **Forgetting:** per-entry delete, per-store wipe, or "forget everything
   before <date>". Memory exports as JSON/Markdown. A rejected fact is never
   re-suggested.
-- **Privacy defaults:** no memory of a conversation unless the persona's
-  private-memory toggle is on; memory never includes the *content* of user
+- **Privacy defaults:** global auto-remember is **on** by default but only
+  ever produces visible, confirmable suggestions (nothing tailors a reply
+  until confirmed); persona-scoped memory of a conversation requires that
+  persona's private-memory toggle; memory never includes the *content* of user
   files the partner read unless explicitly saved into a note; headless
   (playbook/schedule/brainstorm) runs neither read nor write persona memory.
 
@@ -558,9 +568,10 @@ pairing (`/v1/pair/device`, `/v1/boot` — M15); notes knowledge workspace
 `/promote` — M16); note projects (`GET /v1/notes?folderId=…`,
 `PUT /v1/notes/:id/folders` — M17); and schedules (`POST
 /v1/personas/:id/schedules/:scheduleId/run-now`, `GET /v1/schedules/runs` +
-`/runs/:runId` — M14). M19 adds **no route**: automatic remember runs on the
+`/runs/:runId` — M14). M19 adds **no chat route**: automatic remember runs on the
 chat path and only widens `/v1/memory/profile` with global and persona-scoped
-suggested entries.
+suggested entries. The M19 follow-up adds `GET`/`PUT /v1/memory/settings`
+(`{ autoRememberGlobal: boolean }`) for the user-level global consent.
 
 M22 adds the **account lane** for the hosted shape: `POST /v1/auth/session`
 ({username, password} → a session that carries `user_id` and `LOGIN_SESSION_CLASS`),
@@ -870,6 +881,21 @@ apps/partner/
       audit gains `globals`/`personaScoped` counts (still content-free). Web
       copy (persona-editor Memory hint, Memory privacy note) explains the two
       scopes. *Exit: core suite green · web 712 passed · typechecks 0.*
+      **Follow-up (turn-target fallback):** extraction no longer silently
+      no-ops when the persona's cheap/chat resolver yields no model — it rides
+      the provider client + model that actually served the turn
+      (`RememberInput.fallbackTarget`), so a provider with no default models
+      (per-message model picks) still remembers. Route test proves a
+      default-model-less provider files a global suggestion from a turn's
+      explicit model. **Follow-up (independent global consent):** global fact
+      detection no longer rides the per-persona private-memory toggle. A
+      user-level `memory.autoRemember.global` setting (settings table, default
+      ON, `GET`/`PUT /v1/memory/settings`) governs facts that apply to every
+      persona; the persona toggle governs only persona-scoped facts. The chat
+      route enqueues extraction when either is on and passes a per-turn policy
+      so only consented scopes are filed. Web: an “Automatic memory” card in
+      the Memory view; persona-editor copy scoped to persona facts. No schema
+      change. *Exit: core 1158 passed · web 733 passed · typechecks 0.*
 - [ ] **M20 — Client-server, multi-user & mobile (detailed spec:
       `PLAN-M20.md`; decisions locked 2026-09-12; M20.A in progress).**
       Partner grows a remote, multi-device, multi-user server role.

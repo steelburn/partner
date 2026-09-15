@@ -292,6 +292,50 @@ describe('remember manager (fake provider)', () => {
     }
   });
 
+  it('falls back to the turn target when the resolver yields none', async () => {
+    const fake = fakeProvider('[{"kind":"identity","value":"Lives in Berlin","scope":"global"}]');
+    const env = makeMemoryEnv();
+    // No resolver target — the manager must ride the turn's own target.
+    const remember = makeRemember(env, { target: null });
+    try {
+      const outcome = await remember.extract({
+        personaId: 'p-x',
+        userText: 'I just moved to Berlin',
+        assistantText: 'Noted.',
+        fallbackTarget: fake.target,
+      });
+      expect(outcome).toMatchObject({ status: 'saved', suggested: 1 });
+      expect(env.profile.list().map((e) => e.value)).toEqual(['Lives in Berlin']);
+      expect(fake.requests).toHaveLength(1);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('falls back to the turn target when the resolver throws', async () => {
+    const fake = fakeProvider('[{"kind":"rule","value":"Ship on Fridays"}]');
+    const env = makeMemoryEnv();
+    const remember = createRememberManager({
+      profile: env.profile,
+      audit: env.audit,
+      demo: false,
+      providerResolver: () => {
+        throw new Error('keychain unavailable');
+      },
+    });
+    try {
+      const outcome = await remember.extract({
+        personaId: 'p-x',
+        userText: 'x',
+        assistantText: 'y',
+        fallbackTarget: fake.target,
+      });
+      expect(outcome).toMatchObject({ status: 'saved', suggested: 1 });
+    } finally {
+      env.close();
+    }
+  });
+
   it('returns error when the provider stream fails (never throws)', async () => {
     const client: ProviderClient = {
       async *chatStream(): AsyncGenerator<ChatEvent> {
@@ -307,6 +351,68 @@ describe('remember manager (fake provider)', () => {
       await expect(
         remember.extract({ personaId: 'p-x', userText: 'a', assistantText: 'b' }),
       ).resolves.toEqual({ status: 'error' });
+    } finally {
+      env.close();
+    }
+  });
+
+  it('filters findings by the per-turn policy (global vs persona consent)', async () => {
+    const reply =
+      '[{"kind":"identity","value":"Lives in Berlin","scope":"global"},{"kind":"preference","value":"Persona-only fact","scope":"persona"}]';
+
+    // Global only: persona detection consent is off.
+    const globalOnly = fakeProvider(reply);
+    const envA = makeMemoryEnv();
+    try {
+      const remember = makeRemember(envA, { target: globalOnly.target });
+      const outcome = await remember.extract({
+        personaId: 'p-x',
+        userText: 'x',
+        assistantText: 'y',
+        policy: { global: true, persona: false },
+      });
+      expect(outcome).toMatchObject({ status: 'saved', suggested: 1 });
+      const entries = envA.profile.list();
+      expect(entries.map((e) => e.value)).toEqual(['Lives in Berlin']);
+      expect(entries[0]?.personaScope).toBeNull();
+    } finally {
+      envA.close();
+    }
+
+    // Persona only: global consent is off.
+    const personaOnly = fakeProvider(reply);
+    const envB = makeMemoryEnv();
+    try {
+      const remember = makeRemember(envB, { target: personaOnly.target });
+      const outcome = await remember.extract({
+        personaId: 'p-x',
+        userText: 'x',
+        assistantText: 'y',
+        policy: { global: false, persona: true },
+      });
+      expect(outcome).toMatchObject({ status: 'saved', suggested: 1 });
+      const entries = envB.profile.list();
+      expect(entries.map((e) => e.value)).toEqual(['Persona-only fact']);
+      expect(entries[0]?.personaScope).toBe('p-x');
+    } finally {
+      envB.close();
+    }
+  });
+
+  it('skips entirely (no provider call) when both scopes are disallowed', async () => {
+    const fake = fakeProvider('[{"kind":"rule","value":"Never"}]');
+    const env = makeMemoryEnv();
+    try {
+      const remember = makeRemember(env, { target: fake.target });
+      await expect(
+        remember.extract({
+          personaId: 'p-x',
+          userText: 'x',
+          assistantText: 'y',
+          policy: { global: false, persona: false },
+        }),
+      ).resolves.toEqual({ status: 'skipped', reason: 'disabled' });
+      expect(fake.requests).toHaveLength(0);
     } finally {
       env.close();
     }

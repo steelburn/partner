@@ -270,6 +270,7 @@ export {
   REMEMBER_EVIDENCE_CAP,
   REMEMBER_INPUT_CAP,
   REMEMBER_SCOPES,
+  REMEMBER_DEFAULT_POLICY,
 } from './memory/remember.js';
 export type {
   RememberManager,
@@ -278,8 +279,11 @@ export type {
   RememberOutcome,
   RememberCandidate,
   RememberScope,
+  RememberPolicy,
   RememberTarget,
 } from './memory/remember.js';
+export { createMemorySettings, AUTO_REMEMBER_GLOBAL_KEY } from './memory/settings.js';
+export type { MemorySettings, MemorySettingsOptions } from './memory/settings.js';
 
 // ---- M5 notes + plans (PLAN-M5.md) -----------------------------------------
 export { createNoteManager, parseWikiLinks, noteSearchText, stripDailySummarySection, demoDailySummary, createDailySummarizeResolver } from './notes/index.js';
@@ -911,6 +915,11 @@ export function createCore(
     audit,
   });
 
+  // Shared settings store (used by search, themes and the M19-follow-up
+  // user-level global auto-remember consent). Opened before memory so the
+  // bundle can read the flag.
+  const settingsStore = createSettingsStore(db);
+
   // M4: memory over the SAME db (schema v5). Summaries route through the
   // persona's resolved chat provider when a conversation has one and a
   // provider+model is usable; demo mode always writes placeholder summaries.
@@ -920,6 +929,7 @@ export function createCore(
   const memory = createMemoryBundle({
     stores: { profile: profileStore, episodes: episodeStore, fts: memoryFtsStore },
     conversations: conversationManager,
+    settings: settingsStore,
     audit,
     demo: config.demo,
     providerResolver: createSummarizeResolver({
@@ -987,7 +997,7 @@ export function createCore(
   // seed on first boot (empty table only); the persona store's colorTheme
   // column (M3) is the per-persona override and the settings store holds the
   // global active_theme key.
-  const settingsStore = createSettingsStore(db);
+  // (settingsStore is opened earlier, before the memory bundle.)
   // M11 F2 search: optional API-key backend (config in settings, key in the
   // OS keychain, default-deny OFF). No schema change — schema v12 stands.
   const search = createSearchManager({

@@ -521,6 +521,10 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const profileStore = createProfileStore(db);
   const episodeStore = createEpisodeStore(db);
   const memoryFtsStore = createMemoryFtsStore(db);
+  // Shared settings store — opened before memory so the bundle can read the
+  // user-level global auto-remember consent.
+  const settingsStore = createSettingsStore(db);
+
   let memory: MemoryBundle | undefined;
   let profile: ProfileManager | undefined;
   let episodes: EpisodeManager | undefined;
@@ -531,6 +535,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     memory = createMemoryBundle({
       stores: { profile: profileStore, episodes: episodeStore, fts: memoryFtsStore },
       conversations,
+      settings: settingsStore,
       audit,
       demo,
       providerResolver: createSummarizeResolver({
@@ -599,7 +604,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   // per-persona override. Managers + routes are wired unless themes: false
   // (the 501 not_configured case).
   const themeStore = createThemeStore(db);
-  const settingsStore = createSettingsStore(db);
+  // (settingsStore is opened earlier, before the memory bundle.)
   // M11 F2: search backend (config in settings, key in the fake/native
   // keychain — default-deny OFF until enabled).
   const search = createSearchManager({

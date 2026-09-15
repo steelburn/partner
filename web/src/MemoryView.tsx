@@ -33,6 +33,7 @@ import {
   addProfileEntry,
   exportMemory,
   forgetMemory,
+  getMemorySettings,
   importMemory,
   listEpisodes,
   listProfile,
@@ -40,6 +41,7 @@ import {
   removeProfileEntry,
   searchMemory,
   summarizeEpisode,
+  updateMemorySettings,
   updateProfileEntry,
   type MemoryImportResult,
 } from './lib/memory.js';
@@ -211,6 +213,7 @@ export default function MemoryView({
 
         {!sessionLost && entries !== null ? (
           <>
+            <RememberSettingsCard onSessionLost={handleSessionLost} />
             <ProfileCard
               confirmed={confirmed}
               suggested={suggested}
@@ -236,13 +239,110 @@ export default function MemoryView({
               Memory is stored locally in the core on this machine — never on a Partner server.
               Entries show their provenance, and you can forget or export all of it at any time.
               Only confirmed profile entries tailor replies, and only when a persona is routed
-              through a provider. A persona with private memory on notices durable facts: those
-              that apply everywhere arrive as global suggestions, and facts tied to that persona
-              stay scoped to it.
+              through a provider. Automatic memory has two independent consents: the global
+              setting above covers facts that apply everywhere, and each persona&apos;s private
+              memory covers facts tied to it.
             </p>
           </>
         ) : null}
       </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Automatic-memory settings (M19 follow-up: user-level global consent)
+// ---------------------------------------------------------------------------
+
+interface RememberSettingsCardProps {
+  onSessionLost: () => void;
+}
+
+/**
+ * The user-level consent for GLOBAL auto-remember. Independent of the
+ * per-persona private-memory toggle, so facts that apply everywhere are
+ * noticed even when no persona has private memory on. Loads lazily (the card
+ * renders nothing until the setting arrives) and writes optimistically only
+ * after the core confirms the stored value.
+ */
+function RememberSettingsCard({ onSessionLost }: RememberSettingsCardProps) {
+  const [autoRememberGlobal, setAutoRememberGlobal] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const token = readStoredToken();
+    if (!token) return;
+    void getMemorySettings(token)
+      .then((settings) => {
+        if (!cancelled) setAutoRememberGlobal(settings.autoRememberGlobal);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        if (isSessionLost(cause)) {
+          onSessionLost();
+          return;
+        }
+        setError(cause instanceof Error ? cause.message : 'Could not load memory settings.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onSessionLost]);
+
+  const toggle = async (next: boolean): Promise<void> => {
+    if (busy) return;
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await updateMemorySettings(token, { autoRememberGlobal: next });
+      setAutoRememberGlobal(saved.autoRememberGlobal);
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : 'Could not save that setting.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (autoRememberGlobal === null && error === null) return null;
+
+  return (
+    <section className="card mem-settings" aria-label="Automatic memory">
+      <div className="section-head">
+        <h2 className="card-title">Automatic memory</h2>
+      </div>
+      <label className="check-label" htmlFor="mem-auto-global">
+        <input
+          id="mem-auto-global"
+          className="check"
+          type="checkbox"
+          checked={autoRememberGlobal === true}
+          disabled={busy}
+          onChange={(event) => void toggle(event.target.checked)}
+        />
+        Notice facts that apply to every persona
+      </label>
+      <p className="card-copy">
+        When on, the partner watches your chats for durable facts about you — name, role,
+        language, standing tone — and files them as <strong>All personas</strong> suggestions.
+        Nothing is used until you confirm it below. Facts tied to one persona are governed by that
+        persona&apos;s private-memory setting in Personas.
+      </p>
+      {error ? (
+        <p className="row-error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </section>
   );
 }

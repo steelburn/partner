@@ -19,6 +19,10 @@
  * Discipline:
  *   - The extractor instruction is FIXED and never user-derived; the
  *     transcript is user data that only ever sits in the payload.
+ *   - The cheap resolver is preferred, but when it yields no usable target
+ *     the manager rides the provider client + model that actually served the
+ *     turn (`RememberInput.fallbackTarget`) — a turn that streamed always
+ *     remains eligible for remembering.
  *   - Parsing is defensive: fences stripped, first '[' → last ']', kind
  *     whitelist, scope whitelist (unknown/missing -> persona), length caps, an
  *     obvious-secret filter, and dedupe against every existing entry the
@@ -50,6 +54,24 @@ export type RememberScope = 'global' | 'persona';
 export const REMEMBER_SCOPES: readonly RememberScope[] = ['global', 'persona'];
 
 /**
+ * Which scopes this turn may file. Computed by the caller from the user-level
+ * global consent ({@link MemorySettings.autoRememberGlobal}) plus the
+ * persona's own `memory.personaMemory` flag, so global detection can run with
+ * the persona toggle off and persona detection can run with global off.
+ * Findings for a disallowed scope are dropped (never filed, never audited as
+ * content). Omitted -> both allowed (keeps direct manager callers at M19
+ * behaviour).
+ */
+export interface RememberPolicy {
+  /** File global (`personaScope: null`) findings. */
+  global: boolean;
+  /** File persona-scoped findings for this persona. */
+  persona: boolean;
+}
+
+export const REMEMBER_DEFAULT_POLICY: RememberPolicy = { global: true, persona: true };
+
+/**
  * Fixed extractor instruction — NEVER user-derived. The transcript only ever
  * appears as the user payload after this instruction.
  */
@@ -78,6 +100,16 @@ export interface RememberInput {
   userText: string;
   assistantText: string;
   conversationId?: string | null;
+  /**
+   * The provider client + model that actually served this turn. Used only
+   * when {@link RememberManagerOptions.providerResolver} cannot resolve a
+   * target (no cheap/chat model configured, or a provider with no default
+   * models where the turn carried an explicit model). Chat worked, so
+   * extraction must too — otherwise auto-remember silently never runs.
+   */
+  fallbackTarget?: RememberTarget;
+  /** Which scopes may be filed (default: both). */
+  policy?: RememberPolicy;
 }
 
 export interface RememberCandidate {
@@ -92,7 +124,7 @@ export interface RememberCandidate {
 export type RememberOutcome =
   | { status: 'saved'; suggested: number; entryIds: string[] }
   | { status: 'empty' }
-  | { status: 'skipped'; reason: 'demo' | 'no_provider' | 'no_text' }
+  | { status: 'skipped'; reason: 'demo' | 'no_provider' | 'no_text' | 'disabled' }
   | { status: 'error' };
 
 export interface RememberManager {
@@ -246,19 +278,28 @@ export function createRememberManager(options: RememberManagerOptions): Remember
     const personaId = typeof input.personaId === 'string' ? input.personaId.trim() : '';
     const userText = trimToCap(input.userText, REMEMBER_INPUT_CAP);
     const assistantText = trimToCap(input.assistantText, REMEMBER_INPUT_CAP);
+    const policy = input.policy ?? REMEMBER_DEFAULT_POLICY;
     if (personaId === '') return { status: 'skipped', reason: 'no_text' };
     if (demo) return { status: 'skipped', reason: 'demo' };
+    if (!policy.global && !policy.persona) return { status: 'skipped', reason: 'disabled' };
     if (userText === '' && assistantText === '') {
       return { status: 'skipped', reason: 'no_text' };
     }
 
-    let target: RememberTarget | null;
+    let target: RememberTarget | null = null;
+    let resolverFailed = false;
     try {
       target = await resolver(personaId);
     } catch {
-      return { status: 'error' };
+      resolverFailed = true;
     }
-    if (target === null) return { status: 'skipped', reason: 'no_provider' };
+    // A turn that streamed through a provider always has a usable target;
+    // prefer the resolver's (cheap) model, but never skip extraction merely
+    // because that model could not be resolved on its own.
+    if (target === null) target = input.fallbackTarget ?? null;
+    if (target === null) {
+      return resolverFailed ? { status: 'error' } : { status: 'skipped', reason: 'no_provider' };
+    }
 
     let reply: string | null;
     try {
@@ -279,9 +320,13 @@ export function createRememberManager(options: RememberManagerOptions): Remember
     }
     if (reply === null) return { status: 'empty' };
 
-    const candidates = parseRememberReply(reply).filter(
-      (candidate) => !looksLikeSecret(candidate.value) && !looksLikeSecret(candidate.evidence ?? ''),
-    );
+    const candidates = parseRememberReply(reply)
+      .filter((candidate) =>
+        candidate.scope === 'global' ? policy.global : policy.persona,
+      )
+      .filter(
+        (candidate) => !looksLikeSecret(candidate.value) && !looksLikeSecret(candidate.evidence ?? ''),
+      );
     if (candidates.length === 0) return { status: 'empty' };
 
     // Dedupe against every existing entry the persona would honor: global

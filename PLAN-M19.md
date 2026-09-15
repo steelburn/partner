@@ -24,13 +24,31 @@ Two additions to the explicit memory system:
    this persona; filed scoped to it), so the partner can learn facts that
    apply everywhere without every persona re-learning them.
 
+   **Two independent consents (follow-up).** Because a global fact tailors
+   EVERY persona, noticing one is a user-level choice, not a per-persona one:
+
+   - **Global auto-remember** (`memory.autoRemember.global` in the settings
+     table, **default ON**): any persisted, provider-routed turn may file
+     **global** findings, regardless of which persona is speaking and whether
+     that persona has private memory on. Findings are visible suggestions, so
+     the default leaks nothing into a reply before the user confirms.
+   - **Persona private memory** (`personas.memory_flags.personaMemory`,
+     default OFF): only a persona with the toggle on may file
+     **persona-scoped** findings (and recall them).
+
+   Extraction runs when either consent is on; findings for a scope whose
+   consent is off are dropped before filing. Turning both off means no
+   extractor call at all.
+
 ## Data
 
 **No schema change.** `profile_entries` already carries `persona_scope`
 (null = global, else persona id) and `source` (`user` | `partner_suggestion`)
 from M4; the batch this milestone needed was wiring + UI + the extractor. The
 new persona toggle lives inside the existing `personas.memory_flags` JSON
-column, so an older row simply reads as `off`.
+column, so an older row simply reads as `off`. The follow-up's user-level
+global consent lives in the existing `settings` key-value table
+(`memory.autoRemember.global`), so schema `SCHEMA_VERSION` is unchanged.
 
 ## Shared (`shared/src/persona.ts`)
 
@@ -60,35 +78,54 @@ compiling, and the core normalizes a missing value to `off`.
   persona. Demo mode and no-provider skip; every path is content-free in
   audit (`memory.remember` carries ids/counts/model only). `enqueue()` runs
   it fire-and-forget and `idle()` awaits in-flight work so tests are
-  deterministic.
+  deterministic. `extract()` takes a per-turn `policy: { global, persona }`
+  (default both) and drops findings for a disallowed scope; both-false skips
+  the provider call entirely.
+- **Global consent store** (`memory/settings.ts`, new). One boolean over the
+  shared settings table: `autoRememberGlobal()` reads `'off'` as the only
+  false value (absent = ON), and `setAutoRememberGlobal()` persists it with a
+  content-free `memory.settings` audit row. `MemoryBundle.settings` exposes it
+  to the chat route and the HTTP surface.
 - **Wiring.** `MemoryBundle.remember` is built by `createMemoryBundle`; the
   resolver rides the persona's `cheap` task class (falling back to general),
-  so extraction can be pinned to a cheap purpose model. The chat route, after
-  the response has ended (`res.end()` has fired, so the user never waits),
-  enqueues extraction for persisted, non-continue, provider-routed turns
-  whose persona has `personaMemory: 'on'`.
+  so extraction can be pinned to a cheap purpose model. When that resolver
+  yields no target — no cheap/chat model configured, or an enabled provider
+  with no default models whose turn carried an explicit per-message model —
+  the extractor rides the exact provider client + model that served the turn
+  (`RememberInput.fallbackTarget`), so auto-remember never silently no-ops on
+  a turn that streamed successfully. The chat route, after the response has
+  ended (`res.end()` has fired, so the user never waits), enqueues extraction
+  for persisted, non-continue, provider-routed turns when **either** consent
+  is on — the user-level global flag or that persona's `personaMemory: 'on'` —
+  and passes the matching `policy` so only consented scopes are filed.
 
 ## Web
 
 - **Persona editor** gains a Memory fieldset: a single tick —
   "Keep a private memory of me for this persona" — bound to
-  `memory.personaMemory`. Copy states the privacy boundary.
+  `memory.personaMemory`. Copy now scopes it to facts tied to that persona and
+  points at the separate global setting.
+- **Memory view** gains an **Automatic memory** card bound to
+  `GET`/`PUT /v1/memory/settings`: one tick, "Notice facts that apply to every
+  persona", default on. The card renders nothing until the setting loads and
+  only reflects the value the core confirms.
 - **Memory view** marks persona-scoped confirmed entries "in use" when their
   persona has private memory on (union with the global set), labels
   `partner_suggestion` entries as auto-detected, and shows each suggestion's
-  scope ("All personas" or the persona name). The scope chip already names
-  the persona.
-- **Persona editor** copy explains that a private-memory persona files global
-  ("All personas") suggestions for facts that apply everywhere and scoped
-  suggestions for facts tied to that persona; nothing is used until confirmed.
+  scope ("All personas" or the persona name).
 
 ## Tests
 
 Core: persona memory-flag normalization + round-trip; tailoring injects
 scoped entries only when on (and never for a different persona); remember
 parse/dedupe/cap/secret-filter/demo + no-provider skips, scope parsing with a
-persona default, and global findings filed `personaScope: null`; HTTP
-integration — a memory-on persona gets its scoped prelude, a managed-provider
-turn files suggested entries that `GET /v1/memory/profile` returns, and a
-confirmed global suggestion from one persona tailors a different persona. Web:
-helper tests for the persona-aware in-use set and the auto-detected label.
+persona default, and global findings filed `personaScope: null`; policy
+filtering (global-only, persona-only, both-off skips without a provider call);
+the settings manager default/round-trip/content-free audit; HTTP integration —
+a memory-on persona gets its scoped prelude, a managed-provider turn files
+suggested entries that `GET /v1/memory/profile` returns, a confirmed global
+suggestion from one persona tailors a different persona, global facts are
+detected with the persona toggle OFF, persona findings survive global OFF, and
+`GET`/`PUT /v1/memory/settings` round-trips. Web: helper tests for the
+persona-aware in-use set and the auto-detected label, plus the settings API
+client.

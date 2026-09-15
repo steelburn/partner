@@ -3031,18 +3031,24 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           ...(routingPersonaId !== null ? { personaId: routingPersonaId } : {}),
           ...(conversationId !== null ? { conversationId } : {}),
         });
-        // M19 automatic remember: persisted, provider-routed turns whose
-        // persona keeps private memory are scanned OUT OF BAND. res.end()
-        // has already fired, so the client never waits on extraction; the
-        // manager tracks the work so tests can await idle().
+        // M19 automatic remember: persisted, provider-routed turns are
+        // scanned OUT OF BAND. res.end() has already fired, so the client
+        // never waits on extraction; the manager tracks the work so tests can
+        // await idle(). Two independent consents (M19 follow-up): GLOBAL
+        // facts ride the user-level setting, PERSONA-scoped facts ride the
+        // persona's private-memory toggle — so global detection works with
+        // the persona toggle off, and vice versa.
+        const rememberGlobalAuto =
+          options.memory?.settings.autoRememberGlobal() === true;
+        const rememberPersonaOn = routingPersona?.memory.personaMemory === 'on';
         if (
           persist &&
           sawDone &&
           !continueTurn &&
           conversationId !== null &&
           routingPersona !== null &&
-          routingPersona.memory.personaMemory === 'on' &&
           options.memory !== undefined &&
+          (rememberGlobalAuto || rememberPersonaOn) &&
           (lastUser !== undefined || deltaText.trim() !== '')
         ) {
           options.memory.remember.enqueue({
@@ -3050,6 +3056,13 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
             userText: lastUser?.content ?? '',
             assistantText: deltaText,
             conversationId,
+            // Ride the exact provider/model that served this turn when the
+            // persona's cheap/chat target cannot be resolved on its own (a
+            // provider with no default models, e.g. a per-message model
+            // pick). Without this, auto-remember silently never runs.
+            fallbackTarget: { client, model },
+            // Only the scopes whose consent is on may be filed.
+            policy: { global: rememberGlobalAuto, persona: rememberPersonaOn },
           });
         }
       }
@@ -4149,6 +4162,31 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // responses carry the OWNER's memory (user data by design) but audit rows
   // only ever carry ids, kinds and lengths — never memory content.
   // -------------------------------------------------------------------------
+
+  // M19 follow-up: the user-level consent for GLOBAL auto-remember. Persona
+  // detection stays per-persona; this flag governs facts that apply
+  // everywhere. Default ON (suggestions still require confirmation).
+  api.get('/v1/memory/settings', requireSession(sessions), (_req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    res.json({ autoRememberGlobal: memory.settings.autoRememberGlobal() });
+  });
+
+  api.put('/v1/memory/settings', requireSession(sessions), (req: Request, res: Response) => {
+    const memory = requireMemory(options, res);
+    if (!memory) return;
+    const body = (req.body ?? {}) as { autoRememberGlobal?: unknown };
+    if (typeof body.autoRememberGlobal !== 'boolean') {
+      res.status(400).json({
+        error: 'invalid_input',
+        message: 'autoRememberGlobal must be a boolean',
+      });
+      return;
+    }
+    res.json({
+      autoRememberGlobal: memory.settings.setAutoRememberGlobal(body.autoRememberGlobal),
+    });
+  });
 
   api.get('/v1/memory/profile', requireSession(sessions), (req: Request, res: Response) => {
     const memory = requireMemory(options, res);

@@ -53,13 +53,15 @@ export interface PersonaMemoryFlags {
   userProfile: 'read' | 'none';
   episodes: 'read+write' | 'none';
   /**
-   * M19 automatic remember consent + persona-private memory. 'on' = this
-   * persona notices durable facts about the user after a persisted turn.
-   * Findings that apply everywhere (name, language, standing tone) are filed
-   * global (`personaScope: null`) as suggestions; facts tied to this persona
-   * stay scoped to it. Nothing is applied until the user confirms it in the
-   * Memory view. 'off'/absent = neither reads nor writes auto-detected facts
-   * (privacy default).
+   * M19 persona-private memory + automatic remember consent for THIS persona.
+   * 'on' = this persona notices durable facts tied to it after a persisted
+   * turn and recalls them only in its own chats. Persona-scoped findings are
+   * filed `personaScope: <id>` as suggestions; nothing is applied until the
+   * user confirms it in the Memory view. Facts that apply everywhere are
+   * governed separately by the user-level global auto-remember setting
+   * (`/v1/memory/settings`, default on), not this flag. 'off'/absent = this
+   * persona reads/writes no persona-scoped auto-detected facts (privacy
+   * default).
    */
   personaMemory?: 'on' | 'off';
 }

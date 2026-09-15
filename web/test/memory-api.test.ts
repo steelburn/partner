@@ -10,12 +10,14 @@ import {
   addProfileEntry,
   exportMemory,
   forgetMemory,
+  getMemorySettings,
   importMemory,
   listEpisodes,
   listProfile,
   parseEpisode,
   parseEpisodeList,
   parseImportResult,
+  parseMemorySettings,
   parseProfileEntry,
   parseProfileList,
   parseSearchHits,
@@ -23,6 +25,7 @@ import {
   removeProfileEntry,
   searchMemory,
   summarizeEpisode,
+  updateMemorySettings,
   updateProfileEntry,
   type MemoryImportResult,
 } from '../src/lib/memory.js';
@@ -390,5 +393,37 @@ describe('auth / envelope robustness', () => {
       name: 'ApiRequestError',
       status: 401,
     });
+  });
+});
+
+describe('memory settings (M19 follow-up)', () => {
+  it('parses the settings response and rejects unexpected shapes', () => {
+    expect(parseMemorySettings({ autoRememberGlobal: true })).toEqual({
+      autoRememberGlobal: true,
+    });
+    expect(() => parseMemorySettings({ autoRememberGlobal: 'on' })).toThrow(ApiRequestError);
+    expect(() => parseMemorySettings(null)).toThrow(ApiRequestError);
+  });
+
+  it('GETs the setting with a bearer token and no body', async () => {
+    const { fetchImpl, calls } = recordFetch(() => jsonResponse({ autoRememberGlobal: false }));
+    await expect(getMemorySettings(TOKEN, { fetchImpl })).resolves.toEqual({
+      autoRememberGlobal: false,
+    });
+    expect(calls[0]?.input).toBe('/v1/memory/settings');
+    expect(calls[0]?.init?.method).toBe('GET');
+    expect(new Headers(calls[0]?.init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('PUTs the boolean and returns the stored value', async () => {
+    const { fetchImpl, calls } = recordFetch((_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { autoRememberGlobal?: unknown };
+      expect(body).toEqual({ autoRememberGlobal: true });
+      return jsonResponse({ autoRememberGlobal: true });
+    });
+    await expect(
+      updateMemorySettings(TOKEN, { autoRememberGlobal: true }, { fetchImpl }),
+    ).resolves.toEqual({ autoRememberGlobal: true });
+    expect(calls[0]?.init?.method).toBe('PUT');
   });
 });

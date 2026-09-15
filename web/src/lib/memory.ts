@@ -22,6 +22,7 @@ import type {
 } from '@partner/shared';
 
 const PROFILE_PATH = '/v1/memory/profile';
+const SETTINGS_PATH = '/v1/memory/settings';
 const EPISODES_PATH = '/v1/memory/episodes';
 const SEARCH_PATH = '/v1/memory/search';
 const FORGET_PATH = '/v1/memory/forget';
@@ -160,6 +161,56 @@ export function parseImportResult(value: unknown): MemoryImportResult {
   const episodesImported =
     count(value, 'episodesImported') ?? (nested ? count(nested, 'episodes') : null);
   return { profileImported, episodesImported };
+}
+
+// ---------------------------------------------------------------------------
+// Settings (M19 follow-up: user-level global auto-remember consent)
+// ---------------------------------------------------------------------------
+
+/** The user-level memory consent this client reads/writes. */
+export interface MemorySettings {
+  /** May the partner propose facts that apply to every persona? Default ON. */
+  autoRememberGlobal: boolean;
+}
+
+/** Normalize the settings response; throws on an unexpected shape. */
+export function parseMemorySettings(value: unknown, status = 200): MemorySettings {
+  if (!isRecord(value) || typeof value.autoRememberGlobal !== 'boolean') {
+    throw new ApiRequestError(status, 'The memory settings response had an unexpected shape.');
+  }
+  return { autoRememberGlobal: value.autoRememberGlobal };
+}
+
+/** GET /v1/memory/settings -> the global auto-remember consent. */
+export async function getMemorySettings(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<MemorySettings> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(SETTINGS_PATH, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  return parseMemorySettings(await expectJson<unknown>(response), response.status);
+}
+
+/** PUT /v1/memory/settings -> the stored consent. */
+export async function updateMemorySettings(
+  token: string,
+  settings: MemorySettings,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<MemorySettings> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(SETTINGS_PATH, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({ autoRememberGlobal: settings.autoRememberGlobal }),
+  });
+  return parseMemorySettings(await expectJson<unknown>(response), response.status);
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,28 @@ function parseSse(text: string): Array<{ type: string; [key: string]: unknown }>
     .map((line) => JSON.parse(line.slice('data: '.length)) as { type: string; [key: string]: unknown });
 }
 
+/** True for an out-of-band automatic-remember extraction request. With global
+ *  auto-remember ON by default, extraction calls interleave with chat calls,
+ *  so body-index assertions must look at chat requests only. */
+function isExtractionBody(body: { messages: ChatMessage[] }): boolean {
+  return body.messages.some(
+    (m) => typeof m.content === 'string' && m.content.includes('private memory of the USER'),
+  );
+}
+
+/** Chat (non-extraction) request bodies in arrival order. */
+function chatBodies(upstream: {
+  bodies: Array<{ model: string; messages: ChatMessage[] }>;
+}): Array<{ model: string; messages: ChatMessage[] }> {
+  return upstream.bodies.filter((body) => !isExtractionBody(body));
+}
+
+/** The `profile` array from a GET /v1/memory/profile response. */
+function listedProfile(res: { body: unknown }): Array<Record<string, unknown>> {
+  const body = res.body as { profile?: unknown };
+  return Array.isArray(body.profile) ? (body.profile as Array<Record<string, unknown>>) : [];
+}
+
 /** SSE text minus done_meta lines (ids are random per conversation) and
  *  timing noise — the demo provider reports real measured latencyMs, which
  *  varies 0/1ms between runs under parallel load and is not part of the
@@ -102,6 +124,8 @@ describe('auth + wiring gates on the memory surface', () => {
     try {
       const cases: Array<[string, string]> = [
         ['get', '/v1/memory/profile'],
+        ['get', '/v1/memory/settings'],
+        ['put', '/v1/memory/settings'],
         ['post', '/v1/memory/profile'],
         ['put', '/v1/memory/profile/x'],
         ['delete', '/v1/memory/profile/x'],
@@ -130,6 +154,7 @@ describe('auth + wiring gates on the memory surface', () => {
       const token = await pairToken(h);
       const cases: Array<[string, string]> = [
         ['get', '/v1/memory/profile'],
+        ['get', '/v1/memory/settings'],
         ['post', '/v1/memory/profile'],
         ['get', '/v1/memory/episodes'],
         ['get', '/v1/memory/search?q=x'],
@@ -638,7 +663,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
         .set(authed(token))
         .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
       expect(off.status).toBe(200);
-      const offPrelude = String(upstream.bodies[0]?.messages[0]?.content ?? '');
+      const offPrelude = String(chatBodies(upstream)[0]?.messages[0]?.content ?? '');
       expect(offPrelude).toContain('global fact');
       expect(offPrelude).not.toContain('researcher private');
 
@@ -649,7 +674,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
         .set(authed(token))
         .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'hi again' }] });
       expect(on.status).toBe(200);
-      const onPrelude = String(upstream.bodies[1]?.messages[0]?.content ?? '');
+      const onPrelude = String(chatBodies(upstream)[1]?.messages[0]?.content ?? '');
       expect(onPrelude).toContain('global fact');
       expect(onPrelude).toContain('researcher private');
     } finally {
@@ -765,7 +790,82 @@ describe('M19 persona-scoped memory + automatic remember', () => {
     }
   });
 
-  it('never extracts for a persona with private memory off', async () => {
+  it('detects GLOBAL facts with the persona private-memory toggle OFF', async () => {
+    // The user-level global consent is independent of the per-persona toggle:
+    // a persona with private memory off still gets global findings filed,
+    // while its persona-scoped findings are dropped.
+    const upstream = await startChatUpstream({
+      suggestReply:
+        '[{"kind":"identity","value":"Lives in Berlin","scope":"global"},{"kind":"preference","value":"Persona-only fact","scope":"persona"}]',
+    });
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      const provider = await h.providerManager.create({
+        name: 'm19-global-off-persona',
+        endpoint: upstream.server.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19global-persona');
+      // Persona private memory stays OFF (the default).
+      expect(h.personas.get('p-researcher')?.memory.personaMemory).toBe('off');
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'I just moved to Berlin' }] });
+      expect(chat.status).toBe(200);
+      await h.memory?.remember.idle();
+
+      // Global detection ran even though the persona toggle is off.
+      expect(upstream.bodies.filter(isExtractionBody)).toHaveLength(1);
+      const entries = listedProfile(await request(h.app).get('/v1/memory/profile').set(authed(token)));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.value).toBe('Lives in Berlin');
+      expect(entries[0]?.personaScope).toBeNull();
+      // The persona-scoped finding was dropped, not filed.
+      expect(entries.some((entry) => entry.value === 'Persona-only fact')).toBe(false);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('global auto-remember OFF keeps persona findings but drops global ones', async () => {
+    const upstream = await startChatUpstream({
+      suggestReply:
+        '[{"kind":"identity","value":"Lives in Berlin","scope":"global"},{"kind":"preference","value":"Persona-only fact","scope":"persona"}]',
+    });
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      h.memory?.settings.setAutoRememberGlobal(false);
+      h.personas.update('p-researcher', { memory: { personaMemory: 'on' } });
+      const provider = await h.providerManager.create({
+        name: 'm19-global-off',
+        endpoint: upstream.server.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19globaloff');
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({ personaId: 'p-researcher', model: 'gpt-4o', messages: [{ role: 'user', content: 'I just moved to Berlin' }] });
+      expect(chat.status).toBe(200);
+      await h.memory?.remember.idle();
+
+      const entries = listedProfile(await request(h.app).get('/v1/memory/profile').set(authed(token)));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.value).toBe('Persona-only fact');
+      expect(entries[0]?.personaScope).toBe('p-researcher');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('neither consent ON means no extraction call at all', async () => {
     const upstream = await startChatUpstream({
       suggestReply: '[{"kind":"identity","value":"Should never be filed"}]',
     });
@@ -773,12 +873,13 @@ describe('M19 persona-scoped memory + automatic remember', () => {
     const h = demoHarness({ demo: false });
     try {
       const token = await pairToken(h);
+      h.memory?.settings.setAutoRememberGlobal(false);
       const provider = await h.providerManager.create({
-        name: 'm19-off',
+        name: 'm19-both-off',
         endpoint: upstream.server.base,
         defaultModels: ['gpt-4o'],
       });
-      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19off');
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19bothoff');
 
       const chat = await request(h.app)
         .post('/v1/chat')
@@ -787,10 +888,76 @@ describe('M19 persona-scoped memory + automatic remember', () => {
       expect(chat.status).toBe(200);
       await h.memory?.remember.idle();
 
-      // Only the chat completion hit the upstream — no extractor call.
-      expect(upstream.bodies).toHaveLength(1);
+      expect(upstream.bodies.filter(isExtractionBody)).toHaveLength(0);
+      expect(listedProfile(await request(h.app).get('/v1/memory/profile').set(authed(token)))).toHaveLength(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('reads and writes the user-level global auto-remember setting', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      // Default ON.
+      const initial = await request(h.app).get('/v1/memory/settings').set(authed(token));
+      expect(initial.status).toBe(200);
+      expect(initial.body).toEqual({ autoRememberGlobal: true });
+
+      const off = await request(h.app)
+        .put('/v1/memory/settings')
+        .set(authed(token))
+        .send({ autoRememberGlobal: false });
+      expect(off.status).toBe(200);
+      expect(off.body).toEqual({ autoRememberGlobal: false });
+      expect(h.memory?.settings.autoRememberGlobal()).toBe(false);
+
+      const bad = await request(h.app)
+        .put('/v1/memory/settings')
+        .set(authed(token))
+        .send({ autoRememberGlobal: 'nope' });
+      expect(bad.status).toBe(400);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('extracts with the turn model when the persona has no resolvable default', async () => {
+    // A provider can be enabled with no default model (purpose profiles with
+    // no discovered models, or a persona pinned per message). Chat then works
+    // only because the turn carries an explicit model — and automatic remember
+    // must ride that same turn target instead of silently resolving nothing.
+    const upstream = await startChatUpstream({
+      suggestReply: '[{"kind":"identity","value":"Lives in Berlin","scope":"global"}]',
+    });
+    upstreams.push(upstream);
+    const h = demoHarness({ demo: false });
+    try {
+      const token = await pairToken(h);
+      h.personas.update('p-researcher', { memory: { personaMemory: 'on' } });
+      const provider = await h.providerManager.create({
+        name: 'm19-turn-model',
+        endpoint: upstream.server.base,
+        defaultModels: [],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-key-m19turnmodel');
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(authed(token))
+        .send({
+          personaId: 'p-researcher',
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: 'I just moved to Berlin' }],
+        });
+      expect(chat.status).toBe(200);
+      await h.memory?.remember.idle();
+
       const listed = await request(h.app).get('/v1/memory/profile').set(authed(token));
-      expect(listed.body.profile).toHaveLength(0);
+      const entries = listed.body.profile as Array<Record<string, unknown>>;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.value).toBe('Lives in Berlin');
+      expect(entries[0]?.personaScope).toBeNull();
     } finally {
       h.close();
     }

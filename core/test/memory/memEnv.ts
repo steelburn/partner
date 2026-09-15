@@ -15,6 +15,7 @@ import {
   createMemoryFtsStore,
   createMessageStore,
   createProfileStore,
+  createSettingsStore,
 } from '../../src/stores/db.js';
 import { createConversationManager } from '../../src/conversations/manager.js';
 import type { ConversationManager } from '../../src/conversations/manager.js';
@@ -28,6 +29,9 @@ import { createMemoryForgetManager } from '../../src/memory/forget.js';
 import type { MemoryForgetManager } from '../../src/memory/forget.js';
 import { createMemoryTransferManager } from '../../src/memory/transfer.js';
 import type { MemoryTransferManager } from '../../src/memory/transfer.js';
+import { createMemorySettings } from '../../src/memory/settings.js';
+import type { MemorySettings } from '../../src/memory/settings.js';
+import type { SettingsStore } from '../../src/stores/types.js';
 
 export interface MemoryTestEnv {
   db: Database;
@@ -44,6 +48,8 @@ export interface MemoryTestEnv {
   search: SearchManager;
   forget: MemoryForgetManager;
   transfer: MemoryTransferManager;
+  settings: SettingsStore;
+  memorySettings: MemorySettings;
   close(): void;
 }
 
@@ -86,6 +92,8 @@ export function makeMemoryEnv(optionsIn: MemoryTestOptions = {}): MemoryTestEnv 
   const search = createSearchManager({ stores });
   const forget = createMemoryForgetManager({ stores, audit, now });
   const transfer = createMemoryTransferManager({ stores, audit, now });
+  const settings = createSettingsStore(db);
+  const memorySettings = createMemorySettings({ settings, audit, now });
   return {
     db,
     auditStore,
@@ -97,6 +105,8 @@ export function makeMemoryEnv(optionsIn: MemoryTestOptions = {}): MemoryTestEnv 
     search,
     forget,
     transfer,
+    settings,
+    memorySettings,
     close(): void {
       db.close();
     },

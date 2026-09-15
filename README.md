@@ -77,10 +77,12 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 ## Status (2026-09-14)
 
 M0–M19 implemented and verified (PLAN.md §15): schema **v19**; current root
-suite **1267 passed** (5 env-gated skips) · web **730 passed** · typechecks 0 ·
+suite **1292 passed** (5 env-gated skips) · web **733 passed** · typechecks 0 ·
 web build green. An **M11 F12 follow-up** renders a fenced ```html code block
 inline beside its sandboxed result in chat, the assets read view and the new
-note-editor preview toggle. Latest release: **v0.1.12** (per-provider search keys, global
+note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
+fact detection a user-level setting independent of each persona's private-memory
+tick. Latest release: **v0.1.12** (per-provider search keys, global
 auto-remember, and scorecard ratings — on top of the silent-bind fix, hosted
 sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
 mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat
@@ -656,28 +658,37 @@ interactive `/v1/chat` route. A persona-scoped entry is never injected into a
 different persona's prelude, and the headless playbook/schedule/brainstorm
 loops never see it. Global confirmed facts still tailor every persona (M4).
 
-**Automatic remember.** When private memory is on, the core asks the
-persona's cheap-task-class model (out of band, AFTER the client's response has
-ended, so the turn never waits) whether the finished exchange holds anything
-durable about the user. Findings are filed as `partner_suggestion` /
+**Automatic remember.** Detection has two independent consents. A user-level
+**global auto-remember** setting (`GET`/`PUT /v1/memory/settings`, default
+**on**) covers facts that apply to every persona — name, role, language,
+standing tone — regardless of which persona is speaking. Each persona's
+**private-memory** tick (off by default) covers facts tied to that persona.
+The core asks the persona's cheap-task-class model (out of band, AFTER the
+client's response has ended, so the turn never waits) whether the finished
+exchange holds anything durable about the user, and drops findings for a
+scope whose consent is off. Findings are filed as `partner_suggestion` /
 `suggested` entries for the user to confirm, edit or reject in the Memory
 view — alongside the existing explicit add-a-fact path. Each finding is
-labeled **global** (a truth about the user in every conversation: name, role,
-language, standing tone/format rules; filed `personaScope: null` so it tailors
-**every** persona once confirmed) or **persona** (only meaningful while
-working with this persona; filed scoped to it), so the partner learns a
-universal fact once instead of per persona. The extractor prompt is fixed and
+labeled **global** (filed `personaScope: null` so it tailors **every** persona
+once confirmed) or **persona** (filed scoped to the persona that heard it),
+so the partner learns a universal fact once instead of per persona. The
+extractor prompt is fixed and
 never user-derived; parsing is defensive (fence/JSON guard, kind + scope
 whitelist with a persona default, caps, obvious-secret filter); dedupe covers
 global + same-scope entries, rejected included, so a rejected fact is never
-re-suggested; demo/no-provider turns skip; audit rows carry ids/counts/model
-only. No schema change (M4's `profile_entries.persona_scope`/`source` and the
-`personas.memory_flags` JSON were enough). Web: a Memory fieldset in the
+re-suggested; demo/no-provider turns skip; if the persona's cheap/chat model
+cannot be resolved on its own (a provider with no default models whose turn
+carried an explicit model), extraction rides the exact provider + model that
+served the turn, so a successful turn never silently skips remembering; audit
+rows carry ids/counts/model
+only. No schema change (M4's `profile_entries.persona_scope`/`source`, the
+`personas.memory_flags` JSON and the `settings` key-value table were enough).
+Web: an “Automatic memory” card in the Memory view, a Memory fieldset in the
 persona editor, a persona-aware “in use” marker, and an “Auto-detected”
 provenance chip. Suites after the pass: core **893 passed** (5 env-gated
 skips) · web **541 passed** · typechecks 0 · web build green · `ux_audit`
-green; **global auto-remember follow-up** kept core and web green (web 712).
-Spec: `PLAN-M19.md`.
+green; later follow-ups (turn-target fallback, independent global consent)
+kept the suites green. Spec: `PLAN-M19.md`.
 
 ### M23 — scorecard chat answers (2026-09-15, implemented)
 

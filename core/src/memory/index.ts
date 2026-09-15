@@ -15,6 +15,7 @@ import type {
   EpisodeStore,
   MemoryFtsStore,
   ProfileEntryStore,
+  SettingsStore,
 } from '../stores/types.js';
 import { createEpisodeManager } from './episodes.js';
 import type { EpisodeManager, SummarizeTarget } from './episodes.js';
@@ -26,6 +27,8 @@ import { createRememberManager } from './remember.js';
 import type { RememberManager, RememberTarget } from './remember.js';
 import { createSearchManager } from './search.js';
 import type { SearchManager } from './search.js';
+import { createMemorySettings } from './settings.js';
+import type { MemorySettings } from './settings.js';
 import { createMemoryTransferManager } from './transfer.js';
 import type {
   MemoryImportCounts,
@@ -68,6 +71,7 @@ export {
   REMEMBER_EVIDENCE_CAP,
   REMEMBER_INPUT_CAP,
   REMEMBER_SCOPES,
+  REMEMBER_DEFAULT_POLICY,
 } from './remember.js';
 export type {
   RememberManager,
@@ -76,8 +80,12 @@ export type {
   RememberOutcome,
   RememberCandidate,
   RememberScope,
+  RememberPolicy,
   RememberTarget,
 } from './remember.js';
+
+export { createMemorySettings, AUTO_REMEMBER_GLOBAL_KEY } from './settings.js';
+export type { MemorySettings, MemorySettingsOptions } from './settings.js';
 
 /**
  * The M4 memory surface wired into CoreAppOptions.memory / CoreBundle.memory
@@ -89,13 +97,17 @@ export interface MemoryBundle {
   search: SearchManager;
   forget: MemoryForgetManager;
   transfer: MemoryTransferManager;
-  /** M19 automatic remember (persona-scoped suggestions). */
+  /** M19 automatic remember (persona-scoped + global suggestions). */
   remember: RememberManager;
+  /** M19 follow-up: user-level global auto-remember consent. */
+  settings: MemorySettings;
 }
 
 export interface MemoryWiringOptions {
   stores: { profile: ProfileEntryStore; episodes: EpisodeStore; fts: MemoryFtsStore };
   conversations: ConversationManager;
+  /** Shared settings store holding the user-level global auto-remember flag. */
+  settings: SettingsStore;
   audit: AuditService;
   /** Demo mode writes placeholder summaries without any provider call. */
   demo: boolean;
@@ -165,7 +177,12 @@ export function createMemoryBundle(options: MemoryWiringOptions): MemoryBundle {
     demo: options.demo,
     providerResolver: rememberTargetResolver,
   });
-  return { profile, episodes, search, forget, transfer, remember };
+  const settings = createMemorySettings({
+    settings: options.settings,
+    audit: options.audit,
+    now,
+  });
+  return { profile, episodes, search, forget, transfer, remember, settings };
 }
 
 /**
