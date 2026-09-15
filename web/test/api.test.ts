@@ -4,6 +4,7 @@ import {
   asChatEvent,
   createPurposeProviders,
   discoverProviderModels,
+  listProviderModels,
   fetchCoreHealth,
   fetchDemoPairCode,
   requestPair,
@@ -386,6 +387,34 @@ describe('M13 per-turn model picker payloads', () => {
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       endpoint: 'https://api.ne1.dev/v1',
       key: 'sk-bundle',
+    });
+  });
+
+  it('listProviderModels reads an existing provider’s models through the stored key', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ models: ['gpt-4o', 'llama-3.1-8b', 7] }),
+    );
+    const models = await listProviderModels('tok-secret', 'p-1', { fetchImpl });
+    expect(models).toEqual(['gpt-4o', 'llama-3.1-8b']);
+    expect(calls[0]?.input).toBe('/v1/models?provider=p-1');
+    expect(calls[0]?.init?.method).toBe('GET');
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(calls[0]?.init?.headers).toMatchObject({ authorization: 'Bearer tok-secret' });
+  });
+
+  it('listProviderModels URL-encodes the provider id', async () => {
+    const { fetchImpl, calls } = recordFetch(() => jsonResponse({ models: [] }));
+    await listProviderModels('tok-secret', 'a/b', { fetchImpl });
+    expect(calls[0]?.input).toBe('/v1/models?provider=a%2Fb');
+  });
+
+  it('listProviderModels surfaces a missing-key 409 as ApiRequestError', async () => {
+    const { fetchImpl } = recordFetch(() =>
+      jsonResponse({ error: 'missing_key', message: 'provider has no key' }, 409),
+    );
+    await expect(listProviderModels('tok-secret', 'p-1', { fetchImpl })).rejects.toMatchObject({
+      name: 'ApiRequestError',
+      status: 409,
     });
   });
 });

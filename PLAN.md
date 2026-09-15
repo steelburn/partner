@@ -578,7 +578,10 @@ function calls) and `{noPersist:true}` (A/B compare — streams, saves nothing)
 Later milestones extend this surface: providers by purpose
 (`/v1/providers/discover`, `/v1/providers/purposes` — M13) and edited in place
 (`PUT /v1/providers/:id` — M24, non-secret fields only: model lists, vision
-declarations, purpose, name, enabled, budget); live desktop
+declarations, purpose, name, enabled, budget). M25 reconfiguration adds **no
+route**: it rediscover-an-existing-endpoint read is `GET /v1/models?provider=<id>`
+(uses the stored keychain key) and each reassignment reuses
+`PUT /v1/providers/:id`; live desktop
 pairing (`/v1/pair/device`, `/v1/boot` — M15); notes knowledge workspace
 (`/v1/notes/graph` + `/graph/positions`, `/v1/notes/:id/versions` +
 `/restore`, `/v1/notes/brainstorm`, `/v1/conversations/:id/assets` +
@@ -1485,6 +1488,38 @@ apps/partner/
       live packaged walk against the user's own LiteLLM endpoint is env-gated and
       has not been executed — that is the case this fix was written for, so it is
       the one worth walking.*
+
+- [x] **M25 — Reconfigure existing providers (implemented + locally green 2026-09-16).**
+      The provider setup card could only ADD purpose profiles; once created, the
+      only way to change which models a purpose carried was to delete the profile
+      and build it again, which meant re-typing the API key and losing the
+      keychain item. The card now has two modes over the same endpoint/key idea:
+      **Add new** (the unchanged M13 bundle) and **Reconfigure existing**, which
+      operates on profiles that already exist. Pick one of the endpoints in the
+      list, rediscover its current model list through the key the keychain
+      ALREADY holds (`GET /v1/models?provider=<id>` — no key field, tried across
+      the endpoint's profiles healthiest-first so one keyless sibling cannot block
+      the rest), then tick the models each purpose profile should carry and save.
+      Writes reuse the existing `PUT /v1/providers/:id` (M24) per changed profile,
+      so a `vision`-purpose profile's new pins are also its image-capability
+      declaration (M24 semantics), while other profiles keep their existing
+      declarations. The pane never creates, deletes or re-keys anything; a profile
+      emptied of models is refused before any request (the add flow refuses the
+      same shape), and only profiles whose ordered list actually changed are sent,
+      so order still picks each purpose's default. Pure decisions live in
+      `web/src/lib/providers.ts` (`endpointGroups`, `reconfigureModelOptions`,
+      `reconfigurePinsFor`, `reconfigureChanges`), with the stored-key read as
+      `listProviderModels` in `web/src/lib/api.ts`. The mode toggle and the
+      reassignment rows reuse the token-only `.btn`/`.field`/`.bundle-*` styles
+      plus one `.bundle-mode` selection rule (surface + elevation-sm, the
+      purpose-filter contract). No core route or schema change.
+      *Exit: shared 90 · root 1328 passed (5 env-gated skips) · web 758 (742 + 16)
+      · typechecks 0 · web build green · `ux_audit` PASSED (17 APCA pairs, light
+      + dark; tokens, states, slop tells). The complete-stylesheet whole-file
+      `ux_audit` run remains outstanding (payload > 200 KB); the gate ran on a
+      composed, brace-balanced payload of the new block plus every interactive
+      base/state it depends on, and a full-file slop-tell scan (`backdrop-filter`
+      0 · gradients 0 · blur 0 · text-shadow 0).*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

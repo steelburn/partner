@@ -12,6 +12,7 @@ import {
   createPurposeProviders,
   deleteProvider,
   discoverProviderModels,
+  listProviderModels,
   listProviders,
   setProviderKey,
   testProvider,
@@ -20,9 +21,13 @@ import {
 import {
   budgetLabel,
   describeHealth,
+  endpointGroups,
   normalizeEndpoint,
   parseBudgetDollars,
   purposeLabel,
+  reconfigureChanges,
+  reconfigureModelOptions,
+  reconfigurePinsFor,
   remainingBudgetLabel,
   sourceLabel,
   suggestPurposesForAdd,
@@ -203,6 +208,7 @@ export default function ProvidersView({ onUnpair, active }: ProvidersViewProps) 
         <PurposeBundleCard
           disabled={sessionLost}
           onAddedMany={appendProviders}
+          onUpdated={replaceProvider}
           onSessionLost={handleSessionLost}
           providers={providers ?? []}
         />
@@ -525,21 +531,38 @@ function ProviderRow({ provider, onUpdated, onRemoved, onSessionLost }: Provider
 interface PurposeBundleCardProps {
   disabled: boolean;
   onAddedMany: (created: ProviderSummary[]) => void;
+  /** Reconfigure: a profile whose model assignment was saved. */
+  onUpdated: (next: ProviderSummary) => void;
   onSessionLost: () => void;
   /** All existing provider profiles — drives the pre-ticked purpose defaults. */
   providers: ProviderSummary[];
 }
 
 /**
- * Add one OpenAI-compatible endpoint + key and get one provider profile PER
+ * Provider setup card — two modes over one endpoint/key idea (M13 + M25).
+ *
+ * **Add**: one OpenAI-compatible endpoint + key -> one provider profile PER
  * purpose (General | Cheap | Deep | Coding | Vision | Research). Step 1
  * discovers the endpoint's models (one upstream /models call, nothing
  * persisted); step 2 lets the user pin which models each purpose profile
  * carries — the FIRST pinned model is that purpose's default when a persona
  * has no override. The single key is stored by the core into each profile's
  * own keychain item.
+ *
+ * **Reconfigure** (M25): the same two steps for profiles that ALREADY exist —
+ * rediscover the endpoint's models through the key the keychain holds (no key
+ * is re-typed) and reassign which models each purpose profile carries, written
+ * back with `PUT /v1/providers/:id`. Nothing is created or deleted here.
  */
-function PurposeBundleCard({ disabled, onAddedMany, onSessionLost, providers }: PurposeBundleCardProps) {
+function PurposeBundleCard({
+  disabled,
+  onAddedMany,
+  onUpdated,
+  onSessionLost,
+  providers,
+}: PurposeBundleCardProps) {
+  /** 'add' = create profiles for a new endpoint; 'reconfigure' = reassign models on existing ones. */
+  const [mode, setMode] = useState<'add' | 'reconfigure'>('add');
   const [endpoint, setEndpoint] = useState('');
   const [key, setKey] = useState('');
   const [selected, setSelected] = useState<ReadonlySet<ProviderPurpose>>(new Set());
@@ -734,16 +757,46 @@ function PurposeBundleCard({ disabled, onAddedMany, onSessionLost, providers }: 
   const formDisabled = busy || disabled;
 
   return (
-    <section className="card bundle-card" id="purpose-bundle-card" aria-label="Add purpose providers">
-      <h2 className="card-title">Add purpose providers</h2>
-      <p className="card-copy">
-        One endpoint + one key creates a provider profile per purpose — General, Cheap, Deep,
-        Coding, Vision and Research. Discover the endpoint&rsquo;s models, then choose which model
-        each purpose uses; routing prefers the matching purpose profile automatically. The key is
-        stored once per profile in your OS keychain and never in Partner.
-      </p>
+    <section className="card bundle-card" id="purpose-bundle-card" aria-label="Provider setup">
+      <h2 className="card-title">Provider setup</h2>
+      <div className="bundle-mode" role="group" aria-label="Provider setup mode">
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          aria-pressed={mode === 'add'}
+          onClick={() => setMode('add')}
+          disabled={disabled}
+        >
+          Add new
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          aria-pressed={mode === 'reconfigure'}
+          onClick={() => setMode('reconfigure')}
+          disabled={disabled}
+        >
+          Reconfigure existing
+        </button>
+      </div>
 
-      <form className="form-stack" onSubmit={(event) => void (models === null ? handleDiscover(event) : handleSubmit(event))} aria-busy={busy}>
+      {mode === 'reconfigure' ? (
+        <ReconfigurePane
+          providers={providers}
+          disabled={disabled}
+          onUpdated={onUpdated}
+          onSessionLost={onSessionLost}
+        />
+      ) : (
+        <>
+          <p className="card-copy">
+            One endpoint + one key creates a provider profile per purpose — General, Cheap, Deep,
+            Coding, Vision and Research. Discover the endpoint&rsquo;s models, then choose which
+            model each purpose uses; routing prefers the matching purpose profile automatically.
+            The key is stored once per profile in your OS keychain and never in Partner.
+          </p>
+
+          <form className="form-stack" onSubmit={(event) => void (models === null ? handleDiscover(event) : handleSubmit(event))} aria-busy={busy}>
         {models === null ? (
           <>
             <div className="form-field">
@@ -924,8 +977,316 @@ function PurposeBundleCard({ disabled, onAddedMany, onSessionLost, providers }: 
             <p className="success-note">{note}</p>
           ) : null}
         </div>
-      </form>
+          </form>
+        </>
+      )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// M25 — reconfigure existing providers
+
+interface ReconfigurePaneProps {
+  providers: ProviderSummary[];
+  disabled: boolean;
+  onUpdated: (next: ProviderSummary) => void;
+  onSessionLost: () => void;
+}
+
+/**
+ * Rediscover an endpoint's models through the key its profiles already hold,
+ * then reassign them across the existing purpose profiles. Two steps, mirroring
+ * the add flow — but no key field, no creation and no deletion: this only edits
+ * the model lists (`PUT /v1/providers/:id`). A `vision`-purpose profile keeps
+ * its pinned models as its M24 image-capability declaration.
+ */
+function ReconfigurePane({ providers, disabled, onUpdated, onSessionLost }: ReconfigurePaneProps) {
+  const groups = endpointGroups(providers);
+  const [endpoint, setEndpoint] = useState('');
+  /** Models the endpoint reported on this pass (null = step 1 not run yet). */
+  const [models, setModels] = useState<string[] | null>(null);
+  /** provider id -> pinned models (kept in the option order). */
+  const [pins, setPins] = useState<Record<string, string[]>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  // Keep a valid endpoint selected as providers come and go (a group vanishes
+  // when its last profile is deleted; a new one may be added elsewhere).
+  useEffect(() => {
+    if (groups.length === 0) {
+      if (endpoint !== '') setEndpoint('');
+      return;
+    }
+    if (!groups.some((group) => group.endpoint === endpoint)) {
+      setEndpoint(groups[0]?.endpoint ?? '');
+      setModels(null);
+      setPins({});
+      setNote(null);
+      setError(null);
+    }
+    // Intended: `providers` decides the valid set; a manual pick wins.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providers]);
+
+  if (groups.length === 0) {
+    return (
+      <p className="card-copy">
+        No providers to reconfigure yet. Add an OpenAI-compatible endpoint in Add new, then come
+        back here to rediscover its models and reassign them.
+      </p>
+    );
+  }
+
+  const group = groups.find((g) => g.endpoint === endpoint) ?? (groups[0] as (typeof groups)[number]);
+  const options =
+    models === null ? [] : reconfigureModelOptions(models, group.providers);
+  const formDisabled = busy || disabled;
+
+  /**
+   * Probe the endpoint through the profiles in this group, healthiest first,
+   * until one answers. A group can hold a profile whose key was never set or
+   * was removed, and any sibling's keychain key reaches the same endpoint — so
+   * one bad sibling must not block reconfiguring the rest.
+   */
+  const rediscover = async (): Promise<string[] | null> => {
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return null;
+    }
+    const ordered = [...group.providers].sort(
+      (a, b) => Number(b.health.ok) - Number(a.health.ok),
+    );
+    let lastError: unknown = null;
+    for (const provider of ordered) {
+      try {
+        return await listProviderModels(token, provider.id);
+      } catch (cause) {
+        if (isSessionLost(cause)) {
+          onSessionLost();
+          return null;
+        }
+        lastError = cause;
+      }
+    }
+    throw lastError ?? new Error('Could not reach that endpoint.');
+  };
+
+  const handleDiscover = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (formDisabled) return;
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const discovered = await rediscover();
+      if (discovered === null) return; // session lost — the parent unpairs
+      const nextOptions = reconfigureModelOptions(discovered, group.providers);
+      setModels(discovered);
+      setPins(
+        Object.fromEntries(
+          group.providers.map((provider) => [
+            provider.id,
+            reconfigurePinsFor(provider, nextOptions),
+          ]),
+        ),
+      );
+      setNote(
+        discovered.length > 0
+          ? `Found ${discovered.length} model${discovered.length === 1 ? '' : 's'} — reassign them below.`
+          : 'The endpoint reported no models. You can still adjust the existing assignments.',
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not reach that endpoint.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleModel = (providerId: string, model: string): void => {
+    setPins((prev) => {
+      const current = prev[providerId] ?? [];
+      const has = current.includes(model);
+      const chosen = new Set(has ? current.filter((m) => m !== model) : [...current, model]);
+      // Keep the option order — the first pinned model is the default.
+      return { ...prev, [providerId]: options.filter((m) => chosen.has(m)) };
+    });
+  };
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (formDisabled) return;
+    const changes = reconfigureChanges(group.providers, pins);
+    if (changes.length === 0) {
+      setError(null);
+      setNote('No changes to save.');
+      return;
+    }
+    // A profile with no models is not a reconfiguration — it is a broken
+    // profile, and the add flow refuses to create one for the same reason.
+    const emptied = changes.filter((change) => change.defaultModels.length === 0);
+    if (emptied.length > 0) {
+      const names = group.providers
+        .filter((provider) => emptied.some((change) => change.id === provider.id))
+        .map((provider) => purposeLabel(provider.purpose))
+        .join(', ');
+      setNote(null);
+      setError(
+        `Pick at least one model for ${names}, or untick nothing there to leave it as it is.`,
+      );
+      return;
+    }
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      for (const change of changes) {
+        const { id, ...patch } = change;
+        onUpdated(await updateProvider(token, id, patch));
+      }
+      setNote(`Updated ${changes.length} provider${changes.length === 1 ? '' : 's'}.`);
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : 'Could not save the reassignment.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p className="card-copy">
+        Rediscover an endpoint&rsquo;s models through the key already in your OS keychain, then
+        reassign which models each existing purpose profile carries. Nothing is re-entered,
+        created or deleted here.
+      </p>
+      <form
+        className="form-stack"
+        onSubmit={(event) => void (models === null ? handleDiscover(event) : handleSave(event))}
+        aria-busy={busy}
+      >
+        {models === null ? (
+          <>
+            <div className="form-field">
+              <label className="label" htmlFor="reconfigure-endpoint">
+                Endpoint
+              </label>
+              <select
+                id="reconfigure-endpoint"
+                className="field"
+                value={group.endpoint}
+                disabled={formDisabled}
+                onChange={(event) => {
+                  setEndpoint(event.target.value);
+                  setModels(null);
+                  setPins({});
+                  setError(null);
+                  setNote(null);
+                }}
+              >
+                {groups.map((candidate) => (
+                  <option key={candidate.endpoint} value={candidate.endpoint}>
+                    {candidate.host} — {candidate.providers.length}{' '}
+                    {candidate.providers.length === 1 ? 'provider' : 'providers'}
+                  </option>
+                ))}
+              </select>
+              <p className="field-hint">
+                Uses the key already stored in your OS keychain — nothing to re-enter.
+              </p>
+            </div>
+            <div className="form-actions">
+              <button type="submit" className="btn btn-primary" disabled={formDisabled}>
+                {busy ? 'Rediscovering…' : 'Rediscover models'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="bundle-assign" role="group" aria-label="Reassign models to purposes">
+              <p className="form-hint bundle-assign-heading">
+                Tick the models each purpose profile should carry. The first ticked model is that
+                purpose&rsquo;s default when a persona has no override. A Vision profile&rsquo;s
+                ticks are also its image-capability declaration (M24).
+              </p>
+              {group.providers.map((provider) => {
+                const pinned = pins[provider.id] ?? [];
+                const declared = declaredVisionModels(provider);
+                const declaresByPurpose = provider.purpose === 'vision';
+                return (
+                  <div key={provider.id} className="bundle-assign-row">
+                    <span className="bundle-assign-purpose">
+                      {purposeLabel(provider.purpose)}
+                    </span>
+                    <div className="bundle-assign-models">
+                      {options.map((model) => {
+                        const on = pinned.includes(model);
+                        const sees = declaresByPurpose || isImageCapableModel(model, declared);
+                        return (
+                          <label
+                            key={model}
+                            className={
+                              on ? 'chip bundle-model-chip is-on' : 'chip bundle-model-chip'
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={formDisabled}
+                              onChange={() => toggleModel(provider.id, model)}
+                              aria-label={`${model}${sees ? ' (vision)' : ''} for ${purposeLabel(provider.purpose)}`}
+                            />
+                            {model}
+                            {sees ? ' · vision' : ''}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="form-actions bundle-assign-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setModels(null);
+                  setPins({});
+                  setNote(null);
+                  setError(null);
+                }}
+                disabled={formDisabled}
+              >
+                ‹ Endpoint
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={formDisabled}>
+                {busy ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </>
+        )}
+        <div className="form-feedback" aria-live="polite">
+          {error ? (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          ) : note ? (
+            <p className="success-note">{note}</p>
+          ) : null}
+        </div>
+      </form>
+    </>
   );
 }
 

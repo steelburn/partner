@@ -6978,6 +6978,24 @@ select {
 
 /* --- M13 purpose-provider bundle card -------------------------------------- */
 
+/* M25: Add new vs Reconfigure existing. The active mode reads as the raised
+ * selection (surface + elevation-sm), the same contract as the purpose filter;
+ * tokens only, no new colour or shadow recipe. */
+.bundle-mode {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.bundle-mode .btn[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  box-shadow: var(--elevation-sm);
+}
+
 .bundle-purposes {
   border: 0;
   padding: 0;

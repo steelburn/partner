@@ -76,9 +76,13 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 
 ## Status (2026-09-16)
 
-M0–M24 implemented (PLAN.md §15): schema **v20**; current root
-suite **1333 passed** (5 env-gated skips) · web **742 passed** · typechecks 0 ·
-web build green. **M24 fixes attached photos never reaching the model** — the
+M0–M25 implemented (PLAN.md §15): schema **v20**; current root
+suite **1328 passed** (5 env-gated skips) · web **758 passed** · typechecks 0 ·
+web build green. **M25 lets you reconfigure existing providers**: the setup card
+gains a *Reconfigure existing* mode that rediscovers an endpoint's models
+through the key your OS keychain already holds and reassigns which models each
+purpose profile carries — no key re-entry, no delete-and-recreate. **M24 fixes
+attached photos never reaching the model** — the
 partner replied "I didn't receive an image" for a model that reads it fine when
 tested directly against LiteLLM. Capability is now *declared* per provider
 (`providers.vision_models`, click a model chip on the provider card, or any model
@@ -90,10 +94,12 @@ walk against a real gateway is still open (§15). An **M11 F12 follow-up** rende
 inline beside its sandboxed result in chat, the assets read view and the new
 note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
 fact detection a user-level setting independent of each persona's private-memory
-tick. Latest release: **v0.1.13** (inline HTML code-block previews in chat,
-assets and notes; global auto-remember independent of the per-persona toggle;
-the turn-model fallback so extraction never silently no-ops). It builds on
-v0.1.12 (per-provider search keys, global
+tick. Latest release: **v0.1.14** (reconfigure existing providers — rediscover
+an endpoint's models through the stored keychain key and reassign them per
+purpose, no delete-and-recreate). It builds on v0.1.13 (inline HTML code-block
+previews in chat, assets and notes; global auto-remember independent of the
+per-persona toggle; the turn-model fallback so extraction never silently
+no-ops), which builds on v0.1.12 (per-provider search keys, global
 auto-remember, and scorecard ratings — on top of the silent-bind fix, hosted
 sign-up by invite, tap-outside pane dismissal, the sidebar minimize toggle, the
 mobile phone-tier UI, persona picker, top-bar chrome, note projects, chat
@@ -700,6 +706,36 @@ provenance chip. Suites after the pass: core **893 passed** (5 env-gated
 skips) · web **541 passed** · typechecks 0 · web build green · `ux_audit`
 green; later follow-ups (turn-target fallback, independent global consent)
 kept the suites green. Spec: `PLAN-M19.md`.
+
+### M25 — reconfigure existing providers (2026-09-16, implemented)
+
+The setup card could only ADD purpose providers. Once a profile existed, the
+only way to change which models its purpose carried was to delete it and build
+it again — which meant pasting the API key another time and discarding the
+keychain item. The card now has two modes: **Add new** (the M13 bundle,
+unchanged) and **Reconfigure existing**.
+
+Reconfigure picks one of the endpoints already in the list, rediscovers its
+current models through the key the keychain **already holds**
+(`GET /v1/models?provider=<id>` — there is no key field, and the probe tries the
+endpoint's profiles healthiest-first, so one profile whose key was never set
+cannot block the rest of a group), then lets you tick which models each existing
+purpose profile should carry. Saving writes only the profiles whose ordered list
+changed, through the M24 `PUT /v1/providers/:id` route — and a `vision`-purpose
+profile's new ticks become its image-capability declaration, so reassigning a
+vision provider needs no second step. A profile emptied of all models is refused
+before any request (the add flow refuses that shape too). Nothing is created,
+deleted or re-keyed here.
+
+The pure decisions live in `web/src/lib/providers.ts`
+(`endpointGroups`/`reconfigureModelOptions`/`reconfigurePinsFor`/
+`reconfigureChanges`) and the stored-key read is `listProviderModels` in
+`web/src/lib/api.ts`; **no core route or schema change**. Suites after the
+change: shared **90** · root **1328 passed** (5 env-gated skips) · web **758**
+(742 + 16) · typechecks 0 · web build green · `ux_audit` PASSED (17 APCA pairs,
+light + dark). The whole-file `ux_audit` run is still outstanding (payload
+> 200 KB); the gate ran on a composed, brace-balanced payload of the new block
+plus every interactive base/state it depends on.
 
 ### M24 — attached photos actually reach the model (2026-09-16, fix)
 

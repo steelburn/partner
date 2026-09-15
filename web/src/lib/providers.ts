@@ -128,6 +128,111 @@ export function remainingBudgetLabel(
   return `${money(left)} of ${money(budgetCents)} left this window`;
 }
 
+/**
+ * M25 reconfiguration — group the profiles that point at ONE endpoint, so the
+ * reconfigure pane can rediscover that endpoint's models once (through the key
+ * the keychain already holds) and reassign them across the purpose profiles
+ * built from it.
+ */
+export interface EndpointGroup {
+  endpoint: string;
+  /** Host label for the group (e.g. `api.ne1.dev`). */
+  host: string;
+  /** Profiles on this endpoint, in the order they were listed (creation order). */
+  providers: ProviderSummary[];
+}
+
+/** Host (host:port) of an endpoint for labels. Falls back to the raw string. */
+export function endpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return endpoint;
+  }
+}
+
+/** Distinct endpoints across the given profiles, first-seen order preserved. */
+export function endpointGroups(providers: ProviderSummary[]): EndpointGroup[] {
+  const byEndpoint = new Map<string, ProviderSummary[]>();
+  for (const provider of providers) {
+    const list = byEndpoint.get(provider.endpoint);
+    if (list) list.push(provider);
+    else byEndpoint.set(provider.endpoint, [provider]);
+  }
+  return [...byEndpoint.entries()].map(([endpoint, group]) => ({
+    endpoint,
+    host: endpointHost(endpoint),
+    providers: group,
+  }));
+}
+
+/**
+ * The model options to offer when reconfiguring an endpoint: every model the
+ * endpoint currently reports, plus any model a profile already pins but the
+ * endpoint no longer lists — so reconfiguring never silently drops a model id
+ * that was working. Order: discovered first, then extras in profile order.
+ */
+export function reconfigureModelOptions(
+  discovered: string[],
+  providers: ProviderSummary[],
+): string[] {
+  const seen = new Set<string>();
+  const options: string[] = [];
+  const push = (model: string): void => {
+    const trimmed = model.trim();
+    if (trimmed === '' || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    options.push(trimmed);
+  };
+  for (const model of discovered) push(model);
+  for (const provider of providers) for (const model of provider.defaultModels) push(model);
+  return options;
+}
+
+/** Initial ticks for one profile: its current models, in the options' order. */
+export function reconfigurePinsFor(
+  provider: ProviderSummary,
+  options: string[],
+): string[] {
+  const current = new Set(provider.defaultModels);
+  return options.filter((model) => current.has(model));
+}
+
+/** One profile's model assignment to write back during reconfiguration. */
+export interface ReconfigureChange {
+  id: string;
+  defaultModels: string[];
+  /** Present for a `vision` profile: its pinned models also ARE its M24 declaration. */
+  visionModels?: string[];
+}
+
+/**
+ * Diff the reconfigure pane's per-profile assignments against current state and
+ * return only the PUTs that actually change something. A profile left untouched
+ * (or re-picked to the same ordered list) produces no request. A `vision`
+ * purpose profile always carries its pinned list as its declared image-capable
+ * models (M24 semantics: pinning a model to Vision IS the vision declaration);
+ * every other profile keeps its existing declarations.
+ */
+export function reconfigureChanges(
+  providers: ProviderSummary[],
+  pins: Record<string, string[]>,
+): ReconfigureChange[] {
+  const changes: ReconfigureChange[] = [];
+  for (const provider of providers) {
+    const next = pins[provider.id];
+    if (next === undefined) continue;
+    const same =
+      next.length === provider.defaultModels.length &&
+      next.every((model, index) => model === provider.defaultModels[index]);
+    if (same) continue;
+    const change: ReconfigureChange = { id: provider.id, defaultModels: next };
+    if (provider.purpose === 'vision') change.visionModels = next;
+    changes.push(change);
+  }
+  return changes;
+}
+
 export type HealthTone = 'ok' | 'error' | 'unknown';
 
 export interface HealthLine {

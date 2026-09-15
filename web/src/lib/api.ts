@@ -25,6 +25,7 @@ const CHAT_PATH = '/v1/chat';
 const SESSION_PATH = '/v1/session';
 const DEMO_PAIR_CODE_PATH = '/v1/dev/pair-code';
 const PROVIDERS_PATH = '/v1/providers';
+const MODELS_PATH = '/v1/models';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -805,6 +806,32 @@ export async function discoverProviderModels(
     body: JSON.stringify(input),
   });
   return expectJson<{ endpoint: string; models: string[] }>(response);
+}
+
+/**
+ * M25 — rediscover an EXISTING provider's models through the key the keychain
+ * already holds (`GET /v1/models?provider=<id>`). This is what lets the
+ * reconfigure flow reassign models without asking the user to paste a key a
+ * second time. Read-only: nothing is persisted and no key material crosses
+ * the loopback.
+ */
+export async function listProviderModels(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<string[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${MODELS_PATH}?provider=${encodeURIComponent(id)}`,
+    {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    },
+  );
+  const parsed = await expectJson<{ models?: unknown }>(response);
+  return Array.isArray(parsed.models)
+    ? parsed.models.filter((model): model is string => typeof model === 'string')
+    : [];
 }
 
 /** POST /v1/providers/:id/key {key} -> 204. The key is never echoed back. */
