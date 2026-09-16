@@ -756,7 +756,10 @@ apps/partner/
       theme stream; Notes promoted (tab order, ＋Note/Ctrl+K, Notes lane);
       A/B persona studio; sandboxed HTML/CSS preview (F12 follow-up: an
       ```html code block in chat, the assets read view or the note-editor
-      preview renders inline beside its source); schema v12. *Exit:
+      preview renders in ONE tabbed viewer — Code | Preview, the app's
+      segmented pill — so source and sandboxed render are one flip apart
+      and the message never doubles in height; the bubble keeps its width
+      on a flip, and the iframe mounts once); schema v12. *Exit:
       core 683 · web 440 · extension 57 · typechecks 0 · NSIS packaged app
       boots env-free (demo, schema v12); live + packaged UI sweeps green.*
 - [x] **M12 — UI readability & polish pass (detailed spec: `PLAN-M12.md`).**

@@ -309,20 +309,31 @@ describe('PartnerMarkdown asset containers (F10 — body readable inline)', () =
 });
 
 describe('PartnerMarkdown inline HTML code preview (F12 follow-up)', () => {
-  it('renders both the code and a sandboxed result for an html fence', () => {
+  it('tabs the code and the sandboxed result into one viewer (M11 follow-up)', () => {
     const html = render({ text: 'Look:\n\n```html\n<h1>Hello</h1>\n```' });
-    // The source stays visible...
-    expect(html).toContain('&lt;h1&gt;Hello&lt;/h1&gt;');
     expect(html).toContain('md-code-block');
     expect(html).toContain('md-code-lang');
-    // ...and the rendered document rides an inline sandboxed iframe.
+    // The switch is the app's segmented pill, named for this block's language.
+    expect(html).toContain('class="seg-tabs md-code-tabs" role="group" aria-label="html block view"');
+    expect(html).toContain('aria-pressed="true">Code</button>');
+    expect(html).toContain('aria-pressed="false">Preview</button>');
+    // The source panel opens first and is the one in the flow...
+    expect(html).toContain('class="md-code-panel md-code-source">');
+    expect(html).toContain('&lt;h1&gt;Hello&lt;/h1&gt;');
+    // ...while the preview panel is mounted but hidden, so flipping tabs
+    // never rebuilds the sandboxed iframe.
+    expect(html).toContain('class="md-code-panel md-code-preview" hidden');
     expect(html).toContain('md-code-preview-frame');
     expect(html).toContain('srcDoc');
     expect(html).toContain('sandbox');
+    // The sandbox note and its script opt-in share the preview footer.
+    expect(html).toContain('md-code-preview-foot');
+    expect(html).toContain('md-code-block-toggle');
   });
 
   it('previews an untagged fence whose text reads as HTML', () => {
     const html = render({ text: '```\n<div class="card">Hi</div>\n```' });
+    expect(html).toContain('aria-label="html block view"');
     expect(html).toContain('md-code-preview-frame');
     expect(html).toContain('&lt;div class=&quot;card&quot;&gt;Hi&lt;/div&gt;');
   });

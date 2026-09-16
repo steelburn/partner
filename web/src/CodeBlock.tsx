@@ -4,11 +4,15 @@
  *
  * A reader asked to compare a code block with what it renders without leaving
  * the message, so a ```html block in any markdown surface (chat transcript,
- * saved-asset read view, note preview) renders the code AND a hardened
- * sandboxed iframe of its result side by side by default. The preview reuses
- * `lib/preview` (scripts OFF with a per-block opt-in, no network, never
- * same-origin) — the same policy as the F12 overlay, which stays for
- * attachments and `kind=code` containers.
+ * saved-asset read view, note preview) renders a hardened sandboxed iframe of
+ * its result. Follow-up: source and render share ONE tabbed viewer
+ * (`Code` | `Preview`) instead of stacking, so the block does not double in
+ * height and the reader chooses what to look at. The pill is the app's
+ * segmented control (`.seg-tabs`, the same one on Notes/Plans/Skills), and
+ * both panels stay mounted — flipping tabs never rebuilds the sandboxed
+ * iframe. The preview reuses `lib/preview` (scripts OFF with a per-block
+ * opt-in, no network, never same-origin) — the same policy as the F12 overlay,
+ * which stays for attachments and `kind=code` containers.
  *
  * Every non-HTML block renders exactly as before: a plain `<pre class="md-pre">`.
  */
@@ -21,6 +25,9 @@ export interface CodeBlockProps extends React.ComponentPropsWithoutRef<'pre'> {
   /** The hast `<pre>` element react-markdown hands to custom components. */
   node?: Element;
 }
+
+/** Which panel of the tabbed viewer the reader is looking at. */
+type CodeTab = 'code' | 'preview';
 
 /** Concatenated text of a hast subtree (code bodies are plain text nodes). */
 function textOf(node: RootContent): string {
@@ -56,7 +63,7 @@ export function CodeBlock({ node, children }: CodeBlockProps) {
   const { lang, code } = useMemo(() => codeFenceInfo(node), [node]);
   const preview = useMemo(() => codeBlockPreview(lang, code), [lang, code]);
   const [scripts, setScripts] = useState(false);
-  const [show, setShow] = useState(true);
+  const [tab, setTab] = useState<CodeTab>('code');
   const built = useMemo(
     () => (preview === null ? null : buildPreviewDoc(preview.source, { allowScripts: scripts })),
     [preview, scripts],
@@ -72,7 +79,37 @@ export function CodeBlock({ node, children }: CodeBlockProps) {
     <div className="md-code-block">
       <div className="md-code-block-head">
         <span className="md-code-lang">{label}</span>
-        <span className="md-code-block-actions">
+        <div className="seg-tabs md-code-tabs" role="group" aria-label={`${label} block view`}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            aria-pressed={tab === 'code'}
+            onClick={() => setTab('code')}
+          >
+            Code
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            aria-pressed={tab === 'preview'}
+            onClick={() => setTab('preview')}
+          >
+            Preview
+          </button>
+        </div>
+      </div>
+      <div className="md-code-panel md-code-source" hidden={tab !== 'code'}>
+        <pre className="md-pre">{children}</pre>
+      </div>
+      <div className="md-code-panel md-code-preview" hidden={tab !== 'preview'}>
+        <iframe
+          className="md-code-preview-frame"
+          title={`Sandboxed preview of the ${label} block`}
+          sandbox={scripts ? 'allow-scripts' : ''}
+          srcDoc={built.doc}
+        />
+        <div className="md-code-preview-foot">
+          <p className="md-code-preview-note">{blockedSummary(built.report)}</p>
           <button
             type="button"
             className="btn-link md-code-block-toggle"
@@ -81,28 +118,8 @@ export function CodeBlock({ node, children }: CodeBlockProps) {
           >
             {scripts ? 'Scripts on' : 'Scripts off'}
           </button>
-          <button
-            type="button"
-            className="btn-link md-code-block-toggle"
-            aria-pressed={show}
-            onClick={() => setShow((value) => !value)}
-          >
-            {show ? 'Hide preview' : 'Show preview'}
-          </button>
-        </span>
-      </div>
-      <pre className="md-pre">{children}</pre>
-      {show ? (
-        <div className="md-code-preview">
-          <iframe
-            className="md-code-preview-frame"
-            title={`Sandboxed preview of the ${label} block`}
-            sandbox={scripts ? 'allow-scripts' : ''}
-            srcDoc={built.doc}
-          />
-          <p className="md-code-preview-note">{blockedSummary(built.report)}</p>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }

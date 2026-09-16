@@ -4905,15 +4905,15 @@ select {
   font-size: var(--fs-sm);
 }
 
-/* An HTML fenced code block: source + inline sandboxed render, so the reader
- * compares code and result without leaving the message. The iframe canvas is
- * the user's document (--surface-doc, unthemed by design); the chrome is. */
+/* An HTML fenced code block: the source and its inline sandboxed render share
+ * ONE tabbed viewer (Code | Preview), so the reader compares code and result
+ * without leaving the message and the block does not double in height. The
+ * switch reuses the app's segmented pill (.seg-tabs, as on Notes/Plans); both
+ * panels stay mounted under `hidden`, so a tab flip never rebuilds the
+ * sandboxed iframe. The iframe canvas is the user's document (--surface-doc,
+ * unthemed by design); the chrome is. */
 .md-code-block {
   margin: var(--space-2) 0;
-}
-
-.md-code-block > .md-pre {
-  margin: 0;
 }
 
 .md-code-block-head {
@@ -4931,10 +4931,31 @@ select {
   color: var(--text-muted);
 }
 
-.md-code-block-actions {
-  display: flex;
-  gap: var(--space-2);
+.md-code-tabs {
   margin-left: auto;
+  align-self: center;
+}
+
+/* The inactive panel leaves the flow. The SOURCE panel is the one exception:
+ * it stays as a zero-height, invisible ghost. A chat bubble hugs its content
+ * (`align-self: flex-start` + `max-width`), so hiding the source would let the
+ * iframe's 300px intrinsic width set the bubble — flipping to Preview would
+ * resize the message and leave the preview in a 300px column. The ghost keeps
+ * the block's intrinsic width identical on both tabs while taking no height
+ * and no paint (and `visibility: hidden` also keeps it out of the a11y tree). */
+.md-code-panel[hidden] {
+  display: none;
+}
+
+.md-code-source[hidden] {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.md-code-panel > .md-pre {
+  margin: 0;
 }
 
 .md-code-block-toggle {
@@ -4946,12 +4967,14 @@ select {
   color: var(--accent-hover);
 }
 
+/* The well is a document viewport: separation comes from the white canvas +
+ * the surface-2 chrome strip below it, raised with the named sm elevation —
+ * no hairline, the same contract as the F12 overlay's `.preview-frame`. */
 .md-code-preview {
-  margin-top: var(--space-2);
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--surface-doc);
+  box-shadow: var(--elevation-sm);
 }
 
 .md-code-preview-frame {
@@ -4962,11 +4985,19 @@ select {
   background: var(--surface-doc);
 }
 
-.md-code-preview-note {
-  margin: 0;
+/* Sandbox note and its per-block script opt-in share one footer: the policy
+ * line and the override that relaxes it sit together. */
+.md-code-preview-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  border-top: 1px solid var(--border);
   background: var(--surface-2);
+}
+
+.md-code-preview-note {
+  flex: 1;
+  margin: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }

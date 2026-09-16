@@ -90,9 +90,10 @@ on a `vision` profile) instead of guessed from the model id, images are encoded 
 the inline budget (3 MiB, published as `maxInlineImageBytes`) rather than the
 upload cap (8 MiB) so a stored photo is also a sent one, and a turn can carry
 several photos instead of one. M24's locally-green exit is recorded; the live
-walk against a real gateway is still open (§15). An **M11 F12 follow-up** renders a fenced ```html code block
-inline beside its sandboxed result in chat, the assets read view and the new
-note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
+walk against a real gateway is still open (§15). An **M11 F12 follow-up** shows a fenced ```html code block
+as a tabbed Code/Preview viewer (source and sandboxed result one flip apart,
+so the message never doubles in height) in chat, the assets read view and the
+new note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
 fact detection a user-level setting independent of each persona's private-memory
 tick. Latest release: **v0.1.14** (reconfigure existing providers — rediscover
 an endpoint's models through the stored keychain key and reassign them per
