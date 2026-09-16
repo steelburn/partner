@@ -77,7 +77,7 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 ## Status (2026-09-16)
 
 M0–M25 implemented (PLAN.md §15): schema **v20**; current root
-suite **1328 passed** (5 env-gated skips) · web **758 passed** · typechecks 0 ·
+suite **1334 passed** (5 env-gated skips) · web **760 passed** · typechecks 0 ·
 web build green. **M25 lets you reconfigure existing providers**: the setup card
 gains a *Reconfigure existing* mode that rediscovers an endpoint's models
 through the key your OS keychain already holds and reassigns which models each
@@ -90,16 +90,21 @@ on a `vision` profile) instead of guessed from the model id, images are encoded 
 the inline budget (3 MiB, published as `maxInlineImageBytes`) rather than the
 upload cap (8 MiB) so a stored photo is also a sent one, and a turn can carry
 several photos instead of one. M24's locally-green exit is recorded; the live
-walk against a real gateway is still open (§15). An **M11 F12 follow-up** shows a fenced ```html code block
-as a tabbed Code/Preview viewer (source and sandboxed result one flip apart,
-so the message never doubles in height) in chat, the assets read view and the
-new note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
+walk against a real gateway is still open (§15). An **M11 F12 follow-up**
+shows a fenced ```html code block as a tabbed Code/Preview viewer (source and
+sandboxed result one flip apart, so the message never doubles in height, and
+the preview pane is sized like a real screen) in chat, the assets read view and
+the new note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
 fact detection a user-level setting independent of each persona's private-memory
 tick. An **M19 follow-up** reviews existing memory and pending suggestions in
 the extraction payload (a bounded `ALREADY KNOWN` listing) so an already-known
-fact is not re-proposed — and never files the same suggestion twice. Latest release: **v0.1.14** (reconfigure existing providers — rediscover
-an endpoint's models through the stored keychain key and reassign them per
-purpose, no delete-and-recreate). It builds on v0.1.13 (inline HTML code-block
+fact is not re-proposed — and never files the same suggestion twice. Latest
+release: **v0.1.15** (memory that reviews what is already known and pending
+before proposing, so an already-known fact is never re-proposed in fresh
+wording; a fenced ```html block as a tabbed Code/Preview viewer whose preview
+pane is sized like a real screen). It builds on v0.1.14 (reconfigure existing
+providers — rediscover an endpoint's models through the stored keychain key
+and reassign them per purpose, no delete-and-recreate), which builds on v0.1.13 (inline HTML code-block
 previews in chat, assets and notes; global auto-remember independent of the
 per-persona toggle; the turn-model fallback so extraction never silently
 no-ops), which builds on v0.1.12 (per-provider search keys, global
