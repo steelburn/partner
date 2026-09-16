@@ -17,6 +17,11 @@
  * outcome notes are persisted as system messages, so the NEXT user turn's
  * history carries them (honest, minimal, stream-safe). MCP + native
  * function_calls + search backends are later F2 slices.
+ *
+ * M26: an EXTERNAL provider may declare the client-class capability it needs
+ * (`capability`), and the pass then refuses it by class before execute-vs-queue,
+ * exactly as it does for broker tools. Search and MCP declare none and are
+ * unchanged.
  */
 import type {
   Persona,
@@ -29,6 +34,7 @@ import { authorizeTool } from '../playbooks/gate.js';
 import { summarizeToolResult } from '../playbooks/loop.js';
 import { capabilityForTool } from '../broker/broker.js';
 import { capabilityDenial } from '../http/capabilities.js';
+import type { Capability } from '../http/capabilities.js';
 import type { AuditService } from '../services/redaction.js';
 
 /** The broker surface the pass needs (structural — easy to fake in tests). */
@@ -73,6 +79,17 @@ export interface ChatToolPassDeps {
     exec(toolId: string, args: Record<string, unknown>): Promise<ToolExecResponse> | ToolExecResponse;
     /** Dynamic resolution for ids not in `manifests` (e.g. mcp:<server>/<t>). */
     match?(toolId: string): ToolManifest | undefined;
+    /**
+     * M26: the client-class envelope this provider needs, when it has one.
+     *
+     * Static externals (search) are class-ungated, which was fine while every
+     * one of them was a read. A WRITE-shaped external tool must not inherit that
+     * gap: with this set, the provider's capability is checked BEFORE
+     * execute-vs-queue, so a class that may not ask cannot even queue the work —
+     * and the refusal is the same one broker tools get (`capability.denied` +
+     * "not available to this device").
+     */
+    capability?: Capability;
   }>;
   audit: AuditService;
   /**
@@ -194,6 +211,7 @@ async function handleDirective(
     allow(toolId: string): boolean;
     exec(toolId: string, args: Record<string, unknown>): Promise<ToolExecResponse> | ToolExecResponse;
     match?(toolId: string): ToolManifest | undefined;
+    capability?: Capability;
   }>,
   deps: ChatToolPassDeps,
   at: number,
@@ -221,6 +239,25 @@ async function handleDirective(
   }
 
   const args = directive.args ?? {};
+  //
+  // M26: an external provider that DECLARES a capability is gated here, before
+  // execute-vs-queue — the same place, and for the same reason, as a broker
+  // tool: a class that may not ask must not be able to queue the work either.
+  // Applied only to providers that opt in, so the search and MCP flows are
+  // byte-identical to what they were.
+  if (owner?.capability !== undefined) {
+    const providerDenial = capabilityDenial(deps.clientClass ?? 'desktop', owner.capability);
+    if (providerDenial !== null) {
+      audit.log('persona', 'capability.denied', toolId, {
+        clientClass: providerDenial.clientClass,
+        capability: providerDenial.capability,
+      });
+      appendSystemNote(
+        `The tool "${toolId}" is not available to this device — continue without it.`,
+      );
+      return { toolId, decision: 'refused', reason: 'capability_denied' };
+    }
+  }
   //
   // M20-B S4 — the client-class envelope covers the PERSONA's tool calls too, not
   // only a session's direct API calls. Checked HERE, before execute-vs-queue, so

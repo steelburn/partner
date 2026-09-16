@@ -310,6 +310,14 @@ export interface PendingToolRow {
   conversationId: string | null;
   /** M12 search approvals: persona behind the request (queue tagging). */
   personaId: string | null;
+  /**
+   * M26 (v21): 'tool' (a broker call, the default) or 'skill_install' (a
+   * persona asking to promote a skill draft). The HTTP decide route branches on
+   * this; `broker.decide` REFUSES anything but 'tool'.
+   */
+  kind: string;
+  /** M26: the draft an install ask refers to (kind 'skill_install' only). */
+  draftId: string | null;
 }
 
 export interface PendingToolStore {
@@ -932,6 +940,65 @@ export interface SkillStore {
   list(): SkillRow[];
   /** Apply a whitelisted patch, always stamping updated_at. */
   update(id: string, patch: SkillRowPatch): void;
+  remove(id: string): void;
+}
+
+/** `skill_drafts` row — an INERT authored bundle (M26, schema v21). */
+export interface SkillDraftRow {
+  id: string;
+  name: string;
+  description: string;
+  /** 'draft' | 'installed' (manager-owned). */
+  status: string;
+  /** 'generated'|'template'|'manual'|'chat'|'fork'|'import'. */
+  origin: string;
+  /** Parsed+normalized SkillManifest JSON; NULL while the manifest is invalid. */
+  manifestJson: string | null;
+  /** Exactly what the owner/model wrote (editable verbatim). */
+  manifestText: string;
+  /** The entry.mjs source. */
+  code: string;
+  /** The description the draft was generated from ('' when manual/template). */
+  prompt: string;
+  /** Which model drafted it (NULL for manual/template/fork). */
+  model: string | null;
+  /** JSON SkillDraftValidation — the deterministic result, never a run. */
+  validationJson: string;
+  conversationId: string | null;
+  personaId: string | null;
+  /** Set on promote: the version that shipped (audit trail). */
+  installedVersion: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Whitelisted patch; every write stamps updated_at. */
+export type SkillDraftRowPatch = Partial<
+  Pick<
+    SkillDraftRow,
+    | 'name'
+    | 'description'
+    | 'status'
+    | 'origin'
+    | 'manifestJson'
+    | 'manifestText'
+    | 'code'
+    | 'prompt'
+    | 'model'
+    | 'validationJson'
+    | 'conversationId'
+    | 'personaId'
+    | 'installedVersion'
+  >
+> & { updatedAt: number };
+
+export interface SkillDraftStore {
+  insert(row: SkillDraftRow): void;
+  findById(id: string): SkillDraftRow | undefined;
+  /** Newest first — the Studio's rail order. */
+  list(): SkillDraftRow[];
+  update(id: string, patch: SkillDraftRowPatch): void;
+  /** Hard delete: a draft is not history (the audit row is). */
   remove(id: string): void;
 }
 

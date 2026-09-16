@@ -18,7 +18,7 @@
  * ids/versions only — never skill code, logs, args or results.
  */
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   CatalogSkill,
@@ -68,6 +68,22 @@ export interface SkillManager {
   enable(id: string): SkillSummary;
   /** Uninstall: wipes code dir + rows; throws not_found for unknown ids. */
   remove(id: string): void;
+  /**
+   * M26 D1/D2b: write an ALREADY-VALIDATED bundle into the store and record the
+   * row — the single door from an authored draft to runnable code. `update`
+   * replaces an existing skill in place (same id, new version + hash); anything
+   * else is refused so an install cannot silently clobber another skill.
+   * Validation and the consent diff are the CALLER's job (skills/drafts.ts).
+   */
+  installFromBundle(
+    bundle: { manifest: SkillManifest; code: string },
+    options: { update: boolean; source: 'authored' },
+  ): SkillSummary;
+  /**
+   * M26: read an installed entry's source (the fork/"edit a copy" path). Throws
+   * not_found when the skill or its entry is gone.
+   */
+  readEntrySource(id: string): string;
   /** Recent invocation metadata for a skill (newest first). */
   listInvocations(skillId: string, limit?: number): SkillInvocationMeta[];
 }
@@ -235,7 +251,106 @@ export function createSkillManager(options: SkillManagerOptions): SkillManager {
     return invocations.listBySkill(skillId, capped).map(rowToMeta);
   }
 
-  return { catalog, install, list, get, disable, enable, remove, listInvocations };
+  /**
+   * M26: the ONLY path from authored text to runnable code.
+   *
+   * The manifest.json written here is the manifest that was validated, and the
+   * entry is written as the exact utf8 bytes that get hashed, so the runner's
+   * integrity check (recorded hash vs file on disk) holds by construction.
+   */
+  function installFromBundle(
+    bundle: { manifest: SkillManifest; code: string },
+    opts: { update: boolean; source: 'authored' },
+  ): SkillSummary {
+    const manifest = bundle.manifest;
+    const code = typeof bundle.code === 'string' ? bundle.code : '';
+    if (code.trim() === '') {
+      throw skillError('invalid_input', 'the bundle has no entry source');
+    }
+    const existing = store.findById(manifest.id);
+    if (opts.update && !existing) {
+      throw skillError('not_found', `skill "${manifest.id}" is not installed`);
+    }
+    if (!opts.update && existing) {
+      throw skillError('conflict', `skill "${manifest.id}" is already installed`);
+    }
+
+    const target = join(storeDir, manifest.id);
+    mkdirSync(storeDir, { recursive: true });
+    // Wipe first: a stale file from a previous version must not survive into
+    // the new bundle (and on Windows a lingering handle is retried below).
+    if (existsSync(target)) removeTree(target);
+    mkdirSync(target, { recursive: true });
+    const entryAbs = join(target, manifest.entrypoint);
+    writeFileSync(entryAbs, code, 'utf8');
+    writeFileSync(join(target, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+    const sha256 = createHash('sha256').update(readEntry(entryAbs)).digest('hex');
+    const at = now();
+
+    if (existing) {
+      store.update(manifest.id, {
+        name: manifest.name,
+        description: manifest.description,
+        author: manifest.author,
+        version: manifest.version,
+        entrypoint: manifest.entrypoint,
+        manifestJson: JSON.stringify(manifest),
+        sha256,
+        source: opts.source,
+        status: 'installed',
+        updatedAt: at,
+      });
+      audit.log('web', 'skill.update', manifest.id, {
+        version: manifest.version,
+        from: existing.version,
+        source: opts.source,
+      });
+    } else {
+      store.insert({
+        id: manifest.id,
+        name: manifest.name,
+        description: manifest.description,
+        author: manifest.author,
+        version: manifest.version,
+        entrypoint: manifest.entrypoint,
+        manifestJson: JSON.stringify(manifest),
+        sha256,
+        source: opts.source,
+        status: 'installed',
+        installedAt: at,
+        updatedAt: at,
+      });
+      audit.log('web', 'skill.install', manifest.id, {
+        version: manifest.version,
+        source: opts.source,
+      });
+    }
+    return rowToSummary(store.findById(manifest.id) as SkillRow);
+  }
+
+  function readEntrySource(id: string): string {
+    const row = requireRow(id);
+    const entryAbs = join(storeDir, id, row.entrypoint);
+    try {
+      return readFileSync(entryAbs, 'utf8');
+    } catch {
+      throw skillError('not_found', `skill "${id}" entry is missing from the store`);
+    }
+  }
+
+  return {
+    catalog,
+    install,
+    list,
+    get,
+    disable,
+    enable,
+    remove,
+    listInvocations,
+    installFromBundle,
+    readEntrySource,
+  };
 }
 
 function readEntry(path: string): Buffer {

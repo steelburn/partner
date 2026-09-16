@@ -235,6 +235,15 @@ export interface CoreConfig {
    */
   skillsDir: string;
   /**
+   * M26 cut E: the core-owned temp root a DRAFT dry-run materializes into
+   * (one dir per run, wiped in a finally): env SKILL_RUNS_DIR. Derived exactly
+   * like {@link skillsDir} - LIVE next to this core's SQLite under
+   * `<db dir>/skill-runs`, DEMO (`:memory:` boots) under the OS temp dir - so a
+   * draft run never writes into the installed store and never walks up into
+   * the repo tree. It is scratch space: never scanned for installable skills.
+   */
+  skillRunsDir: string;
+  /**
    * M20-B S1: parent of the per-user tree (`<dataRoot>/users/<userId>/`).
    * Defaults to this DB's directory, so an explicit DB_PATH keeps partitions
    * next to it; env DATA_ROOT overrides.
@@ -617,6 +626,14 @@ export function loadConfig(
       (dbPath === ':memory:'
         ? join(tmpdir(), 'partner-demo-skills')
         : join(dirname(dbPath), 'skills')),
+    // M26 cut E: the same rule for the dry-run scratch root (env
+    // SKILL_RUNS_DIR overrides; packaged shells override it explicitly). One
+    // derivation, so a draft run can never land inside the installed store.
+    skillRunsDir:
+      env.SKILL_RUNS_DIR?.trim() ||
+      (dbPath === ':memory:'
+        ? join(tmpdir(), 'partner-draft-runs')
+        : join(dirname(dbPath), 'skill-runs')),
     // The checked-in local catalog (no remote gallery in M8). Resolved from
     // this source file so tsx/vitest runs work from any working directory.
     // Bundled artifacts (import.meta.url empty) fall back to cwd-relative so

@@ -50,6 +50,9 @@ import type {
   SessionStore,
   SettingsStore,
   SiteScopeStore,
+  SkillDraftRow,
+  SkillDraftRowPatch,
+  SkillDraftStore,
   SkillInvocationRow,
   SkillInvocationStore,
   SkillRow,
@@ -664,6 +667,37 @@ CREATE TABLE IF NOT EXISTS key_wraps (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- M26 skill DRAFTS (PLAN-M26.md, additive schema v21). One row per authored
+-- bundle: the manifest text and the entry source the owner/model wrote, plus
+-- the DETERMINISTIC validation result. Nothing here is executable until it is
+-- promoted into the skills table — drafting is inert by construction, and a
+-- draft has no privileged path to becoming runnable code. These columns are
+-- the owner's own content (which is why they live in the same encrypted DB as
+-- everything else) and they NEVER reach the audit log, which records
+-- ids/counts/lengths only.
+
+CREATE TABLE IF NOT EXISTS skill_drafts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  origin TEXT NOT NULL,
+  manifest_json TEXT,
+  manifest_text TEXT NOT NULL,
+  code TEXT NOT NULL,
+  prompt TEXT NOT NULL DEFAULT '',
+  model TEXT,
+  validation_json TEXT NOT NULL,
+  conversation_id TEXT,
+  persona_id TEXT,
+  installed_version TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_drafts_status
+  ON skill_drafts (status, updated_at DESC);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -697,7 +731,8 @@ const PENDING_TOOL_COLUMNS = `
   id, tool_id AS toolId, project_id AS projectId, params, risk,
   requested_by AS requestedBy, created_at AS createdAt,
   decided_at AS decidedAt, decision, decided_by AS decidedBy,
-  conversation_id AS conversationId, persona_id AS personaId`;
+  conversation_id AS conversationId, persona_id AS personaId,
+  kind, draft_id AS draftId`;
 
 const FILE_PROPOSAL_COLUMNS = `
   id, project_id AS projectId, path, original_mtime AS originalMtime,
@@ -840,6 +875,12 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   // conversation to post the outcome note into + the requesting persona.
   ['pending_tools', 'conversation_id', 'conversation_id TEXT'],
   ['pending_tools', 'persona_id', 'persona_id TEXT'],
+  // M26 (v21) skill-install asks: the queue carries two kinds of row — a broker
+  // tool call ('tool', the default, which is what every existing row is) and a
+  // persona's request to promote a draft ('skill_install'). The decide route
+  // branches on kind; broker.decide refuses anything but 'tool'.
+  ['pending_tools', 'kind', "kind TEXT NOT NULL DEFAULT 'tool'"],
+  ['pending_tools', 'draft_id', 'draft_id TEXT'],
   // M20-B S3 (v18) session widening: acting user, client class, device
   // identity. Legacy session rows read back 'desktop' / NULL (a pre-auth
   // desktop pairing), which is exactly today's behaviour.
@@ -1291,8 +1332,8 @@ export function createGrantStore(db: Database.Database): GrantStore {
  */
 export function createPendingToolStore(db: Database.Database): PendingToolStore {
   const insert = db.prepare(
-    `INSERT INTO pending_tools (id, tool_id, project_id, params, risk, requested_by, created_at, conversation_id, persona_id)
-     VALUES (@id, @toolId, @projectId, @params, @risk, @requestedBy, @createdAt, @conversationId, @personaId)`,
+    `INSERT INTO pending_tools (id, tool_id, project_id, params, risk, requested_by, created_at, conversation_id, persona_id, kind, draft_id)
+     VALUES (@id, @toolId, @projectId, @params, @risk, @requestedBy, @createdAt, @conversationId, @personaId, @kind, @draftId)`,
   );
   const findById = db.prepare(`SELECT ${PENDING_TOOL_COLUMNS} FROM pending_tools WHERE id = ?`);
   const listOpen = db.prepare(
@@ -2266,6 +2307,90 @@ export function createSkillStore(db: Database.Database): SkillStore {
       params.id = id;
       db.prepare(
         `UPDATE skills SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
+      ).run(params);
+    },
+    remove(id: string): void {
+      remove.run(id);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M26 skill DRAFT row store (PLAN-M26.md — additive schema v21). Plain typed
+// CRUD, NO business logic: the drafts manager (core/src/skills/drafts.ts) owns
+// slugging, deterministic validation, audit and promotion. The manifest/code
+// text is the owner's own content — it crosses the loopback to the owner's UI
+// and never reaches the audit log.
+// ---------------------------------------------------------------------------
+
+const SKILL_DRAFT_COLUMNS = `
+  id, name, description, status, origin,
+  manifest_json AS manifestJson, manifest_text AS manifestText, code, prompt,
+  model, validation_json AS validationJson,
+  conversation_id AS conversationId, persona_id AS personaId,
+  installed_version AS installedVersion,
+  created_at AS createdAt, updated_at AS updatedAt`;
+
+const SKILL_DRAFT_UPDATE_COLUMNS: Readonly<Record<string, keyof SkillDraftRowPatch>> = {
+  name: 'name',
+  description: 'description',
+  status: 'status',
+  origin: 'origin',
+  manifest_json: 'manifestJson',
+  manifest_text: 'manifestText',
+  code: 'code',
+  prompt: 'prompt',
+  model: 'model',
+  validation_json: 'validationJson',
+  conversation_id: 'conversationId',
+  persona_id: 'personaId',
+  installed_version: 'installedVersion',
+};
+
+export function createSkillDraftStore(db: Database.Database): SkillDraftStore {
+  const insert = db.prepare(
+    `INSERT INTO skill_drafts (id, name, description, status, origin,
+                               manifest_json, manifest_text, code, prompt, model,
+                               validation_json, conversation_id, persona_id,
+                               installed_version, created_at, updated_at)
+     VALUES (@id, @name, @description, @status, @origin,
+             @manifestJson, @manifestText, @code, @prompt, @model,
+             @validationJson, @conversationId, @personaId,
+             @installedVersion, @createdAt, @updatedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${SKILL_DRAFT_COLUMNS} FROM skill_drafts WHERE id = ?`);
+  const listAll = db.prepare(
+    `SELECT ${SKILL_DRAFT_COLUMNS} FROM skill_drafts ORDER BY updated_at DESC, rowid DESC`,
+  );
+  const remove = db.prepare('DELETE FROM skill_drafts WHERE id = ?');
+
+  return {
+    insert(row: SkillDraftRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): SkillDraftRow | undefined {
+      return findById.get(id) as SkillDraftRow | undefined;
+    },
+    list(): SkillDraftRow[] {
+      return listAll.all() as SkillDraftRow[];
+    },
+    update(id: string, patch: SkillDraftRowPatch): void {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { updatedAt: patch.updatedAt };
+      for (const [column, key] of Object.entries(SKILL_DRAFT_UPDATE_COLUMNS)) {
+        const value = patch[key as keyof SkillDraftRowPatch];
+        if (value !== undefined) {
+          sets.push(`${column} = @${String(key)}`);
+          params[String(key)] = value;
+        }
+      }
+      if (sets.length === 0) {
+        db.prepare('UPDATE skill_drafts SET updated_at = ? WHERE id = ?').run(patch.updatedAt, id);
+        return;
+      }
+      params.id = id;
+      db.prepare(
+        `UPDATE skill_drafts SET ${sets.join(', ')}, updated_at = @updatedAt WHERE id = @id`,
       ).run(params);
     },
     remove(id: string): void {

@@ -27,6 +27,12 @@ export type ToolErrorCode =
   | 'exists'
   | 'changed_since_proposal'
   /**
+   * M26: a pending row that is NOT a broker tool call (kind 'skill_install')
+   * was handed to `broker.decide`, which can only approve tool executions.
+   * Named so the mistake is visible rather than executing the wrong thing.
+   */
+  | 'wrong_kind'
+  /**
    * M20-B S4: the caller's CLIENT CLASS may not use (or approve) that tool.
    * Named separately from `denied` so a client can tell "your device may not"
    * apart from "the policy refused", and so the audit row and the response

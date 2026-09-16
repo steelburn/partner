@@ -4,6 +4,11 @@
  * These guard the two failure modes that make a badge system actively worse
  * than none: counting one event twice, and badging something the user cannot
  * see.
+ *
+ * M26 D13 extends both: `skills` joins the destinations, and its count is the
+ * READY drafts (validated ok, not installed) — with the model's own rule 1
+ * applied rather than contradicted, because a draft whose install the persona
+ * asked for is already an open approval counted under `files`.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -14,27 +19,44 @@ import {
   formatBadge,
   FAILED_RUN_WINDOW_MS,
   failedRunsNeedingAttention,
+  readyDraftsNeedingAttention,
   totalAttention,
+  type AttentionDraft,
 } from '../src/lib/attention.js';
 import { MOBILE_MORE, MOBILE_TABS } from '../src/lib/nav.js';
 
 describe('attention counts', () => {
   it('maps each source to its destination', () => {
     expect(
-      attentionCounts({ pendingApprovals: 2, memorySuggestions: 5, failedScheduleRuns: 1 }),
-    ).toEqual({ files: 2, memory: 5, personas: 1 });
+      attentionCounts({
+        pendingApprovals: 2,
+        memorySuggestions: 5,
+        failedScheduleRuns: 1,
+        readyDrafts: 3,
+      }),
+    ).toEqual({ files: 2, memory: 5, personas: 1, skills: 3 });
   });
 
   it('treats absent, negative and non-finite input as zero', () => {
     expect(
-      attentionCounts({ pendingApprovals: -3, memorySuggestions: Number.NaN, failedScheduleRuns: 0 }),
-    ).toEqual({ files: 0, memory: 0, personas: 0 });
+      attentionCounts({
+        pendingApprovals: -3,
+        memorySuggestions: Number.NaN,
+        failedScheduleRuns: 0,
+        readyDrafts: Number.POSITIVE_INFINITY,
+      }),
+    ).toEqual({ files: 0, memory: 0, personas: 0, skills: 0 });
   });
 
   it('floors fractional counts rather than showing a half a thing', () => {
     expect(
-      attentionCounts({ pendingApprovals: 1.9, memorySuggestions: 0, failedScheduleRuns: 0 }).files,
-    ).toBe(1);
+      attentionCounts({
+        pendingApprovals: 1.9,
+        memorySuggestions: 0,
+        failedScheduleRuns: 0,
+        readyDrafts: 2.9,
+      }).skills,
+    ).toBe(2);
   });
 
   it('does not count a queued scheduled run again as its own attention item', () => {
@@ -45,14 +67,22 @@ describe('attention counts', () => {
       pendingApprovals: 1,
       memorySuggestions: 0,
       failedScheduleRuns: 0,
+      readyDrafts: 0,
     });
     expect(totalAttention(counts)).toBe(1);
   });
 
   it('sums across every destination', () => {
     expect(
-      totalAttention(attentionCounts({ pendingApprovals: 2, memorySuggestions: 3, failedScheduleRuns: 4 })),
-    ).toBe(9);
+      totalAttention(
+        attentionCounts({
+          pendingApprovals: 2,
+          memorySuggestions: 3,
+          failedScheduleRuns: 4,
+          readyDrafts: 5,
+        }),
+      ),
+    ).toBe(14);
   });
 });
 
@@ -75,9 +105,10 @@ describe('phone More-sheet aggregate', () => {
       pendingApprovals: 7,
       memorySuggestions: 3,
       failedScheduleRuns: 0,
+      readyDrafts: 4,
     });
-    // 'memory' is in the More sheet; 'files' is a visible tab.
-    expect(aggregateAttention(counts, MOBILE_MORE)).toBe(3);
+    // 'memory' and 'skills' are in the More sheet; 'files' is a visible tab.
+    expect(aggregateAttention(counts, MOBILE_MORE)).toBe(7);
   });
 
   it('never folds a visible tab into the More badge', () => {
@@ -87,6 +118,7 @@ describe('phone More-sheet aggregate', () => {
       pendingApprovals: 5,
       memorySuggestions: 0,
       failedScheduleRuns: 0,
+      readyDrafts: 0,
     });
     expect(aggregateAttention(filesOnly, MOBILE_MORE)).toBe(0);
   });
@@ -103,6 +135,7 @@ describe('phone More-sheet aggregate', () => {
       pendingApprovals: 1,
       memorySuggestions: 2,
       failedScheduleRuns: 3,
+      readyDrafts: 4,
     });
     const onTabs = aggregateAttention(counts, MOBILE_TABS);
     const inSheet = aggregateAttention(counts, MOBILE_MORE);
@@ -155,6 +188,61 @@ describe('failed scheduled runs', () => {
   });
 
   it('ignores a run with no usable timestamp instead of dividing by nothing', () => {
-    expect(failedRunsNeedingAttention([{ status: 'error', startedAt: Number.NaN, finishedAt: null }], now)).toBe(0);
+    expect(
+      failedRunsNeedingAttention([{ status: 'error', startedAt: Number.NaN, finishedAt: null }], now),
+    ).toBe(0);
+  });
+});
+
+describe('ready skill drafts (M26 D13)', () => {
+  const draft = (overrides: Partial<AttentionDraft> = {}): AttentionDraft => ({
+    status: 'draft',
+    validation: { ok: true },
+    pendingInstallId: null,
+    ...overrides,
+  });
+
+  it('counts a validated, uninstalled draft', () => {
+    expect(readyDraftsNeedingAttention([draft()])).toBe(1);
+  });
+
+  it('does not count a draft that still has validation problems', () => {
+    // A broken draft is not something the user must act on for the badge to
+    // clear: the model or the owner fixes it in the Studio.
+    expect(readyDraftsNeedingAttention([draft({ validation: { ok: false } })])).toBe(0);
+  });
+
+  it('does not count an installed draft', () => {
+    expect(readyDraftsNeedingAttention([draft({ status: 'installed' })])).toBe(0);
+  });
+
+  it('does NOT double count a draft whose install is already an open approval', () => {
+    // Rule 1: that draft is a row in the approval queue, which Files already
+    // badges. Counting it here would report one decision as two problems.
+    const pending = draft({ pendingInstallId: 'pending-1' });
+    expect(readyDraftsNeedingAttention([pending])).toBe(0);
+    const counts = attentionCounts({
+      pendingApprovals: 1,
+      memorySuggestions: 0,
+      failedScheduleRuns: 0,
+      readyDrafts: readyDraftsNeedingAttention([pending]),
+    });
+    expect(counts.skills).toBe(0);
+    expect(counts.files).toBe(1);
+    expect(totalAttention(counts)).toBe(1);
+  });
+
+  it('counts the ready drafts and the open ask exactly once, in the right places', () => {
+    const drafts = [
+      draft(),
+      draft({ pendingInstallId: 'pending-1' }),
+      draft({ validation: { ok: false } }),
+      draft({ status: 'installed' }),
+    ];
+    expect(readyDraftsNeedingAttention(drafts)).toBe(1);
+  });
+
+  it('handles an empty list', () => {
+    expect(readyDraftsNeedingAttention([])).toBe(0);
   });
 });

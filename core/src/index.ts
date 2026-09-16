@@ -67,6 +67,7 @@ export {
   createSessionStore,
   createSettingsStore,
   createSiteScopeStore,
+  createSkillDraftStore,
   createSkillInvocationStore,
   createSkillStore,
   createSpendLedgerStore,
@@ -329,8 +330,34 @@ export type { ThemePreset } from './theming/index.js';
 
 // ---- M8 skills (PLAN-M8.md) ----------------------------------------------
 export { createSkillManager } from './skills/manager.js';
-export type { SkillManager, SkillManagerOptions } from './skills/manager.js';
-export { createSkillRunner } from './skills/runner.js';
+export { createSkillDraftManager, permissionDiff, slugifySkillId } from './skills/drafts.js';
+export type { SkillDraftManager, SkillGenerateHook } from './skills/drafts.js';
+export {
+  buildAuthoringPrompt,
+  normalizeAuthoredBundle,
+  parseAuthoringReply,
+  templateBundle,
+} from './skills/authoring.js';
+export type {
+  AuthoredBundle,
+  AuthoringNormalizeResult,
+  AuthoringParseResult,
+  AuthoringPromptInput,
+} from './skills/authoring.js';
+export {
+  createSkillGenerator,
+  demoAuthoredBundle,
+  generateAuthoredBundle,
+  DEMO_GENERATION_MODEL,
+  GENERATION_REPLY_CAP_BYTES,
+  GENERATION_TIMEOUT_MS,
+} from './skills/generate.js';
+export type {
+  GenerationFailureCode,
+  GenerationOutcome,
+  GenerationProviderSource,
+  SkillGeneratorOptions,
+} from './skills/generate.js';
 export type {
   SkillInvokeContext,
   SkillInvokeErrorCode,
@@ -469,6 +496,7 @@ import {
   createMemoryFtsStore,
   createSettingsStore,
   createSiteScopeStore,
+  createSkillDraftStore,
   createSkillInvocationStore,
   createSkillStore,
   createThemeStore,
@@ -560,6 +588,9 @@ import type { SiteScopeManager } from './browser/scopes.js';
 import { createNativeSession } from './native/index.js';
 import type { NativeSessionDeps } from './native/index.js';
 import { createSkillManager } from './skills/manager.js';
+import { createSkillDraftManager } from './skills/drafts.js';
+import type { SkillDraftManager } from './skills/drafts.js';
+import { createSkillGenerator } from './skills/generate.js';
 import type { SkillManager } from './skills/manager.js';
 import { createSkillRunner } from './skills/runner.js';
 import type { SkillRunner } from './skills/runner.js';
@@ -658,6 +689,8 @@ export interface CoreBundle {
   skillRunner: SkillRunner;
   skillStore: SkillStore;
   skillInvocationStore: SkillInvocationStore;
+  /** M26 skill authoring: the draft lifecycle (schema v21, PLAN-M26.md). */
+  skillDrafts: SkillDraftManager;
   /** M9 playbook + deploy surfaces (schema v10, PLAN-M9.md). */
   playbooks: PlaybookManager;
   playbookRunStore: PlaybookRunStore;
@@ -1048,6 +1081,34 @@ export function createCore(
     invocations: skillInvocationStore,
   });
 
+  // M26: skill DRAFTS over the SAME db (schema v21). A draft is inert — the
+  // manager owns slugging, deterministic validation (shape + broker registry +
+  // entry lint, never execution) and the single promote path into the skills
+  // store. Cut B injects the one-shot generator: one bounded model call (256 KiB
+  // reply cap, 60 s abort) whose text is sanitised before it becomes a draft, or
+  // a deterministic pure-skill bundle when demo/no provider is configured. The
+  // generator only ever produces draft TEXT — it cannot run or install anything.
+  // Cut E injects the SAME sandbox runner plus the core-owned scratch root a
+  // dry-run materializes into (config.skillRunsDir): a draft run is the real
+  // launcher against a temp bundle, and the route — never a caller — supplies
+  // the dir.
+  const skillGenerator = createSkillGenerator({
+    providers: providerManager,
+    demo: config.demo,
+  });
+  const skillDrafts = createSkillDraftManager({
+    store: createSkillDraftStore(db),
+    skills,
+    tools: skillRegistry,
+    audit,
+    generate: skillGenerator,
+    runsDir: config.skillRunsDir,
+    runner: skillRunner,
+    // M26 cut C: an install ask rides the SAME pending_tools queue the Files
+    // queue and the chat cards read; approving it calls the one `promote`.
+    pending: pendingManager,
+  });
+
   // M9: playbooks + deploy targets over the SAME db (schema v10). The deploy
   // manager owns profile CRUD validation + the package step; the playbook
   // manager orchestrates persona tool loops (broker-mediated, approval-queue
@@ -1211,6 +1272,7 @@ export function createCore(
     scopes,
     skills,
     skillRunner,
+    skillDrafts,
     playbooks,
     deployProfiles,
     schedules,
@@ -1263,6 +1325,7 @@ export function createCore(
     scopeStore,
     skills,
     skillRunner,
+    skillDrafts,
     skillStore,
     skillInvocationStore,
     playbooks,

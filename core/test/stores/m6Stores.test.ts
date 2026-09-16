@@ -63,7 +63,7 @@ describe('schema v7 (additive M6 themes table)', () => {
       // M9 (PLAN-M9.md, ba83902) raised the schema to 10 (deploy_profiles +
       // playbook_runs); the themes milestone (M6, 238b20a) was v7.
       // v11 added spend_ledger (M10 W3); v12 added M11 guarded columns.
-      expect(SCHEMA_VERSION).toBe(20);
+      expect(SCHEMA_VERSION).toBe(21);
     } finally {
       db.close();
     }

@@ -25,7 +25,7 @@ describe('M8 skills stores (additive, idempotent)', () => {
     const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as {
       value: string;
     };
-    expect(SCHEMA_VERSION).toBe(20);
+    expect(SCHEMA_VERSION).toBe(21);
     expect(meta.value).toBe(String(SCHEMA_VERSION));
     db.close();
   });

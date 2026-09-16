@@ -27,7 +27,13 @@ import {
 } from './api.js';
 import type {
   CatalogSkill,
+  SkillBundle,
   SkillDetail,
+  SkillDraft,
+  SkillDraftCreateInput,
+  SkillDraftInstallResult,
+  SkillDraftRun,
+  SkillDraftSummary,
   SkillInvocationMeta,
   SkillInvokeInput,
   SkillSummary,
@@ -371,4 +377,364 @@ export async function listInvocations(
     'invocations',
     options,
   );
+}
+
+// ---------------------------------------------------------------------------
+// M26 skill authoring — drafts (PLAN-M26.md cut D)
+//
+// A draft is INERT: listing it, reading it, validating it and editing it run
+// nothing. The two calls that DO something are separate and owner-initiated —
+// `runDraft` (a sandboxed dry-run the owner asks for) and `installDraft` (the
+// one door into the skills store).
+//
+// Redaction discipline: a draft's `manifestText` and `code` are the OWNER's own
+// content. They travel from the core to this UI and are rendered for the owner
+// only; this client never logs them, never puts them in a URL, and the install
+// consent (M26 D6) is the only place a permission set is negotiated.
+// ---------------------------------------------------------------------------
+
+const DRAFTS_PATH = `${SKILLS_PATH}/drafts`;
+
+/** One Studio template (M26): a complete bundle the core builds offline. */
+export interface SkillTemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  /** Plain-language line: what the template's skill can reach, and what not. */
+  reach: string;
+}
+
+/** Pull a draft row out of a bare object or a `{draft: …}` envelope. */
+function unwrapDraft(value: unknown): unknown {
+  if (isRecord(value) && isRecord(value.draft)) return value.draft;
+  return value;
+}
+
+/** Minimal guard for a wire draft row (id + name + a validation record). */
+function isDraftRow(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    isRecord(value.validation)
+  );
+}
+
+/** Tolerant parse of one draft (summary or full detail). */
+function parseDraft(value: unknown, status: number): SkillDraft {
+  const row = unwrapDraft(value);
+  if (!isDraftRow(row)) {
+    throw new ApiRequestError(status, 'The draft response had an unexpected shape.');
+  }
+  return row as unknown as SkillDraft;
+}
+
+/** POST/PUT helpers that send a JSON body and parse one draft back. */
+async function writeDraft(
+  token: string,
+  path: string,
+  method: 'POST' | 'PUT',
+  body: unknown,
+  options: { fetchImpl?: FetchLike },
+): Promise<SkillDraft> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(path, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  return parseDraft(await expectJson<unknown>(response), response.status);
+}
+
+/** GET /v1/skills/drafts -> draft SUMMARIES, newest first (no code). */
+export async function listDrafts(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraftSummary[]> {
+  return getList<SkillDraftSummary>(token, DRAFTS_PATH, ['drafts'], 'draft', options);
+}
+
+/** GET /v1/skills/drafts/:id -> the full draft, including its editable source. */
+export async function getDraft(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  return parseDraft(await expectJson<unknown>(response), response.status);
+}
+
+/**
+ * POST /v1/skills/drafts -> a new draft (201). `mode: 'generate'` costs one
+ * bounded model call and needs a configured provider; the core answers a coded
+ * refusal when it has none, which the Studio renders as its honest line rather
+ * than as a failure of the draft itself.
+ */
+export async function createDraft(
+  token: string,
+  input: SkillDraftCreateInput,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  return writeDraft(token, DRAFTS_PATH, 'POST', input, options);
+}
+
+/** Patch shape of PUT /v1/skills/drafts/:id — every field optional. */
+export interface DraftPatchInput {
+  name?: string;
+  description?: string;
+  /** Raw manifest text; the core re-parses and re-validates it. */
+  manifestText?: string;
+  code?: string;
+}
+
+/**
+ * PUT /v1/skills/drafts/:id -> the re-validated draft. The core refuses a write
+ * to an already-installed draft with 409 (thrown), which the Studio shows as a
+ * named reason instead of retrying.
+ */
+export async function updateDraft(
+  token: string,
+  id: string,
+  patch: DraftPatchInput,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  return writeDraft(token, `${DRAFTS_PATH}/${encodeURIComponent(id)}`, 'PUT', patch, options);
+}
+
+/** POST /v1/skills/drafts/:id/validate -> the deterministic result. Never runs it. */
+export async function validateDraft(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  return writeDraft(
+    token,
+    `${DRAFTS_PATH}/${encodeURIComponent(id)}/validate`,
+    'POST',
+    {},
+    options,
+  );
+}
+
+/**
+ * Coded refusals the promote route documents (M26 D6). They arrive as a typed
+ * outcome rather than an exception, because each one has a NEXT STEP the owner
+ * can take — above all `permission_change`: review the before/after table and
+ * confirm, which is precisely not a dead end.
+ */
+export const DRAFT_INSTALL_ERROR_CODES = [
+  'permission_change',
+  'invalid_input',
+  'conflict',
+  'not_found',
+] as const;
+
+export type DraftInstallErrorCode = (typeof DRAFT_INSTALL_ERROR_CODES)[number];
+
+/** Outcome of POST /v1/skills/drafts/:id/install. */
+export type DraftInstallOutcome =
+  | { ok: true; result: SkillDraftInstallResult }
+  | { ok: false; code: DraftInstallErrorCode; message: string };
+
+function isDraftInstallCode(value: unknown): value is DraftInstallErrorCode {
+  return (
+    typeof value === 'string' &&
+    (DRAFT_INSTALL_ERROR_CODES as readonly string[]).includes(value)
+  );
+}
+
+/** Pull the coded refusal out of `{error, message}` / `{error: {code}}`. */
+function readDraftInstallFailure(parsed: unknown): {
+  code: DraftInstallErrorCode | null;
+  message: string | null;
+} {
+  if (!isRecord(parsed)) return { code: null, message: null };
+  const nested = isRecord(parsed.error) ? parsed.error : null;
+  const code = nested !== null ? nested.code : parsed.error;
+  const message = nested !== null ? nested.message : parsed.message;
+  return {
+    code: isDraftInstallCode(code) ? code : null,
+    message: typeof message === 'string' && message.length > 0 ? message : null,
+  };
+}
+
+/**
+ * POST /v1/skills/drafts/:id/install -> the installed skill + the install mode.
+ *
+ * `acknowledgePermissions` is sent by the caller that has ALREADY shown the
+ * before/after table; the core refuses a widened permission set without it
+ * (409 `permission_change`, returned here as `{ok:false, code}` so the UI can
+ * say "review the change and confirm"). A 401/403 without a coded body still
+ * throws ApiRequestError — that is a lost session, not a decision.
+ */
+export async function installDraft(
+  token: string,
+  id: string,
+  input: { acknowledgePermissions?: boolean } = {},
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<DraftInstallOutcome> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const body: Record<string, unknown> = {};
+  if (input.acknowledgePermissions === true) body.acknowledgePermissions = true;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}/install`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text.length > 0 ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      // Non-JSON failure — the generic mapping below reports it.
+    }
+    const failure = readDraftInstallFailure(parsed);
+    if (failure.code !== null) {
+      return {
+        ok: false,
+        code: failure.code,
+        message: failure.message ?? 'The install was refused.',
+      };
+    }
+    throw new ApiRequestError(response.status, extractErrorMessage(text, response.status));
+  }
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || !isRecord(parsed.skill) || typeof parsed.mode !== 'string') {
+    throw new ApiRequestError(response.status, 'The install response had an unexpected shape.');
+  }
+  return { ok: true, result: parsed as unknown as SkillDraftInstallResult };
+}
+
+/** DELETE /v1/skills/drafts/:id -> 204 (the draft and its code are gone). */
+export async function discardDraft(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return expectNoContent(response, 'Discarding the draft');
+}
+
+/**
+ * POST /v1/skills/drafts/:id/run -> a SANDBOXED dry-run (201-free, 200 body).
+ * The answer carries the worker's own redacted log lines, which is what makes
+ * an import-time crash readable in the Studio instead of an opaque `crashed`.
+ * No invocation row is written: a dry-run is not history.
+ */
+export async function runDraft(
+  token: string,
+  id: string,
+  input: { args?: unknown; timeoutMs?: number } = {},
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraftRun> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const body: Record<string, unknown> = {};
+  if (input.args !== undefined) body.args = input.args;
+  if (input.timeoutMs !== undefined) body.timeoutMs = input.timeoutMs;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || typeof parsed.ok !== 'boolean') {
+    throw new ApiRequestError(response.status, 'The run response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillDraftRun;
+}
+
+/**
+ * POST /v1/skills/:id/fork -> a NEW draft copied from an installed skill. The
+ * installed skill is untouched; the copy gets a fresh slug and a fresh row.
+ */
+export async function forkSkill(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  return writeDraft(token, skillPath(id, '/fork'), 'POST', {}, options);
+}
+
+/**
+ * POST /v1/skills/:id/edit -> a draft BOUND to the installed skill's id, so
+ * promoting it updates that skill in place (and its permission diff is the
+ * consent the owner sees before any new power is granted).
+ */
+export async function editSkill(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  return writeDraft(token, skillPath(id, '/edit'), 'POST', {}, options);
+}
+
+/** GET /v1/skills/templates -> the templates THIS build can honour. */
+export async function listSkillTemplates(
+  token: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillTemplateSummary[]> {
+  return getList<SkillTemplateSummary>(
+    token,
+    `${SKILLS_PATH}/templates`,
+    ['templates'],
+    'template',
+    options,
+  );
+}
+
+/**
+ * POST /v1/skills/drafts/:id/bundle -> the draft's own bytes as an UNSIGNED
+ * bundle (M26 D12) for the owner to save. Export is a read of the owner's own
+ * content: nothing is installed and no capability is granted by it.
+ */
+export async function exportDraftBundle(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillBundle> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}/bundle`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || typeof parsed.manifestText !== 'string' || typeof parsed.code !== 'string') {
+    throw new ApiRequestError(response.status, 'The bundle response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillBundle;
+}
+
+/**
+ * POST /v1/skills/drafts/import -> a NEW INERT draft (201). The core re-points
+ * the manifest at a fresh, de-duplicated slug and validates it: an import can
+ * never overwrite an installed skill, and nothing runs until the owner tests
+ * and installs the draft it produced.
+ */
+export async function importDraftBundle(
+  token: string,
+  bundle: unknown,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillDraft> {
+  return writeDraft(token, `${DRAFTS_PATH}/import`, 'POST', bundle, options);
 }

@@ -124,6 +124,7 @@ import { isLoopbackPeer } from './peer.js';
 import type { SessionInfo, SessionManager } from './session.js';
 import { requireCapability } from './requireCapability.js';
 import type { Capability } from './capabilities.js';
+import { capabilityDenial } from './capabilities.js';
 import type { AuditService } from '../services/redaction.js';
 import type { PendingToolRow } from '../stores/types.js';
 import type { ToolBroker } from '../broker/broker.js';
@@ -148,6 +149,12 @@ import { ThemeError, themeErrorStatus } from '../theming/errors.js';
 import type { SiteScopeManager } from '../browser/scopes.js';
 import { BrowserError, browserErrorStatus } from '../browser/errors.js';
 import type { SkillManager } from '../skills/manager.js';
+import type { SkillDraftManager } from '../skills/drafts.js';
+import {
+  authoringToolExternal,
+  authoringToolSpecs,
+  canAdvertiseAuthoring,
+} from '../skills/tool.js';
 import type { SkillRunner } from '../skills/runner.js';
 import { SkillError, skillErrorStatus } from '../skills/errors.js';
 import type { FolderManager } from '../folders/manager.js';
@@ -163,6 +170,7 @@ import type { SearchManager } from '../search/manager.js';
 import { SearchError, searchErrorStatus } from '../search/errors.js';
 import {
   applyStructuredGuidance,
+  authoringInstructions,
   independenceDeclaration,
   SEARCH_TOOL_APPROVAL_INSTRUCTION,
   SEARCH_TOOL_INSTRUCTION,
@@ -420,6 +428,11 @@ export interface CoreAppOptions {
    */
   skills?: SkillManager;
   /**
+   * M26 skill DRAFT manager (optional so M0–M25 harnesses compile unchanged).
+   * When absent the /v1/skills/drafts surface responds 501 not_configured.
+   */
+  skillDrafts?: SkillDraftManager;
+  /**
    * M8 skill runner (paired with skills; the invoke route needs both). When
    * absent POST /v1/skills/:id/invoke responds 501 not_configured.
    */
@@ -649,6 +662,13 @@ function assembleRequestMessages(input: {
   /** M12 F2-capability: the search backend is enabled (default-deny OFF). */
   searchEnabled?: boolean;
   /**
+   * M26 D8: the broker tool ids the skill-authoring contract may name, or null
+   * when this turn may not author at all (a non-desktop client, an `assist`
+   * persona, a banned tool). Null = the contract is NOT appended, so a persona
+   * that cannot act is never told the tools exist.
+   */
+  authoringToolIds?: readonly string[] | null;
+  /**
    * M12.6 approval continuation: resume the conversation WITHOUT a new user
    * turn — prompts + the stored history tail only, so the next assistant
    * round answers against the outcome notes the decision just posted.
@@ -716,6 +736,18 @@ function assembleRequestMessages(input: {
           };
         }
       }
+      // M26 D8: the authoring contract, under exactly the conditions the chat
+      // route advertises the two authoring tools (the caller decides - the
+      // prompt and the advertised functions must never disagree).
+      if (input.authoringToolIds !== undefined && input.authoringToolIds !== null) {
+        const base = out[systemIndex];
+        if (base) {
+          out[systemIndex] = {
+            ...base,
+            content: `${base.content}\n\n${authoringInstructions(input.authoringToolIds)}`,
+          };
+        }
+      }
     }
   }
   const singleNewUserTurn =
@@ -760,6 +792,42 @@ function searchInstructionFor(persona: Persona, searchEnabled: boolean): string 
   if (level === 'auto' || level === 'autonomous') return SEARCH_TOOL_INSTRUCTION;
   if (level === 'suggest') return SEARCH_TOOL_APPROVAL_INSTRUCTION;
   return null;
+}
+
+/**
+ * M26 D8: the broker tool ids the authoring contract may name for this turn, or
+ * null when it may not author. ONE decision function, so the system-prompt
+ * contract and the advertised native functions can never disagree - and the
+ * same rule is enforced again in the tool pass, which refuses the ids by class.
+ */
+function authoringToolIdsFor(
+  persona: Persona,
+  clientClass: string,
+  options: CoreAppOptions,
+): readonly string[] | null {
+  const broker = options.broker;
+  if (broker === undefined || options.skillDrafts === undefined) return null;
+  if (!canAdvertiseAuthoring({ persona, clientClass })) return null;
+  return broker.manifests.map((manifest) => manifest.id);
+}
+
+/** The native function-call advertisement for the two authoring tools. The
+ *  specs come from the authoring module, so the description is written once.
+ *  (A non-null return needs a non-empty tool list.) */
+function authoringFunctionTools(
+  toolIds: ReadonlySet<string>,
+): Array<{
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}> {
+  return authoringToolSpecs(toolIds).map((spec) => ({
+    type: 'function',
+    function: {
+      name: spec.id,
+      description: spec.description,
+      parameters: spec.parameters,
+    },
+  }));
 }
 
 function appendAttachmentContext(messages: ChatMessage[], context: string): void {
@@ -1358,6 +1426,16 @@ function requireSkillRunner(options: CoreAppOptions, res: Response): SkillRunner
   return runner;
 }
 
+/** Guard: returns the M26 skill DRAFT manager or 501s. */
+function requireSkillDrafts(options: CoreAppOptions, res: Response): SkillDraftManager | null {
+  const drafts = options.skillDrafts;
+  if (!drafts) {
+    notConfigured(res, 'skill draft manager');
+    return null;
+  }
+  return drafts;
+}
+
 /** Guard: returns the M9 playbook manager or 501s. */
 function requirePlaybooks(options: CoreAppOptions, res: Response): PlaybookManager | null {
   const playbooks = options.playbooks;
@@ -1552,6 +1630,128 @@ async function decideExternalApproval(
     ...(error !== undefined ? { error } : {}),
     ...(executed && result !== undefined ? { result } : {}),
   };
+}
+
+interface SkillInstallApprovalDeps {
+  broker: ToolBroker;
+  drafts: SkillDraftManager;
+  row: PendingToolRow;
+  decision: 'approve' | 'deny';
+  /** True when the caller has SEEN the before/after permission table (D6). */
+  acknowledgePermissions: boolean;
+  by: string;
+  options: CoreAppOptions;
+  audit: AuditService;
+}
+
+/**
+ * Decide a persona-requested SKILL INSTALL row (M26 D2b). Approve calls the SAME
+ * `promote()` the Studio button calls - one install implementation, so the two
+ * surfaces cannot diverge - and deny closes the ask, leaving the draft exactly
+ * as it was. Nothing else here can make a draft executable.
+ *
+ * Two properties that are deliberate, not incidental:
+ *
+ *   1. The row is closed by `settleInstall`, never by `broker.decide` (which
+ *      EXECUTES the stored tool and refuses a non-tool row).
+ *   2. A FAILED approve leaves the ask OPEN: nothing was installed, so the card
+ *      must survive for the owner to review in the Studio or deny. The failure
+ *      is reported as `error` in the same body shape the search approvals use,
+ *      which is what the chat card already renders.
+ */
+function decideInstallApproval(deps: SkillInstallApprovalDeps): {
+  ok: true;
+  grantId: null;
+  executed: boolean;
+  error?: string;
+  result?: Record<string, unknown>;
+} {
+  const { broker, drafts, row, decision, by, options, audit } = deps;
+  // A decided row is decided: this is what makes "approving installs exactly
+  // once" true, and it mirrors `broker.decide` (which refuses the same way).
+  if (row.decidedAt !== null) throw toolError('not_pending', 'pending call was already decided');
+  const approved = decision === 'approve';
+  let executed = false;
+  let error: string | undefined;
+  let result: Record<string, unknown> | undefined;
+  let draftName = '';
+
+  if (approved) {
+    const draftId = row.draftId ?? '';
+    if (draftId === '') {
+      error = 'bad_params';
+    } else {
+      draftName = drafts.get(draftId)?.name ?? '';
+      try {
+        const installed = drafts.promote(draftId, {
+          via: 'approval',
+          acknowledgePermissions: deps.acknowledgePermissions,
+        });
+        executed = true;
+        // Ids/version only: the draft's code and text never leave the store.
+        result = {
+          skillId: installed.skill.id,
+          version: installed.skill.version,
+          mode: installed.mode,
+        };
+      } catch (err) {
+        error = err instanceof SkillError ? err.code : 'install_failed';
+      }
+    }
+  }
+
+  if (!approved) broker.pending.settleInstall(row.id, 'deny', by);
+  else if (executed) broker.pending.settleInstall(row.id, 'approve', by);
+
+  audit.log(by, approved ? 'tool.approve' : 'tool.deny', row.id, {
+    kind: 'skill_install',
+    draftId: row.draftId,
+    executed,
+    ...(error !== undefined ? { error } : {}),
+  });
+
+  let note: string;
+  if (!approved) {
+    note =
+      'The skill install the persona asked for was denied by the user - the draft is still ' +
+      'there; continue without it.';
+  } else if (error !== undefined) {
+    note =
+      `The install of "${draftName}" could not be completed (${error}) - continue without it; ` +
+      'the draft is unchanged.';
+  } else {
+    note =
+      `The user installed the skill "${draftName}" (${String(result?.mode ?? 'created')}, ` +
+      `version ${String(result?.version ?? '')}). It is available now - continue.`;
+  }
+  appendConversationSystemNote(options, row.conversationId, note);
+
+  return {
+    ok: true,
+    grantId: null,
+    executed,
+    ...(error !== undefined ? { error } : {}),
+    ...(result !== undefined ? { result } : {}),
+  };
+}
+
+/**
+ * The persona label a queue row is tagged with (PLAN-M9 Web bullet): a live
+ * playbook run wins, then the persona stored on a chat-requested row, else
+ * nothing. One function, because the M26 INSTALL branch labels its row the same
+ * way.
+ */
+function queuePersonaName(
+  row: { id: string; requestedBy: string },
+  broker: ToolBroker,
+  options: CoreAppOptions,
+): string | null {
+  if (row.requestedBy !== 'persona') return null;
+  const playbookPersona = options.playbooks?.personaForPending(row.id) ?? null;
+  if (playbookPersona !== null) return playbookPersona.name;
+  const storedPersonaId = broker.pending.get(row.id)?.personaId ?? null;
+  if (storedPersonaId === null || options.personaManager === undefined) return null;
+  return options.personaManager.get(storedPersonaId)?.name ?? null;
 }
 
 export function createCoreApp(options: CoreAppOptions): express.Express {
@@ -2747,6 +2947,16 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         // the backend is enabled (config read is cheap + sync; the key is
         // checked at exec time with a clear note when missing).
         searchEnabled: options.search !== undefined && options.search.config().enabled === true,
+        // M26 D8: the authoring contract, under the same conditions as the two
+        // advertised authoring tools below (never for a turn that cannot act).
+        authoringToolIds:
+          routingPersona !== null
+            ? authoringToolIdsFor(
+                routingPersona,
+                (res.locals.session as SessionInfo).clientClass,
+                options,
+              )
+            : null,
         continueTurn,
       });
 
@@ -2872,6 +3082,36 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           },
         });
       }
+      // M26 cut C: the authoring external tools for THIS turn. The conversation
+      // and persona are bound here, at the only place that knows them, so a
+      // chat-authored draft and its install ask belong to the right chat. It is
+      // wired whether or not the turn ADVERTISES the tools: the directive form
+      // works too, and D8 governs what the model is TOLD, not what a client
+      // class may ask for (the tool pass applies the class envelope itself).
+      const authoringTool =
+        routingPersona !== null && options.broker !== undefined
+          ? authoringToolExternal({
+              drafts: options.skillDrafts,
+              toolIds: new Set(options.broker.manifests.map((manifest) => manifest.id)),
+              conversationId,
+              personaId: routingPersona.id,
+            })
+          : undefined;
+      // M26 D8: the two authoring tools join the advertisement ONLY when the
+      // persona could actually use them (desktop session, `skill.author`,
+      // independence >= suggest, neither id banned). Default-deny, exactly like
+      // search above - an `assist` persona is never told authoring exists.
+      if (advertiseTools && routingPersona !== null && authoringTool !== undefined) {
+        const authoringIds = authoringToolIdsFor(
+          routingPersona,
+          (res.locals.session as SessionInfo).clientClass,
+          options,
+        );
+        if (authoringIds !== null) {
+          chatRequest.tools = Array.isArray(chatRequest.tools) ? chatRequest.tools : [];
+          chatRequest.tools.push(...authoringFunctionTools(new Set(authoringIds)));
+        }
+      }
       let events = 0;
       let ok = true;
       let over = false;
@@ -2959,6 +3199,12 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           const externalTools = [
             searchToolExternal(options.search),
             mcpToolExternal(options.mcp),
+            // M26 cut C: the authoring tools built above. The provider declares
+            // `capability: 'skill.author'`, so the tool pass refuses them by
+            // client class BEFORE execute-vs-queue (a mobile or extension turn
+            // is refused with the device note, like any broker tool it may not
+            // use).
+            authoringTool,
           ].filter((tool): tool is NonNullable<typeof tool> => tool !== undefined);
           try {
             const appendSystemNote = (content: string): void => {
@@ -5228,16 +5474,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // wins (queued playbook runs); chat-requested rows (M12 search
     // approvals) carry the stored persona_id instead; plain rows stay as-is.
     const pending = broker.pending.list().map((row) => {
-      if (row.requestedBy !== 'persona') return { ...row, personaName: null };
-      const playbookPersona = options.playbooks?.personaForPending(row.id) ?? null;
-      if (playbookPersona !== null) return { ...row, personaName: playbookPersona.name };
-      const stored = broker.pending.get(row.id);
-      const storedPersonaId = stored?.personaId ?? null;
-      if (storedPersonaId !== null && options.personaManager !== undefined) {
-        const persona = options.personaManager.get(storedPersonaId);
-        if (persona !== null) return { ...row, personaName: persona.name };
-      }
-      return { ...row, personaName: null };
+      const personaName = queuePersonaName(row, broker, options);
+      // M26 D2b: an INSTALL row names its DRAFT, not a tool - the queue can
+      // render "Install <skill>?" without a broker manifest to look up. The row
+      // already carries `kind` + `draftId` (the wire contract); `draftName` is
+      // the label printed next to them.
+      if (row.kind !== 'skill_install') return { ...row, personaName };
+      const draftId = row.draftId ?? null;
+      const draft = draftId === null ? null : (options.skillDrafts?.get(draftId) ?? null);
+      return { ...row, personaName, draftName: draft?.name ?? null };
     });
     res.json({ pending });
   });
@@ -5303,6 +5548,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       decision?: unknown;
       remember?: unknown;
       note?: unknown;
+      /** M26 D6: the caller has seen the before/after permission table. */
+      acknowledgePermissions?: unknown;
     };
     const decision = body.decision === 'deny' ? 'deny' : body.decision === 'approve' ? 'approve' : null;
     if (decision === null) {
@@ -5313,6 +5560,45 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     try {
       const row = broker.pending.get(id);
       if (!row) throw toolError('not_found', 'pending call not found');
+      // M26 D2b (PLAN-M26.md): a SKILL INSTALL row is a different decision with
+      // a different executor. Approve calls `drafts.promote` - the same function
+      // the Studio button calls - and deny closes the ask; `broker.decide` is
+      // never reached for it (it would refuse the row as `wrong_kind` anyway).
+      if (row.kind === 'skill_install') {
+        // M20-B S4, the same rule the broker path applies: APPROVING EXECUTES.
+        // An install is `skill.install`, so the approver's client class must
+        // clear that envelope - otherwise the approval queue would be a way
+        // around the class table for the act the table most cares about.
+        const classDenial = capabilityDenial(
+          (res.locals.session as SessionInfo).clientClass,
+          'skill.install',
+        );
+        if (classDenial !== null) {
+          audit.log(actor, 'capability.denied', row.toolId, {
+            clientClass: classDenial.clientClass,
+            capability: classDenial.capability,
+          });
+          throw toolError('capability_denied', 'this device may not install a skill');
+        }
+        const drafts = options.skillDrafts;
+        const resultForInstall =
+          drafts === undefined
+            ? { ok: true as const, grantId: null, executed: false, error: 'not_configured' }
+            : decideInstallApproval({
+                broker,
+                drafts,
+                row,
+                decision,
+                acknowledgePermissions: body.acknowledgePermissions === true,
+                by: actor,
+                options,
+                audit,
+              });
+        // M14: a decided persona row may belong to a queued SCHEDULE run.
+        void options.schedules?.tryResumeAfterDecision(id);
+        res.status(200).json(resultForInstall);
+        return;
+      }
       // M12 search approvals: a persona-requested row for an EXTERNAL tool
       // (no project root, no broker manifest) is decided against the search
       // backend — approve executes the search ONCE and posts the outcome
@@ -5601,6 +5887,270 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     const listing = skills.catalog();
     res.json({ skills: listing.skills, warnings: listing.warnings });
   });
+
+  // -------------------------------------------------------------------------
+  // M26 skill AUTHORING surface (PLAN-M26.md cut A). A draft is INERT: it runs
+  // nothing and installs nothing. Creating/editing/validating need `skill.author`
+  // (desktop-only by the envelope table); only /install needs `skill.install`,
+  // and it is the single door into the skills store (the approved chat card
+  // calls the same manager method). Draft source is the owner's own content: it
+  // crosses this surface to the owner's UI and never reaches the audit log.
+  //
+  // Cut E adds the one route that DOES execute draft code - /run, a dry-run the
+  // owner asks for, which materializes the draft into a core-owned scratch dir
+  // (never a caller path) and returns the worker's own redacted log lines - plus
+  // /bundle export and /import. An import always lands as a new INERT draft.
+  //
+  // Registered BEFORE the '/v1/skills/:id' routes so Express cannot read
+  // 'drafts' or 'templates' as a skill id (same reason as '/catalog').
+  // -------------------------------------------------------------------------
+  api.get('/v1/skills/templates', requireSession(sessions), (req: Request, res: Response) => {
+    const drafts = requireSkillDrafts(options, res);
+    if (!drafts) return;
+    res.json({ templates: drafts.templates() });
+  });
+
+  api.get('/v1/skills/drafts', requireSession(sessions), (req: Request, res: Response) => {
+    const drafts = requireSkillDrafts(options, res);
+    if (!drafts) return;
+    res.json({ drafts: drafts.list() });
+  });
+
+  api.post(
+    '/v1/skills/drafts',
+    requireSession(sessions),
+    capability('skill.author'),
+    async (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        const draft = await drafts.create({
+          mode: body.mode as 'manual' | 'template' | 'generate' | 'generate-flow',
+          name: typeof body.name === 'string' ? body.name : '',
+          description: typeof body.description === 'string' ? body.description : '',
+          prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
+          template: typeof body.template === 'string' ? body.template : undefined,
+          id: typeof body.id === 'string' ? body.id : undefined,
+        });
+        res.status(201).json(draft);
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  /** Read a draft (owner's content) — no capability beyond the session. */
+  api.get('/v1/skills/drafts/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const drafts = requireSkillDrafts(options, res);
+    if (!drafts) return;
+    const draft = drafts.get(String(req.params.id ?? ''));
+    if (draft === null) {
+      res.status(404).json({ error: 'not_found', message: 'skill draft not found' });
+      return;
+    }
+    res.json(draft);
+  });
+
+  api.put(
+    '/v1/skills/drafts/:id',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        res.json(
+          drafts.update(String(req.params.id ?? ''), {
+            name: typeof body.name === 'string' ? body.name : undefined,
+            description: typeof body.description === 'string' ? body.description : undefined,
+            manifestText:
+              typeof body.manifestText === 'string' ? body.manifestText : undefined,
+            code: typeof body.code === 'string' ? body.code : undefined,
+          }),
+        );
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // Re-validate: deterministic, and it NEVER executes the draft.
+  api.post(
+    '/v1/skills/drafts/:id/validate',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        res.json(drafts.validate(String(req.params.id ?? '')));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // M26 cut E: the dry-run. The ONLY route that executes draft code, and only
+  // because the owner asked for it. The manager materializes the draft into a
+  // core-owned scratch dir (never a caller-supplied path), runs the REAL
+  // sandbox against it, and answers with the worker's own redacted log lines so
+  // an import-time crash is readable instead of an opaque `crashed`. No
+  // skill_invocations row is written; the audit row carries counts only.
+  api.post(
+    '/v1/skills/drafts/:id/run',
+    requireSession(sessions),
+    capability('skill.author'),
+    async (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as { args?: unknown; timeoutMs?: unknown };
+      try {
+        res.json(
+          await drafts.runDraft(String(req.params.id ?? ''), {
+            args: body.args,
+            timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+          }),
+        );
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // M26 D12 export: the draft as an UNSIGNED bundle ({version, manifestText,
+  // code}) for the SPA to save. Owner content, so it crosses this surface to
+  // the owner's own UI; the audit row records a byte LENGTH only.
+  api.post(
+    '/v1/skills/drafts/:id/bundle',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        res.json(drafts.exportBundle(String(req.params.id ?? '')));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // M26 D12 import: a bundle ALWAYS lands as a new INERT draft (origin
+  // 'import', de-duplicated slug) — it installs nothing, and the body is
+  // treated as untrusted input (shape + size checked, manifest re-pointed at
+  // the fresh slug). Registered before the ':id' routes below like every other
+  // literal draft path.
+  api.post(
+    '/v1/skills/drafts/import',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        res.status(201).json(drafts.importBundle(req.body));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // Promote: the ONE path from authored text to runnable code.
+  api.post(
+    '/v1/skills/drafts/:id/install',
+    requireSession(sessions),
+    capability('skill.install'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        res.json(
+          drafts.promote(String(req.params.id ?? ''), {
+            // Never defaulted on: a widened permission set must be acknowledged
+            // by a caller that has seen the before→after table.
+            acknowledgePermissions: body.acknowledgePermissions === true,
+            via: 'studio',
+          }),
+        );
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // M26 D2b: the persona's install ASK, as an HTTP surface (the chat tool
+  // `skills.requestInstall` reaches the same manager method). It creates a
+  // pending_tools row of kind 'skill_install' and NOTHING else — approving that
+  // row is what installs, through the same `promote` the Studio calls.
+  api.post(
+    '/v1/skills/drafts/:id/request-install',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as { conversationId?: unknown; personaId?: unknown };
+      try {
+        const { pendingId } = drafts.requestInstall(String(req.params.id ?? ''), {
+          conversationId: typeof body.conversationId === 'string' ? body.conversationId : null,
+          personaId: typeof body.personaId === 'string' ? body.personaId : null,
+        });
+        res.status(201).json({ pendingId });
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.delete(
+    '/v1/skills/drafts/:id',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        drafts.discard(String(req.params.id ?? ''));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+      res.status(204).end();
+    },
+  );
+
+  // Start a draft from an INSTALLED skill: 'fork' copies under a new id (the
+  // original is untouched), 'edit' binds to the installed id so promoting it
+  // updates that skill in place.
+  for (const action of ['fork', 'edit'] as const) {
+    api.post(
+      `/v1/skills/:id/${action}`,
+      requireSession(sessions),
+      capability('skill.author'),
+      (req: Request, res: Response) => {
+        const drafts = requireSkillDrafts(options, res);
+        if (!drafts) return;
+        const id = String(req.params.id ?? '');
+        try {
+          res.status(201).json(action === 'fork' ? drafts.fork(id) : drafts.edit(id));
+        } catch (err) {
+          if (sendSkillError(res, err)) return;
+          throw err;
+        }
+      },
+    );
+  }
 
   api.get('/v1/skills', requireSession(sessions), (req: Request, res: Response) => {
     const skills = requireSkills(options, res);

@@ -14,7 +14,10 @@
  *     *already* counted as a pending approval — M14 pauses the run and queues
  *     the tool, so both rows describe one event. Only FAILED runs count, on
  *     Personas. Counting `queued` runs as well would show the user "2 things
- *     need you" for one decision.
+ *     need you" for one decision. The same rule covers skills (M26 D13): an
+ *     authored draft whose install the persona ASKED for is already an open
+ *     approval, so it is counted under Files only; Skills badges the drafts
+ *     that are validated and waiting for the owner to install them.
  *  2. **A badge inside a closed sheet is invisible.** On a phone most
  *     destinations live in the More sheet, so the More tab carries the
  *     aggregate of everything inside it — otherwise the badge that tells the
@@ -24,7 +27,7 @@
  */
 
 /** Destinations that can be waiting on the user. */
-export const ATTENTION_VIEWS = ['files', 'memory', 'personas'] as const;
+export const ATTENTION_VIEWS = ['files', 'memory', 'personas', 'skills'] as const;
 
 export type AttentionView = (typeof ATTENTION_VIEWS)[number];
 
@@ -42,6 +45,11 @@ export interface AttentionInput {
   memorySuggestions: number;
   /** Scheduled runs that ended in `error` / `loop_exhausted` (not `queued`). */
   failedScheduleRuns: number;
+  /**
+   * Authored drafts that validate `ok`, are not installed, and have NO open
+   * install ask — see `readyDraftsNeedingAttention` (M26 D13).
+   */
+  readyDrafts: number;
 }
 
 /** Coerce anything to a non-negative integer count. */
@@ -96,7 +104,36 @@ export function attentionCounts(input: AttentionInput): AttentionCounts {
     files: count(input.pendingApprovals),
     memory: count(input.memorySuggestions),
     personas: count(input.failedScheduleRuns),
+    skills: count(input.readyDrafts),
   };
+}
+
+/** The shape this needs from a draft, kept structural so a caller can pass the
+ *  wire summary without `lib/skills` being imported here. */
+export interface AttentionDraft {
+  status: 'draft' | 'installed';
+  validation: { ok: boolean };
+  /** Open install-approval row, when the persona asked for one (M26 D2b). */
+  pendingInstallId: string | null;
+}
+
+/**
+ * Drafts that are waiting on the OWNER: validated `ok`, not installed, and not
+ * already an open install ask.
+ *
+ * Rule 1, applied rather than restated: a draft whose install the persona asked
+ * for is a row in the approval queue, which Files already badges — counting it
+ * here would report one decision as two problems. Everything else about a draft
+ * (a validation error, an already-installed one) is not something the user must
+ * act on for the badge to clear itself.
+ */
+export function readyDraftsNeedingAttention(drafts: readonly AttentionDraft[]): number {
+  return drafts.filter(
+    (draft) =>
+      draft.status !== 'installed' &&
+      draft.validation?.ok === true &&
+      draft.pendingInstallId === null,
+  ).length;
 }
 
 /** Total number of things waiting on the user, across every destination. */

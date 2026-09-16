@@ -8,10 +8,14 @@ import type {
   SkillSummary,
 } from '@partner/shared';
 import { ApiRequestError } from './lib/api.js';
+import { formatBadge } from './lib/attention.js';
 import { readStoredToken } from './lib/token.js';
+import SkillStudio from './SkillStudio.js';
 import {
   disableSkill,
+  editSkill,
   enableSkill,
+  forkSkill,
   getSkill,
   installSkill,
   invokeSkill,
@@ -31,7 +35,14 @@ import {
   type PermissionChip,
 } from './lib/skill-helpers.js';
 
-export type SkillsSegment = 'installed' | 'catalog';
+export type SkillsSegment = 'installed' | 'catalog' | 'studio';
+
+/** A deep-link intent: open the Build segment focused on one draft. */
+export interface SkillStudioFocus {
+  draftId: string;
+  /** Changes on every request, so re-opening the same draft re-fires the intent. */
+  nonce: number;
+}
 
 export interface SkillsViewProps {
   /** Personas available to run skills as (null while the shell loads them). */
@@ -40,6 +51,23 @@ export interface SkillsViewProps {
   onUnpair: () => void;
   /** True while this view is the visible one; triggers the first load. */
   active?: boolean;
+  /**
+   * M26 D (PLAN-M26.md L1): a chat card's "Review in Studio" — opens the Build
+   * segment on this draft. The shell owns the intent and clears it here.
+   */
+  studioFocus?: SkillStudioFocus | null;
+  /** The intent has been applied; the shell can drop it. */
+  onStudioFocusConsumed?: () => void;
+  /** A draft changed/installed — the shell's attention poll should re-read. */
+  onAttentionChanged?: () => void;
+  /** Open the chat a chat-authored draft came from. */
+  onOpenConversation?: (conversationId: string) => void;
+  /**
+   * Ask the shell to open the Build segment on one draft. This is how "Edit in
+   * Studio" / "Fork" land the new draft, and it is the same intent a chat
+   * approval card uses — one mechanism, two producers.
+   */
+  onOpenStudioDraft?: (draftId: string) => void;
 }
 
 /** One installed skill: its summary plus the manifest detail (for chips). */
@@ -48,7 +76,7 @@ interface InstalledSkill {
   manifest: SkillManifest | null;
 }
 
-type RowOp = 'disable' | 'enable' | 'uninstall';
+type RowOp = 'disable' | 'enable' | 'uninstall' | 'fork' | 'edit';
 
 /** True when an ApiRequestError means the core session is gone. */
 function isSessionLost(cause: unknown): boolean {
@@ -104,7 +132,16 @@ function Chips({ source }: { source: SkillPermissions }) {
  * the console and results rendered here are the owner's own data and stay on
  * the page — nothing is echoed into errors, copied into labels, or logged.
  */
-export default function SkillsView({ personas, onUnpair, active }: SkillsViewProps) {
+export default function SkillsView({
+  personas,
+  onUnpair,
+  active,
+  studioFocus,
+  onStudioFocusConsumed,
+  onAttentionChanged,
+  onOpenConversation,
+  onOpenStudioDraft,
+}: SkillsViewProps) {
   const [segment, setSegment] = useState<SkillsSegment>('installed');
   const [installed, setInstalled] = useState<InstalledSkill[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -122,6 +159,12 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
   const [installingId, setInstallingId] = useState<string | null>(null);
   /** Skill selected in the Invoke console. */
   const [invokeId, setInvokeId] = useState<string | null>(null);
+  /**
+   * Ready drafts (validated, not installed, no open install ask) — the Build
+   * segment's badge. Reported up by the Studio, which owns the draft list, so
+   * the two cannot count different things.
+   */
+  const [readyDrafts, setReadyDrafts] = useState(0);
 
   const loadInstalled = async (): Promise<void> => {
     const token = readStoredToken();
@@ -198,6 +241,30 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
 
   const handleSessionLost = (): void => setSessionLost(true);
 
+  /**
+   * The deep-link intent (M26 D): a chat card's "Review in Studio" opens the
+   * Build segment on one draft. The segment switch is a state change, so it
+   * cannot run under SSR — the routing RULE it applies (the intent wins over the
+   * local selection) lives in `resolveSelectedDraft` and is unit-tested there.
+   */
+  useEffect(() => {
+    if (studioFocus === undefined || studioFocus === null) return;
+    setSegment('studio');
+    onStudioFocusConsumed?.();
+    // Intended: apply each intent once (the shell uses a nonce per request).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studioFocus]);
+
+  /**
+   * The Studio reports its ready-draft count: it drives the Build badge here and
+   * tells the shell to re-read its attention poll, so the nav badge and the
+   * segment badge never disagree.
+   */
+  const handleReadyCount = (ready: number): void => {
+    setReadyDrafts(ready);
+    onAttentionChanged?.();
+  };
+
   const sorted = installed;
 
   const replaceOrDrop = (summary: SkillSummary | null, id: string): void => {
@@ -234,6 +301,7 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
       if (op === 'uninstall') {
         await uninstallSkill(token, skillId);
         replaceOrDrop(null, skillId);
+        onAttentionChanged?.();
         return;
       }
       // Status change: the core usually returns the updated row; when it
@@ -273,6 +341,54 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
     });
   };
 
+  /**
+   * Start a draft FROM an installed skill and open it in the Studio.
+   *
+   * `edit` binds the draft to this skill's id, which is the ONLY way a skill's
+   * permissions can ever change: the core refuses a PUT on an already-installed
+   * draft, so an update always travels through a fresh edit draft — and the
+   * install confirmation is where the before -> after table is shown (M26 D6).
+   * `fork` copies it under a new id instead, leaving the original alone.
+   */
+  const startStudioDraft = async (skillId: string, mode: 'fork' | 'edit'): Promise<void> => {
+    if (busy[skillId] !== undefined || viewLocked) return;
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    setArmed((prev) => ({ ...prev, [skillId]: false }));
+    setBusy((prev) => ({ ...prev, [skillId]: mode }));
+    setRowError((prev) => ({ ...prev, [skillId]: '' }));
+    try {
+      const draft =
+        mode === 'fork'
+          ? await forkSkill(token, skillId)
+          : await editSkill(token, skillId);
+      // The shell owns the intent; opening the draft is its decision, so the
+      // Studio and a chat card cannot disagree about what "open in the Studio"
+      // means.
+      onOpenStudioDraft?.(draft.id);
+      onAttentionChanged?.();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        handleSessionLost();
+        return;
+      }
+      setRowError((prev) => ({
+        ...prev,
+        [skillId]:
+          cause instanceof Error ? cause.message : 'Could not open that skill in the Studio.',
+      }));
+    } finally {
+      setBusy((prev) => {
+        const next = { ...prev };
+        delete next[skillId];
+        return next;
+      });
+    }
+  };
+
   const handleInstall = async (catalogId: string): Promise<void> => {
     if (installingId !== null) return;
     const token = readStoredToken();
@@ -286,6 +402,7 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
       await installSkill(token, catalogId);
       // Installed: refresh the Installed list and take the user there.
       await loadInstalled();
+      onAttentionChanged?.();
       setSegment('installed');
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -343,26 +460,12 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
           </div>
         ) : null}
 
-        <div className="seg-tabs" role="group" aria-label="Skills segments">
-          <button
-            type="button"
-            className="btn btn-secondary seg-tab"
-            onClick={() => setSegment('installed')}
-            aria-pressed={segment === 'installed'}
-            disabled={viewLocked}
-          >
-            Installed
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary seg-tab"
-            onClick={() => setSegment('catalog')}
-            aria-pressed={segment === 'catalog'}
-            disabled={viewLocked}
-          >
-            Catalog
-          </button>
-        </div>
+        <SkillsSegments
+          segment={segment}
+          readyDrafts={readyDrafts}
+          disabled={viewLocked}
+          onSelect={setSegment}
+        />
 
         {/* ------------------------- Installed segment ------------------------ */}
         <div className={segment === 'installed' ? 'skills-seg skills-seg-active' : 'skills-seg'}>
@@ -422,6 +525,26 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
                           </span>
                         </div>
                         <div className="row-actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => void startStudioDraft(row.summary.id, 'edit')}
+                            disabled={busy[row.summary.id] !== undefined || viewLocked}
+                            aria-busy={busy[row.summary.id] === 'edit'}
+                            aria-label={`Edit ${row.summary.name} in the Skill Studio`}
+                          >
+                            {busy[row.summary.id] === 'edit' ? 'Opening…' : 'Edit in Studio'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => void startStudioDraft(row.summary.id, 'fork')}
+                            disabled={busy[row.summary.id] !== undefined || viewLocked}
+                            aria-busy={busy[row.summary.id] === 'fork'}
+                            aria-label={`Copy ${row.summary.name} into a new draft`}
+                          >
+                            {busy[row.summary.id] === 'fork' ? 'Copying…' : 'Fork'}
+                          </button>
                           {row.summary.status === 'installed' ? (
                             <button
                               type="button"
@@ -595,8 +718,90 @@ export default function SkillsView({ personas, onUnpair, active }: SkillsViewPro
             </ul>
           ) : null}
         </div>
+
+        {/* --------------------------- Build segment -------------------------- */}
+        <div className={segment === 'studio' ? 'skills-seg skills-seg-active' : 'skills-seg'}>
+          <SkillStudio
+            active={active}
+            disabled={viewLocked}
+            personas={personas}
+            focusDraftId={studioFocus?.draftId ?? null}
+            onFocusHandled={onStudioFocusConsumed}
+            onOpenConversation={onOpenConversation}
+            onSessionLost={handleSessionLost}
+            onReadyCountChange={handleReadyCount}
+            onInstalled={() => {
+              void loadInstalled();
+              onAttentionChanged?.();
+            }}
+          />
+        </div>
       </div>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Segment switch (its own component so the badge rule is render-testable)
+// ---------------------------------------------------------------------------
+
+export interface SkillsSegmentsProps {
+  segment: SkillsSegment;
+  /** Ready drafts, badged on Build (M26 D13/spec Web). */
+  readyDrafts: number;
+  disabled: boolean;
+  onSelect: (segment: SkillsSegment) => void;
+}
+
+/**
+ * Installed | Catalog | Build, reusing the app's segmented pill.
+ *
+ * Build carries the count of drafts that are WAITING on the owner (validated
+ * ok, not installed, no open install ask) — the same rule the nav badge uses, so
+ * the two numbers cannot disagree. A count of zero renders no badge at all
+ * rather than a "0" that would read as a waiting item.
+ */
+export function SkillsSegments({
+  segment,
+  readyDrafts,
+  disabled,
+  onSelect,
+}: SkillsSegmentsProps) {
+  const badge = formatBadge(readyDrafts);
+  return (
+    <div className="seg-tabs" role="group" aria-label="Skills segments">
+      <button
+        type="button"
+        className="btn btn-secondary seg-tab"
+        onClick={() => onSelect('installed')}
+        aria-pressed={segment === 'installed'}
+        disabled={disabled}
+      >
+        Installed
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary seg-tab"
+        onClick={() => onSelect('catalog')}
+        aria-pressed={segment === 'catalog'}
+        disabled={disabled}
+      >
+        Catalog
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary seg-tab"
+        onClick={() => onSelect('studio')}
+        aria-pressed={segment === 'studio'}
+        disabled={disabled}
+        aria-label={
+          badge === undefined ? 'Build' : `Build — ${badge} draft${badge === '1' ? '' : 's'} ready`
+        }
+      >
+        Build
+        {badge !== undefined ? <span className="tab-badge">{badge}</span> : null}
+      </button>
+    </div>
   );
 }
 

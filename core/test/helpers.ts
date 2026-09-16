@@ -59,6 +59,8 @@ import type { SiteScopeManager } from '../src/browser/scopes.js';
 import { FILE_TOOL_IDS } from '../src/files/tools.js';
 import { createSkillManager } from '../src/skills/manager.js';
 import type { SkillManager } from '../src/skills/manager.js';
+import { createSkillDraftManager } from '../src/skills/drafts.js';
+import type { SkillGenerateHook } from '../src/skills/drafts.js';
 import { createSkillRunner } from '../src/skills/runner.js';
 import type { SkillRunner } from '../src/skills/runner.js';
 import {
@@ -120,6 +122,7 @@ import {
   createSessionStore,
   createSettingsStore,
   createSiteScopeStore,
+  createSkillDraftStore,
   createSkillInvocationStore,
   createSkillStore,
   createSpendLedgerStore,
@@ -155,6 +158,7 @@ import type {
   SessionStore,
   SettingsStore,
   SiteScopeStore,
+  SkillDraftStore,
   SkillInvocationStore,
   SkillStore,
   ThemeStore,
@@ -329,6 +333,18 @@ export interface HarnessOptions {
    * resolver to script a real provider turn.
    */
   brainstormProvider?: () => Promise<DailySummarizeTarget | null> | DailySummarizeTarget | null;
+  /**
+   * M26 cut B: the one-shot skill generator the drafts manager is built with.
+   * ABSENT BY DEFAULT — no generator means `mode: 'generate'` is refused by
+   * name, which is exactly what a build with no configured provider does.
+   */
+  skillDraftGenerator?: SkillGenerateHook;
+  /**
+   * M26 cut E: wire the skill RUNNER into the drafts manager (default true).
+   * Pass false to leave the manager without a sandbox, which is the only way to
+   * reach the dry-run's typed "no runner wired" refusal.
+   */
+  skillDraftRunner?: boolean;
 }
 
 export interface Harness {
@@ -408,6 +424,18 @@ export interface Harness {
   skillInvocationStore: SkillInvocationStore;
   skills?: SkillManager;
   skillRunner?: SkillRunner;
+  /** M26 skill-draft authoring over the SAME db (default on). */
+  skillDrafts?: import('../src/skills/drafts.js').SkillDraftManager;
+  /** The generator the drafts manager got (undefined = generate is refused). */
+  skillDraftGenerator?: import('../src/skills/drafts.js').SkillGenerateHook;
+  skillDraftStore: SkillDraftStore;
+  /**
+   * The scratch root a draft dry-run materializes into (removed in close()).
+   * Tests assert against it exactly as the manager does — the run dir itself is
+   * wiped by the manager, so this is the PARENT the run reported. `undefined`
+   * when skills are unwired.
+   */
+  skillRunsDir?: string;
   /** M9 playbook + deploy stores/managers over the SAME db (default on). */
   deployProfileStore: DeployProfileStore;
   playbookRunStore: PlaybookRunStore;
@@ -644,10 +672,16 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   const skillsOption =
     typeof options.skills === 'object' && options.skills !== null ? options.skills : {};
   let skillsDir: string | undefined;
+  let skillRunsDir: string | undefined;
   let skills: SkillManager | undefined;
   let skillRunner: SkillRunner | undefined;
+  let skillDrafts: import('../src/skills/drafts.js').SkillDraftManager | undefined;
+  const skillDraftStore = createSkillDraftStore(db);
   if (skillsEnabled && brokerEnabled) {
     skillsDir = skillsOption.storeDir ?? makeTempRoot();
+    // M26 cut E: dry-runs materialize under their own temp root, so a test can
+    // see exactly what the manager wrote and then wiped.
+    skillRunsDir = makeTempRoot();
     const catalogDir = skillsOption.catalogDir ?? REPO_CATALOG;
     // The broker registry is the six files.* manifests in v1; FILE_TOOL_IDS
     // mirrors it so the harness needs no back-reference to the broker.
@@ -665,6 +699,26 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       broker: broker as ToolBroker,
       audit,
       invocations: skillInvocationStore,
+    });
+    // M26: drafts over the same db, with the same registry. No generator is
+    // injected by default, so `mode:'generate'` is refused — which is exactly
+    // what a build with no configured provider does. A test may inject one to
+    // exercise the generate seam without a real provider. Cut E wires the SAME
+    // runner (a dry-run is the real sandbox) plus the scratch root, and
+    // `skillDraftRunner: false` leaves the runner out on purpose. Cut C wires
+    // the broker's approval queue: an install ask rides that same `pending_tools`
+    // table the Files queue reads.
+    skillDrafts = createSkillDraftManager({
+      store: skillDraftStore,
+      skills,
+      tools: registry,
+      audit,
+      runsDir: skillRunsDir,
+      pending: pendingManager,
+      ...(options.skillDraftRunner === false ? {} : { runner: skillRunner }),
+      ...(options.skillDraftGenerator !== undefined
+        ? { generate: options.skillDraftGenerator }
+        : {}),
     });
   }
 
@@ -792,6 +846,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(themesEnabled ? { themes } : {}),
     ...(browserEnabled ? { scopes } : {}),
     ...(skills && skillRunner ? { skills, skillRunner } : {}),
+    ...(skillDrafts !== undefined ? { skillDrafts } : {}),
     ...(playbooks !== undefined ? { playbooks } : {}),
     ...(deployProfiles !== undefined ? { deployProfiles } : {}),
     ...(schedules !== undefined ? { schedules } : {}),
@@ -858,6 +913,10 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     skillInvocationStore,
     skills,
     skillRunner,
+    skillDrafts,
+    skillDraftGenerator: options.skillDraftGenerator,
+    skillDraftStore,
+    skillRunsDir,
     deployProfileStore,
     playbookRunStore,
     deployProfiles,
@@ -867,6 +926,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     close(): void {
       db.close();
       if (skillsDir !== undefined) removeTempRoot(skillsDir);
+      if (skillRunsDir !== undefined) removeTempRoot(skillRunsDir);
     },
   };
 }

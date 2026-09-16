@@ -44,9 +44,11 @@ import {
   failedRunsNeedingAttention,
   formatBadge,
   isAttentionView,
+  readyDraftsNeedingAttention,
   type AttentionCounts,
 } from './lib/attention.js';
 import { listProfile } from './lib/memory.js';
+import { listDrafts } from './lib/skills.js';
 import { listScheduleRuns } from './lib/schedules.js';
 import { revokeSession } from './lib/api.js';
 import AuditView from './AuditView.js';
@@ -408,6 +410,12 @@ export default function App() {
   // M16 wiki-links: a `[[Note Title]]` chip in chat asks the Notes view to
   // open a note. Nonce forces a repeat click on the same id to re-focus.
   const [noteFocus, setNoteFocus] = useState<{ id: string; nonce: number } | null>(null);
+  // M26 D (PLAN-M26.md L1): the Skills view's Build segment can be opened on
+  // ONE draft — the deep link a chat approval card's "Review in Studio" uses,
+  // in the same shape as `noteFocus`. The nonce makes a repeat request for the
+  // same draft re-fire; SkillsView reports back so this state can be cleared
+  // (a stale intent would keep overriding the rail's own selection).
+  const [studioFocus, setStudioFocus] = useState<{ draftId: string; nonce: number } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [creatingChat, setCreatingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -532,12 +540,19 @@ export default function App() {
    */
   const [memorySuggestions, setMemorySuggestions] = useState<number>(0);
   const [failedRuns, setFailedRuns] = useState<number>(0);
+  /**
+   * M26 D13: authored drafts that validate ok and are not installed — the
+   * Skills badge. Only a COUNT lives here, like every other attention source;
+   * the draft content stays in the Studio that owns it.
+   */
+  const [readyDrafts, setReadyDrafts] = useState<number>(0);
 
   const refreshAttention = useCallback((): void => {
     const token = readStoredToken();
     if (!token) {
       setMemorySuggestions(0);
       setFailedRuns(0);
+      setReadyDrafts(0);
       return;
     }
     void listProfile(token)
@@ -548,12 +563,19 @@ export default function App() {
     void listScheduleRuns(token, { limit: 50 })
       .then((runs) => setFailedRuns(failedRunsNeedingAttention(runs, Date.now())))
       .catch(() => undefined);
+    // The SAME rule the Build segment badges with (`readyDraftsNeedingAttention`),
+    // including the no-double-count rule for a draft whose install is already an
+    // open approval (that one is counted under Files).
+    void listDrafts(token)
+      .then((drafts) => setReadyDrafts(readyDraftsNeedingAttention(drafts)))
+      .catch(() => undefined);
   }, []);
 
   const attention = attentionCounts({
     pendingApprovals: pending.length,
     memorySuggestions,
     failedScheduleRuns: failedRuns,
+    readyDrafts,
   });
 
   // M6: theme list + resolved active theme. The active theme is persona-
@@ -777,6 +799,18 @@ export default function App() {
     setNoteFocus({ id, nonce: Date.now() });
     setView('notes');
   };
+
+  /**
+   * M26 D (PLAN-M26.md L1): open the Skills view's Build segment on ONE draft —
+   * the shape of the existing Notes deep link, and the ONE mechanism two
+   * producers share: a chat approval card's "Review in Studio", and the
+   * Installed list's Edit/Fork (which is how a skill's permissions are ever
+   * changed, since the core refuses an edit of an already-installed draft).
+   */
+  const openSkillDraftInStudio = useCallback((draftId: string): void => {
+    setStudioFocus({ draftId, nonce: Date.now() });
+    setView('skills');
+  }, []);
 
   const handleDeleteConversation = async (id: string): Promise<void> => {
     const token = readStoredToken();
@@ -1670,6 +1704,11 @@ function ColumnDivider({
                 personas={personas}
                 onUnpair={handleSessionLost}
                 active={view === 'skills'}
+                studioFocus={studioFocus}
+                onStudioFocusConsumed={() => setStudioFocus(null)}
+                onAttentionChanged={refreshAttention}
+                onOpenConversation={handleOpenConversation}
+                onOpenStudioDraft={openSkillDraftInStudio}
               />
             </div>
             <div className={view === 'playbooks' ? 'app-view app-view-active' : 'app-view'}>

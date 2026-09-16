@@ -17,6 +17,8 @@
  * exists.
  */
 import type { ChatMessage, IndependenceLevel } from '@partner/shared';
+import { entryContract } from '../skills/runtime.js';
+import { DRAFT_TOOL_ID, REQUEST_INSTALL_TOOL_ID } from '../skills/tool.js';
 
 /** Feature-flagged instruction blocks (id -> text). Order is stable. */
 const INSTRUCTIONS: ReadonlyArray<readonly [string, string]> = [
@@ -171,6 +173,64 @@ export const SEARCH_TOOL_APPROVAL_INSTRUCTION = [
   'until you see its results; results arrive as a note AFTER the approval — say you are looking it up and',
   'answer on the following turn; never invent titles, URLs or facts; never emit this directive for any other tool.',
 ].join('\n');
+
+/**
+ * M26 D8: the skill-authoring contract. Appended to a persona's system prompt
+ * ONLY when the turn can actually author (desktop client, `skill.author`,
+ * independence >= suggest, neither tool banned) — the caller decides, this
+ * function states the contract. Same input, same string.
+ *
+ * It restates the runtime by CALLING `entryContract()` instead of describing it
+ * again, so the prompt cannot promise a harness the worker does not implement.
+ * The two sentences that carry the most weight are the last two: the model
+ * cannot install anything, and it may fix validation errors by re-calling the
+ * same tool with the same id.
+ */
+export function authoringInstructions(toolIds: readonly string[]): string {
+  return [
+    'Skill authoring is available to you in this conversation.',
+    `  ${DRAFT_TOOL_ID} — stage or update a skill DRAFT`,
+    `  ${REQUEST_INSTALL_TOOL_ID} — ask the user to install a draft`,
+    '',
+    'Arguments:',
+    `  ${DRAFT_TOOL_ID}: { name, code, tools?, description?, manifestText?, id? }`,
+    '    - name and code (the whole entry.mjs as one string) are required',
+    '    - tools lists the broker tool ids the skill needs; with no manifestText the',
+    '      core builds the manifest from name, description and tools for you',
+    '    - pass manifestText only when you need to control risk, version or budget',
+    `  ${REQUEST_INSTALL_TOOL_ID}: { draftId }`,
+    '',
+    'The manifest contract (when you do write manifestText):',
+    '  {"id" (a slug the core replaces anyway), "name", "description", "author",',
+    '   "version": "0.1.0", "entrypoint": "entry.mjs",',
+    '   "permissions": {"tools": [<ids below>], "network": false, "risk":',
+    '                    "low" | "medium" | "high"},',
+    '   "budget": {"timeMs": <ms, at most 300000>}}',
+    '',
+    'Caps the core enforces (a bundle that breaks one is refused, not fixed):',
+    '  - args are capped at 64 KiB and the result at 1 MiB',
+    '  - budget.timeMs is clamped to 300000 ms (the runner ceiling)',
+    '  - "permissions.network": true is refused — a skill has NO network access',
+    '  - permissions.tools may name ONLY the ids listed below; anything else is',
+    '    dropped and reported as a problem',
+    '  - the entry must export run(args) (named, default, or export { run })',
+    '',
+    entryContract([...toolIds]),
+    '',
+    'How it works, in the order it happens:',
+    '  1. You stage a draft; the result tells you whether it validates and names',
+    '     every problem. Re-call the SAME tool with the SAME id and a fixed bundle',
+    '     to clear them — that is how you iterate, in this conversation.',
+    '  2. You CANNOT install a skill: the user installs it. You may ASK with',
+    `     ${REQUEST_INSTALL_TOOL_ID}, which opens an approval card here for them`,
+    '     to decide; nothing is installed until they approve.',
+    '  3. You cannot run a draft either. Only the user test-runs it, in the Studio',
+    '     (Skills > Build), where they also read the code before installing.',
+    '',
+    'Drafting changes nothing the user can execute, so never describe a draft as',
+    'installed, live, active or running.',
+  ].join('\n');
+}
 
 export function applyStructuredGuidance(
   out: ChatMessage[],

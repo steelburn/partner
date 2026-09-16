@@ -11,6 +11,8 @@
  *
  * Locked decisions (PLAN-M20-B §6):
  *  - mobile: denied `file.write`, `roots`, `deploy`, `skill.install`.
+ *    (`skill.author` is denied by the same mechanism — mobile is an allowlist,
+ *    so a new capability is denied for it until this table says otherwise.)
  *  - extension: the LEAST trusted client — it executes inside pages the user
  *    does not control, so its envelope is an allowlist of read + browser +
  *    chat, and every other capability is denied by construction.
@@ -43,6 +45,13 @@ export const CAPABILITIES = [
   'deploy',
   'skill.install',
   'skill.invoke',
+  /**
+   * M26: AUTHORING — creating, editing, validating and dry-running a skill
+   * DRAFT. Narrower than `skill.install` on purpose: writing a draft is inert
+   * (nothing runs, nothing installs), so it is gated separately from the act
+   * that makes code executable.
+   */
+  'skill.author',
   'mcp.call',
   /**
    * M22 (was the recorded "vocabulary gap"): PROVIDER KEY WRITES —

@@ -21,11 +21,13 @@ import { basename, join } from 'node:path';
 import type { CatalogSkill, SkillManifest, ToolId } from '@partner/shared';
 import { FILE_TOOL_IDS } from '../files/tools.js';
 import { skillError, SkillError } from './errors.js';
+// M26 cut A: the shape validator moved to ./manifest.js so an authored draft and
+// an installed bundle are held to ONE bar. Re-exported here because this module
+// was its only public door before the move (existing importers keep working).
+import { ID_RE, validateManifestShape } from './manifest.js';
+export { validateManifestShape } from './manifest.js';
+export type { ManifestValidation } from './manifest.js';
 
-const ENTRY_EXT = '.mjs';
-const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const RISKS: ReadonlySet<string> = new Set(['low', 'medium', 'high']);
-const DEFAULT_TIME_MS = 30_000;
 
 export interface CatalogReadOptions {
   /** Broker tool registry; defaults to the six v1 files.* ids. */
@@ -46,114 +48,6 @@ export interface LoadedCatalogSkill {
   dir: string;
 }
 
-export type ManifestValidation =
-  | { ok: true; manifest: SkillManifest }
-  | { ok: false; errors: string[] };
-
-/**
- * Shape-validate an arbitrary parsed manifest.json against the shared
- * SkillManifest wire type, with the M8 defaults applied (budget.timeMs 30s,
- * tools [] , network false, risk low). fs-free — the entrypoint FILE check
- * happens in the readers that know the bundle directory.
- */
-export function validateManifestShape(raw: unknown): ManifestValidation {
-  const errors: string[] = [];
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, errors: ['manifest must be a JSON object'] };
-  }
-  const value = raw as Record<string, unknown>;
-
-  const id = typeof value.id === 'string' ? value.id.trim() : '';
-  if (id === '' || !ID_RE.test(id)) {
-    errors.push('id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}');
-  }
-  const name = typeof value.name === 'string' ? value.name.trim() : '';
-  if (name === '') errors.push('name is required and must be a non-empty string');
-  const description = typeof value.description === 'string' ? value.description.trim() : '';
-  if (description === '') errors.push('description is required and must be a non-empty string');
-  const author = typeof value.author === 'string' ? value.author.trim() : '';
-  if (author === '') errors.push('author is required and must be a non-empty string');
-  const version = typeof value.version === 'string' ? value.version.trim() : '';
-  if (version === '') errors.push('version is required and must be a non-empty string');
-
-  // entrypoint: a bare .mjs file name inside the bundle (no directories, no
-  // traversal — install copies the whole bundle and the runner joins it onto
-  // the code dir, so separators/.. would escape the sandbox store).
-  const entrypoint = typeof value.entrypoint === 'string' ? value.entrypoint : '';
-  if (entrypoint === '' || !entrypoint.endsWith(ENTRY_EXT)) {
-    errors.push('entrypoint must be a single .mjs file inside the skill bundle');
-  } else if (basename(entrypoint) !== entrypoint || entrypoint.includes('/') || entrypoint.includes('\\')) {
-    errors.push('entrypoint must be a bare file name (no path separators)');
-  }
-
-  // permissions
-  const perms = value.permissions;
-  if (perms === null || typeof perms !== 'object' || Array.isArray(perms)) {
-    errors.push('permissions is required and must be an object');
-  }
-  const permsObj = (perms ?? {}) as Record<string, unknown>;
-  const toolsRaw = permsObj.tools;
-  const tools: string[] = [];
-  if (toolsRaw === undefined) {
-    // M8 default: no tools declared.
-  } else if (!Array.isArray(toolsRaw)) {
-    errors.push('permissions.tools must be an array of tool ids');
-  } else {
-    for (const tool of toolsRaw) {
-      if (typeof tool !== 'string' || tool.trim() === '') {
-        errors.push('permissions.tools must contain only non-empty string tool ids');
-        break;
-      }
-      tools.push(tool.trim());
-    }
-  }
-  const network = permsObj.network === true;
-  if (permsObj.network !== undefined && typeof permsObj.network !== 'boolean') {
-    errors.push('permissions.network must be a boolean');
-  }
-  const risk = typeof permsObj.risk === 'string' ? permsObj.risk : 'low';
-  if (!RISKS.has(risk)) errors.push("permissions.risk must be one of low|medium|high");
-
-  // budget
-  const budgetRaw = value.budget;
-  let budget: SkillManifest['budget'];
-  if (budgetRaw === undefined) {
-    budget = { timeMs: DEFAULT_TIME_MS };
-  } else if (budgetRaw === null || typeof budgetRaw !== 'object' || Array.isArray(budgetRaw)) {
-    errors.push('budget must be an object');
-    budget = { timeMs: DEFAULT_TIME_MS };
-  } else {
-    const budgetObj = budgetRaw as Record<string, unknown>;
-    const timeMs = typeof budgetObj.timeMs === 'number' ? budgetObj.timeMs : 0;
-    const maxTokens = budgetObj.maxTokens;
-    if (!Number.isFinite(timeMs) || timeMs <= 0) {
-      errors.push('budget.timeMs must be a positive number of ms');
-      budget = { timeMs: DEFAULT_TIME_MS };
-    } else if (maxTokens !== undefined && (!Number.isFinite(maxTokens as number) || (maxTokens as number) <= 0)) {
-      errors.push('budget.maxTokens must be a positive number when present');
-      budget = { timeMs };
-    } else {
-      budget = maxTokens === undefined ? { timeMs } : { timeMs, maxTokens: maxTokens as number };
-    }
-  }
-
-  if (errors.length > 0) return { ok: false, errors };
-  const manifest: SkillManifest = {
-    id,
-    name,
-    description,
-    author,
-    version,
-    entrypoint,
-    permissions: {
-      tools: tools as ToolId[],
-      network,
-      risk: risk as SkillManifest['permissions']['risk'],
-    },
-    budget,
-  };
-  return { ok: true, manifest };
-}
 
 /** The default M8 broker tool registry (six files.* ids). */
 export function defaultToolRegistry(): ReadonlySet<string> {

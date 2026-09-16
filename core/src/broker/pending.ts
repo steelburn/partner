@@ -7,6 +7,11 @@
  * decide() optionally creates a grant through an injected callback — the
  * broker wires it to the grant manager so this module stays decoupled from
  * grants/roots (PLAN-M2 broker internals).
+ *
+ * M26 added a second KIND of row: a persona asking to install a skill draft
+ * (`kind: 'skill_install'`). Its executor is the skill drafts manager, so
+ * `decide` refuses it (`wrong_kind`) and `settleInstall` closes it once that
+ * executor has decided — the two cannot be confused for each other.
  */
 import { randomUUID } from 'node:crypto';
 import type { PendingToolCall, ToolDecisionInput, ToolRequestedBy, ToolRisk } from '@partner/shared/tools.js';
@@ -36,6 +41,14 @@ export interface EnqueueInput {
   conversationId?: string | null;
   /** M12 external approvals: persona behind the request (queue tagging). */
   personaId?: string | null;
+  /**
+   * M26: 'tool' (default) for a broker call, 'skill_install' for a persona's
+   * request to promote a skill draft. A skill_install row is decided by the
+   * HTTP route (which calls the drafts manager), NEVER by `broker.decide`.
+   */
+  kind?: 'tool' | 'skill_install';
+  /** M26: the draft a 'skill_install' row refers to. */
+  draftId?: string | null;
 }
 
 export interface PendingDecision {
@@ -58,6 +71,15 @@ export interface PendingManager {
    * grant via the injected callback.
    */
   decide(id: string, input: ToolDecisionInput, by: string): PendingDecision;
+  /**
+   * Close a NON-broker row (M26 D2b: kind 'skill_install') once its OWN
+   * executor has decided it. `decide` refuses those rows on purpose — it
+   * EXECUTES the stored tool, and an install ask is executed by the drafts
+   * manager instead. This closes the row and does NOTHING else: no tool runs,
+   * no grant is created. It refuses a 'tool' row (`wrong_kind`) so it can never
+   * be used to close an approval without executing it.
+   */
+  settleInstall(id: string, decision: 'approve' | 'deny', by: string): PendingToolRow;
 }
 
 const REQUESTED_BY: ReadonlySet<string> = new Set(['web', 'persona', 'skill']);
@@ -85,6 +107,10 @@ function toCall(row: PendingToolRow): PendingToolCall {
     // Chat-requested rows carry the conversation they asked from so the
     // chat UI can surface approvals for the active conversation (M12.6).
     conversationId: row.conversationId ?? null,
+    // M26: the queue carries two kinds of ask; the UI labels an install row by
+    // its draft instead of rendering a tool + params.
+    kind: row.kind === 'skill_install' ? 'skill_install' : 'tool',
+    draftId: row.draftId ?? null,
   };
 }
 
@@ -127,6 +153,11 @@ export function createPendingManager(options: PendingManagerOptions): PendingMan
       decidedBy: null,
       conversationId,
       personaId,
+      kind: input.kind === 'skill_install' ? 'skill_install' : 'tool',
+      draftId:
+        typeof input.draftId === 'string' && input.draftId.trim() !== ''
+          ? input.draftId.trim()
+          : null,
     });
     return id;
   }
@@ -149,6 +180,12 @@ export function createPendingManager(options: PendingManagerOptions): PendingMan
     if (row.decidedAt !== null) {
       throw toolError('not_pending', 'pending call was already decided');
     }
+    // M26: only a broker tool call may be decided here. An install ask is a
+    // different decision with a different executor (the drafts manager), so it
+    // must not be approved by the path that executes tools.
+    if (row.kind !== 'tool') {
+      throw toolError('wrong_kind', 'this approval is not a tool call');
+    }
     const at = now();
     store.updateDecision(id, at, decision, by);
     const closed = { ...row, decidedAt: at, decision, decidedBy: by };
@@ -160,5 +197,19 @@ export function createPendingManager(options: PendingManagerOptions): PendingMan
     return { row: closed, grantId };
   }
 
-  return { enqueue, list, get, decide };
+  function settleInstall(id: string, decision: 'approve' | 'deny', by: string): PendingToolRow {
+    const row = store.findById(id);
+    if (!row) throw toolError('not_found', 'pending call not found');
+    if (row.decidedAt !== null) {
+      throw toolError('not_pending', 'pending call was already decided');
+    }
+    if (row.kind !== 'skill_install') {
+      throw toolError('wrong_kind', 'this approval is not a skill install');
+    }
+    const at = now();
+    store.updateDecision(id, at, decision, by);
+    return { ...row, decidedAt: at, decision, decidedBy: by };
+  }
+
+  return { enqueue, list, get, decide, settleInstall };
 }

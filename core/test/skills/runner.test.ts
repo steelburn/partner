@@ -9,7 +9,7 @@
  * prove the echo/pure/tool paths end-to-end via install -> invoke.
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { SkillDetail, SkillInvocationMeta } from '@partner/shared';
@@ -473,6 +473,97 @@ describe('skill runner — integrity (M8 review finding 5)', () => {
       const out = await invoke(env, detail, { name: 'Ada' });
       expect(out.ok).toBe(false);
       expect(out.error).toBe('integrity');
+    } finally {
+      env.close();
+    }
+  });
+});
+
+describe('skill runner — the M26 D5 dry-run context', () => {
+  /** A draft-shaped detail: no installed hash (a draft never has one). */
+  function draftDetail(id: string): SkillDetail {
+    return { ...detailOf(id), sha256: '' };
+  }
+
+  /** Materialize one entry into a fresh dir — what the draft manager does. */
+  function materialize(code: string): string {
+    const dir = makeDir();
+    writeFileSync(join(dir, 'entry.mjs'), code, 'utf8');
+    return dir;
+  }
+
+  it('runs the bundle from ctx.dirOverride, and sha256 "" skips the hash check', async () => {
+    const env = buildEnv();
+    try {
+      const dir = materialize('export function run(){ return { from: "override" }; }');
+      const out = await env.runner.invoke(draftDetail('draft-skill'), {}, { dirOverride: dir });
+      expect(out.ok).toBe(true);
+      if (out.ok) expect(out.result).toEqual({ from: 'override' });
+      // The installed store was never touched: a dry-run bundle lives elsewhere.
+      expect(existsSync(join(env.dataDir, 'draft-skill'))).toBe(false);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('still enforces the integrity check against the overridden dir when a hash is recorded', async () => {
+    const env = buildEnv();
+    try {
+      const dir = materialize('export function run(){ return { tampered: true }; }');
+      const detail: SkillDetail = {
+        ...detailOf('draft-skill'),
+        sha256: createHash('sha256').update('the bundle that was reviewed').digest('hex'),
+      };
+      const out = await env.runner.invoke(detail, {}, { dirOverride: dir });
+      expect(out.ok).toBe(false);
+      if (!out.ok) expect(out.error).toBe('integrity');
+    } finally {
+      env.close();
+    }
+  });
+
+  it('sends the redacted lines to ctx.logSink instead of the core console', async () => {
+    const env = buildEnv();
+    try {
+      const dir = materialize(`export function run(){
+        globalThis.partner.log('token=sk-abcdefgh12345678');
+        return { ok: true };
+      }`);
+      const lines: string[] = [];
+      const out = await env.runner.invoke(draftDetail('log-draft'), {}, {
+        dirOverride: dir,
+        logSink: (line) => lines.push(line),
+      });
+      expect(out.ok).toBe(true);
+      expect(lines.join('\n')).toContain('[skill log-draft]');
+      // Redaction is unchanged by the redirect: the author sees the reason, not
+      // the secret.
+      expect(lines.join('\n')).toContain('***[redacted]');
+      expect(lines.join('\n')).not.toContain('sk-abcdefgh12345678');
+      // The runner-level sink (the core console) did not receive them.
+      expect(env.lines.join('\n')).not.toContain('[skill log-draft]');
+    } finally {
+      env.close();
+    }
+  });
+
+  it('writes no skill_invocations row with record:false, but still audits the run', async () => {
+    const env = buildEnv();
+    try {
+      const dir = materialize('export function run(){ return { ok: true }; }');
+      const out = await env.runner.invoke(draftDetail('quiet-skill'), {}, {
+        dirOverride: dir,
+        record: false,
+      });
+      expect(out.ok).toBe(true);
+      // A dry-run is not history...
+      expect(env.invocations.listBySkill('quiet-skill', 10)).toEqual([]);
+      // ...but the run still settles a meta the caller can audit, and the
+      // audit row still happens (M26 D5/A).
+      expect(out.meta).toMatchObject({ skillId: 'quiet-skill', ok: true, toolCalls: 0 });
+      const audited = env.audit.list(50).filter((row) => row.action === 'skill.invoke');
+      expect(audited).toHaveLength(1);
+      expect(JSON.parse(audited[0]?.details ?? '{}')).toMatchObject({ ok: true, toolCalls: 0 });
     } finally {
       env.close();
     }

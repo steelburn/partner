@@ -152,6 +152,10 @@ describe('capability vocabulary', () => {
       'deploy',
       'skill.install',
       'skill.invoke',
+      // M26: authoring is gated SEPARATELY from installing — writing a draft is
+      // inert (nothing runs, nothing installs), so it gets its own name and is
+      // denied to mobile/extension by the same allowlist mechanism.
+      'skill.author',
       'mcp.call',
       // M22: the two names the vocabulary was missing (the recorded "gap").
       'provider.configure',

@@ -28,6 +28,12 @@
  *   with redactString applied. Skill logs/args/results NEVER reach audit:
  *   each run records one skill_invocations meta row (ok/toolCalls/ms/error
  *   code) + one skill.invoke audit row (ids/version/counts only).
+ *
+ *   dry-run (M26 D5): `ctx.dirOverride` runs a bundle the core materialized
+ *   somewhere else, `ctx.logSink` sends the same redacted lines to the author's
+ *   run response instead of the console, and `ctx.record:false` keeps the run
+ *   out of skill_invocations (a dry-run is not history). The audit row and the
+ *   sandbox are unchanged - a dry-run is exactly the real launcher.
  */
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -40,10 +46,9 @@ import type { SkillDetail, SkillInvocationMeta, ToolRisk } from '@partner/shared
 import type { ToolBroker } from '../broker/broker.js';
 import type { AuditService } from '../services/redaction.js';
 import type { SkillInvocationStore } from '../stores/types.js';
+import { MAX_SKILL_TIME_MS } from './manifest.js';
 
 const DEFAULT_BUDGET_MS = 30_000;
-/** Hard ceiling on a skill's declared budget (M8 review finding 4). */
-const MAX_SKILL_TIME_MS = 300_000;
 const DEFAULT_MAX_ARGS_BYTES = 64 * 1024;
 const DEFAULT_MAX_RESULT_BYTES = 1024 * 1024;
 const MAX_ERROR_CODE = 200;
@@ -108,6 +113,27 @@ export interface SkillInvokeContext {
   personaId?: string;
   /** Abort kills the worker ('aborted' outcome). */
   signal?: AbortSignal;
+  /**
+   * M26 D5: the CORE-OWNED bundle dir for a draft dry-run
+   * (config.skillRunsDir). It is NEVER caller-supplied - the draft route
+   * materializes the bundle and passes the dir it made, so a request can never
+   * point the runner at an arbitrary directory. Absent = the installed store
+   * dir (dataDir/<id>).
+   */
+  dirOverride?: string;
+  /**
+   * M26 D5: per-invocation redacted log sink (default: the core console). Only
+   * the destination changes - the lines still go through redactString, so a
+   * dry-run can show the author why a skill failed without ever printing a
+   * secret.
+   */
+  logSink?: (line: string) => void;
+  /**
+   * M26 D5: false writes NO skill_invocations row - a dry-run is not history.
+   * Default true keeps every installed-skill behaviour identical. The audit row
+   * still happens, because a run is an auditable event either way.
+   */
+  record?: boolean;
 }
 
 export interface SkillRunner {
@@ -133,7 +159,12 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
     return Math.min(raw, MAX_SKILL_TIME_MS);
   }
 
-  /** Record the meta row + audit for a settled (or pre-spawn-failed) run. */
+  /**
+   * Record the meta row + audit for a settled (or pre-spawn-failed) run.
+   * `persist: false` (M26 D5 dry-run) keeps the meta in the RESPONSE - the
+   * caller still needs ok/toolCalls/ms for its own audit row - while writing no
+   * skill_invocations row.
+   */
   function record(
     skill: SkillDetail,
     startedAt: number,
@@ -141,6 +172,7 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
     personaId: string | null,
     toolCalls: number,
     outcome: { ok: true } | { ok: false; error: string },
+    persist = true,
   ): SkillInvocationMeta {
     const error = outcome.ok ? null : outcome.error;
     const meta: SkillInvocationMeta = {
@@ -154,17 +186,19 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
       error,
       ms: finishedAt - startedAt,
     };
-    invocations.insert({
-      id: meta.id,
-      skillId: meta.skillId,
-      personaId: meta.personaId,
-      startedAt: meta.startedAt,
-      finishedAt: meta.finishedAt,
-      ok: meta.ok ? 1 : 0,
-      toolCalls: meta.toolCalls,
-      error: meta.error,
-      ms: meta.ms,
-    });
+    if (persist) {
+      invocations.insert({
+        id: meta.id,
+        skillId: meta.skillId,
+        personaId: meta.personaId,
+        startedAt: meta.startedAt,
+        finishedAt: meta.finishedAt,
+        ok: meta.ok ? 1 : 0,
+        toolCalls: meta.toolCalls,
+        error: meta.error,
+        ms: meta.ms,
+      });
+    }
     // Audit: ids/version/counts ONLY — never skill logs, args or results.
     const details: Record<string, unknown> = {
       version: skill.version,
@@ -185,6 +219,9 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
   ): Promise<SkillInvokeResult> {
     const startedAt = now();
     const personaId = typeof ctx.personaId === 'string' && ctx.personaId.trim() !== '' ? ctx.personaId.trim() : null;
+    // M26 D5 knobs: a dry-run redirects the log lines and keeps no history.
+    const sink = ctx.logSink ?? logSink;
+    const persist = ctx.record !== false;
 
     // Args JSON cap — pre-spawn (a giant/cyclic payload never reaches a worker).
     let argsText = '';
@@ -192,24 +229,39 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
       argsText = JSON.stringify(rawArgs === undefined ? {} : rawArgs);
     } catch {
       const finished = now();
-      const meta = record(skill, startedAt, finished, personaId, 0, {
-        ok: false,
-        error: 'caps_exceeded',
-      });
+      const meta = record(
+        skill,
+        startedAt,
+        finished,
+        personaId,
+        0,
+        { ok: false, error: 'caps_exceeded' },
+        persist,
+      );
       return { ok: false, error: 'caps_exceeded', meta };
     }
     if (argsText === undefined || Buffer.byteLength(argsText, 'utf8') > maxArgsBytes) {
       const finished = now();
-      const meta = record(skill, startedAt, finished, personaId, 0, {
-        ok: false,
-        error: 'caps_exceeded',
-      });
+      const meta = record(
+        skill,
+        startedAt,
+        finished,
+        personaId,
+        0,
+        { ok: false, error: 'caps_exceeded' },
+        persist,
+      );
       return { ok: false, error: 'caps_exceeded', meta };
     }
 
     const budgetMs = budgetMsOf(skill);
     const workerPath = WORKER_PATH;
-    const skillDir = join(dataDir, skill.id);
+    // The override wins when the caller (the draft route) materialized the
+    // bundle elsewhere - the store dir is only the installed-skill default.
+    const skillDir =
+      typeof ctx.dirOverride === 'string' && ctx.dirOverride !== ''
+        ? ctx.dirOverride
+        : join(dataDir, skill.id);
     mkdirSync(skillDir, { recursive: true });
 
     // Integrity pre-check (M8 review finding 5): refuse to run code whose
@@ -220,17 +272,27 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         const entryAbs = join(skillDir, skill.manifest.entrypoint);
         const digest = createHash('sha256').update(readFileSync(entryAbs)).digest('hex');
         if (digest !== skill.sha256) {
-          const meta = record(skill, startedAt, now(), personaId, 0, {
-            ok: false,
-            error: 'integrity',
-          });
+          const meta = record(
+            skill,
+            startedAt,
+            now(),
+            personaId,
+            0,
+            { ok: false, error: 'integrity' },
+            persist,
+          );
           return { ok: false, error: 'integrity', meta };
         }
       } catch {
-        const meta = record(skill, startedAt, now(), personaId, 0, {
-          ok: false,
-          error: 'integrity',
-        });
+        const meta = record(
+          skill,
+          startedAt,
+          now(),
+          personaId,
+          0,
+          { ok: false, error: 'integrity' },
+          persist,
+        );
         return { ok: false, error: 'integrity', meta };
       }
     }
@@ -272,7 +334,7 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
           // Already gone.
         }
         const finishedAt = now();
-        const meta = record(skill, startedAt, finishedAt, personaId, toolCalls, outcome);
+        const meta = record(skill, startedAt, finishedAt, personaId, toolCalls, outcome, persist);
         if (outcome.ok) {
           resolve({ ok: true, result: outcome.result, meta });
         } else {
@@ -385,7 +447,7 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         };
         if (msg.type === 'log') {
           const line = redactString(String(msg.line ?? ''));
-          logSink(`[skill ${skill.id}] ${line}`);
+          sink(`[skill ${skill.id}] ${line}`);
           return;
         }
         if (msg.type === 'tools.exec') {

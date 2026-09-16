@@ -30,7 +30,7 @@ describe('M11 schema v12 (guarded columns)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(20);
+      expect(SCHEMA_VERSION).toBe(21);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');

@@ -430,6 +430,50 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
 - **Audit:** every skill invocation is logged (which persona invoked it,
   what it touched) and reviewable; a skill that asks for more than it needs
   can be uninstalled with one click, and its store wiped.
+- **Authoring (M26, planned — `PLAN-M26.md`).** The gallery is the *install*
+  half; M26 adds the *make* half. A **draft** is an inert, editable bundle
+  (stored as rows in the user's own encrypted DB, never a directory) that the
+  user describes in chat (`skills.draft`) or in the **Skill Studio**
+  (AI-assisted generation from the configured provider, or a template, so it
+  works with no provider configured). Validation is deterministic and never
+  executes code; a sandboxed **dry-run** returns the worker's own logs; and
+  **install is the owner's act on both surfaces** — the Studio button, or an
+  approval card in the chat the persona asked from (`skills.requestInstall`
+  writes a `pending_tools` row of kind `skill_install`, and Approve calls the
+  same `promote()` the Studio calls). Installed authored skills carry
+  `source:'authored'`; a widened permission set on update forces re-consent on
+  either path; unsigned bundle export/import lands as an inert draft (signing
+  deferred). Capability `skill.author` is desktop-only; `network` stays refused.
+  The *pure* and *reads-files* templates ship here; the *notes* and *MCP*
+  templates need capabilities no skill has today and ship in **M27**.
+- **What a skill may reach (M27, planned — `PLAN-M27.md`).** `ToolScope` widens
+  to `{kind:'project'} | {kind:'app'}` so three read-only app tools
+  (`notes.list/search/read`, mapped to the existing `file.read` capability)
+  resolve against a reserved `APP_SCOPE_ID` instead of a project root; a
+  manifest may declare `permissions.mcpServers`, letting the sandbox reach an
+  **enabled** MCP server's tools (medium-or-higher ceiling, coded denial when
+  undeclared/disabled, never an interactive pending row); and the **session
+  client class is propagated into the runner** for broker and MCP calls, which
+  closes the gap M20-B S4 recorded against itself. **S5** adds model reach:
+  `permissions.llm` enables `partner.llm.complete`, the skill's own
+  `budget.maxTokens` is finally **enforced** (declared and validated since M8,
+  never charged), the invocation's tokens are ledger-charged, and `skill.llm`
+  is a desktop-only capability — so a skill can send what it read to the
+  configured provider, **declared and bounded**, never ambient.
+- **Flow authoring (M28, planned — `PLAN-M28.md`).** The Studio gains a fourth
+  surface: a React Flow canvas (the dependency is already in `web/`, used by
+  `NotesGraph.tsx`) where a skill is a graph of ten typed nodes and the model
+  can build it, the user can draw it, and the model can refine it as a
+  **proposal the user accepts or rejects**. The load-bearing constraint: a flow
+  is **not a second kind of skill** — it compiles deterministically to
+  `entry.mjs` (same artifact, same sandbox, same hash check, no flow
+  interpreter), so the emitted code is held to the unmodified install gates.
+  The vocabulary is deliberately not a programming language (no loops, no
+  arbitrary expressions) and the compiler is total; expressions are a validated
+  path grammar plus fixed operators, so an AI-written graph **cannot inject
+  code**. `permissions.tools` is derived from the graph's `tool` nodes, and
+  flow/code coherence is a derived hash comparison, not a flag. The `llm` node
+  needs M27 S5; without it the palette is nine nodes.
 
 ---
 
@@ -511,6 +555,7 @@ any Partner-owned server (there is none in v1).
 | `project_roots` | user-granted filesystem roots |
 | `pending_tools` / `file_proposals` | approval queue + write proposals |
 | `skills` / `skill_invocations` | installed skill metadata + hashes; invocation audit |
+| `skill_drafts` | authored skill bundles in progress: manifest text + entry code + the deterministic validation result. **Inert** — nothing runs or installs from here until `promote` (M26 cut A, schema v21) |
 | `playbook_runs` / `scheduled_runs` | playbook runs + scheduled-run state (M14) |
 | `spend_ledger` | rolling provider spend windows (M10) |
 | `deploy_profiles` | Ship/deploy targets (§6.1) |
@@ -527,11 +572,12 @@ any Partner-owned server (there is none in v1).
 | `pairings` / `sessions` | device/origin pairing + session tokens; sessions gain `user_id`, client class, device label/platform and `rotated_at` (M20) — **`kind` is deliberately NOT widened**: it is the audit actor for 7 routes |
 | `audit_log` | append-only activity |
 
-Schema is `v20` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+Schema is `v21` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
 `personas.policy`/`home_folder`/`schedules`, `providers.purpose`/
 `vision_models`, `conversations.folder_id`/`parent_id`/`source_asset_id`,
-`messages.content_type`, `pending_tools.conversation_id`/`persona_id`, and —
-M20.B — `sessions.user_id`/`client_class`/`device_label`/`platform`/`rotated_at`).
+`messages.content_type`, `pending_tools.conversation_id`/`persona_id`/**`kind`**/
+**`draft_id`**, and — M20.B — `sessions.user_id`/`client_class`/`device_label`/
+`platform`/`rotated_at`).
 `v17` added the `users` + `user_credentials` tables; `v18` added the session
 columns; `v19` (M20-B S9) added `key_wraps` (the passphrase-wrapped partition key)
 and `users.keep_unlocked` (the per-user, audited opt-in that keeps a key in the
@@ -540,6 +586,16 @@ added `providers.vision_models` — the models the user declares image-capable, 
 a gateway alias can receive photos. A pre-v20 row reads `NULL` = nothing
 declared, which is exactly the old name-only behaviour (an upgrade never invents
 a capability).
+
+**v21 (M26 cut A, landed):** adds `skill_drafts` (an authored bundle's editable
+`manifest_text` + `code` + its deterministic validation result) and two
+`pending_tools` columns (`kind`, `draft_id`) so a persona's install ask can ride
+the approval queue that already exists — `PLAN-M26.md`. **Planned v21 (M27):**
+no further table — app-scoped grants reuse the reserved `projectId='app'` —
+`PLAN-M27.md`. **Planned v22 (M28):** three additive columns on `skill_drafts`
+(`flow_json`, `flow_sha256`, `flow_compiled_at`) so a Flow-authored draft keeps
+its graph and can derive staleness against the code it compiled to —
+`PLAN-M28.md`.
 
 **M20 partitions by user and by trust tier:** one whole-file-encrypted DB +
 cipher key + skills dir per user under `data/users/<id>/` (generalizing the
@@ -579,6 +635,22 @@ REST + SSE + WebSocket events, all behind pairing/session auth:
 `/v1/conversations/:id/theme` · `/v1/personas/:id/theme` · `/v1/theme/active
 ?personaId=&conversationId=` · `/v1/chat` also accepts `{tools:true}` (native
 function calls) and `{noPersist:true}` (A/B compare — streams, saves nothing)
+
+M26 cut A **landed** (implementation status: `PLAN-M26.md` §State,
+measured record: `docs/VERIFY-M26.md`). Live now:
+`GET /v1/skills/templates` · `GET|POST /v1/skills/drafts` ·
+`GET|PUT|DELETE /v1/skills/drafts/:id` · `POST /v1/skills/drafts/:id/validate` ·
+`POST /v1/skills/drafts/:id/install` · `POST /v1/skills/:id/fork` and
+`POST /v1/skills/:id/edit`. `skill.author` gates authoring (desktop-only) and
+`skill.install` gates the promote. Registered before `/v1/skills/:id`. Still
+planned for M26: `/run` (dry-run), `/request-install` (+ the `kind:'skill_install'`
+branch on `POST /v1/tools/pending/:id`), `/bundle` export and `/import`.
+M27 (planned) adds **no route**: app-scoped grants reuse `POST /v1/grants` with
+the reserved `projectId:'app'` (accepted only for an app-scoped manifest) —
+`PLAN-M27.md`.
+M28 (planned) adds the Flow surface under `/v1/skills/drafts/:id/flow`
+(`GET` · `PUT` · `/compile` · `/refine` · `/from-code` · `/explain`) plus a
+`mode:'generate-flow'` value on the M26 create route — `PLAN-M28.md`.
 
 Later milestones extend this surface: providers by purpose
 (`/v1/providers/discover`, `/v1/providers/purposes` — M13) and edited in place
@@ -1536,6 +1608,136 @@ apps/partner/
       composed, brace-balanced payload of the new block plus every interactive
       base/state it depends on, and a full-file slop-tell scan (`backdrop-filter`
       0 · gradients 0 · blur 0 · text-shadow 0).*
+
+- [x] **M26 — Skill authoring: build a skill by talking to the partner
+      (detailed spec: `PLAN-M26.md`).** M8 could only install from the
+      checked-in catalog; M26 adds the missing half. A **draft** is an inert,
+      editable bundle held as a `skill_drafts` row (schema **v21**) in the
+      user's own encrypted DB: describe the skill in **chat** (the
+      `skills.draft` external tool, advertised only when the session is
+      desktop, the persona may act, and `skill.author` is granted) or in a new
+      **Build** segment of the Skills view (AI-assisted generation from the
+      configured provider, or a template, so it works with no provider too).
+      The line the milestone draws: **a model may write code and ask, but only
+      the owner makes it executable.** Drafting is inert, validation is
+      deterministic (never executes), the sandboxed **dry-run** returns the
+      worker's own logs so chat iteration is possible, and install is a
+      `skill.install` act on **both** surfaces — the Studio button, or the
+      approval card the persona's `skills.requestInstall` opens in the
+      conversation it asked from (`pending_tools.kind='skill_install'`,
+      decided by the same `promote()`); the plain-language permission summary
+      is shown either way, and a widened permission set forces re-consent
+      (`permission_change` 409). Drafts are re-draftable across turns so a
+      lint error is fixable in place, export/import moves an unsigned bundle
+      that always lands as a draft (signing deferred), and the `skills` nav
+      badge counts ready drafts without double counting an open approval. New
+      capability `skill.author` (desktop-only by the existing envelope table);
+      `network: true` stays refused; audits carry ids/counts/lengths only —
+      never code, description, prompt or bundle body. Slices A drafts core ·
+      B generator + the pure/reads-files templates · C chat authoring + install
+      approval · D Studio + deep link + badge · E export/import · F docs/verify.
+      *Exit: schema v21 additive (a v20 DB opens unchanged) ·
+      create → validate → dry-run → install/update + re-consent → discard,
+      fork and bundle round-trip green · deterministic validation covers
+      shape/registry/import lint/caps · chat stages and asks but never runs or
+      installs, and both install paths produce identical rows · `skill.author`
+      denied for mobile + extension · no draft code/description/prompt/args/
+      result/log/bundle in any audit row · Studio usable with and without a
+      provider · typechecks 0 · web build green · `ux_audit` PASSED.*
+      *State: **COMPLETE except two templates that need M27** (2026-09-16).
+      Measured: root **1468 passed / 5 env-gated skips** · shared **90** ·
+      web **851** · typechecks 0 · web build green · `ux_audit` PASSED (16 token
+      pairs, light + dark) · record `docs/VERIFY-M26.md`. All slices landed:
+      A drafts core (+ schema v21) · B generator + demo fallback · C chat
+      `skills.draft`/`skills.requestInstall` + the install approval (which
+      promotes through the SAME `promote()` the Studio calls, and is
+      class-checked as `skill.install` because approving EXECUTES) · D the
+      Studio Build segment (editor, validation, sandboxed dry-run, two-step
+      install with the consent table, fork/edit, export/import, deep link,
+      `skills` badge, and a label on the canned non-model draft) · E dry-run +
+      unsigned bundles · F docs. Remaining: the *notes* and *MCP* templates,
+      which need M27 S1/S2 — the picker is capability-filtered so it offers only
+      what the build can honour. NOT walked: a live-endpoint generation run and
+      a packaged-app Studio run.*
+- [ ] **M27 — What a skill may reach: app-scoped tools + MCP from the sandbox
+      (detailed spec: `PLAN-M27.md`).** Exists because two of the four Studio
+      templates are not implementable on today's skill reach. **S1** widens
+      `ToolScope` to `{kind:'project'} | {kind:'app'}` and adds three read-only
+      app tools (`notes.list`/`notes.search`/`notes.read`, `low` risk, mapped
+      to the existing `file.read` capability — no new capability name) that
+      resolve against a reserved `APP_SCOPE_ID='app'` instead of a project root,
+      with rootless app grants beside the roots in the same grant surface.
+      **S2** adds `permissions.mcpServers` so a skill may reach an **enabled**
+      MCP server's tools through the runner, a **medium-or-higher ceiling**
+      (an MCP tool's own risk is unknowable in advance), and coded denials
+      (`mcp_not_declared`/`mcp_disabled`) with **no interactive pending row** —
+      consistent with skills being non-interactive. **S3** propagates the
+      session **client class** into the runner for broker *and* MCP calls,
+      which closes the gap M20-B S4 recorded against itself (nothing in
+      `skills/` or `mcp/` consulted the class). **S4** adds the notes + MCP
+      templates and points the Studio picker at a single "what can a skill
+      reach" source so a template can never produce a bundle the sandbox
+      refuses. **S5** adds **model reach**:
+      `permissions.llm` enables a new `partner.llm.complete` worker verb, the
+      skill's own `budget.maxTokens` is finally **enforced and ledger-charged**
+      (it has been declared and validated since M8 and never read — `runner.ts`
+      uses only `timeMs`), and `skill.llm` is a desktop-only capability. A
+      skill can therefore send the data it read to the configured provider —
+      **declared, ceiling-bounded and audited as counts**, not ambient. S5 is
+      independent of S1–S4 and can land as its own M27-B; `PLAN-M28.md`'s `llm`
+      node needs it.
+      *Exit (planned): a zero-root broker grants and runs `notes.read` ·
+      `POST /v1/grants {projectId:'app'}` accepted only for an app-scoped
+      manifest and refused for `files.read` · app tools audit ids/counts/
+      lengths only · an enabled server's tool runs, undeclared/disabled/unknown/
+      over-ceiling refused with no pending row · **mobile-with-a-grant refused**
+      at the broker and the MCP path, class read from the session row · model
+      reach declared/bounded/ledgered and refused `llm_not_declared` without the
+      declaration · both templates validate *and* run · suites root + Δ /
+      web + Δ / shared + Δ, zero regressions · typechecks 0 · web build green ·
+      demo e2e walk (notes template against a seeded note, MCP template against
+      a stub stdio server).*
+      *State: spec only — nothing built. Depends on M26 A+B; S1/S2 are
+      independent, S3 lands with or before S2, S5 is independent of S1–S4.*
+- [ ] **M28 — Skill Studio Flow: build a skill on a canvas, with the model as a
+      collaborator (detailed spec: `PLAN-M28.md`).** The Studio (M26) gains a
+      fourth surface: a **React Flow** canvas — the dependency is already in
+      `web/` (used by `NotesGraph.tsx`), so **no new package** — where a skill
+      is a graph of ten typed nodes. The model can **build** the graph from a
+      description (`mode:'generate-flow'`), the user can draw it, and the model
+      can **refine** what the user drew as a **proposal with an
+      accept/reject diff** — never a silent rewrite. The load-bearing
+      constraint: a flow is **not a second kind of skill**. It compiles
+      **deterministically to `entry.mjs`** (byte-identical for one flow, total
+      compiler: a cycle is a named error, not an exception), so the artifact,
+      the sandbox, the hash check and every M26 install gate are unchanged and
+      there is no flow interpreter to trust. The vocabulary is deliberately not
+      a programming language — no loops, no arbitrary expressions, no imports —
+      and expressions are a validated **path grammar + fixed operators**, so an
+      AI-written graph **cannot inject code**; the emitted code is then held to
+      the unmodified gates. Two properties fall out for free: `permissions.tools`
+      is **derived from the graph's `tool` nodes** (the install summary provably
+      matches the code), and flow/code coherence is a **derived hash
+      comparison**, not a boolean (a hand-edit that restores the compiled bytes
+      clears it). Because React Flow has no keyboard path to creating an edge,
+      the Flow tab ships a second, equivalent **Nodes table** view over the same
+      document; the palette omits `llm` unless M27 S5 is wired. Schema **v22**
+      adds `flow_json`/`flow_sha256`/`flow_compiled_at`. Slices A compiler
+      (pure) · B routes + staleness · C canvas + nodes table · D AI
+      build/refine/from-code · E chat `flow` payload · F docs/verify.
+      *Exit (planned): v22 additive (a v21 DB opens unchanged) · compiler total
+      and deterministic, cycle/dangling/missing-output/unknown-tool named ·
+      injection refused by the path grammar + template escaping, asserted ·
+      derived `permissions.tools` equal to the graph's tool nodes both ways ·
+      install from a stale draft allowed and documented (install consumes code) ·
+      refine writes nothing until accepted · `llm` only with M27 S5 · canvas and
+      nodes views edit one document, both keyboard-reachable · `ux_audit` PASSED
+      on the new token-only styles **plus a looked-at canvas frame** (a passing
+      audit is the floor, not the evidence, for a visual surface) · suites
+      root + Δ / web + Δ / shared + Δ, zero regressions · typechecks 0 · web
+      build green · both demo e2e flows green.*
+      *State: spec only — nothing built. Depends on M26 A+B; the `llm` node
+      depends on M27 S5 and ships as a nine-node vocabulary without it.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

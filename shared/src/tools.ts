@@ -82,6 +82,15 @@ export interface PendingToolCall {
    * turn once they are decided.
    */
   conversationId?: string | null;
+  /**
+   * M26 (v21): the queue carries two kinds of ask. 'tool' (default) is a broker
+   * call awaiting a grant; 'skill_install' is a persona asking to promote an
+   * authored skill draft. The decide route branches on this — `broker.decide`
+   * refuses anything but 'tool'.
+   */
+  kind?: 'tool' | 'skill_install';
+  /** M26: the draft an install ask refers to (kind 'skill_install' only). */
+  draftId?: string | null;
 }
 
 export type ToolExecResponse =
