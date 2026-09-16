@@ -75,12 +75,26 @@ compiling, and the core normalizes a missing value to `off`.
   never re-suggested, and the same value is never filed on both scopes).
   Findings are written `source: 'partner_suggestion'`, `status: 'suggested'`,
   with `personaScope: null` for global and `personaScope: <persona id>` for
-  persona. Demo mode and no-provider skip; every path is content-free in
+  persona. Before the provider call, the payload carries a bounded, value-capped
+  `ALREADY KNOWN` listing of the entries the persona would honor (confirmed +
+  still-pending suggestions, global + its own scope, rejected withheld), so the
+  model **reviews existing memory and pending suggestions before suggesting**
+  and does not re-propose them in fresh wording; the deterministic dedupe stays
+  the guarantee (a fact already known or already suggested is dropped even when
+  the model repeats it, punctuation/case/space-insensitive). Demo mode and
+  no-provider skip; every path is content-free in
   audit (`memory.remember` carries ids/counts/model only). `enqueue()` runs
   it fire-and-forget and `idle()` awaits in-flight work so tests are
   deterministic. `extract()` takes a per-turn `policy: { global, persona }`
   (default both) and drops findings for a disallowed scope; both-false skips
   the provider call entirely.
+- **Review before suggest** (`memory/remember.ts`). `formatKnownBlock()` builds
+  the fixed `ALREADY KNOWN` listing (≤ `REMEMBER_KNOWN_MAX` lines, ≤
+  `REMEMBER_KNOWN_VALUE_CAP` chars each, whitespace collapsed, de-duped) and the
+  fixed system prompt tells the model never to return a listed fact, even
+  reworded. Rejected values stay out of the listing but remain in the dedupe
+  set, and the normalized key now also ignores surrounding quotes and trailing
+  sentence punctuation — so the same fact is never suggested twice.
 - **Global consent store** (`memory/settings.ts`, new). One boolean over the
   shared settings table: `autoRememberGlobal()` reads `'off'` as the only
   false value (absent = ON), and `setAutoRememberGlobal()` persists it with a
@@ -119,7 +133,11 @@ compiling, and the core normalizes a missing value to `off`.
 Core: persona memory-flag normalization + round-trip; tailoring injects
 scoped entries only when on (and never for a different persona); remember
 parse/dedupe/cap/secret-filter/demo + no-provider skips, scope parsing with a
-persona default, and global findings filed `personaScope: null`; policy
+persona default, and global findings filed `personaScope: null`; the
+`formatKnownBlock` listing (header, whitespace collapse, empty, bounds) and the
+payload review (global + this persona's confirmed/pending facts listed,
+rejected and other-persona facts withheld, rule kept out of the system prompt);
+a fact already pending review is never filed again; policy
 filtering (global-only, persona-only, both-off skips without a provider call);
 the settings manager default/round-trip/content-free audit; HTTP integration —
 a memory-on persona gets its scoped prelude, a managed-provider turn files

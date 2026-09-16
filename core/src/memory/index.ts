@@ -64,12 +64,16 @@ export type { TailoringPersona } from './tailor.js';
 export {
   createRememberManager,
   parseRememberReply,
+  formatKnownBlock,
   looksLikeSecret,
   REMEMBER_SYSTEM_PROMPT,
   REMEMBER_MAX_ITEMS,
   REMEMBER_VALUE_CAP,
   REMEMBER_EVIDENCE_CAP,
   REMEMBER_INPUT_CAP,
+  REMEMBER_KNOWN_MAX,
+  REMEMBER_KNOWN_VALUE_CAP,
+  REMEMBER_KNOWN_HEADER,
   REMEMBER_SCOPES,
   REMEMBER_DEFAULT_POLICY,
 } from './remember.js';

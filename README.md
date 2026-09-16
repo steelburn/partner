@@ -95,7 +95,9 @@ as a tabbed Code/Preview viewer (source and sandboxed result one flip apart,
 so the message never doubles in height) in chat, the assets read view and the
 new note-editor preview toggle. An **M19 follow-up** makes global (all-personas)
 fact detection a user-level setting independent of each persona's private-memory
-tick. Latest release: **v0.1.14** (reconfigure existing providers — rediscover
+tick. An **M19 follow-up** reviews existing memory and pending suggestions in
+the extraction payload (a bounded `ALREADY KNOWN` listing) so an already-known
+fact is not re-proposed — and never files the same suggestion twice. Latest release: **v0.1.14** (reconfigure existing providers — rediscover
 an endpoint's models through the stored keychain key and reassign them per
 purpose, no delete-and-recreate). It builds on v0.1.13 (inline HTML code-block
 previews in chat, assets and notes; global auto-remember independent of the
@@ -692,9 +694,13 @@ once confirmed) or **persona** (filed scoped to the persona that heard it),
 so the partner learns a universal fact once instead of per persona. The
 extractor prompt is fixed and
 never user-derived; parsing is defensive (fence/JSON guard, kind + scope
-whitelist with a persona default, caps, obvious-secret filter); dedupe covers
-global + same-scope entries, rejected included, so a rejected fact is never
-re-suggested; demo/no-provider turns skip; if the persona's cheap/chat model
+whitelist with a persona default, caps, obvious-secret filter); before
+suggesting, the extractor reviews a bounded `ALREADY KNOWN` listing of the
+confirmed and still-pending facts the persona honors (global + its own scope)
+so already-known facts are not re-proposed, and dedupe (punctuation/case/space-
+insensitive) covers global + same-scope entries, rejected included, so a
+rejected fact is never re-suggested and the same fact is never suggested
+twice; demo/no-provider turns skip; if the persona's cheap/chat model
 cannot be resolved on its own (a provider with no default models whose turn
 carried an explicit model), extraction rides the exact provider + model that
 served the turn, so a successful turn never silently skips remembering; audit

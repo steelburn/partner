@@ -389,7 +389,12 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   (`personaScope: null` — name, role, language, standing tone/format rules,
   so it tailors every persona) or **persona-scoped** (only that persona). The
   extractor prompt is fixed, parsing/caps/secret-filter are defensive, and
-  audit rows carry ids/counts only.
+  audit rows carry ids/counts only. Before suggesting, the extractor reviews a
+  bounded `ALREADY KNOWN` listing (the confirmed and still-pending facts the
+  persona honors — global + its own scope, capped) and must not re-propose
+  them; a punctuation/case/space-insensitive dedupe keeps an already-known or
+  already-suggested fact out of the store — so the same suggestion is never
+  filed twice.
 - **Forgetting:** per-entry delete, per-store wipe, or "forget everything
   before <date>". Memory exports as JSON/Markdown. A rejected fact is never
   re-suggested.
@@ -930,6 +935,14 @@ apps/partner/
       so only consented scopes are filed. Web: an “Automatic memory” card in
       the Memory view; persona-editor copy scoped to persona facts. No schema
       change. *Exit: core 1158 passed · web 733 passed · typechecks 0.*
+      **Follow-up (review before suggest):** extraction reviews existing memory
+      and pending suggestions before proposing — a bounded, value-capped
+      `ALREADY KNOWN` listing (confirmed + still-pending, global + the
+      persona's own scope; rejected withheld) rides the payload with a fixed
+      “never return a listed fact, even reworded” instruction, and the
+      normalized dedupe key ignores punctuation so a fact already known or
+      already suggested is never filed twice. *Exit: core 1334 passed (5
+      env-gated skips) · web 760 passed · typechecks 0.*
 - [ ] **M20 — Client-server, multi-user & mobile (detailed spec:
       `PLAN-M20.md`; decisions locked 2026-09-12; M20.A in progress).**
       Partner grows a remote, multi-device, multi-user server role.

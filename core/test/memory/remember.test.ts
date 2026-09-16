@@ -9,12 +9,17 @@ import type {
   ChatEvent,
   ChatRequest,
   HealthReport,
+  ProfileEntry,
   ProviderClient,
 } from '@partner/shared';
 import {
   createRememberManager,
+  formatKnownBlock,
   looksLikeSecret,
   parseRememberReply,
+  REMEMBER_KNOWN_HEADER,
+  REMEMBER_KNOWN_MAX,
+  REMEMBER_KNOWN_VALUE_CAP,
   REMEMBER_MAX_ITEMS,
   REMEMBER_SYSTEM_PROMPT,
 } from '../../src/memory/remember.js';
@@ -99,6 +104,41 @@ describe('parseRememberReply', () => {
     expect(parseRememberReply('')).toEqual([]);
     expect(parseRememberReply('nothing to remember')).toEqual([]);
     expect(parseRememberReply('[{"kind":"rule","value":"x"}')).toEqual([]);
+  });
+});
+
+describe('formatKnownBlock', () => {
+  function entry(value: string): ProfileEntry {
+    return {
+      id: value,
+      kind: 'rule',
+      key: null,
+      value,
+      evidence: null,
+      source: 'user',
+      status: 'confirmed',
+      personaScope: null,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+  }
+
+  it('lists known facts behind the fixed header, collapsing whitespace', () => {
+    const block = formatKnownBlock([entry('Lives in\n  Berlin'), entry('Lives in Berlin')]);
+    expect(block).toBe(`${REMEMBER_KNOWN_HEADER}\n- Lives in Berlin`);
+  });
+
+  it('returns an empty string when nothing is known', () => {
+    expect(formatKnownBlock([])).toBe('');
+  });
+
+  it('bounds the listing and each value', () => {
+    const long = 'x'.repeat(REMEMBER_KNOWN_VALUE_CAP + 40);
+    const entries = [entry(long)];
+    for (let i = 0; i < REMEMBER_KNOWN_MAX + 5; i += 1) entries.push(entry(`rule ${i}`));
+    const block = formatKnownBlock(entries);
+    expect(block.split('\n')).toHaveLength(1 + REMEMBER_KNOWN_MAX);
+    expect(block).not.toContain('x'.repeat(REMEMBER_KNOWN_VALUE_CAP + 1));
   });
 });
 
@@ -221,6 +261,74 @@ describe('remember manager (fake provider)', () => {
       const values = env.profile.list({ includeRejected: true }).map((e) => e.value);
       expect(values).toContain('Prefers bullet lists');
       expect(values).toHaveLength(3); // 2 seeded + 1 new
+    } finally {
+      env.close();
+    }
+  });
+
+  it('reviews existing memory and pending suggestions before suggesting', async () => {
+    const fake = fakeProvider('[]');
+    const env = makeMemoryEnv();
+    const remember = makeRemember(env, { target: fake.target });
+    try {
+      env.profile.add({ kind: 'identity', value: 'Lives in Berlin' });
+      env.profile.add({ kind: 'rule', value: 'Ships on Fridays', personaScope: 'p-builder' });
+      env.profile.add({
+        kind: 'preference',
+        value: 'Prefers bullet lists',
+        source: 'partner_suggestion',
+      });
+      env.profile.add({ kind: 'rule', value: 'Declined once', status: 'rejected' });
+      env.profile.add({ kind: 'rule', value: 'Other persona secret', personaScope: 'p-other' });
+
+      await remember.extract({ personaId: 'p-builder', userText: 'hi', assistantText: 'ok' });
+
+      const payload = String(fake.requests[0]?.messages[1]?.content);
+      expect(payload).toContain(REMEMBER_KNOWN_HEADER);
+      // Confirmed global + this persona's own scoped entry + a pending suggestion.
+      expect(payload).toContain('Lives in Berlin');
+      expect(payload).toContain('Ships on Fridays');
+      expect(payload).toContain('Prefers bullet lists');
+      // Rejected facts are not "known", and another persona's memory never leaks.
+      expect(payload).not.toContain('Declined once');
+      expect(payload).not.toContain('Other persona secret');
+      // The rule lives in the fixed instruction; the listing never enters it.
+      expect(String(fake.requests[0]?.messages[0]?.content)).toContain('already known');
+      expect(String(fake.requests[0]?.messages[0]?.content)).not.toContain('Lives in Berlin');
+    } finally {
+      env.close();
+    }
+  });
+
+  it('omits the known block when nothing is remembered yet', async () => {
+    const fake = fakeProvider('[]');
+    const env = makeMemoryEnv();
+    const remember = makeRemember(env, { target: fake.target });
+    try {
+      await remember.extract({ personaId: 'p-builder', userText: 'hi', assistantText: 'ok' });
+      expect(String(fake.requests[0]?.messages[1]?.content)).not.toContain(REMEMBER_KNOWN_HEADER);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('never files a duplicate suggestion for a fact already pending review', async () => {
+    const fake = fakeProvider('[{"kind":"preference","value":"Prefers bullet lists."}]');
+    const env = makeMemoryEnv();
+    const remember = makeRemember(env, { target: fake.target });
+    try {
+      env.profile.add({
+        kind: 'preference',
+        value: 'Prefers bullet lists',
+        source: 'partner_suggestion',
+      });
+      const outcome = await remember.extract({
+        personaId: 'p-builder',
+        userText: 'x',
+        assistantText: 'y',
+      });
+      expect(outcome).toEqual({ status: 'empty' });
+      expect(env.profile.list({ includeRejected: true })).toHaveLength(1);
     } finally {
       env.close();
     }

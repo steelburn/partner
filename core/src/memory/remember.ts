@@ -28,13 +28,25 @@
  *     obvious-secret filter, and dedupe against every existing entry the
  *     persona would honor — global + same-scope, rejected included — so a
  *     fact the user rejected anywhere is never re-suggested.
+ *   - Review-before-suggest: the payload lists what is already known (the
+ *     confirmed and still-pending entries the persona would honor, global +
+ *     its own scope, bounded and value-capped) so the model does not propose
+ *     it again in fresh wording. The deterministic dedupe above stays the
+ *     guarantee — the listing is only a hint; a fact already known or already
+ *     suggested is filtered out even when the model repeats it.
  *   - Audit rows carry ids/counts/model only — never the fact text.
  *   - Demo / no-provider turns skip entirely (returns a typed outcome).
  *
  * `enqueue()` runs extraction fire-and-forget (the chat route never waits);
  * `idle()` awaits in-flight work so tests are deterministic.
  */
-import type { ChatEvent, ProfileEntryInput, ProfileEntryKind, ProviderClient } from '@partner/shared';
+import type {
+  ChatEvent,
+  ProfileEntry,
+  ProfileEntryInput,
+  ProfileEntryKind,
+  ProviderClient,
+} from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
 import { memoryError } from './errors.js';
 import { PROFILE_KINDS } from './profile.js';
@@ -47,6 +59,13 @@ export const REMEMBER_VALUE_CAP = 300;
 export const REMEMBER_EVIDENCE_CAP = 200;
 /** Per-message transcript cap fed to the extractor (prompt stays bounded). */
 export const REMEMBER_INPUT_CAP = 4000;
+/** Most existing facts listed for the extractor's pre-suggestion review. */
+export const REMEMBER_KNOWN_MAX = 40;
+/** Longest value shown per already-known fact in that listing. */
+export const REMEMBER_KNOWN_VALUE_CAP = 160;
+/** Fixed lead-in for the already-known listing (never user-derived). */
+export const REMEMBER_KNOWN_HEADER =
+  'ALREADY KNOWN (never return these again, in any wording):';
 
 /** Where a remembered fact applies: every persona (`global`) or only one. */
 export type RememberScope = 'global' | 'persona';
@@ -87,7 +106,8 @@ export const REMEMBER_SYSTEM_PROMPT =
   'defaults, standing rules); use "persona" when it only matters while working with this ' +
   'persona. Return [] when nothing is worth keeping. Never include secrets ' +
   '(passwords, API keys, tokens, payment data), transient task details, or facts about anyone ' +
-  'other than the user.';
+  'other than the user. A list of facts that are already known may follow the transcript: ' +
+  'never return any of them, not even reworded.';
 
 /** The chat client a persona's extraction rides, plus the concrete model id. */
 export interface RememberTarget {
@@ -173,9 +193,41 @@ export function looksLikeSecret(value: string): boolean {
   return false;
 }
 
-/** Normalized value used for dedupe (case/space-insensitive). */
+/**
+ * Normalized value used for dedupe: case/space-insensitive, with surrounding
+ * quotes and trailing sentence punctuation ignored, so "Tabs." and "tabs"
+ * are the same fact.
+ */
 function dedupeKey(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .replace(/[.!?;:,]+$/, '')
+    .trim();
+}
+
+/**
+ * Render the fixed "already known" block the extractor reviews BEFORE
+ * suggesting. Rejected entries stay out (they are not known facts — they are
+ * filtered deterministically), and the listing is bounded + value-capped so
+ * the prompt stays small. Values collapse whitespace so a stored multi-line
+ * fact cannot fake the block's structure. Returns '' when nothing is known.
+ */
+export function formatKnownBlock(entries: readonly ProfileEntry[]): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const entry of entries) {
+    if (lines.length >= REMEMBER_KNOWN_MAX) break;
+    const key = dedupeKey(entry.value);
+    if (key === '' || seen.has(key)) continue;
+    seen.add(key);
+    lines.push(
+      `- ${trimToCap(entry.value.replace(/\s+/g, ' '), REMEMBER_KNOWN_VALUE_CAP)}`,
+    );
+  }
+  return lines.length === 0 ? '' : `${REMEMBER_KNOWN_HEADER}\n${lines.join('\n')}`;
 }
 
 /**
@@ -301,6 +353,21 @@ export function createRememberManager(options: RememberManagerOptions): Remember
       return resolverFailed ? { status: 'error' } : { status: 'skipped', reason: 'no_provider' };
     }
 
+    // Everything the persona would honor — global + its own scope — across
+    // confirmed, pending and rejected entries.
+    const scoped = profile
+      .list({ includeRejected: true })
+      .filter((entry) => entry.personaScope === null || entry.personaScope === personaId);
+    // Review-before-suggest: show the model what is already known (confirmed
+    // and still-pending, newest first so the cap keeps the freshest facts) so
+    // it does not propose the same fact in new wording. Rejected values are
+    // withheld from the listing but still deduped below.
+    const knownBlock = formatKnownBlock(
+      scoped
+        .filter((entry) => entry.status !== 'rejected')
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    );
+
     let reply: string | null;
     try {
       reply = await collectReply(
@@ -310,7 +377,9 @@ export function createRememberManager(options: RememberManagerOptions): Remember
             { role: 'system', content: REMEMBER_SYSTEM_PROMPT },
             {
               role: 'user',
-              content: `USER:\n${userText}\n\nPARTNER:\n${assistantText}`,
+              content:
+                `USER:\n${userText}\n\nPARTNER:\n${assistantText}` +
+                (knownBlock === '' ? '' : `\n\n${knownBlock}`),
             },
           ],
         }),
@@ -331,15 +400,11 @@ export function createRememberManager(options: RememberManagerOptions): Remember
 
     // Dedupe against every existing entry the persona would honor: global
     // facts and its own scoped facts, rejected included (a fact the user
-    // rejected — anywhere — is never re-suggested). The same value is never
-    // filed on both scopes either: a global fact keeps a persona candidate
-    // from duplicating it, and vice versa.
-    const existing = new Set(
-      profile
-        .list({ includeRejected: true })
-        .filter((entry) => entry.personaScope === null || entry.personaScope === personaId)
-        .map((entry) => dedupeKey(entry.value)),
-    );
+    // rejected — anywhere — is never re-suggested), and pending suggestions
+    // already waiting for review (the same fact is never suggested twice).
+    // The same value is never filed on both scopes either: a global fact
+    // keeps a persona candidate from duplicating it, and vice versa.
+    const existing = new Set(scoped.map((entry) => dedupeKey(entry.value)));
 
     const entryIds: string[] = [];
     let globalSuggested = 0;
