@@ -948,9 +948,11 @@ inside a hardened sandbox; the content never leaves the machine.
    300px intrinsic width would otherwise resize the message and squeeze the
    preview into a 300px column. The well is a document viewport (white
    canvas + a `--surface-2` chrome strip + `--elevation-sm`, no hairline —
-   the `preview-frame` contract); the sandbox note and its per-block script
-   opt-in share that strip. Same sandbox policy as above (scripts OFF with a
-   per-block opt-in; never `allow-same-origin`). `web/src/CodeBlock.tsx` +
+   the `preview-frame` contract) and the pane is sized like a real screen
+   (`min(700px, 78vh)`, not a short strip) so a document reads as authored
+   without overrunning a short window; the sandbox note and its per-block
+   script opt-in share that strip. Same sandbox policy as above (scripts OFF
+   with a per-block opt-in; never `allow-same-origin`). `web/src/CodeBlock.tsx` +
    `codeBlockPreview()` in `lib/code-assets.ts` accept an `html`/`htm` tag
    or an untagged fence whose text reads as HTML; css alone is *not*
    previewed inline (a lone stylesheet renders a blank page). The F12
@@ -964,7 +966,10 @@ notice, data: images kept, size-cap fallback. Component: sandbox attrs
 refused. `PartnerMarkdown`: an `html` fence renders one segmented viewer
 (`aria-pressed` Code true by default, the escaped source in the open panel,
 the sandboxed `srcDoc` iframe mounted under the hidden Preview panel with its
-sandbox note + script opt-in); a `js` fence stays a plain `md-pre`. Route:
+sandbox note + script opt-in); a `js` fence stays a plain `md-pre`. In
+`web/test/preview.test.ts` a CSS guard pins the pane's geometry (a
+`min(px, vh)` height with a ≥600px cap — a fixed 320px strip cuts every
+document in half and still "works"). Route:
 content endpoint access control + text-only allowlist. **Exit:** attach
 `index.html` + `styles.css` → preview renders the styled page, network
 blocked, scripts off; opting in runs scripts in an opaque origin with no

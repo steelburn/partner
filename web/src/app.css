@@ -4977,10 +4977,17 @@ select {
   box-shadow: var(--elevation-sm);
 }
 
+/* A preview is a browser viewport, so it gets a screen-like one: tall enough
+ * for a real page (the original 320px cut most documents in half) without ever
+ * outgrowing the window it is read in — the pane is inside the transcript's own
+ * scroll container, so `min(700px, 78vh)` lands on a laptop-class viewport and
+ * still fits a short window. `vh`, not `dvh`, on purpose: the pane must not
+ * resize as a phone's URL bar or keyboard slides, which would reflow the
+ * document mid-read. */
 .md-code-preview-frame {
   display: block;
   width: 100%;
-  height: 320px;
+  height: min(700px, 78vh);
   border: 0;
   background: var(--surface-doc);
 }
