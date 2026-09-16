@@ -24,6 +24,34 @@
  *   closed as DENY and the worker gets tool_denied — a user grant must exist
  *   BEFORE the invocation (default-deny, PLAN-M8).
  *
+ *   class (M27 S3): every brokered call also carries the ACTING SESSION's
+ *   client class, so `broker.exec` applies the SAME envelope it applies to a
+ *   direct `/v1/tools/exec` call. That is the point the class is forwarded at
+ *   all: the envelope sits ABOVE the grant, so a mobile session's pre-existing
+ *   grant must not become a file WRITE "on the phone's behalf" via a skill. The
+ *   runner only FORWARDS `ctx.clientClass`, which the route reads off the
+ *   session row - it never derives a class of its own (see SkillInvokeContext).
+ *
+ *   llm (M27 S5): {type:'llm.complete'} requests are MODEL REACH, and they are
+ *   declared and bounded rather than ambient. Four gates, in this order: the
+ *   manifest must declare `permissions.llm` (otherwise `llm_not_declared` -
+ *   absent and false mean no model access at all), the session's class must be
+ *   allowed `skill.llm` (desktop only, so a phone cannot reach a model THROUGH
+ *   a skill), a provider/model must resolve (`no_provider`, matching chat), and
+ *   the invocation's token ceiling must hold. The ceiling is the skill's own
+ *   `budget.maxTokens` - declared and validated since M8 and never read until
+ *   now - or {@link DEFAULT_SKILL_LLM_MAX_TOKENS} when the manifest declares
+ *   none, and it is accumulated across EVERY call in the invocation. Passing it
+ *   fails the INVOCATION (`budget_exceeded`): the worker is killed and no
+ *   partial success is returned, because a skill that loops model calls could
+ *   otherwise spend the user's provider budget a call at a time.
+ *
+ *   The reach never grows a content channel: each call writes ONE audit row
+ *   (`skill.llm`) carrying the model id and token counts only, and the
+ *   invocation's meta row keeps its counts/ids shape. The prompt and the
+ *   completion never reach audit, the meta row, the worker's log lines or the
+ *   core console.
+ *
  *   logs: {type:'log'} lines are printed to the CORE console (console.error)
  *   with redactString applied. Skill logs/args/results NEVER reach audit:
  *   each run records one skill_invocations meta row (ok/toolCalls/ms/error
@@ -44,8 +72,17 @@ import { fileURLToPath } from 'node:url';
 import { redactString } from '@partner/shared';
 import type { SkillDetail, SkillInvocationMeta, ToolRisk } from '@partner/shared';
 import type { ToolBroker } from '../broker/broker.js';
+import type { SpendLedgerManager } from '../gateway/spend.js';
+import { centsForTokens } from '../gateway/pricing.js';
+import { capabilityDenial } from '../http/capabilities.js';
 import type { AuditService } from '../services/redaction.js';
 import type { SkillInvocationStore } from '../stores/types.js';
+import {
+  DEFAULT_SKILL_LLM_MAX_TOKENS,
+  MAX_SKILL_LLM_PROMPT_BYTES,
+  MAX_SKILL_LLM_REPLY_BYTES,
+} from './llm.js';
+import type { SkillLlmResolver, SkillLlmTarget, SkillLlmUsage } from './llm.js';
 import { MAX_SKILL_TIME_MS } from './manifest.js';
 
 const DEFAULT_BUDGET_MS = 30_000;
@@ -83,6 +120,21 @@ export interface SkillRunnerOptions {
   maxArgsBytes?: number;
   /** Result JSON-size cap (default 1 MiB). */
   maxResultBytes?: number;
+  /**
+   * M27 S5: resolve the model `partner.llm.complete` rides, ONCE per
+   * invocation, or null when nothing usable is configured (`no_provider`).
+   * ABSENT means this core has no model reach at all for skills, which is the
+   * honest state of a test double or a build without providers - every
+   * `llm.complete` then answers `no_provider`. Injected so a test drives the
+   * whole reach with a fake ProviderClient and never touches the network.
+   */
+  llm?: SkillLlmResolver;
+  /**
+   * M27 S5 (PLAN-M27 D13): the cumulative per-provider spend ledger a model
+   * call is charged to. Optional: without one the call is still bounded and
+   * still audited, only the rolling provider window goes unrecorded.
+   */
+  spendLedger?: SpendLedgerManager;
 }
 
 export type SkillInvokeErrorCode =
@@ -111,6 +163,23 @@ export type SkillInvokeResult = SkillInvokeOk | SkillInvokeFailure;
 
 export interface SkillInvokeContext {
   personaId?: string;
+  /**
+   * M27 S3 (PLAN-M27 D7): the acting session's client class, read by the ROUTE
+   * from `res.locals.session` (SessionInfo) - never from a request body, header
+   * or query, so a caller cannot name its own class and make the envelope
+   * decorative. The runner forwards it verbatim to every `broker.exec` it
+   * mediates, which means the SAME capability envelope (`http/capabilities.ts`)
+   * that guards `/v1/tools/exec` sits above the skill's own grants: a granted
+   * `files.edit` on a project root does not walk a mobile session into a write
+   * (mobile's envelope hands out `file.read` but not `file.write`).
+   *
+   * Absent (or not a string) means "an internal caller with no session" - a
+   * persona, scheduled or playbook run - and keeps the DESKTOP envelope, exactly
+   * as `ExecContext.clientClass` documents. That is the pre-M27 behaviour, so
+   * those paths are unchanged. Any other value is passed through unchanged and
+   * refused by the broker's fail-closed envelope rather than guessed at here.
+   */
+  clientClass?: string;
   /** Abort kills the worker ('aborted' outcome). */
   signal?: AbortSignal;
   /**
@@ -142,8 +211,23 @@ export interface SkillRunner {
 
 const RISK_RANK: Record<ToolRisk, number> = { low: 0, medium: 1, high: 2 };
 
+/**
+ * The conservative byte/4 token estimate the chat route also falls back to
+ * (M27 S5): a provider that reports NO usage event must not make a skill's
+ * ceiling unbounded, so the call is settled with this instead. It is marked
+ * `estimated` in the audit row, because a guess and a count are not the same
+ * claim.
+ */
+function estimatedUsage(prompt: string, replyBytes: number): SkillLlmUsage {
+  const promptTokens = Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4);
+  const completionTokens = Math.ceil(replyBytes / 4);
+  return { promptTokens, completionTokens, totalTokens: Math.max(1, promptTokens + completionTokens) };
+}
+
 export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
   const { dataDir, broker, audit, invocations } = options;
+  const resolveLlm = options.llm;
+  const spendLedger = options.spendLedger;
   const now = options.now ?? Date.now;
   const logSink = options.log ?? ((line: string) => console.error(line));
   const maxArgsBytes = options.maxArgsBytes ?? DEFAULT_MAX_ARGS_BYTES;
@@ -157,6 +241,22 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         : DEFAULT_BUDGET_MS;
     // Ceiling so a bad/edited manifest cannot hold a worker forever.
     return Math.min(raw, MAX_SKILL_TIME_MS);
+  }
+
+  /**
+   * The model-token ceiling ONE invocation may spend (M27 S5, D11). The
+   * manifest's own `budget.maxTokens` wins when declared; absent, the
+   * DOCUMENTED default applies rather than "unbounded", and `permissionSummary`
+   * states whichever number applies to the owner before they install. The
+   * declared value is not clamped: it is the figure the owner consented to, and
+   * `budget.timeMs` remains the outer bound on the whole run.
+   */
+  function llmTokenCeiling(skill: SkillDetail): number {
+    const declared = skill.manifest.budget?.maxTokens;
+    if (typeof declared === 'number' && Number.isFinite(declared) && declared > 0) {
+      return Math.floor(declared);
+    }
+    return DEFAULT_SKILL_LLM_MAX_TOKENS;
   }
 
   /**
@@ -219,6 +319,10 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
   ): Promise<SkillInvokeResult> {
     const startedAt = now();
     const personaId = typeof ctx.personaId === 'string' && ctx.personaId.trim() !== '' ? ctx.personaId.trim() : null;
+    // M27 S3: forwarded as-is. undefined keeps the desktop envelope (the
+    // internal/session-less caller); anything else - including a typo'd class -
+    // is the broker's fail-closed decision, not the runner's.
+    const { clientClass } = ctx;
     // M26 D5 knobs: a dry-run redirects the log lines and keeps no history.
     const sink = ctx.logSink ?? logSink;
     const persist = ctx.record !== false;
@@ -255,6 +359,7 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
     }
 
     const budgetMs = budgetMsOf(skill);
+    const tokenCeiling = llmTokenCeiling(skill);
     const workerPath = WORKER_PATH;
     // The override wins when the caller (the draft route) materialized the
     // bundle elsewhere - the store dir is only the installed-skill default.
@@ -408,7 +513,7 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
           deny('tool_denied');
           return;
         }
-        const response = broker.exec(toolId, params, { requestedBy: 'skill' });
+        const response = broker.exec(toolId, params, { requestedBy: 'skill', clientClass });
         if (response.outcome === 'executed') {
           try {
             child.send({ type: 'tools.result', nonce, ok: true, result: response.result });
@@ -432,6 +537,213 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         deny(response.reason);
       };
 
+      // --- M27 S5: model reach ---------------------------------------------
+
+      /** Reply to one `llm.complete` (the answer the worker resolves on). */
+      const llmAnswer = (nonce: string, payload: Record<string, unknown>): void => {
+        try {
+          child.send({ type: 'llm.result', nonce, ...payload });
+        } catch {
+          // Channel gone (worker already killed).
+        }
+      };
+
+      // Tokens charged across EVERY call in this invocation: the ceiling is a
+      // per-INVOCATION bound, so a loop of small calls cannot slip past it.
+      let llmTokens = 0;
+      // The target is resolved once per invocation (as the chat path resolves
+      // its provider once per turn) and cached, including a null answer, so a
+      // provider that cannot serve is not re-resolved on every call.
+      let llmTargetPromise: Promise<SkillLlmTarget | null> | null = null;
+      const llmTarget = async (): Promise<SkillLlmTarget | null> => {
+        if (resolveLlm === undefined) return null;
+        if (llmTargetPromise === null) {
+          llmTargetPromise = Promise.resolve()
+            .then(() => resolveLlm())
+            .then((target) =>
+              target !== null &&
+              target !== undefined &&
+              typeof target.model === 'string' &&
+              target.model !== ''
+                ? target
+                : null,
+            )
+            .catch(() => null);
+        }
+        return llmTargetPromise;
+      };
+
+      /**
+       * ONE model call. Accounting is the provider's own `usage` event, with
+       * the conservative byte/4 estimate the chat route also falls back to when
+       * a stream reports none - so a silent provider cannot make the ceiling
+       * unbounded. Every accounted call writes one `skill.llm` audit row and
+       * charges the provider's rolling spend window (D13); counts and the model
+       * id only, never the prompt or the completion.
+       */
+      const completeLlm = async (
+        nonce: string,
+        prompt: string,
+        callCeiling: number,
+      ): Promise<void> => {
+        const target = await llmTarget();
+        if (done) return;
+        if (target === null) {
+          // Nothing usable configured: the same answer the chat path gives.
+          llmAnswer(nonce, { ok: false, error: 'no_provider' });
+          return;
+        }
+        const callStartedAt = now();
+        const controller = new AbortController();
+        const parts: string[] = [];
+        let replyBytes = 0;
+        let reported: SkillLlmUsage | null = null;
+
+        /** Accumulate + trace + charge one call; true when the ceiling broke. */
+        const account = (counts: SkillLlmUsage, estimated: boolean): boolean => {
+          llmTokens += Math.max(0, counts.totalTokens);
+          const providerId = target.providerId;
+          const cents =
+            spendLedger !== undefined && providerId !== undefined
+              ? centsForTokens(target.model, counts.totalTokens)
+              : 0;
+          if (spendLedger !== undefined && providerId !== undefined && cents > 0) {
+            try {
+              spendLedger.charge({ providerId, cents });
+            } catch {
+              // A ledger write must never break a skill run.
+            }
+          }
+          // Counts + model id + ms ONLY (PLAN-M27 D13, brief rule 5).
+          audit.log('skill', 'skill.llm', `${skill.id}/${target.model}`, {
+            skillId: skill.id,
+            model: target.model,
+            promptTokens: counts.promptTokens,
+            completionTokens: counts.completionTokens,
+            totalTokens: counts.totalTokens,
+            ms: Math.max(0, now() - callStartedAt),
+            ...(estimated ? { estimated: true } : {}),
+            ...(cents > 0 ? { cents } : {}),
+            ...(personaId !== null ? { personaId } : {}),
+          });
+          return llmTokens > tokenCeiling || counts.totalTokens > callCeiling;
+        };
+
+        try {
+          for await (const event of target.client.chatStream({
+            model: target.model,
+            messages: [{ role: 'user', content: prompt }],
+            signal: controller.signal,
+          })) {
+            if (done) {
+              controller.abort();
+              return;
+            }
+            if (event.type === 'delta') {
+              replyBytes += Buffer.byteLength(event.text, 'utf8');
+              if (replyBytes > MAX_SKILL_LLM_REPLY_BYTES) {
+                // A runaway reply is a bounded resource, not a partial answer -
+                // and unlike an oversized PROMPT (a refusal the skill can act
+                // on) it is fatal: the provider has already spent this call.
+                controller.abort();
+                fail('caps_exceeded');
+                return;
+              }
+              parts.push(event.text);
+              continue;
+            }
+            if (event.type === 'usage') {
+              // One usage event per turn is the ChatEvent contract: a re-emitted
+              // one must not charge the same call twice.
+              if (reported === null) {
+                reported = {
+                  promptTokens: event.promptTokens,
+                  completionTokens: event.completionTokens,
+                  totalTokens: event.totalTokens,
+                };
+                if (account(reported, false)) {
+                  // Past the ceiling: abort the call and fail the INVOCATION -
+                  // a partial success here would be spend with no bound.
+                  controller.abort();
+                  fail('budget_exceeded');
+                  return;
+                }
+              }
+              continue;
+            }
+            if (event.type === 'error') {
+              llmAnswer(nonce, { ok: false, error: 'upstream' });
+              return;
+            }
+          }
+        } catch {
+          if (!done) llmAnswer(nonce, { ok: false, error: 'upstream' });
+          return;
+        }
+        if (done) return;
+
+        const counted: SkillLlmUsage =
+          reported ?? estimatedUsage(prompt, replyBytes);
+        if (reported === null && account(counted, true)) {
+          fail('budget_exceeded');
+          return;
+        }
+        llmAnswer(nonce, { ok: true, text: parts.join(''), usage: counted });
+      };
+
+      /**
+       * Answer ONE `llm.complete` request. The gate ORDER is the decision order
+       * (PLAN-M27 D11/D12): the DECLARATION first (a skill that never asked for
+       * model reach cannot reach a provider at all), then the session CLASS (a
+       * phone does not get model reach THROUGH a skill), then the request
+       * SHAPE, then the provider, then the ceiling. Every gate but the ceiling
+       * is a refusal the skill catches (the `tools.exec` shape); the ceiling is
+       * fatal to the invocation.
+       */
+      const replyLlm = (message: {
+        prompt?: unknown;
+        maxTokens?: unknown;
+        nonce?: unknown;
+      }): void => {
+        const nonce = typeof message.nonce === 'string' ? message.nonce : '';
+        const refuse = (code: string): void => llmAnswer(nonce, { ok: false, error: code });
+        if (nonce === '') {
+          // Unanswerable - the worker drops a mismatch anyway.
+          refuse('bad_params');
+          return;
+        }
+        if (skill.manifest.permissions.llm !== true) {
+          // Absent and false mean the same thing: no model access at all.
+          refuse('llm_not_declared');
+          return;
+        }
+        if (capabilityDenial(clientClass ?? 'desktop', 'skill.llm') !== null) {
+          refuse('capability_denied');
+          return;
+        }
+        const prompt = message.prompt;
+        if (typeof prompt !== 'string' || prompt.trim() === '') {
+          refuse('bad_params');
+          return;
+        }
+        if (Buffer.byteLength(prompt, 'utf8') > MAX_SKILL_LLM_PROMPT_BYTES) {
+          refuse('caps_exceeded');
+          return;
+        }
+        const requestedMax = typeof message.maxTokens === 'number' ? message.maxTokens : undefined;
+        if (
+          message.maxTokens !== undefined &&
+          (requestedMax === undefined || !Number.isFinite(requestedMax) || requestedMax <= 0)
+        ) {
+          refuse('bad_params');
+          return;
+        }
+        // A per-call request can only TIGHTEN the invocation's ceiling.
+        const callCeiling =
+          requestedMax === undefined ? tokenCeiling : Math.min(tokenCeiling, Math.floor(requestedMax));
+        void completeLlm(nonce, prompt, callCeiling);
+      };
+
       child.on('message', (message: unknown) => {
         if (done) return;
         const msg = message as {
@@ -441,6 +753,8 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
           toolId?: unknown;
           params?: unknown;
           nonce?: unknown;
+          prompt?: unknown;
+          maxTokens?: unknown;
           ok?: unknown;
           text?: unknown;
           error?: unknown;
@@ -453,6 +767,13 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         if (msg.type === 'tools.exec') {
           toolCalls += 1;
           replyTool(msg);
+          return;
+        }
+        if (msg.type === 'llm.complete') {
+          // Deliberately NOT counted as a tool call: `toolCalls` (the meta row
+          // and the skill_invocations column) keeps its M8 meaning - brokered
+          // TOOL calls - and the model call is traced by its own audit row.
+          replyLlm(msg);
           return;
         }
         if (msg.type === 'ready') {

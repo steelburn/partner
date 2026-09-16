@@ -25,6 +25,7 @@ import { skillError, SkillError } from './errors.js';
 // an installed bundle are held to ONE bar. Re-exported here because this module
 // was its only public door before the move (existing importers keep working).
 import { ID_RE, validateManifestShape } from './manifest.js';
+import type { RuntimeCapabilities } from './manifest.js';
 export { validateManifestShape } from './manifest.js';
 export type { ManifestValidation } from './manifest.js';
 
@@ -32,6 +33,14 @@ export type { ManifestValidation } from './manifest.js';
 export interface CatalogReadOptions {
   /** Broker tool registry; defaults to the six v1 files.* ids. */
   tools?: ReadonlySet<string>;
+  /**
+   * M27 S5: which reaches this build's runtime can honour, forwarded to the
+   * SHAPE validator so a checked-in bundle may declare a wired reach
+   * (`permissions.llm`). Omitted keeps the conservative library default
+   * (`{ mcp: false, llm: false }`) - the catalog is the door that reads
+   * manifests from DISK, so it must be told, not assume.
+   */
+  capabilities?: RuntimeCapabilities;
 }
 
 export interface CatalogReadResult {
@@ -79,6 +88,7 @@ export function readCatalog(dir: string, options: CatalogReadOptions = {}): Cata
   const warnings: string[] = [];
   const skills: CatalogSkill[] = [];
   const registry = options.tools ?? defaultToolRegistry();
+  const capabilities = options.capabilities;
 
   let entries;
   try {
@@ -94,7 +104,7 @@ export function readCatalog(dir: string, options: CatalogReadOptions = {}): Cata
       warnings.push(`[${entry.name}] ${message}`);
     };
     try {
-      const loaded = loadBundle(bundleDir, entry.name, registry);
+      const loaded = loadBundle(bundleDir, entry.name, registry, capabilities);
       if (loaded.ok) {
         skills.push(toCatalogSkill(loaded.manifest));
       } else if (loaded.network === true) {
@@ -118,7 +128,12 @@ type BundleLoad =
   | { ok: false; errors: string[]; network?: boolean };
 
 /** Load + validate one bundle (shape + registry + entrypoint on disk). */
-function loadBundle(bundleDir: string, expectedId: string, registry: ReadonlySet<string>): BundleLoad {
+function loadBundle(
+  bundleDir: string,
+  expectedId: string,
+  registry: ReadonlySet<string>,
+  capabilities?: RuntimeCapabilities,
+): BundleLoad {
   const manifestFile = join(bundleDir, 'manifest.json');
   let text: string;
   try {
@@ -132,7 +147,7 @@ function loadBundle(bundleDir: string, expectedId: string, registry: ReadonlySet
   } catch {
     return { ok: false, errors: ['manifest.json is not valid JSON'] };
   }
-  const shape = validateManifestShape(raw);
+  const shape = validateManifestShape(raw, capabilities === undefined ? {} : { capabilities });
   if (!shape.ok) return { ok: false, errors: shape.errors };
   const manifest = shape.manifest;
   if (manifest.id !== expectedId) {
@@ -174,7 +189,7 @@ export function loadCatalogSkill(
   if (!existsSync(join(bundleDir, 'manifest.json'))) {
     throw skillError('not_found', `no skill "${clean}" in the catalog`);
   }
-  const loaded = loadBundle(bundleDir, clean, registry);
+  const loaded = loadBundle(bundleDir, clean, registry, options.capabilities);
   if (!loaded.ok) {
     if (loaded.network === true) {
       throw skillError(

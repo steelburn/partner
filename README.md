@@ -76,9 +76,27 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 
 ## Status (2026-09-16)
 
-M0–M26 implemented (PLAN.md §15): schema **v21**; current root
-suite **1468 passed** (5 env-gated skips) · shared **90** · web **851** · typechecks 0 ·
-web build green. **M26 lands skill authoring** (PLAN-M26.md,
+M0–M27 (S3+S5) implemented (PLAN.md §15): schema **v21**; current root
+suite **1495 passed** (5 env-gated skips) · shared **90** · web **851** · typechecks 0 ·
+web build green. **M27 S3+S5 land skill reach** (PLAN-M27.md,
+`docs/VERIFY-M27.md`). **A skill can now call a model** — declared, bounded and
+gated: `permissions.llm` enables `partner.llm.complete`, the skill's own
+`budget.maxTokens` finally *does* something (it was declared and validated since
+M8 and never read — `runner.ts` used only `timeMs`), past the ceiling the
+invocation fails `budget_exceeded` mid-run with the worker killed rather than
+returning partial output, the provider spend ledger is charged per call, and
+`skill.llm` is a desktop-only capability that is deliberately absent from the
+mobile/extension allowlists. One `skill.llm` audit row per call carries the
+model id and token counts only — never the prompt or the completion. Because a
+skill can now send what it read to your provider, the install summary says so in
+plain words. S3 also closes the gap **M20-B S4 recorded against itself**: the
+session **client class** now reaches the runner from the session row, so an
+already-granted write can no longer walk a phone through the envelope — proven
+with `files.edit`, because the case that note described is the *write* one
+(mobile's envelope already permits `file.read`, and a test asserts it executes).
+Still unbuilt and specced: M27 **S1** (app-scoped notes tools), **S2** (MCP from
+the sandbox) and **S4** (their two Studio templates), and **M28** (the Flow
+canvas). **M26 lands skill authoring** (PLAN-M26.md,
 `docs/VERIFY-M26.md`): a skill can now be *made*, not only installed from the
 checked-in catalog. A **draft** is an inert, editable bundle held in the user's
 own encrypted DB (`skill_drafts`, schema v21) — manifest text + entry source +
@@ -691,6 +709,62 @@ PLAN-M15; per-surface theme walkthrough (`docs/theme-conformance.md`); the
 `docs/VERIFY-M10.md` live-mode walk details; browser-actuator research
 capture; S0 companion API in `~/apps/llm-self-service`. Read
 `HANDOFF-WINDOWS.md` first when picking up from a Windows machine.
+
+### M27 S3+S5 — skill reach: the client class and the model (2026-09-16, implemented)
+
+Two of M27's five slices. **A skill can now call a model** — and the class gap
+M20-B S4 recorded against itself is closed for the broker.
+
+`partner.llm.complete({prompt, maxTokens?})` is the new worker verb, and the gate
+order in the runner is **declaration → class → request shape → provider →
+ceiling**. `permissions.llm !== true` refuses `llm_not_declared` (absent means no
+model access at all, the only honest default); `skill.llm` — a new capability
+deliberately *not* in the mobile or extension allowlists — refuses
+`capability_denied`, so a phone's skill run cannot send your data to a provider;
+nothing configured refuses `no_provider`; and the **ceiling** is
+`budget.maxTokens` when declared, otherwise a documented 4096 default, never
+unbounded.
+
+**`SkillBudget.maxTokens` finally does something.** It has been declared in the
+shared contracts, validated by the manifest validator, and never read since M8 —
+`runner.ts` used only `timeMs`. It is now the token ceiling it always claimed to
+be, accumulated across every call in one invocation, and past it the invocation
+fails `budget_exceeded` **mid-run** with the worker killed and no partial success
+returned. The provider spend ledger is charged per accounted call (with a
+byte/4 estimate when the stream reports no `usage`), and `permissionSummary`
+states the binding ceiling so you read the number before installing — because a
+skill that can call a model can send **anything it read** to that model, and the
+install summary now says so in plain words.
+
+Content never reaches the audit: one `skill.llm` row per accounted call carries
+the model id, prompt/completion/total token counts, ms and cents — and neither
+the prompt nor the completion (asserted by serializing the audit list).
+
+**S3 — the class reaches the runner.** `broker.exec` called from a skill passed
+no `clientClass`, which defaults to the desktop envelope: unobservable while a
+skill could only reach `files.*`, and a real hole the moment it can reach more.
+`SkillInvokeContext.clientClass` is now read from the **session row** by both
+routes into the runner and forwarded to the broker, with an absent class keeping
+its documented meaning (an internal persona or scheduled run is the desktop
+owner's agent).
+
+The implementation brief asked for this to be proven with a granted
+`files.read` — and **that premise was wrong**: mobile's envelope *does* include
+`file.read`, and an existing test asserts it executes through the broker. Forcing
+a refusal would have meant weakening the envelope and breaking a passing test, so
+the case is proven with **`files.edit`**, which is what M20-B S4 actually wrote
+down: *"its grant for `files.edit` would walk the phone straight into a write."*
+`files.read` is kept as the positive control, so the test proves the class is
+per-capability rather than a blanket deny. The grant is verified **present**
+before the refusal (or the refusal proves nothing), no pending row or proposal is
+created, a request **body** cannot set or raise the class, and the same
+assertions run against the dry-run route.
+
+Suites: shared **90** · root **1495 passed** (5 env-gated skips) · web **851** ·
+typechecks 0 · web build green. Record: `docs/VERIFY-M27.md`. One tripwire was
+updated deliberately: `capabilities.test.ts` pins the closed vocabulary and the
+narrow per-class allowlists, and now records why `skill.llm` joins the first and
+deliberately not the others.
 
 ### M26 — skill authoring: build a skill by talking to the partner (2026-09-16, implemented)
 

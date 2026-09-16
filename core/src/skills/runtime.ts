@@ -14,6 +14,7 @@
  * completeness: "can read files under a root you grant", not "files.read".
  */
 import type { SkillManifest } from '@partner/shared';
+import { DEFAULT_SKILL_LLM_MAX_TOKENS } from './llm.js';
 
 /** Plain-language consequence of one declared tool. */
 const TOOL_REACH: Readonly<Record<string, string>> = {
@@ -57,6 +58,14 @@ export function permissionSummary(manifest: SkillManifest): string[] {
   lines.push(`runs for at most ${seconds}s per invocation`);
   if (typeof manifest.budget?.maxTokens === 'number') {
     lines.push(`may spend at most ${manifest.budget.maxTokens} model tokens per invocation`);
+  } else if (permissions.llm === true) {
+    // M27 S5 D11: a declaration WITHOUT a ceiling is not unbounded - the runner
+    // applies DEFAULT_SKILL_LLM_MAX_TOKENS - and the owner has to read which
+    // number actually binds before they install. Same constant, so the summary
+    // and the runner's arithmetic cannot drift.
+    lines.push(
+      `may spend at most ${DEFAULT_SKILL_LLM_MAX_TOKENS} model tokens per invocation (the default ceiling)`,
+    );
   }
   return lines;
 }
@@ -73,8 +82,15 @@ export function unknownTools(
  * The contract a skill entry must satisfy — stated once, verbatim, so the
  * authoring prompt and the chat instructions cannot describe it differently
  * from what the worker harness actually does.
+ *
+ * `options.llm` (M27 S5) adds the model verb, and only where the build can
+ * honour it: describing `partner.llm.complete` to a build whose runner answers
+ * `llm_not_declared` for every call would produce a draft that cannot run.
  */
-export function entryContract(toolIds: readonly string[]): string {
+export function entryContract(
+  toolIds: readonly string[],
+  options: { llm?: boolean } = {},
+): string {
   return [
     'A skill entry is ONE ES module exporting run(args):',
     '  export async function run(args) { … return <JSON-serializable>; }',
@@ -83,6 +99,13 @@ export function entryContract(toolIds: readonly string[]): string {
     'Its only interface to the core is a global named `partner`:',
     '  partner.log(text)                    — a line on the core console',
     '  partner.tools.exec(toolId, params)   — one broker-mediated tool call',
+    ...(options.llm === true
+      ? [
+          '  partner.llm.complete({prompt, maxTokens?}) — one model call,',
+          "    resolving {text, usage}; needs permissions.llm, and the manifest's",
+          '    token ceiling bounds what the whole run may spend on it',
+        ]
+      : []),
     'No imports are available except node builtins and files next to the entry.',
     'There is no network access.',
     '',
@@ -92,6 +115,13 @@ export function entryContract(toolIds: readonly string[]): string {
     '  · the whole run is killed when the manifest budget expires',
     '  · a tool call must be declared in the manifest AND covered by a user grant;',
     '    a skill is non-interactive, so a missing grant is a hard denial',
+    ...(options.llm === true
+      ? [
+          '  · a model call must be declared as permissions.llm; the ceiling is',
+          '    per INVOCATION (every call in one run counts against it), and passing',
+          '    it fails the whole run instead of returning a partial result',
+        ]
+      : []),
     '',
     toolIds.length > 0
       ? `Declarable tool ids: ${toolIds.join(', ')}.`

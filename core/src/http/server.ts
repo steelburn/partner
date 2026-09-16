@@ -6014,6 +6014,9 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
           await drafts.runDraft(String(req.params.id ?? ''), {
             args: body.args,
             timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+            // M27 S3: the dry-run reaches the SAME runner, so it carries the
+            // same class - read from the session row, like the invoke route.
+            clientClass: (res.locals.session as SessionInfo).clientClass,
           }),
         );
       } catch (err) {
@@ -6268,11 +6271,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
         return;
       }
     }
-    const result = await runner.invoke(
-      detail,
-      body.args,
-      personaId === undefined ? {} : { personaId },
-    );
+    const result = await runner.invoke(detail, body.args, {
+      // M27 S3 (PLAN-M27 D7): the class comes from the SESSION ROW this token
+      // resolved to - never from the body/header/query - so the broker's
+      // capability envelope keeps sitting ABOVE the skill's own grants. An
+      // absent class would mean "internal caller with no session" (desktop),
+      // which is not a route: every route here has a session.
+      clientClass: (res.locals.session as SessionInfo).clientClass,
+      ...(personaId === undefined ? {} : { personaId }),
+    });
     // Invoke outcomes ride the 200 envelope {ok, result?, error?, meta}: the
     // coded failures (budget_exceeded/crashed/tool_denied/caps_exceeded/...) are
     // results of a run, not transport errors.

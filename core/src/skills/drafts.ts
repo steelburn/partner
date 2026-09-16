@@ -188,6 +188,16 @@ export interface DraftRunOptions {
   args?: unknown;
   /** Clamps the manifest's own budget DOWN only - never extends it. */
   timeoutMs?: number;
+  /**
+   * M27 S3 (PLAN-M27 D7): the acting session's client class, read by the ROUTE
+   * from `res.locals.session` and forwarded to the runner, so a dry-run applies
+   * the same capability envelope a real invocation does. A dry-run reaches the
+   * SAME runner, so it must carry the same class - otherwise it would be a way
+   * around the envelope rather than a rehearsal of it. NEVER derived here and
+   * never read from the request body. Absent = an internal caller with no
+   * session, which keeps the desktop envelope (see SkillInvokeContext).
+   */
+  clientClass?: string;
 }
 
 export interface PromoteOptions {
@@ -1079,6 +1089,9 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
       };
       const result = await runner.invoke(detail, runOptions.args ?? {}, {
         dirOverride: dir,
+        // M27 S3: the class the route read off the session row rides into the
+        // same broker calls a real invocation makes.
+        clientClass: runOptions.clientClass,
         logSink: (line) => {
           logs.push(line);
         },

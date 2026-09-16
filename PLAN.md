@@ -446,20 +446,24 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   deferred). Capability `skill.author` is desktop-only; `network` stays refused.
   The *pure* and *reads-files* templates ship here; the *notes* and *MCP*
   templates need capabilities no skill has today and ship in **M27**.
-- **What a skill may reach (M27, planned — `PLAN-M27.md`).** `ToolScope` widens
-  to `{kind:'project'} | {kind:'app'}` so three read-only app tools
+- **What a skill may reach (M27 — `PLAN-M27.md`; S3 + S5 landed).** `ToolScope`
+  is to widen to `{kind:'project'} | {kind:'app'}` so three read-only app tools
   (`notes.list/search/read`, mapped to the existing `file.read` capability)
-  resolve against a reserved `APP_SCOPE_ID` instead of a project root; a
-  manifest may declare `permissions.mcpServers`, letting the sandbox reach an
+  resolve against a reserved `APP_SCOPE_ID` instead of a project root, and a
+  manifest is to declare `permissions.mcpServers` so the sandbox can reach an
   **enabled** MCP server's tools (medium-or-higher ceiling, coded denial when
-  undeclared/disabled, never an interactive pending row); and the **session
-  client class is propagated into the runner** for broker and MCP calls, which
-  closes the gap M20-B S4 recorded against itself. **S5** adds model reach:
-  `permissions.llm` enables `partner.llm.complete`, the skill's own
-  `budget.maxTokens` is finally **enforced** (declared and validated since M8,
-  never charged), the invocation's tokens are ledger-charged, and `skill.llm`
-  is a desktop-only capability — so a skill can send what it read to the
-  configured provider, **declared and bounded**, never ambient.
+  undeclared/disabled, never an interactive pending row) — **both still
+  unbuilt (S1, S2)**.
+  **Landed (S3 + S5, 2026-09-16):** the **session client class now reaches the
+  runner** for broker calls (read from the session row by both routes in, so an
+  already-granted write can no longer walk a phone through the envelope — the
+  M20-B S4 gap is closed for the broker; **MCP's half waits on S2**), and
+  **model reach** is live: `permissions.llm` enables `partner.llm.complete`,
+  the skill's own `budget.maxTokens` is finally **enforced** (declared and
+  validated since M8, never read until now) with a documented 4096 default, the
+  invocation's tokens are **ledger-charged**, and `skill.llm` is a desktop-only
+  capability — so a skill can send what it read to the configured provider,
+  **declared and bounded**, never ambient (`docs/VERIFY-M27.md`).
 - **Flow authoring (M28, planned — `PLAN-M28.md`).** The Studio gains a fourth
   surface: a React Flow canvas (the dependency is already in `web/`, used by
   `NotesGraph.tsx`) where a skill is a graph of ten typed nodes and the model
@@ -1691,14 +1695,28 @@ apps/partner/
       manifest and refused for `files.read` · app tools audit ids/counts/
       lengths only · an enabled server's tool runs, undeclared/disabled/unknown/
       over-ceiling refused with no pending row · **mobile-with-a-grant refused**
-      at the broker and the MCP path, class read from the session row · model
-      reach declared/bounded/ledgered and refused `llm_not_declared` without the
-      declaration · both templates validate *and* run · suites root + Δ /
-      web + Δ / shared + Δ, zero regressions · typechecks 0 · web build green ·
-      demo e2e walk (notes template against a seeded note, MCP template against
-      a stub stdio server).*
-      *State: spec only — nothing built. Depends on M26 A+B; S1/S2 are
-      independent, S3 lands with or before S2, S5 is independent of S1–S4.*
+      at the broker and the MCP path, class read from the session row · both
+      templates validate *and* run.*
+      *State: **S3 + S5 landed 2026-09-16** (record `docs/VERIFY-M27.md`) —
+      root **1495 passed / 5 env-gated skips** · web **851** · typechecks 0 ·
+      web build green. **S3:** the session client class now reaches the runner
+      from the SESSION ROW (both routes in) and is forwarded to `broker.exec`,
+      so an already-granted write can no longer walk a phone through the
+      envelope — the case proven with `files.edit`, because the brief's
+      `files.read` premise was wrong (mobile's envelope includes it and an
+      existing test asserts it executes); the grant is verified present before
+      the refusal, and a request body cannot set or raise the class.
+      **S5:** `partner.llm.complete` — declared (`permissions.llm`, else
+      `llm_not_declared`), class-gated by a new `skill.llm` capability that is
+      deliberately absent from the mobile/extension allowlists, and bounded by
+      `budget.maxTokens` (else a documented 4096 default) accumulated across the
+      invocation, failing `budget_exceeded` MID-RUN with the worker killed. That
+      finally gives `SkillBudget.maxTokens` a runtime meaning (declared since M8,
+      never read), the provider spend ledger is charged per accounted call, and
+      one `skill.llm` audit row carries the model id + token counts only — never
+      the prompt or the completion. **Remaining: S1** (app-scoped notes tools +
+      rootless grants) · **S2** (MCP from the runner — D7's MCP half is NOT
+      closed) · **S4** (the notes/MCP Studio templates, which depend on S1/S2).*
 - [ ] **M28 — Skill Studio Flow: build a skill on a canvas, with the model as a
       collaborator (detailed spec: `PLAN-M28.md`).** The Studio (M26) gains a
       fourth surface: a **React Flow** canvas — the dependency is already in

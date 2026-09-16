@@ -211,11 +211,41 @@ gets the same reach for free.
       note and the MCP template against a stub stdio server.
 - Env-gated: a real MCP server walk against a user-configured server.
 
-*State:* spec only — no code written. Depends on M26 A+B (the drafts store and
-the authoring prompt/validator). S1 and S2 are independent and can land in
-either order; S3 should land with or before S2; **S5 is independent of S1–S4 and
-can be its own landing (M27-B)** — `PLAN-M28.md` (Flow) needs it for its `llm`
-node, so if S5 slips, M28 ships without that node.
+*State:* **S3 + S5 landed 2026-09-16** — measured record: `docs/VERIFY-M27.md`.
+Root **1495 passed / 5 env-gated skips** · web **851** · typechecks 0 · web build
+green.
+
+**S3 DONE:** `SkillInvokeContext.clientClass` is read from the SESSION ROW by both
+routes into the runner (`/v1/skills/:id/invoke` and the draft dry-run) and
+forwarded to `broker.exec`, with an absent class keeping its documented
+internal-caller meaning. M20-B S4's case is proven with **`files.edit`**, not
+`files.read` — the brief's premise was wrong (mobile's envelope DOES include
+`file.read`, and an existing test asserts it executes), so the write tool is the
+case that note actually described; `files.read` stays as the positive control
+proving the class is per-capability. The grant is verified PRESENT before the
+refusal, and a request body cannot set or raise the class.
+
+**S5 DONE:** `partner.llm.complete({prompt, maxTokens?})` — a declared, bounded
+model reach. Gate order declaration → class → shape → provider → ceiling;
+`permissions.llm !== true` → `llm_not_declared`; `skill.llm` (new capability,
+deliberately NOT in the mobile/extension allowlists) → `capability_denied`;
+`no_provider` when nothing is configured; and the ceiling — `budget.maxTokens`,
+else the documented 4096 default — accumulated across every call in one
+invocation, failing `budget_exceeded` MID-RUN with the worker killed and no
+partial success. `SkillBudget.maxTokens` finally has a runtime meaning (declared
+and validated since M8, never read until now), the provider spend ledger is
+charged per accounted call, and one `skill.llm` audit row per call carries the
+model id + token counts + ms + cents and NEVER the prompt or the completion.
+The authoring prompt now describes the reach (including "anything the skill read
+can leave the machine"), driven by the passed capability object.
+
+**Remaining: S1** (app-scoped `notes.list/search/read` — rootless grants, a new
+scope kind), **S2** (MCP from the runner: `permissions.mcpServers`, the medium
+ceiling, coded denials, no pending row; D7's MCP half is NOT closed), **S4** (the
+*notes* + *MCP* Studio templates). Those three are the whole of what is left, and
+S4 depends on S1/S2.
+
+*State was:* spec only.
 
 ## Out of scope
 

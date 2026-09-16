@@ -369,6 +369,21 @@ export type {
 } from './skills/runner.js';
 export { SkillError, skillError, skillErrorStatus } from './skills/errors.js';
 export type { SkillErrorCode } from './skills/errors.js';
+// M27 S5: the model-reach seam (`partner.llm.complete`) — the resolver the
+// runner is injected with, and the two bounds a skill's model call meets.
+export {
+  createSkillLlmResolver,
+  DEFAULT_SKILL_LLM_MAX_TOKENS,
+  MAX_SKILL_LLM_PROMPT_BYTES,
+  MAX_SKILL_LLM_REPLY_BYTES,
+} from './skills/llm.js';
+export type {
+  SkillLlmProviderSource,
+  SkillLlmResolver,
+  SkillLlmTarget,
+  SkillLlmUsage,
+} from './skills/llm.js';
+export type { RuntimeCapabilities } from './skills/manifest.js';
 export {
   readCatalog,
   loadCatalogSkill,
@@ -594,6 +609,8 @@ import { createSkillGenerator } from './skills/generate.js';
 import type { SkillManager } from './skills/manager.js';
 import { createSkillRunner } from './skills/runner.js';
 import type { SkillRunner } from './skills/runner.js';
+import { createSkillLlmResolver } from './skills/llm.js';
+import type { RuntimeCapabilities } from './skills/manifest.js';
 import { createFolderManager } from './folders/index.js';
 import type { FolderManager } from './folders/index.js';
 import { createAttachmentManager } from './attachments/index.js';
@@ -1063,6 +1080,14 @@ export function createCore(
   // runner spawns one worker per invoke and brokers tool requests with
   // requestedBy 'skill'. Config.skillsCatalogDir points at the checked-in
   // local catalog (repo skills-catalog/) — no remote gallery in M8.
+  //
+  // M27: which reaches THIS core's runtime can honour, passed IN to every door
+  // that validates a manifest (catalog reads, drafts, the generator) so a
+  // declaration is only refused when the sandbox really cannot deliver it. S5
+  // wired model reach, so `llm` is true here; `mcp` stays false until S2 wires
+  // it. The library default stays conservative ({ mcp: false, llm: false }) —
+  // the object is the CALLER's statement about this build.
+  const skillRuntimeCapabilities: RuntimeCapabilities = { mcp: false, llm: true };
   const skillStore = createSkillStore(db);
   const skillInvocationStore = createSkillInvocationStore(db);
   const skillRegistry: ReadonlySet<string> = new Set(broker.manifests.map((m) => m.id));
@@ -1072,6 +1097,7 @@ export function createCore(
     storeDir: config.skillsDir,
     catalogDir: config.skillsCatalogDir,
     tools: skillRegistry,
+    capabilities: skillRuntimeCapabilities,
     audit,
   });
   const skillRunner = createSkillRunner({
@@ -1079,6 +1105,12 @@ export function createCore(
     broker,
     audit,
     invocations: skillInvocationStore,
+    // M27 S5: the model reach `partner.llm.complete` rides — the same
+    // resolveChatModel + clientFor the chat path uses, so a skill's call goes
+    // to the provider/model the user configured, and the tokens spend against
+    // that provider's rolling ledger window (D13).
+    llm: createSkillLlmResolver(providerManager),
+    spendLedger,
   });
 
   // M26: skill DRAFTS over the SAME db (schema v21). A draft is inert — the
@@ -1094,12 +1126,14 @@ export function createCore(
   // the dir.
   const skillGenerator = createSkillGenerator({
     providers: providerManager,
+    capabilities: skillRuntimeCapabilities,
     demo: config.demo,
   });
   const skillDrafts = createSkillDraftManager({
     store: createSkillDraftStore(db),
     skills,
     tools: skillRegistry,
+    capabilities: skillRuntimeCapabilities,
     audit,
     generate: skillGenerator,
     runsDir: config.skillRunsDir,

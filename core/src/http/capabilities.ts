@@ -54,6 +54,15 @@ export const CAPABILITIES = [
   'skill.author',
   'mcp.call',
   /**
+   * M27 S5: MODEL REACH — a skill asking the core to call the user's
+   * configured model provider (`partner.llm.complete`). Desktop-only by
+   * construction: mobile and extension are ALLOWLISTS, so a phone session that
+   * reaches `skill.invoke` cannot reach a model through the skill it runs
+   * (PLAN-M27 D12). Declared by the manifest's own `permissions.llm` — this
+   * capability decides whether the CLASS may ask at all.
+   */
+  'skill.llm',
+  /**
    * M22 (was the recorded "vocabulary gap"): PROVIDER KEY WRITES —
    * `/v1/providers/:id/key` and `/v1/search/key`. A stored key is spendable
    * money and, for a hosted core, a credential that outlives the session, so a
@@ -76,17 +85,23 @@ export type Capability = (typeof CAPABILITIES)[number];
  * WHY mobile is NOT "desktop minus four": `grants`, `skill.invoke` and
  * `mcp.call` are INDIRECT routes to the very capabilities mobile is denied.
  * Creating a grant is an authorization act for something mobile may not do;
- * a skill or an MCP server can carry file-write permissions of its own. Verified:
- * neither `core/src/skills/` nor `core/src/mcp/` consults the session's client
- * class today, so the class would NOT constrain what they do on mobile's behalf —
- * an over-permissive table here would be the only thing standing between a phone
- * session and file-write authority.
+ * a skill or an MCP server can carry file-write permissions of its own. That is
+ * why the class has to travel WITH the work: M27 S3 propagates the session class
+ * into the skill runner (so a brokered call from a skill applies THIS table
+ * before the skill's own grants) and M27 S5 extends it to a skill's model reach
+ * (`skill.llm` below), while a skill's MCP path (M27 S2) is not wired yet.
  *
  * So this FAILS CLOSED. Those three may be added back only together with a test
  * proving the session class propagates into skill and MCP execution (the S4
  * wiring must extend the broker's ExecContext and refuse before the grant check).
  * Widening later is a deliberate decision; narrowing after release is a security
  * fix that breaks working flows.
+ *
+ * M27 S5 adds `skill.llm` to the vocabulary and NOT to the narrow allowlists:
+ * the class that may invoke a skill on a phone is still denied model reach,
+ * because the runner checks this capability (from the S3 propagation) before it
+ * resolves a provider — so the phone's skill run cannot send the user's data to
+ * a model provider on the phone's behalf.
  *
  * M22 closed the two NAMES the vocabulary was missing (`provider.configure`,
  * `persona.run`) and put them in this envelope's deny side for mobile/extension

@@ -78,7 +78,7 @@ describe('capabilityDenial', () => {
   });
 
   it('denies the extension everything outside read + browser + chat', () => {
-    for (const capability of ['file.write', 'roots', 'deploy', 'skill.install', 'skill.invoke', 'mcp.call', 'grants'] as Capability[]) {
+    for (const capability of ['file.write', 'roots', 'deploy', 'skill.install', 'skill.invoke', 'mcp.call', 'grants', 'skill.llm'] as Capability[]) {
       const denial = capabilityDenial('extension', capability);
       expect(denial?.reason).toBe('capability_denied');
       expect(denial?.capability).toBe(capability);
@@ -157,6 +157,11 @@ describe('capability vocabulary', () => {
       // denied to mobile/extension by the same allowlist mechanism.
       'skill.author',
       'mcp.call',
+      // M27 S5: a skill's MODEL REACH. New name, deliberately NOT added to the
+      // narrow allowlists: the runner checks it (with the session class S3
+      // propagates) before it resolves a provider, so a phone's skill run
+      // cannot send the user's data to a model provider.
+      'skill.llm',
       // M22: the two names the vocabulary was missing (the recorded "gap").
       'provider.configure',
       'persona.run',
@@ -182,7 +187,7 @@ describe('the mobile envelope is narrow BY DECISION, not by omission', () => {
   });
 
   it('denies each indirect route by name, so a phone cannot reach file-write sideways', () => {
-    for (const capability of ['grants', 'skill.invoke', 'mcp.call', 'file.write', 'roots', 'deploy', 'skill.install'] as Capability[]) {
+    for (const capability of ['grants', 'skill.invoke', 'mcp.call', 'file.write', 'roots', 'deploy', 'skill.install', 'skill.llm'] as Capability[]) {
       expect(capabilityDenial('mobile', capability)).toEqual({
         ok: false,
         reason: 'capability_denied',

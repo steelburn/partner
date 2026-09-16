@@ -60,6 +60,7 @@ import { FILE_TOOL_IDS } from '../src/files/tools.js';
 import { createSkillManager } from '../src/skills/manager.js';
 import type { SkillManager } from '../src/skills/manager.js';
 import { createSkillDraftManager } from '../src/skills/drafts.js';
+import { createSkillLlmResolver } from '../src/skills/llm.js';
 import type { SkillGenerateHook } from '../src/skills/drafts.js';
 import { createSkillRunner } from '../src/skills/runner.js';
 import type { SkillRunner } from '../src/skills/runner.js';
@@ -686,12 +687,16 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     // The broker registry is the six files.* manifests in v1; FILE_TOOL_IDS
     // mirrors it so the harness needs no back-reference to the broker.
     const registry = new Set<string>(FILE_TOOL_IDS);
+    // M27 S5: the reaches this harness's runtime honours, exactly as createCore
+    // states them. Passed IN, so the bare library default stays conservative.
+    const runtimeCapabilities = { mcp: false, llm: true };
     skills = createSkillManager({
       store: skillStore,
       invocations: skillInvocationStore,
       storeDir: skillsDir,
       catalogDir,
       tools: registry,
+      capabilities: runtimeCapabilities,
       audit,
     });
     skillRunner = createSkillRunner({
@@ -699,6 +704,13 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       broker: broker as ToolBroker,
       audit,
       invocations: skillInvocationStore,
+      // M27 S5: the same production resolver a real core injects. With no
+      // provider seeded (the default here, and every demo build) it resolves
+      // nothing, so a skill's model call answers `no_provider` — honest, and
+      // what a build with nothing configured does. A test that needs the reach
+      // drives the runner directly with a fake client, never the network.
+      llm: createSkillLlmResolver(providerManager),
+      spendLedger,
     });
     // M26: drafts over the same db, with the same registry. No generator is
     // injected by default, so `mode:'generate'` is refused — which is exactly
@@ -712,6 +724,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       store: skillDraftStore,
       skills,
       tools: registry,
+      capabilities: runtimeCapabilities,
       audit,
       runsDir: skillRunsDir,
       pending: pendingManager,

@@ -10,11 +10,25 @@
  *   partner.tools.exec(toolId, params)   -> {type:'tools.exec'} request,
  *                                           resolved/rejected by the
  *                                           {type:'tools.result'} reply
+ *   partner.llm.complete({prompt, maxTokens?})   (M27 S5)
+ *                                        -> {type:'llm.complete'} request,
+ *                                           resolved/rejected by the
+ *                                           {type:'llm.result'} reply
+ *
+ * `llm.complete` is MODEL REACH, and it is declared + bounded rather than
+ * ambient: the core refuses it unless the manifest declares `permissions.llm`
+ * AND the acting session's client class may ask for `skill.llm` AND a provider
+ * is configured, and it fails the whole invocation when the skill's own token
+ * ceiling is passed. This side therefore carries the request and the answer
+ * only — it decides nothing, exactly like `tools.exec`. Both verbs share ONE
+ * nonce + in-flight discipline (including the concurrency cap), so the worker
+ * gains no new failure mode from the second one.
  *
  * Protocol (parent -> worker): {type:'invoke', argsText}
  *            (worker -> parent): {type:'ready'}
  *                                {type:'log', line}
  *                                {type:'tools.exec', toolId, params, nonce}
+ *                                {type:'llm.complete', prompt, maxTokens?, nonce}
  *                                {type:'result', ok:true, text}   |   {type:'result', ok:false, error}
  *
  * The result payload rides as a JSON TEXT so BOTH ends enforce the 1 MiB cap
@@ -27,7 +41,12 @@ import { pathToFileURL } from 'node:url';
 const skillDir = process.env.PARTNER_SKILL_DIR ?? '';
 const entry = process.env.PARTNER_SKILL_ENTRY ?? '';
 const maxResultBytes = Number(process.env.PARTNER_SKILL_MAX_RESULT_BYTES ?? 1024 * 1024);
-const MAX_CONCURRENT_TOOLS = 8;
+/**
+ * Most core requests (tools.exec + llm.complete) this worker keeps in flight at
+ * once. ONE cap for both verbs: the core is a single parent process, and the
+ * point of the cap is that a skill cannot flood it.
+ */
+const MAX_IN_FLIGHT_REQUESTS = 8;
 const MAX_ERROR_CODE = 200;
 
 function send(message) {
@@ -44,6 +63,13 @@ function errorCodeOf(err) {
     return err.code.slice(0, MAX_ERROR_CODE);
   }
   return 'skill_error';
+}
+
+/** The one error shape both broker verbs reject with: message = code. */
+function codedError(code) {
+  const err = new Error(code);
+  err.code = code;
+  return err;
 }
 
 // Crash-to-log: an uncaught error in skill code becomes a redacted log line
@@ -75,14 +101,10 @@ const partner = {
   tools: {
     exec(toolId, params) {
       if (typeof toolId !== 'string' || toolId === '') {
-        const err = new Error('tool_denied');
-        err.code = 'tool_denied';
-        return Promise.reject(err);
+        return Promise.reject(codedError('tool_denied'));
       }
-      if (inFlight >= MAX_CONCURRENT_TOOLS) {
-        const err = new Error('tool_denied');
-        err.code = 'tool_denied';
-        return Promise.reject(err);
+      if (inFlight >= MAX_IN_FLIGHT_REQUESTS) {
+        return Promise.reject(codedError('tool_denied'));
       }
       const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       inFlight += 1;
@@ -101,6 +123,64 @@ const partner = {
         };
         process.on('message', onMessage);
         send({ type: 'tools.exec', toolId, params, nonce });
+      }).finally(() => {
+        inFlight -= 1;
+      });
+    },
+  },
+  llm: {
+    /**
+     * ONE model completion, brokered by the core (M27 S5). Resolves
+     * { text, usage } where usage is { promptTokens, completionTokens,
+     * totalTokens } and rejects with an Error carrying `.code` when the core
+     * refuses the call:
+     *
+     *   llm_not_declared  the manifest does not declare permissions.llm
+     *   capability_denied the session's client class may not reach a model
+     *   no_provider       nothing usable is configured, or the key is missing
+     *   budget_exceeded   the invocation's token ceiling was passed
+     *   caps_exceeded     the prompt or the reply passed its byte cap, or too
+     *                     many core requests are already in flight
+     *   bad_params        the request is not { prompt: <non-empty string> }
+     *   upstream          the provider stream failed
+     *
+     * A refusal is thrown, not returned, so a skill chooses between failing
+     * and working around it ("summarise with the model, else return the text
+     * unchanged") — the same shape `tools.exec` uses.
+     */
+    complete(request) {
+      const req = request !== null && typeof request === 'object' ? request : {};
+      if (typeof req.prompt !== 'string' || req.prompt === '') {
+        return Promise.reject(codedError('bad_params'));
+      }
+      if (inFlight >= MAX_IN_FLIGHT_REQUESTS) {
+        return Promise.reject(codedError('caps_exceeded'));
+      }
+      const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      inFlight += 1;
+      return new Promise((resolve, reject) => {
+        const onMessage = (msg) => {
+          if (!msg || msg.type !== 'llm.result' || msg.nonce !== nonce) return;
+          process.removeListener('message', onMessage);
+          if (msg.ok === true) {
+            resolve({
+              text: typeof msg.text === 'string' ? msg.text : '',
+              usage: msg.usage ?? null,
+            });
+          } else {
+            const code = typeof msg.error === 'string' && msg.error !== '' ? msg.error : 'upstream';
+            reject(codedError(code));
+          }
+        };
+        process.on('message', onMessage);
+        send({
+          type: 'llm.complete',
+          nonce,
+          prompt: req.prompt,
+          // Passed through verbatim: the CORE validates it (a bad value is a
+          // named refusal the author can act on, never a silent default).
+          ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+        });
       }).finally(() => {
         inFlight -= 1;
       });

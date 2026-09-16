@@ -8,7 +8,10 @@
  *                          `runtime.ts`, the same text the chat instructions
  *                          use, so the prompt cannot describe a runtime that
  *                          does not exist. The tool ids are the caller's real
- *                          broker registry, not a wish list.
+ *                          broker registry, not a wish list, and the reach
+ *                          lines (`llm`, `mcpServers`) follow the capability
+ *                          object the caller passes - an unwired reach is
+ *                          refused in the same breath, never offered.
  *   parseAuthoringReply    what the model RETURNED. Tolerant (fences, prose
  *                          around the object) but typed on failure - a model
  *                          reply is untrusted input and must never throw into
@@ -27,6 +30,7 @@
  */
 import { DEFAULT_RUNTIME_CAPABILITIES, ID_RE, MAX_SKILL_TIME_MS } from './manifest.js';
 import type { RuntimeCapabilities } from './manifest.js';
+import { DEFAULT_SKILL_LLM_MAX_TOKENS } from './llm.js';
 import { entryContract } from './runtime.js';
 import { findTemplate } from './templates.js';
 
@@ -84,7 +88,7 @@ export function buildAuthoringPrompt(input: AuthoringPromptInput): string {
     'list below is refused, so declaring reach you do not use only makes the',
     'bundle invalid.',
     '',
-    entryContract(input.toolIds),
+    entryContract(input.toolIds, { llm: capabilities.llm }),
     '',
     'LIMITS THE CORE ENFORCES (a bundle that breaks one is refused, not fixed):',
     '  - args are capped at 64 KiB and the result at 1 MiB',
@@ -95,6 +99,22 @@ export function buildAuthoringPrompt(input: AuthoringPromptInput): string {
   ];
   if (!capabilities.llm) {
     lines.push('  - "permissions.llm" is refused in this build - do not declare it');
+  } else {
+    // M27 S5 D11: the reach exists, so DESCRIBE it - what the verb is, that it
+    // costs the owner's provider budget, and that the honest consequence is
+    // data leaving the machine. Driven by the capability the caller passed, so
+    // the prompt and the validator cannot disagree about what is declarable.
+    lines.push(
+      '  - "permissions.llm": true lets the skill call a model through',
+      '    partner.llm.complete({ prompt, maxTokens? }). The core sends the prompt',
+      '    to the user\'s configured provider, so ANYTHING THE SKILL READ CAN LEAVE',
+      '    THE MACHINE - declare it only if the skill truly needs a model, prefer',
+      '    the existing tools when they are enough, and always pair it with a',
+      `    ceiling: "budget": { "timeMs": <ms>, "maxTokens": <tokens, default ${DEFAULT_SKILL_LLM_MAX_TOKENS}> }`,
+      '  - a model call can fail (llm_not_declared, capability_denied, no_provider,',
+      '    budget_exceeded, caps_exceeded, upstream); catch it and still return a',
+      '    useful result, because the call is not guaranteed',
+    );
   }
   if (!capabilities.mcp) {
     lines.push('  - "permissions.mcpServers" is refused in this build - do not declare it');

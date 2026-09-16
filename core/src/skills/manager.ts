@@ -38,6 +38,7 @@ import type {
 import { loadCatalogSkill, readCatalog } from './catalog.js';
 import type { CatalogReadResult } from './catalog.js';
 import { skillError } from './errors.js';
+import type { RuntimeCapabilities } from './manifest.js';
 
 export interface SkillManagerOptions {
   /** skills row store (same SQLite as the rest of the core). */
@@ -51,6 +52,14 @@ export interface SkillManagerOptions {
   /** Broker tool registry — declared tools must exist in M8's set. */
   tools: ReadonlySet<string>;
   audit: AuditService;
+  /**
+   * M27 S5: which reaches the RUNTIME can honour, so a checked-in catalog
+   * bundle may declare one that is wired (`permissions.llm`). Omitted keeps the
+   * conservative library default, so a manifest declaring an unwired reach is
+   * still refused by name rather than installed as a permission that does
+   * nothing.
+   */
+  capabilities?: RuntimeCapabilities;
   /** Injectable clock (epoch ms). */
   now?: () => number;
 }
@@ -126,6 +135,7 @@ function rowToMeta(row: SkillInvocationRow): SkillInvocationMeta {
 
 export function createSkillManager(options: SkillManagerOptions): SkillManager {
   const { store, invocations, storeDir, catalogDir, tools, audit } = options;
+  const capabilities = options.capabilities;
   const now = options.now ?? Date.now;
 
   /**
@@ -152,7 +162,7 @@ export function createSkillManager(options: SkillManagerOptions): SkillManager {
   }
 
   function catalog(): CatalogReadResult {
-    return readCatalog(catalogDir, { tools });
+    return readCatalog(catalogDir, { tools, capabilities });
   }
 
   function requireRow(id: string): SkillRow {
@@ -167,7 +177,7 @@ export function createSkillManager(options: SkillManagerOptions): SkillManager {
     if (store.findById(clean)) {
       throw skillError('conflict', `skill "${clean}" is already installed`);
     }
-    const loaded = loadCatalogSkill(catalogDir, clean, { tools });
+    const loaded = loadCatalogSkill(catalogDir, clean, { tools, capabilities });
     const manifest = loaded.manifest;
     const entryAbs = join(loaded.dir, manifest.entrypoint);
     if (!existsSync(entryAbs)) {
