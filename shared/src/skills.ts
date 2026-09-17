@@ -117,7 +117,15 @@ export type SkillDraftOrigin =
   | 'chat'
   | 'fork'
   | 'edit'
-  | 'import';
+  | 'import'
+  /**
+   * M28: a draft BORN as a Flow — `mode:'generate-flow'` on create, or a
+   * `skills.draft` chat call carrying a `flow` payload instead of `code`.
+   * Its own label on purpose: "from a flow" and "generated" are different
+   * facts (one is a graph, the other is model-written JavaScript), and the
+   * Studio renders the tab strip from exactly this distinction.
+   */
+  | 'flow';
 
 export type SkillDraftStatus = 'draft' | 'installed';
 
@@ -408,6 +416,16 @@ export interface SkillFlowState {
   flow: SkillFlow | null;
   flowCompiledAt: number | null;
   flowStale: boolean;
+  /**
+   * M28 D9: whether THIS build can compile an `llm` node (M27 S5 wired).
+   *
+   * It rides the flow read because the canvas is the one surface that has to
+   * decide what to OFFER before anything is drawn: the palette must omit a node
+   * type whose compile would fail (`llm_not_available`), and the core is the
+   * only party that knows. Without this the web would have to guess from the
+   * tool vocabulary, which says nothing about model reach.
+   */
+  llmAvailable: boolean;
 }
 
 /**
@@ -430,7 +448,12 @@ export type SkillFlowCompileResponse =
   | (Extract<SkillFlowCompileResult, { ok: true }> & { draft: SkillDraft })
   | Extract<SkillFlowCompileResult, { ok: false }>;
 
-/** M28 D8: a refine returns a PROPOSAL — the user accepts or rejects it. */
+/**
+ * M28 D8: a refine returns a PROPOSAL — the user accepts or rejects it.
+ *
+ * (Declared further down, after the two response shapes that carry it.)
+ */
+
 export interface SkillFlowProposal {
   flow: SkillFlow;
   diff: {
@@ -442,3 +465,27 @@ export interface SkillFlowProposal {
   model: string | null;
   warnings: FlowValidationError[];
 }
+
+/**
+ * `POST /v1/skills/drafts/:id/flow/refine` and `…/from-code`. Both ask a model
+ * for a graph and both WRITE NOTHING (D8): the caller gets a proposal and the
+ * only thing that stores it is a `PUT …/flow` after the user accepts.
+ *
+ * A reply the core cannot use answers `ok:false` with a sentence and the
+ * per-node errors (when the reply was a flow that failed validation) — 200,
+ * because the request succeeded in determining the answer, exactly as
+ * `/validate` and `/compile` report a negative result. Nothing is written
+ * either way, so a refusal and a proposal are equally safe to receive.
+ */
+export type SkillFlowProposalResponse =
+  | { ok: true; proposal: SkillFlowProposal }
+  | { ok: false; error: string; errors: FlowValidationError[]; warnings: FlowValidationError[] };
+
+/**
+ * `POST /v1/skills/drafts/:id/flow/explain` — a plain-language walkthrough of
+ * the graph, for the OWNER's eyes only. It returns text and writes nothing; the
+ * audit vocabulary carries no row for it (there is no state to record).
+ */
+export type SkillFlowExplainResponse =
+  | { ok: true; text: string; model: string | null; warnings: FlowValidationError[] }
+  | { ok: false; error: string };

@@ -6041,8 +6041,8 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // authoring routes do (desktop-only by the envelope table), and reads need no
   // capability beyond the session.
   //
-  // `/refine`, `/from-code` and `/explain` (slice D) are deliberately absent:
-  // this slice has no model round-trip.
+  // Cut D added the three AI verbs below (refine / from-code / explain); both
+  // proposal routes write nothing at all.
   //
   // GET /v1/skills/drafts/:id/flow -> the flow + the DERIVED `flowStale`.
   api.get('/v1/skills/drafts/:id/flow', requireSession(sessions), (req: Request, res: Response) => {
@@ -6108,6 +6108,70 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       if (!drafts) return;
       try {
         res.json(drafts.compileFlow(String(req.params.id ?? '')));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // M28 cut D (PLAN-M28.md D7/D8) — the three AI verbs of the flow surface.
+  //
+  // `refine` and `from-code` return PROPOSALS and write NOTHING: the draft row is
+  // byte-identical afterwards, and the only thing that stores a proposal is a
+  // `PUT …/flow` after the user accepts the diff. A model reply the core cannot
+  // use answers 200 with `ok:false` and a sentence (plus the named per-node
+  // errors when the reply was a flow) — the request succeeded in determining the
+  // answer, exactly as `/validate` and `/compile` report a negative result.
+  //
+  // `explain` returns text to the owner's eyes only and audits nothing.
+  api.post(
+    '/v1/skills/drafts/:id/flow/refine',
+    requireSession(sessions),
+    capability('skill.author'),
+    async (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        res.json(
+          await drafts.refineFlow(
+            String(req.params.id ?? ''),
+            typeof body.instruction === 'string' ? body.instruction : '',
+          ),
+        );
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.post(
+    '/v1/skills/drafts/:id/flow/from-code',
+    requireSession(sessions),
+    capability('skill.author'),
+    async (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        res.json(await drafts.flowFromCode(String(req.params.id ?? '')));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  api.post(
+    '/v1/skills/drafts/:id/flow/explain',
+    requireSession(sessions),
+    capability('skill.author'),
+    async (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        res.json(await drafts.explainFlow(String(req.params.id ?? '')));
       } catch (err) {
         if (sendSkillError(res, err)) return;
         throw err;

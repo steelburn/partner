@@ -1,7 +1,7 @@
 # M28 — Skill Studio Flow: build a skill on a canvas, with the model as a collaborator
 
-Status: **slices A + B implemented** (A: the compiler; B: the draft routes,
-schema v22 and derived staleness) · C–F remain — see *State* at the bottom ·
+Status: **implemented (C–F landed 2026-09-17; A + B earlier)** — see *State* at the
+bottom · verification record: `docs/VERIFY-M28.md` ·
 Companion to `PLAN.md` §9, §15 (index) ·
 Builds on: `PLAN-M26.md` (drafts + Studio) · Uses: `PLAN-M27.md` S5
 (`partner.llm`) for its `llm` node · Reuses: `@xyflow/react` ^12.11.6 (already a
@@ -66,7 +66,7 @@ So M28 has a declared dependency and a declared fallback:
 | D3 | **Expressions are a validated path grammar plus fixed operators — never emitted text.** A field path is matched against `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*$` and compiled to an optional-chained accessor; predicates are `eq/neq/gt/gte/lt/lte/contains/exists`; templates substitute `{{path}}` into an escaped template literal. | `__proto__`, `constructor`, `a); process.exit(1);//` and a backtick/`${` in literal text are all refused or escaped, with tests. An AI-written graph cannot inject code, which is the whole reason the compiler is allowed to generate any. |
 | D4 | **The compiler is total and deterministic.** Topological order is sorted by `(rank, nodeId)` rather than edge-iteration order; cycles are a validation error *before* emission; every node type has an emitter. | The same flow always produces the same bytes — which is what makes D6's staleness check derivable and the compile auditable (a hash, not a blob). |
 | D5 | **`permissions.tools` is derived from the graph.** A `tool` node can only pick an id from the broker registry (files.* plus M27's app tools), and compile writes the union of the graph's tool nodes into the manifest. | The permission summary cannot drift from the code. A manifest that declares a tool the graph does not use is a validation **warning** (an unused permission is a smell, not an error). |
-| D6 | **Flow/code coherence is derived, not flagged.** The draft stores `flow_json` + `flow_sha256` (the hash of the code the flow last compiled to). The Studio computes `flow_stale = sha256(code) !== flow_sha256`. | A hand-edit that *restores* the compiled bytes clears staleness by itself, and there is no boolean to get out of sync. A stale flow is a **UI honesty** state, never a security one: install re-validates and runs the code, which is what installs. |
+| D6 | **Flow/code coherence is derived, not flagged.** The draft stores `flow_json` + `flow_sha256` (the hash of the code the flow last compiled to). The Studio computes `flow_stale` from **both sides** of that comparison: the code no longer hashing to the recorded value, **or** the CURRENT graph no longer compiling to it. *(Slice C/D strengthened the second side: because a canvas SAVE never touches `code`, the one-sided formula left an edited graph reading fresh — the Studio offered no Recompile and an install shipped the previous graph's behaviour. `docs/VERIFY-M28.md` §3.1.)* | A hand-edit that *restores* the compiled bytes clears staleness by itself, and there is no boolean to get out of sync. A stale flow is a **UI honesty** state, never a security one: install re-validates and runs the code, which is what installs. |
 | D7 | **No decompiler.** A code-authored draft has no flow. Offering "generate a flow from the code" is an *AI-assisted, lossy, declared* action, never a deterministic promise. | No fragile JS parser, no silent misreading of hand-written code. The Flow tab on a flow-less draft says exactly that and offers the lossy route by name. |
 | D8 | **AI refine is a proposal, never a write.** `POST /drafts/:id/flow/refine {instruction}` returns `{flow, diff}`; the Studio renders an accept/reject diff (nodes and edges added/removed/changed) and only Accept PUTs the flow. | The model cannot restructure the user's graph behind their back. Audited as counts (`nodesAdded`, `nodesRemoved`, `edgesChanged`) — never the flow body or the instruction text. |
 | D9 | **Canvas-only is not acceptable.** The Flow tab has two equivalent views — **Canvas** and **Nodes** (a table of the same graph, every field editable, keyboard-navigable) — and they are the same document. The palette omits a node type whose capability is not wired. | React Flow has no keyboard path to creating an edge; a list view is the honest fix rather than a claim. And `llm` cannot appear in a palette whose compile would fail. |
@@ -149,10 +149,10 @@ just code + manifest.
 | `GET /v1/skills/drafts/:id/flow` | — | **Landed (B).** The flow, the derived `flowStale`, and `flowCompiledAt`. |
 | `PUT /v1/skills/drafts/:id/flow` | `skill.author` | **Landed (B).** Replace the flow (the canvas save). Validates structurally; **does not** touch `code` (a save is not a compile). |
 | `POST /v1/skills/drafts/:id/flow/compile` | `skill.author` | **Landed (B).** D1: emit `code`, write `flow_sha256` + `flow_compiled_at`, derive `permissions.tools` **and** `permissions.llm` (D5), re-run the M26 validation. Returns `{ok, code, sha256, tools, usesLlm, argsForm, warnings, draft}` or `{ok:false, errors, warnings}` having written nothing. |
-| `POST /v1/skills/drafts/:id/flow/refine` | `skill.author` | *D:* D8: `{instruction}` → `SkillFlowProposal`. **Writes nothing.** |
-| `POST /v1/skills/drafts/:id/flow/from-code` | `skill.author` | *D:* D7's declared-lossy conversion: asks the model for a flow that reproduces the current code's intent, returned as a proposal (never auto-applied). |
-| `POST /v1/skills/drafts/:id/flow/explain` | `skill.author` | *D:* Optional: a plain-language walkthrough for the UI. Returns text to the owner only. |
-| `POST /v1/skills/drafts {mode:'generate-flow', description}` | `skill.author` | *D:* M26's create route gains a mode: the model returns a **flow** (not code), which the core validates and compiles. **Until D lands the value is refused by name** (`invalid_input`) rather than downgraded to `mode:'generate'`. |
+| `POST /v1/skills/drafts/:id/flow/refine` | `skill.author` | **Landed (C/D).** D8: `{instruction}` → `SkillFlowProposal`. **Writes nothing** (the draft row is byte-identical after it); an unusable reply answers 200 `ok:false` with a sentence, plus the named per-node errors when the reply was a flow. |
+| `POST /v1/skills/drafts/:id/flow/from-code` | `skill.author` | **Landed (C/D).** D7's declared-lossy conversion: the model proposes a flow that reproduces the code's intent, returned as a proposal (never auto-applied), diffed against the draft's current graph (the empty graph when it has none). |
+| `POST /v1/skills/drafts/:id/flow/explain` | `skill.author` | **Landed (C/D).** A plain-language walkthrough for the UI. Returns text to the owner only, writes nothing and audits nothing. |
+| `POST /v1/skills/drafts {mode:'generate-flow', description}` | `skill.author` | **Landed (C/D).** M26's create route gained the mode: the model returns a **flow** (not code), which the core validates, compiles, and turns into a manifest whose permissions are derived from the graph (`origin: 'flow'`). A build with no flow model wired refuses it **by naming the flow model**, never by downgrading to `mode:'generate'`. |
 
 Audit (counts/ids only — never the flow body, the code, or the instruction):
 
@@ -245,12 +245,13 @@ Core
   401/404/409-on-installed/501; `skill.author` enforced; mobile and extension
   classes refused; a PUT does not touch `code`; a compile rewrites
   `permissions.tools` and `permissions.llm`; a stale draft installs AND runs.
-  *Still D:* `refine` / `from-code` and `generate-flow` (the create route's
-  demo-mode deterministic generator). Until D lands, `mode:'generate-flow'` on
-  `POST /v1/skills/drafts` is **refused by name** (`invalid_input`) rather
-  than falling into the `generate` branch — the wire type keeps advertising the
-  value, but a caller asking for a graph can no longer receive a code bundle
-  with `flow: null` and no error (asserted in `core/test/skills/drafts.test.ts`).
+  *D landed:* `refine` / `from-code` / `explain` and `generate-flow` (the create
+  route's deterministic generator when no model is configured) are covered here,
+  including that a proposal leaves the draft row byte-identical and that an
+  unusable reply answers `ok:false` writing nothing. The refusal of
+  `mode:'generate-flow'` when no flow model is wired is asserted in
+  `core/test/skills/drafts.test.ts` (it names the FLOW model, never downgrading to
+  `mode:'generate'`).
 - `core/test/skills/authoring.test.ts` (extend) — the authoring prompt teaches
   the node vocabulary **and not JavaScript**; it lists exactly the available
   node types (no `llm` when M27 S5 is absent) and the registry's tool ids; a
@@ -271,11 +272,19 @@ Web
   ordering, the deep link opening a flow-backed draft on the canvas.
 
 E2E (demo core)
-- `core/test/e2e/skillFlow.test.ts` — create with `mode:'generate-flow'` →
-  refine (refused while the reply is malformed; accepted when valid) → compile →
-  `flowStale` false → dry-run → install → invoke → uninstall.
-- `core/test/e2e/skillFlowChat.test.ts` — a chat directive carries a `flow`
-  payload; the draft lands flow-backed; the Studio deep link opens it.
+- `core/test/e2e/skillFlow.test.ts` — **built as `tests/e2e-skill-flow.test.ts`**,
+  the repo's actual home for spawned-core e2e: create with `mode:'generate-flow'`
+  → refine → save → compile → `flowStale` false → dry-run → install → invoke →
+  uninstall. (The malformed-reply half of this sketch cannot be driven from a
+  demo core — the demo generator has no malformed mode — so it is asserted where
+  it IS deterministic: `flowAi.test.ts` with a stubbed provider, and the
+  manager's second validation in `flowRefine.test.ts`.)
+- `core/test/e2e/skillFlowChat.test.ts` — **built as a route-level test in
+  `core/test/chat/skillAuthorTool.test.ts`**: a real chat turn against a stubbed
+  upstream whose native tool call carries a `flow`; the draft lands flow-backed
+  and compiled, the conversation keeps the note the Studio's deep link is built
+  from, and nothing installs. A second spawned core would need a fake provider
+  over HTTP to test the same thing.
 
 Docs
 - `docs/VERIFY-M28.md`; a rendered canvas screenshot recorded in the verify doc
@@ -312,17 +321,32 @@ Docs
       draft is allowed and documented (install consumes code). Slice B asserts
       the stale install **and the stale RUN**, so a later "helpful" block fails
       a test instead of silently redefining install.
-- [ ] AI paths: `generate-flow` produces a compiling draft; `refine` returns a
-      proposal that writes nothing until accepted; `from-code` is offered as
-      explicitly lossy; audits carry counts only.
-- [ ] `llm` appears in the palette **only** when M27 S5 is wired, and the
+- [x] AI paths (slice D): `generate-flow` produces a compiling draft;
+      `refine` returns a proposal that writes nothing until accepted;
+      `from-code` is offered as explicitly lossy; audits carry counts only.
+      *Both proposal routes are asserted byte-identical-no-write at the manager
+      level AND over HTTP; the deterministic (no-provider) answers are honest
+      about what they are — see `docs/VERIFY-M28.md` §3.3.*
+- [x] `llm` appears in the palette **only** when M27 S5 is wired, and the
       `skill.llm`/token-ceiling path is exercised through a flow end to end.
-- [ ] Canvas **and** Nodes views edit one document; both are keyboard-reachable;
+      *The palette gate is `llmAvailable` on the flow read (asserted over the
+      wire) plus `paletteFor`; the reach is a compiled `llm` node that really
+      reaches a provider and is bounded by the manifest ceiling
+      (`llmReach.test.ts`). A LIVE walk needs a real endpoint — §7 of the record.*
+- [x] Canvas **and** Nodes views edit one document; both are keyboard-reachable;
       `ux_audit` PASSED on the new token-only styles and a canvas frame reviewed
-      by eye.
-- [ ] Suites root + Δ, web + Δ, shared + Δ, zero regressions; typechecks 0; web
+      by eye. *The Nodes table edits every field, including a `tool` node's
+      `args`; the frames are in `docs/m28/` and the two defects they found are
+      recorded in `docs/VERIFY-M28.md` §4.*
+- [x] Suites root + Δ, web + Δ, shared + Δ, zero regressions; typechecks 0; web
       build green (React Flow is already a dependency — **no new package**);
-      both demo e2e flows green.
+      both demo e2e flows green. *Root **1724** (5 env-gated skips) · shared
+      **90** · web **918** · typechecks 0 · web build green. The flow lifecycle
+      e2e is `tests/e2e-skill-flow.test.ts`; the chat half runs through the real
+      chat route against a stubbed upstream in
+      `core/test/chat/skillAuthorTool.test.ts` — this repo has no
+      `core/test/e2e/` directory, and a second spawned core would add nothing
+      that test does not already cover.*
 
 **Slices A + B landed 2026-09-17** (`core/src/skills/flow/schema.ts` +
 `flow/compile.ts`, both pure — no fs, db or routes — plus the flow lifecycle in
@@ -404,15 +428,35 @@ tier as `riskCeiling`; the same compile also covers `mode:'generate-flow'`
 (above). Test counts: root **1651** (5 env-gated skips) · shared **90** · web
 **858** · typechecks 0 · web build green.
 
-*State:* **A + B done; C–F remain.** Depends on M26 A+B (drafts, Studio,
-dry-run) and on **M27 S5** for the `llm` node; it can ship without S5 as a
-9-node vocabulary. Slices: **A** flow schema + compiler (pure, no UI) ·
-**B** draft routes + staleness (schema v22, `core/src/skills/drafts.ts` +
-`core/test/http/skillFlowRoutes.test.ts` + `core/test/skills/flowStale.test.ts`) ·
-**C** canvas + nodes table + palette/inspector ·
-**D** AI build/refine/from-code + proposal diff · **E** chat `flow` payload ·
-**F** docs/verify. A+B are fully walkable from the API before any canvas work —
-a flow can be saved, compiled, validated, installed and run over HTTP today.
+*State:* **A–F landed; nothing outstanding.** Depends on M26 A+B (drafts, Studio,
+dry-run) and on **M27 S5** for the `llm` node — which landed, so the vocabulary
+is the full ten types. Slices: **A** flow schema + compiler (pure, no UI) ·
+**B** draft routes + staleness (schema v22) · **C** canvas + nodes table +
+palette/inspector (`web/src/SkillFlow.tsx`, `web/src/lib/flow-helpers.ts`, the
+Flow tab in `web/src/studio/*`) · **D** AI build/refine/from-code + proposal diff
+(`core/src/skills/flow/refine.ts` pure, `flow/ai.ts` for the model seam,
+`core/src/skills/model.ts` for the one bounded call, the three routes) ·
+**E** chat `flow` payload (`skills.draft`, the same tool) · **F** docs/verify.
+A hook may author a flow end to end today: `generate-flow` → refine (proposal) →
+save → compile → dry-run → install → invoke, over HTTP or from the canvas.
+The verification record — including what is NOT verified (a live model walk) — is
+`docs/VERIFY-M28.md`.
+
+**Slices C–F landed 2026-09-17.** The canvas is `web/src/SkillFlow.tsx` (React
+Flow; the ten node types register under prefixed React Flow ids because
+`input`/`output`/`default`/`group` are reserved by the library, while the
+DOCUMENT keeps D2's spelling), and every edit flows through one `onChange` so the
+panel around it owns the writes. Decisions fixed during C–F, all recorded in the
+verification doc: staleness checks **both** sides of the last compile (an edited
+graph used to read fresh); the bounded model call was extracted to
+`core/src/skills/model.ts` so five callers share one cap and one timeout;
+`SkillDraftOrigin` gained `'flow'`; `llmAvailable` rides the flow read so the
+palette can omit what the build cannot compile; `explain` audits nothing; and
+the spec's two statements about the Flow tab on a flow-less draft were resolved
+in favour of the tab-strip rule (the no-decompiler sentence and both routes to a
+graph live in the Code panel). Two defects were found by LOOKING at the rendered
+canvas — a full-size danger-toned Remove button on every node, and an 88px Id
+column in the Nodes table — and both are fixed and re-framed.
 
 ## Out of scope
 

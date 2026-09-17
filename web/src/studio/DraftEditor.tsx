@@ -1,10 +1,16 @@
 /**
  * M28-era Studio split — the editor: manifest fields, the entry source, and the
- * hosted Validation panel.
+ * hosted Validation panel — plus M28 cut C's FLOW tab.
  *
  * This is the biggest piece and the one that owns the tab strip. It renders
  * ValidationPanel next to the source because "the code and its verdict" is one
  * reading task, not two screens.
+ *
+ * THE TAB STRIP IS DECIDED BY THE DRAFT KIND (PLAN-M28.md cut C): a flow-backed
+ * draft is authored on the canvas, so Flow leads and is opened first; a
+ * code-authored draft has no graph to show and keeps the two-tab strip it always
+ * had, with the honest door to a flow (an empty canvas, or a declared-LOSSY
+ * from-code proposal) sitting in the Code panel rather than behind an empty tab.
  */
 import { useEffect, useMemo, useState } from 'react';
 import type { SkillDraft, SkillManifest } from '@partner/shared';
@@ -14,11 +20,12 @@ import { toolOptions, type ConfirmStage } from '../lib/skill-studio-helpers.js';
 import { updateDraft, validateDraft } from '../lib/skills.js';
 import { readStoredToken } from '../lib/token.js';
 
+import { FlowPanel, FlowStarter } from './FlowPanel.js';
 import { ValidationPanel } from './ValidationPanel.js';
 import { isSessionLost, messageOf } from './shared.js';
 
 // ---------------------------------------------------------------------------
-// Editor — manifest fields + the entry source
+// Editor — manifest fields + the entry source (and, M28, the flow)
 // ---------------------------------------------------------------------------
 
 export interface DraftEditorProps {
@@ -30,7 +37,7 @@ export interface DraftEditorProps {
   onSessionLost: () => void;
 }
 
-type EditorTab = 'code' | 'validation';
+type EditorTab = 'flow' | 'code' | 'validation';
 /**
  * The manifest's OWN fields plus the entry source, one draft at a time.
  *
@@ -47,7 +54,7 @@ export function DraftEditor({
   onDraftChanged,
   onSessionLost,
 }: DraftEditorProps) {
-  const [tab, setTab] = useState<EditorTab>('code');
+  const [tab, setTab] = useState<EditorTab>(draft.flow === null ? 'code' : 'flow');
   const [name, setName] = useState(draft.name);
   const [description, setDescription] = useState(draft.description);
   const [version, setVersion] = useState(draft.manifest?.version ?? '');
@@ -75,6 +82,25 @@ export function DraftEditor({
     setStage('idle');
     setError(null);
   }, [draft]);
+
+  // The tab STRIP follows the draft KIND, so it is re-decided when the draft
+  // changes: an edit draft opens on its code, a flow-backed one on its canvas,
+  // and starting a flow from the Code panel lands on the canvas it just made.
+  useEffect(() => {
+    setTab(draft.flow === null ? 'code' : 'flow');
+  }, [draft.id, draft.flow === null]);
+
+  const flowBacked = draft.flow !== null;
+  const tabs: Array<{ id: EditorTab; label: string }> = flowBacked
+    ? [
+        { id: 'flow', label: 'Flow' },
+        { id: 'code', label: 'Code' },
+        { id: 'validation', label: 'Validation' },
+      ]
+    : [
+        { id: 'code', label: 'Code' },
+        { id: 'validation', label: 'Validation' },
+      ];
 
   const manifest = draft.manifest;
   const options = useMemo(() => toolOptions(manifest?.permissions.tools ?? []), [manifest]);
@@ -335,29 +361,38 @@ export function DraftEditor({
           </div>
         ) : null}
 
-        <div className="seg-tabs" role="group" aria-label="Entry source or validation">
-          <button
-            type="button"
-            className="btn btn-secondary seg-tab"
-            aria-pressed={tab === 'code'}
-            onClick={() => setTab('code')}
-            disabled={disabled}
-          >
-            Code
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary seg-tab"
-            aria-pressed={tab === 'validation'}
-            onClick={() => setTab('validation')}
-            disabled={disabled}
-          >
-            Validation
-          </button>
+        <div className="seg-tabs" role="group" aria-label="Flow, entry source or validation">
+          {tabs.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className="btn btn-secondary seg-tab"
+              aria-pressed={tab === entry.id}
+              onClick={() => setTab(entry.id)}
+              disabled={disabled}
+            >
+              {entry.label}
+            </button>
+          ))}
         </div>
 
         <div className="form-field">
-          {tab === 'code' ? (
+          {tab === 'flow' && flowBacked ? (
+            <FlowPanel
+              draft={draft}
+              readOnly={readOnly}
+              disabled={disabled}
+              onDraftChanged={onDraftChanged}
+              onSessionLost={onSessionLost}
+            />
+          ) : tab === 'validation' ? (
+            <ValidationPanel
+              validation={draft.validation}
+              busy={busy}
+              disabled={disabled || readOnly}
+              onRevalidate={() => void revalidate()}
+            />
+          ) : (
             <>
               <div className="studio-pane-head">
                 <label className="label" htmlFor="studio-code">
@@ -379,14 +414,15 @@ export function DraftEditor({
                 only reach is the <code className="studio-inline-mono">partner</code> global; the
                 core refuses an entry over its size cap and names any import it cannot resolve.
               </p>
+              {!readOnly && !flowBacked ? (
+                <FlowStarter
+                  draft={draft}
+                  disabled={disabled}
+                  onSessionLost={onSessionLost}
+                  onFlowStarted={() => setTab('flow')}
+                />
+              ) : null}
             </>
-          ) : (
-            <ValidationPanel
-              validation={draft.validation}
-              busy={busy}
-              disabled={disabled || readOnly}
-              onRevalidate={() => void revalidate()}
-            />
           )}
         </div>
 

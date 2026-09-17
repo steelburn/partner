@@ -9901,3 +9901,660 @@ select {
   flex-direction: column;
   gap: var(--space-2);
 }
+
+/* ==========================================================================
+ * M28 — Skill Flow canvas (PLAN-M28.md cut C).
+ *
+ * The Studio's Flow tab: a palette rail, the React Flow canvas (or the Nodes
+ * table over the same document), the inspector for the selected node and the
+ * structural-problem strip.
+ *
+ * Token-only, and a SECOND CONSUMER of the .n-graph-* grammar rather than a
+ * second visual language: the canvas box, the node body, the handle dots and
+ * the edge stroke follow `.n-graph-canvas` / `.n-graph-node` / `.n-graph-handle`
+ * (node = --surface-2 + --radius-sm + one --elevation-sm; handle = an 8px dot on
+ * --surface-2 with a --border stroke and an --accent hover; canvas = --surface
+ * with a --border edge, because a viewport needs an edge). `--flow-edge` is the
+ * same kind of alias `.n-graph-canvas` declares for `--n-graph-edge`: an edge
+ * stroke is the one line that must keep its non-text contrast in both themes.
+ *
+ * The two contrast decisions, forced rather than chosen:
+ *  - A problem reads in --danger, and --danger on a --surface-2 well measures
+ *    Lc 69.5 in light mode — below the body floor (DESIGN.md's M20.A note). So
+ *    `.flow-issue` floats on its OWN --bg ground, the .studio-state recipe.
+ *  - A flagged node keeps its label in --text and marks the fault with a
+ *    --danger ring, so a node stays readable while it is wrong. The fault rules
+ *    are written after the selection rule, and the selected-and-wrong case is
+ *    named too — being selected must never hide being wrong.
+ *
+ * Geometry that is not a spacing decision (the 460px canvas, the 8px handle
+ * dots, the 2px state rings, the branch port offsets) stays a bare length next
+ * to tokenised padding and gaps, exactly as .n-graph-canvas's 460px does.
+ * ========================================================================== */
+
+/* --- The grid: a palette rail beside one work column -------------------- *
+ * The palette is column 1; every work surface names column 2 and lets its row
+ * place itself, so the Nodes view's two tables stack without a wrapper element
+ * and with no extra markup. Below 900px it collapses to the .studio column
+ * model: one column, palette first. */
+
+.flow {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+/* Grid children must be allowed to shrink below their content width. */
+.flow > * {
+  min-width: 0;
+}
+
+.flow-tabs {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .flow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .flow-palette,
+  .flow-canvas,
+  .flow-actions,
+  .flow-inspector,
+  .flow-issues,
+  .flow-table {
+    grid-column: 1;
+  }
+
+  /* The rail becomes a wrapping toolbar of entries: on a phone there is no
+   * column left for it to live in. */
+  .flow-palette {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .flow-palette-item {
+    width: auto;
+  }
+}
+
+/* --- Palette rail ------------------------------------------------------- */
+
+.flow-palette {
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* A palette entry is a .btn .btn-secondary with a column layout: the resting
+ * fill is --surface-2, hover raises it to --surface (from .btn-secondary), so
+ * hover can never be misread as "this node was added". The focus ring, the
+ * transition and the disabled fade come from .btn; the layout is all this adds. */
+.flow-palette-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--target-min);
+  text-align: left;
+  line-height: 1.3;
+}
+
+.flow-palette-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.flow-palette-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Canvas ------------------------------------------------------------- */
+
+.flow-canvas {
+  /* Edge lines and arrowheads read from a token alias so the canvas stays
+   * token-only: the value follows the active theme, and --text-faint is the
+   * stroke that passes non-text contrast on --surface in both modes. */
+  --flow-edge: var(--text-faint);
+  grid-column: 2;
+  position: relative;
+  height: 460px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.react-flow__connection-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+/* A node is a well on the canvas. Separation comes from the background shift
+ * (--surface-2 on --surface) plus one named elevation, in that order — so no
+ * border at rest, which is also what lets a ring mean something when the node
+ * IS selected or IS wrong. */
+.flow-node {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-width: 15rem;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: var(--elevation-sm);
+  cursor: grab;
+}
+
+/* Two more 2px rings on the same recipe, not new elevation recipes: React
+ * Flow's own stylesheet sets `.react-flow__node.selectable:focus-visible {
+ * outline: none }` and paints its BUILT-IN box for the reserved type names —
+ * which no node here uses. So a keyboard focus on a node would be invisible
+ * unless it is drawn here, and selection marks the node the inspector edits. */
+.react-flow__node:focus-visible .flow-node {
+  box-shadow: 0 0 0 2px var(--focus);
+}
+
+.react-flow__node.selected .flow-node {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Written after the selection rule, and the selected-and-wrong case is named
+ * explicitly: `.react-flow__node.selected .flow-node` is three classes deep, so
+ * an error ring on two would otherwise lose to it. */
+.flow-node.flow-node-error,
+.react-flow__node.selected .flow-node.flow-node-error {
+  box-shadow: 0 0 0 2px var(--danger);
+}
+
+.flow-node-type {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.flow-node-title {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* The one control inside a node. QUIET AT REST on purpose: a node's job is to
+ * read as one step in a graph, and a full-size danger-coloured button per node
+ * out-shouts the type and the summary it sits under (visible in the first
+ * looked-at frame of this slice). So the resting state is muted text on the
+ * node's own --surface-2 well -- which passes the body floor -- and the danger
+ * tone only arrives with its own --bg ground (Lc 80.9 there against 69.5 on the
+ * well, the M20.A measurement): the control comes forward exactly when it is
+ * being reached for. */
+.flow-node-remove {
+  min-height: 0;
+  padding: 0 var(--space-1);
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.flow-node-remove:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--danger);
+}
+
+.flow-node-remove:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.flow-node-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Handles (the .n-graph-handle dot) and a branch's two outputs -------- */
+
+.flow-handle {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  min-height: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--flow-edge);
+  border-radius: var(--radius-full);
+  cursor: crosshair;
+}
+
+.flow-handle:hover,
+.flow-handle.connectingfrom,
+.flow-handle.connectingto {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.flow-handle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* A branch emits "then" or "else", so its two dots sit apart: which one a
+ * connection leaves from is the whole meaning of the node. */
+.flow-handle-then {
+  top: 35%;
+}
+
+.flow-handle-else {
+  top: 70%;
+}
+
+.flow-node-port {
+  position: absolute;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  transform: translateY(-50%);
+}
+
+.flow-node-port-then {
+  top: 35%;
+  right: var(--space-3);
+}
+
+.flow-node-port-else {
+  top: 70%;
+  right: var(--space-3);
+}
+
+/* --- The edge label: where an edge's Remove control lives --------------- */
+
+.flow-edge-label {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--elevation-sm);
+  /* React Flow's label layer is pointer-events:none, so a control inside it has
+   * to opt back in — otherwise the button is visible and unclickable. */
+  pointer-events: all;
+}
+
+.flow-edge-name {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* --- Inspector ---------------------------------------------------------- */
+
+.flow-inspector {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.flow-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.flow-inspector-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* A row of paired controls (an argument, a map key, a merge key): wraps rather
+ * than pushing the table sideways on a narrow column. */
+.flow-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.flow-field-row .field {
+  flex: 1 1 6rem;
+}
+
+/* JSON is machine text (DESIGN.md), so a value reads as a value and not as
+ * prose. */
+.flow-json {
+  font-family: var(--font-mono);
+}
+
+/* What the node stores, as label/value rows: `display: contents` puts each term
+ * and its value on the dl's own grid line without a wrapper element. */
+.flow-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.flow-fact {
+  display: contents;
+}
+
+.flow-facts dt {
+  color: var(--text-muted);
+}
+
+.flow-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* --- The problem strip -------------------------------------------------- */
+
+.flow-issues {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.flow-issues ul,
+.flow-inspector-issues,
+.flow-table td ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One named problem: its own --bg ground so the --danger text clears the body
+ * floor on every ground it can be read over. */
+.flow-issue {
+  display: inline-flex;
+  align-items: baseline;
+  align-self: flex-start;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* The code and the node id are identifiers, not prose: machine text on the
+ * pill's own ground, where the muted tone keeps its contrast. */
+.flow-issue-code {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* --- The Nodes view: the same document as a table ----------------------- */
+
+.flow-table {
+  grid-column: 2;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.flow-table-caption {
+  padding-bottom: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  text-align: left;
+}
+
+.flow-table th,
+.flow-table td {
+  padding: var(--space-2);
+  text-align: left;
+  vertical-align: top;
+}
+
+.flow-table thead th {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+/* The Id column carries an editable identifier, and an auto-laid table hands it
+ * whatever is left once the prose columns have taken their share: at a 190px
+ * rail plus a 698px work column that measured 88px, which truncates a name like
+ * `decide` to two visible characters. The FLOOR is what makes the Nodes view
+ * honestly editable (D9 "every field editable") rather than nominally so; the
+ * rest of the width still goes to the columns that need it. */
+.flow-table td:first-child .field,
+.flow-table th:first-child {
+  min-width: 9rem;
+}
+
+/* Row hover is the row's own background shift. The controls inside are
+ * --surface-2 wells, which would vanish against a --surface-2 row, so the
+ * hovered row inverts: the row becomes the well and its fields come forward.
+ * Both states keep every control's text contrast. */
+.flow-table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.flow-table tbody tr:hover .field {
+  background: var(--surface);
+}
+
+/* A row the mirror found a problem in: a 2px --danger bar in the row's own
+ * ground — the .n-row.is-selected recipe in the semantic tone, never a tinted
+ * cell (a tint would put the row's --danger text on a --surface-2 well). */
+.flow-row-error {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+
+/* --- Empty state and the actions line ----------------------------------- */
+
+.flow-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 100%;
+  padding: var(--space-4);
+}
+
+.flow-actions {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.flow-actions .form-hint {
+  flex: 1 1 16rem;
+}
+
+/* The rules above add no transition of their own (the controls inherit .btn's),
+ * but the fallback is stated here anyway, so it cannot be lost by a later edit
+ * that adds one — the M20.A lesson. */
+@media (prefers-reduced-motion: reduce) {
+  .flow-palette-item,
+  .flow-node,
+  .flow-node-remove,
+  .flow-edge-label {
+    transition: none !important;
+  }
+}
+
+/* ==========================================================================
+ * M28 cut C/D — the FLOW PANEL (PLAN-M28.md D6/D7/D8).
+ *
+ * The canvas's own styling lives in the "Skill Flow canvas" block above; this
+ * block is the AUTHORING PANEL around it — the staleness banner, the refine
+ * input, the proposal diff, the from-code starter and the walkthrough. It is a
+ * separate block because it is separate code (`web/src/studio/FlowPanel.tsx`),
+ * and the split is what keeps "the canvas draws, the panel writes" visible in
+ * the stylesheet too.
+ *
+ * Same discipline as everywhere else: tokens only, separation by SPACE first and
+ * a background shift second (no borders, no new shadow recipe), every
+ * interactive element carries :focus-visible and :disabled, and the one
+ * semantic tone used is the repo's --danger TEXT on a --bg ground (never on a
+ * --surface-2 well, where it measures below the body floor in light mode).
+ * ========================================================================== */
+
+.flow-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The staleness banner: a neutral well, not an alarm. Staleness is a FACT about
+ * the code (D6), not an error — the flow is still installable and still runs —
+ * so it reads as a status panel with two named exits, and the tone vocabulary is
+ * reserved for the things that genuinely block (a refusal, a bad node). */
+.flow-stale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+.flow-stale-text {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.flow-refine {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.flow-refine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* The field takes the row; the button keeps its own width. min-width: 0 is what
+ * lets the input shrink instead of pushing the row wider than its column (the
+ * M20.A flex-crush rule, applied before it can bite). */
+.flow-refine-row .field {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+/* The proposal card (D8): a well with the change rows in it. Its Accept/Reject
+ * pair rides .flow-actions, so the spacing stays the panel's. */
+.flow-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+.flow-proposal-head {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.flow-proposal-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.flow-proposal-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+}
+
+.flow-proposal-label {
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+}
+
+.flow-proposal-detail {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* The from-code door (D7). It sits under the entry source with SPACE as the only
+ * separator: adding a rule or a tint here would make "build a flow from code"
+ * look like part of the code editor, which is exactly the confusion the card
+ * exists to prevent. */
+.flow-starter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* The walkthrough (D uses the same well treatment as the proposal card: both are
+ * "text the model produced for you", and both are read, not edited. */
+.flow-explain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+.flow-explain-text {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.flow-dirty {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+/* State coverage for the panel's own controls. The buttons inside are .btn
+ * (already covered globally); these rules exist for the well-hosted variants,
+ * because --danger text belongs on its own --bg ground, not on the well. */
+.flow-proposal .btn:focus-visible,
+.flow-stale .btn:focus-visible,
+.flow-starter .btn:focus-visible,
+.flow-explain .btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.flow-proposal .btn:disabled,
+.flow-stale .btn:disabled,
+.flow-starter .btn:disabled,
+.flow-explain .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

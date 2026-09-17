@@ -66,10 +66,13 @@ describe('M28 B — flow/code coherence is derived (D6)', () => {
       const draft = await drafts.create({ mode: 'manual', name: 'Text shaper', description: '' });
 
       // A code-authored draft has no flow, so there is nothing to be stale about.
+      // `llmAvailable` rides the same read because it is the palette's gate (D9):
+      // the canvas has to know what this build can compile before it draws.
       expect(drafts.getFlow(draft.id)).toEqual({
         flow: null,
         flowCompiledAt: null,
         flowStale: false,
+        llmAvailable: true,
       });
 
       const saved = drafts.saveFlow(draft.id, textFlow(FLOW_TEXT));
@@ -109,6 +112,52 @@ describe('M28 B — flow/code coherence is derived (D6)', () => {
       // Restoring the compiled bytes clears it BY ITSELF.
       expect(drafts.update(draft.id, { code: compiled.code }).flowStale).toBe(false);
       expect(drafts.getFlow(draft.id).flowStale).toBe(false);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('reads stale when the GRAPH moves after a compile, not only when the code does', async () => {
+    // Found by walking the slice-D lifecycle: a canvas SAVE never touches `code`,
+    // so the spec's literal formula (`sha256(code) !== flow_sha256`) left an
+    // EDITED graph reading fresh — the Studio would offer no Recompile, and a
+    // user who drew a change would install the previous graph's behaviour.
+    // Staleness therefore checks BOTH sides against the last compile.
+    const h = demoHarness();
+    try {
+      const drafts = draftsOf(h);
+      const draft = await drafts.create({ mode: 'manual', name: 'Drawn then edited', description: '' });
+      drafts.saveFlow(draft.id, textFlow(FLOW_TEXT));
+      const compiled = drafts.compileFlow(draft.id);
+      expect(compiled.ok).toBe(true);
+      if (!compiled.ok) return;
+      expect(drafts.getFlow(draft.id).flowStale).toBe(false);
+
+      // Save a DIFFERENT graph. The code and `flow_sha256` are untouched (a save
+      // is not a compile), but the code is no longer what this flow compiles to.
+      const saved = drafts.saveFlow(draft.id, textFlow(HAND_EDIT_TEXT));
+      expect(saved.ok).toBe(true);
+      expect(drafts.get(draft.id)?.code).toBe(compiled.code);
+      expect(drafts.get(draft.id)?.flowSha256).toBe(compiled.sha256);
+      expect(drafts.getFlow(draft.id).flowStale).toBe(true);
+
+      // Recompiling the EDITED graph clears it — the graph and the code agree
+      // again, and the new hash is the record of that agreement.
+      const recompiled = drafts.compileFlow(draft.id);
+      expect(recompiled.ok).toBe(true);
+      if (!recompiled.ok) return;
+      expect(recompiled.sha256).not.toBe(compiled.sha256);
+      expect(drafts.getFlow(draft.id).flowStale).toBe(false);
+
+      // A graph that does not compile at all is stale too: its code cannot be
+      // that flow's output. (A half-drawn graph still SAVES — drawing is not
+      // compiling — it just cannot be reported as coherent.)
+      drafts.saveFlow(draft.id, {
+        version: 1,
+        nodes: textFlow('{{text}} half drawn').nodes.slice(0, 2),
+        edges: [],
+      });
+      expect(drafts.getFlow(draft.id).flowStale).toBe(true);
     } finally {
       h.close();
     }

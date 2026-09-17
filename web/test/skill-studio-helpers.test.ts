@@ -92,6 +92,7 @@ describe('origin labels', () => {
     expect(Object.keys(DRAFT_ORIGIN_LABELS).sort()).toEqual([
       'chat',
       'edit',
+      'flow',
       'fork',
       'generated',
       'import',
@@ -100,6 +101,9 @@ describe('origin labels', () => {
     ]);
     expect(draftOriginLabel('chat')).toBe('From chat');
     expect(draftOriginLabel('import')).toBe('Imported');
+    // M28: a draft BORN as a flow (a generated graph, or a chat call carrying
+    // one) is named for what it is, not folded into "Generated".
+    expect(draftOriginLabel('flow')).toBe('From a flow');
   });
 
   it('names an unknown origin as itself instead of inventing a label', () => {

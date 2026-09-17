@@ -27,6 +27,7 @@ import {
 } from './api.js';
 import type {
   CatalogSkill,
+  FlowValidationError,
   SkillBundle,
   SkillDetail,
   SkillDraft,
@@ -34,6 +35,12 @@ import type {
   SkillDraftInstallResult,
   SkillDraftRun,
   SkillDraftSummary,
+  SkillFlow,
+  SkillFlowCompileResponse,
+  SkillFlowExplainResponse,
+  SkillFlowProposalResponse,
+  SkillFlowSaveResult,
+  SkillFlowState,
   SkillInvocationMeta,
   SkillInvokeInput,
   SkillSummary,
@@ -737,4 +744,200 @@ export async function importDraftBundle(
   options: { fetchImpl?: FetchLike } = {},
 ): Promise<SkillDraft> {
   return writeDraft(token, `${DRAFTS_PATH}/import`, 'POST', bundle, options);
+}
+
+// ---------------------------------------------------------------------------
+// M28 — the FLOW surface (PLAN-M28.md)
+//
+// A flow is an AUTHORING view, never a second artifact: the core compiles it
+// deterministically into `code`, and install always consumes that code. These
+// six calls are the whole client side of it.
+//
+// Redaction discipline (unchanged): the flow DOCUMENT is the owner's own
+// content, exactly like the entry source beside it. It travels between this
+// client and the owner's own core, is never logged here, and never lands in a
+// URL. The model round-trips (`refine`, `from-code`, `explain`) send an
+// instruction the owner typed and return text for the owner's eyes; nothing
+// echoes them into an error string.
+// ---------------------------------------------------------------------------
+
+const FLOW_SUFFIX = '/flow';
+
+/** Minimal guard for a flow state row (a flow field + the derived flag). */
+function isFlowState(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  return 'flow' in value && typeof value.flowStale === 'boolean';
+}
+
+/** The per-node errors a refused save carries (`flowErrors` on the 400). */
+function flowErrorsOf(parsed: unknown): FlowValidationError[] {
+  if (!isRecord(parsed) || !Array.isArray(parsed.flowErrors)) return [];
+  return parsed.flowErrors as FlowValidationError[];
+}
+
+function warningsOf(parsed: unknown): FlowValidationError[] {
+  if (!isRecord(parsed) || !Array.isArray(parsed.warnings)) return [];
+  return parsed.warnings as FlowValidationError[];
+}
+
+/** GET /v1/skills/drafts/:id/flow -> the graph + the DERIVED `flowStale` (D6). */
+export async function getDraftFlow(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillFlowState> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}${FLOW_SUFFIX}`, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+  });
+  const parsed = await expectJson<unknown>(response);
+  if (!isFlowState(parsed)) {
+    throw new ApiRequestError(response.status, 'The flow response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillFlowState;
+}
+
+/**
+ * PUT /v1/skills/drafts/:id/flow -> the canvas save. A save is NOT a compile:
+ * `code` and the permissions derived from the graph are untouched, and a
+ * structurally malformed graph answers `{ok:false}` with a per-node error list
+ * (the core's 400) instead of throwing — the canvas decorates the offender.
+ */
+export async function saveDraftFlow(
+  token: string,
+  id: string,
+  flow: SkillFlow,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillFlowSaveResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${DRAFTS_PATH}/${encodeURIComponent(id)}${FLOW_SUFFIX}`, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(flow),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text.length > 0 ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      // A non-JSON failure has no per-node errors; the caller reports the status.
+    }
+    if (isRecord(parsed) && parsed.error === 'invalid_input') {
+      return { ok: false, errors: flowErrorsOf(parsed), warnings: warningsOf(parsed) };
+    }
+    throw new ApiRequestError(response.status, extractErrorMessage(text, response.status));
+  }
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || parsed.ok !== true || !isFlowState(parsed)) {
+    throw new ApiRequestError(response.status, 'The flow save response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillFlowSaveResult;
+}
+
+/**
+ * POST /v1/skills/drafts/:id/flow/compile -> D1's ONLY writer of code from a
+ * flow. A flow that does not compile answers `ok:false` with named errors and
+ * writes nothing (a 200, like `/validate`); a successful compile carries the
+ * rewritten draft, because a compile IS a write.
+ */
+export async function compileDraftFlow(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillFlowCompileResponse> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${DRAFTS_PATH}/${encodeURIComponent(id)}${FLOW_SUFFIX}/compile`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    },
+  );
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || typeof parsed.ok !== 'boolean') {
+    throw new ApiRequestError(response.status, 'The compile response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillFlowCompileResponse;
+}
+
+/** Read one proposal-or-refusal body (both AI routes answer this shape). */
+function readProposal(parsed: unknown, status: number): SkillFlowProposalResponse {
+  if (!isRecord(parsed) || typeof parsed.ok !== 'boolean') {
+    throw new ApiRequestError(status, 'The flow proposal response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillFlowProposalResponse;
+}
+
+/**
+ * POST /v1/skills/drafts/:id/flow/refine -> a PROPOSAL (D8). It writes nothing:
+ * the caller renders the diff and only a later `saveDraftFlow` stores it.
+ */
+export async function refineDraftFlow(
+  token: string,
+  id: string,
+  instruction: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillFlowProposalResponse> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${DRAFTS_PATH}/${encodeURIComponent(id)}${FLOW_SUFFIX}/refine`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({ instruction }),
+    },
+  );
+  return readProposal(await expectJson<unknown>(response), response.status);
+}
+
+/**
+ * POST /v1/skills/drafts/:id/flow/from-code -> D7's declared-LOSSY conversion
+ * of the draft's current entry source into a flow, as a proposal. Never
+ * applied automatically: the model is guessing at intent.
+ */
+export async function draftFlowFromCode(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillFlowProposalResponse> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${DRAFTS_PATH}/${encodeURIComponent(id)}${FLOW_SUFFIX}/from-code`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    },
+  );
+  return readProposal(await expectJson<unknown>(response), response.status);
+}
+
+/** POST /v1/skills/drafts/:id/flow/explain -> a walkthrough, owner's eyes only. */
+export async function explainDraftFlow(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<SkillFlowExplainResponse> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${DRAFTS_PATH}/${encodeURIComponent(id)}${FLOW_SUFFIX}/explain`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    },
+  );
+  const parsed = await expectJson<unknown>(response);
+  if (!isRecord(parsed) || typeof parsed.ok !== 'boolean') {
+    throw new ApiRequestError(response.status, 'The explain response had an unexpected shape.');
+  }
+  return parsed as unknown as SkillFlowExplainResponse;
 }

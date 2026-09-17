@@ -221,12 +221,12 @@ describe('draft lifecycle', () => {
     }
   });
 
-  it('refuses `generate-flow` BY NAME until slice D builds it (no silent downgrade)', async () => {
-    // A generator IS wired, so the only thing that can refuse this is the mode
-    // itself. Before this refusal, `generate-flow` fell into the `generate`
-    // branch: the caller asked for a GRAPH and got a code bundle with
-    // `flow: null` and no error — and slice D would then change behaviour under
-    // a caller that had already shipped against it.
+  it('refuses `generate-flow` BY NAME when no flow model is wired (no silent downgrade)', async () => {
+    // A code GENERATOR is wired, and that is the point: before M28 D, a
+    // `generate-flow` request fell into the `generate` branch and the caller got
+    // a code bundle with `flow: null` and no error. The refusal must name the
+    // flow model — not the code generator — so the caller learns what is
+    // missing rather than receiving the wrong artifact.
     const h = env({
       generate: async ({ description, name, id }) => ({
         manifestText: JSON.stringify({
@@ -249,11 +249,69 @@ describe('draft lifecycle', () => {
         .then(() => null)
         .catch((e: SkillError) => e);
       expect(err?.code).toBe('invalid_input');
-      // The refusal NAMES the mode, so the caller learns which value is not
-      // implemented rather than that its request was malformed.
-      expect(err?.message).toContain('generate-flow');
+      expect(err?.message).toMatch(/generating a flow/);
       // ...and it wrote nothing: no draft row, no generated code.
       expect(h.drafts.list()).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('creates a COMPILED, flow-backed draft from `generate-flow`, and installs nothing', async () => {
+    // M28 D: the model returns a GRAPH. What lands is the compiled artifact —
+    // `code` is the compiler's output, `flow_sha256` records what it compiled
+    // to, and the manifest's permissions are derived from the graph (D5).
+    const h = env({
+      flowAi: {
+        generate: async () => ({
+          ok: true,
+          flow: {
+            version: 1,
+            nodes: [
+              {
+                id: 'in',
+                type: 'input',
+                position: { x: 0, y: 0 },
+                data: { fields: [{ name: 'text', type: 'string', required: true }] },
+              },
+              {
+                id: 'msg',
+                type: 'template',
+                position: { x: 1, y: 0 },
+                data: { text: '{{text}}' },
+              },
+              { id: 'out', type: 'output', position: { x: 2, y: 0 }, data: { shape: 'text' } },
+            ],
+            edges: [
+              { id: 'e0', source: 'in', target: 'msg' },
+              { id: 'e1', source: 'msg', target: 'out' },
+            ],
+          },
+          warnings: [],
+          model: 'test-model',
+        }),
+        refine: async () => ({ ok: false, message: 'unused' }),
+        fromCode: async () => ({ ok: false, message: 'unused' }),
+        explain: async () => ({ ok: false, message: 'unused' }),
+      },
+    });
+    try {
+      const draft = await h.drafts.create({
+        mode: 'generate-flow',
+        name: 'Flow draft',
+        description: 'reads args and returns them',
+      });
+      expect(draft.origin).toBe('flow');
+      expect(draft.model).toBe('test-model');
+      expect(draft.flow).not.toBeNull();
+      expect(draft.flowStale).toBe(false);
+      expect(draft.manifest?.permissions.tools).toEqual([]);
+      expect(draft.manifest?.permissions.llm).toBeFalsy();
+      // The stored code IS the compiler's output for that graph — nothing else.
+      expect(draft.code).toContain('export async function run(args)');
+      expect(draft.validation.ok).toBe(true);
+      // Inert: nothing was installed.
+      expect(h.skills.list().map((skill) => skill.id)).not.toContain(draft.id);
     } finally {
       h.close();
     }

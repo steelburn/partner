@@ -345,6 +345,44 @@ export { createSkillDraftManager, permissionDiff, slugifySkillId } from './skill
 // the web canvas mirrors it instead of copying it.
 export { compileFlow, sha256Of } from './skills/flow/compile.js';
 export type { FlowCompileOptions } from './skills/flow/compile.js';
+// M28 slice D — the flow authoring model (prompt builders, reply parser, diff)
+// and the hook that calls a provider. Pure except for the hook itself.
+export {
+  buildFlowExplainPrompt,
+  buildFlowFromCodePrompt,
+  buildFlowGeneratePrompt,
+  buildFlowRefinePrompt,
+  diffFlows,
+  parseFlowReply,
+} from './skills/flow/refine.js';
+export type { FlowPromptOptions, FlowReplyParseResult } from './skills/flow/refine.js';
+export {
+  createFlowAiHook,
+  demoFlowExplanation,
+  demoFlowFromCode,
+  demoGeneratedFlow,
+  DEMO_FLOW_MODEL,
+} from './skills/flow/ai.js';
+export type {
+  FlowAiExplainOutcome,
+  FlowAiFlowOutcome,
+  FlowAiFlowRequest,
+  FlowAiHook,
+  FlowAiOptions,
+} from './skills/flow/ai.js';
+// M28 slice D: the ONE bounded model call, extracted from M26's generator so the
+// flow verbs inherit the same cap and timeout instead of growing a second one.
+export {
+  runBoundedModelCall,
+  MODEL_CALL_TIMEOUT_MS,
+  MODEL_REPLY_CAP_BYTES,
+} from './skills/model.js';
+export type {
+  ModelCallFailureCode,
+  ModelCallOptions,
+  ModelCallOutcome,
+  ModelCallProviderSource,
+} from './skills/model.js';
 export {
   FLOW_FIELD_TYPES,
   FLOW_LITERAL_KEY,
@@ -640,6 +678,7 @@ import { createSkillManager } from './skills/manager.js';
 import { createSkillDraftManager } from './skills/drafts.js';
 import type { SkillDraftManager } from './skills/drafts.js';
 import { createSkillGenerator } from './skills/generate.js';
+import { createFlowAiHook } from './skills/flow/ai.js';
 import type { SkillManager } from './skills/manager.js';
 import { createSkillRunner } from './skills/runner.js';
 import type { SkillRunner } from './skills/runner.js';
@@ -1180,6 +1219,15 @@ export function createCore(
     capabilities: skillRuntimeCapabilities,
     demo: config.demo,
   });
+  // M28 cut D: the flow authoring model. The SAME bounded call as the generator
+  // (one cap, one timeout, one typed-failure vocabulary) and the same demo rule:
+  // with no provider configured the deterministic graph keeps the canvas, the
+  // compile, the dry-run and the install walkable, while a provider that IS
+  // configured but unusable is reported rather than papered over.
+  const skillFlowAi = createFlowAiHook({
+    providers: providerManager,
+    demo: config.demo,
+  });
   const skillDrafts = createSkillDraftManager({
     store: createSkillDraftStore(db),
     skills,
@@ -1191,6 +1239,8 @@ export function createCore(
     capabilities: skillRuntimeCapabilities,
     audit,
     generate: skillGenerator,
+    // M28 D: the four AI flow verbs (generate/refine/from-code/explain).
+    flowAi: skillFlowAi,
     runsDir: config.skillRunsDir,
     runner: skillRunner,
     // M26 cut C: an install ask rides the SAME pending_tools queue the Files

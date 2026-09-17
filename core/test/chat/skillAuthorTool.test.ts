@@ -110,6 +110,32 @@ describe('authoringInstructions', () => {
     expect(text).toContain('cannot run a draft');
     expect(text).toContain('NO network access');
   });
+
+  it('teaches the FLOW vocabulary (M28 E), with the llm node only where it exists', () => {
+    // One vocabulary, one place: the instructions CALL the same `flowContract`
+    // the flow prompts and the Studio palette mirror, so the chat cannot
+    // describe a node type the compiler would refuse.
+    expect(text).toContain('A FLOW is the other way to author the same entry');
+    for (const type of [
+      'input',
+      'const',
+      'tool',
+      'template',
+      'filter',
+      'map',
+      'branch',
+      'merge',
+      'output',
+    ]) {
+      expect(text).toContain(type);
+    }
+    // No model reach in this call, so no `llm` node is offered — and the
+    // prohibition is stated rather than left implicit.
+    expect(text).toContain('the `llm` node does NOT exist in this build');
+    const wired = authoringInstructions(['files.read'], { llm: true });
+    expect(wired).toContain('llm      {"prompt"');
+    expect(wired).not.toContain('does NOT exist in this build');
+  });
 });
 
 describe('D8: when authoring is advertised at all', () => {
@@ -599,4 +625,299 @@ describe('D8 at the route', () => {
       h.close();
     }
   });
+});
+
+/** args -> tool -> output text. A graph the broker registry can actually run. */
+function chatFlow(toolId = 'files.read'): Record<string, unknown> {
+  return {
+    version: 1,
+    nodes: [
+      {
+        id: 'in',
+        type: 'input',
+        position: { x: 0, y: 0 },
+        data: { fields: [{ name: 'path', type: 'string', required: true }] },
+      },
+      {
+        id: 'read',
+        type: 'tool',
+        position: { x: 200, y: 0 },
+        data: { toolId, args: { path: 'path' } },
+      },
+      { id: 'out', type: 'output', position: { x: 400, y: 0 }, data: { shape: 'text' } },
+    ],
+    edges: [
+      { id: 'e0', source: 'in', target: 'read' },
+      { id: 'e1', source: 'read', target: 'out' },
+    ],
+  };
+}
+
+describe('M28 E: `skills.draft` accepts a FLOW payload', () => {
+  it('advertises the flow option without adding a third tool', () => {
+    const h = harness();
+    try {
+      const provider = authoringProvider(h);
+      const ids = provider?.manifests.map((manifest) => manifest.id) ?? [];
+      expect(ids).toEqual([DRAFT_TOOL_ID, REQUEST_INSTALL_TOOL_ID]);
+      expect(provider?.manifests[0]?.description).toMatch(/flow/i);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('stages a COMPILED, flow-backed draft whose permissions come from the graph', async () => {
+    const h = harness();
+    try {
+      const provider = authoringProvider(h);
+      const staged = await provider?.exec(DRAFT_TOOL_ID, {
+        name: 'Read a file',
+        description: 'reads one file',
+        flow: chatFlow(),
+      });
+      expect(staged).toMatchObject({ outcome: 'executed' });
+      const result = (staged as { result: Record<string, unknown> }).result;
+      expect(result.ok).toBe(true);
+      const draft = h.skillDrafts?.get(String(result.draftId));
+      expect(draft?.flow).not.toBeNull();
+      expect(draft?.flowStale).toBe(false);
+      expect(draft?.code).toContain('files.read');
+      // D5: the manifest declares exactly what the graph reaches — derived by the
+      // compiler, never copied from anything the model said.
+      expect(draft?.manifest?.permissions.tools).toEqual(['files.read']);
+      expect(draft?.validation.ok).toBe(true);
+      // Still inert: nothing was installed.
+      expect(h.skills?.list()).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses `flow` AND `code` together, and names an unknown tool the model can fix', async () => {
+    const h = harness();
+    try {
+      const provider = authoringProvider(h);
+      const both = await provider?.exec(DRAFT_TOOL_ID, {
+        name: 'Both',
+        code: 'export function run(){ return 1; }',
+        flow: chatFlow(),
+      });
+      const bothResult = (both as unknown as { result: { ok: boolean; problems: string } }).result;
+      expect(bothResult.ok).toBe(false);
+      expect(bothResult.problems).toMatch(/either `flow` \(a graph\) or `code`/);
+
+      // A tool id outside the broker registry is refused by the COMPILER, and the
+      // model is told which one — it can re-call with the same id and fix it.
+      const unknown = await provider?.exec(DRAFT_TOOL_ID, {
+        name: 'Unknown tool',
+        flow: chatFlow('files.teleport'),
+      });
+      const refused = (unknown as { result: Record<string, unknown> }).result;
+      expect(refused.ok).toBe(false);
+      expect(String(refused.problems)).toContain('files.teleport');
+      // Nothing was staged, so there is no half-built draft to clean up.
+      expect(h.skillDrafts?.list()).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('re-calling with the SAME id re-stages the graph (the fix-it loop, for flows)', async () => {
+    const h = harness();
+    try {
+      const provider = authoringProvider(h);
+      const first = await provider?.exec(DRAFT_TOOL_ID, {
+        name: 'Iterated',
+        flow: chatFlow('files.read'),
+      });
+      const draftId = String((first as unknown as { result: { draftId: string } }).result.draftId);
+      // A graph with the input field dropped: the update replaces code, manifest
+      // and the stored flow together, so the draft is never half-migrated.
+      const narrowed = chatFlow('files.read');
+      const firstNode = (narrowed.nodes as Array<{ data: Record<string, unknown> }>)[0];
+      if (firstNode !== undefined) firstNode.data.fields = [];
+      const second = await provider?.exec(DRAFT_TOOL_ID, {
+        id: draftId,
+        name: 'Iterated',
+        flow: narrowed,
+      });
+      expect((second as unknown as { result: { ok: boolean } }).result.ok).toBe(true);
+      const draft = h.skillDrafts?.get(draftId);
+      expect(draft?.code).toContain('files.read');
+      expect(draft?.flow?.nodes).toHaveLength(3);
+      expect(draft?.flowStale).toBe(false);
+      // One draft, not two: an update by id never allocates a second row.
+      expect(h.skillDrafts?.list()).toHaveLength(1);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M28 cut E at the ROUTE: a real chat turn whose native tool call carries a
+// `flow` instead of `code`. The seam tests above prove the tool; this proves the
+// whole turn — the model's graph reaches the drafts manager through the same
+// gate, lands as a COMPILED flow-backed draft, and the conversation keeps the
+// note the Studio's deep link is built from.
+// ---------------------------------------------------------------------------
+
+/** Upstream whose SSE carries ONE native `skills.draft` call with a `flow`. */
+async function flowCallUpstream(
+  flow: Record<string, unknown>,
+): Promise<{ base: string; bodies: Array<Record<string, unknown>> }> {
+  const bodies: Array<Record<string, unknown>> = [];
+  let served = 0;
+  const started = await startHttpServer((req, res) => {
+    const path = (req.url ?? '').split('?')[0] ?? '';
+    if (path === '/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }] }));
+      return;
+    }
+    if (path === '/chat/completions') {
+      let raw = '';
+      req.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      req.on('end', () => {
+        try {
+          bodies.push(JSON.parse(raw) as Record<string, unknown>);
+        } catch {
+          bodies.push({});
+        }
+        if (served > 0) {
+          // The continuation turn: a plain answer, so the loop terminates.
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.end(sseReply(['Staged it.'], { prompt: 5, completion: 5 }));
+          return;
+        }
+        served += 1;
+        const args = JSON.stringify({ name: 'Chat Flow', description: 'from chat', flow });
+        const half = Math.floor(args.length / 2);
+        const frames = [
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  role: 'assistant',
+                  tool_calls: [
+                    { index: 0, id: 'call_1', function: { name: DRAFT_TOOL_ID, arguments: '' } },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            choices: [
+              {
+                index: 0,
+                delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(0, half) } }] },
+              },
+            ],
+          },
+          {
+            choices: [
+              {
+                index: 0,
+                delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(half) } }] },
+              },
+            ],
+          },
+          {
+            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+            usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+          },
+        ];
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(
+          frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('') +
+            'data: [DONE]\n\n',
+        );
+      });
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+  upstreams.push(started);
+  return { base: started.base, bodies };
+}
+
+describe('M28 E at the route: a chat turn can stage a flow', () => {
+  it('stages a COMPILED flow-backed draft and keeps the note the Studio links from', async () => {
+    const h = demoHarness({ demo: false });
+    try {
+      // A graph with no tool nodes, so the turn needs no grants: the point here
+      // is the authoring path, not the runtime reach.
+      const upstream = await flowCallUpstream({
+        version: 1,
+        nodes: [
+          {
+            id: 'in',
+            type: 'input',
+            position: { x: 0, y: 0 },
+            data: { fields: [{ name: 'text', type: 'string', required: true }] },
+          },
+          {
+            id: 'msg',
+            type: 'template',
+            position: { x: 240, y: 0 },
+            data: { text: 'from chat: {{text}}' },
+          },
+          { id: 'out', type: 'output', position: { x: 480, y: 0 }, data: { shape: 'text' } },
+        ],
+        edges: [
+          { id: 'e0', source: 'in', target: 'msg' },
+          { id: 'e1', source: 'msg', target: 'out' },
+        ],
+      });
+      const provider = await h.providerManager.create({
+        name: 'flow-call-upstream',
+        endpoint: upstream.base,
+        defaultModels: ['gpt-4o'],
+      });
+      await h.providerManager.setKey(provider.id, 'sk-fake-flow-call-0000000001');
+      const token = await pairToken(h);
+      const headers = authed(token);
+      await setPersonaLevel(h, headers, 'p-analyst', 'suggest');
+
+      const chat = await request(h.app)
+        .post('/v1/chat')
+        .set(headers)
+        .send({
+          personaId: 'p-analyst',
+          tools: true,
+          messages: [{ role: 'user', content: 'stage a flow that prefixes the text' }],
+        });
+      expect(chat.status).toBe(200);
+
+      // The draft landed FLOW-BACKED and COMPILED — the same artifact any other
+      // authoring path produces.
+      const drafts = h.skillDrafts?.list() ?? [];
+      expect(drafts).toHaveLength(1);
+      const staged = h.skillDrafts?.get(drafts[0]!.id);
+      expect(staged?.origin).toBe('chat');
+      expect(staged?.flow).not.toBeNull();
+      expect(staged?.flowStale).toBe(false);
+      expect(staged?.validation.ok).toBe(true);
+      expect(staged?.manifest?.permissions.tools).toEqual([]);
+      // Nothing became executable: drafting is inert, and the install ask is a
+      // separate tool the model did not call.
+      expect(h.skills?.list()).toEqual([]);
+
+      // The conversation carries the note naming the draft — that is the source
+      // of the Studio's deep link ("Review in Studio").
+      const meta = /"done_meta".*?"conversationId":"([^"]+)"/.exec(chat.text);
+      expect(meta?.[1]).toBeDefined();
+      const detail = h.conversations.get(meta?.[1] ?? '');
+      const note = detail.messages.find((message) =>
+        String(message.content).includes(String(staged?.id)),
+      );
+      expect(note).toBeDefined();
+    } finally {
+      h.close();
+    }
+  }, 30_000);
 });

@@ -62,6 +62,7 @@ import { TOOL_MANIFESTS } from '../src/broker/toolManifests.js';
 import { createSkillManager } from '../src/skills/manager.js';
 import type { SkillManager } from '../src/skills/manager.js';
 import { createSkillDraftManager } from '../src/skills/drafts.js';
+import { createFlowAiHook } from '../src/skills/flow/ai.js';
 import { createSkillLlmResolver } from '../src/skills/llm.js';
 import type { SkillGenerateHook } from '../src/skills/drafts.js';
 import { createSkillRunner } from '../src/skills/runner.js';
@@ -343,6 +344,14 @@ export interface HarnessOptions {
    * name, which is exactly what a build with no configured provider does.
    */
   skillDraftGenerator?: SkillGenerateHook;
+  /**
+   * M28 cut D: override the flow authoring model the drafts manager gets.
+   * Default: `createFlowAiHook({ providers, demo })` — the same wiring the real
+   * core uses, so a route test exercises the demo answers (and an injected fake
+   * exercises a proposal that actually CHANGES the graph). `null` leaves it
+   * unwired, which is the only way to reach the "no flow model" refusals.
+   */
+  skillFlowAi?: import('../src/skills/flow/ai.js').FlowAiHook | null;
   /**
    * M26 cut E: wire the skill RUNNER into the drafts manager (default true).
    * Pass false to leave the manager without a sandbox, which is the only way to
@@ -757,6 +766,15 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       ...(options.skillDraftGenerator !== undefined
         ? { generate: options.skillDraftGenerator }
         : {}),
+      // M28 cut D: the flow authoring model, wired by default exactly as the
+      // real core wires it (a demo build answers deterministically, a live one
+      // calls the configured provider). A test that needs a REAL proposal -
+      // one that differs from the graph it was given - injects its own hook;
+      // `skillFlowAi: null` leaves it out on purpose, which is the only way to
+      // reach the "no flow model wired" refusals.
+      ...(options.skillFlowAi === null
+        ? {}
+        : { flowAi: options.skillFlowAi ?? createFlowAiHook({ providers: providerManager, demo }) }),
     });
   }
 

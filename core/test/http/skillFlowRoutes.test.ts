@@ -22,6 +22,7 @@
 import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { SkillFlow } from '@partner/shared';
+import type { FlowAiHook } from '../../src/skills/flow/ai.js';
 import { ALLOWED_HOST, demoHarness } from '../helpers.js';
 import type { Harness } from '../helpers.js';
 
@@ -90,6 +91,41 @@ function toolAndLlmFlow(): SkillFlow {
   };
 }
 
+/**
+ * A FlowAiHook double. The DEFAULT fake answers a flow that differs from the one
+ * it was given in exactly ONE node (the template's text), so a diff assertion
+ * can name the single change — which is what distinguishes "the model proposed
+ * something" from "the model answered with what it was handed".
+ */
+function fakeFlowAi(overrides: Partial<FlowAiHook> = {}): FlowAiHook {
+  return {
+    generate: async () => ({
+      ok: true,
+      flow: textFlow('{{text}}'),
+      warnings: [],
+      model: 'fake-model',
+    }),
+    refine: async () => ({
+      ok: true,
+      flow: textFlow('{{text}} refined'),
+      warnings: [],
+      model: 'fake-model',
+    }),
+    fromCode: async () => ({
+      ok: true,
+      flow: textFlow('{{text}} from code'),
+      warnings: [],
+      model: 'fake-model',
+    }),
+    explain: async () => ({
+      ok: true,
+      text: 'It reads the text you give it and writes it back.',
+      model: 'fake-model',
+    }),
+    ...overrides,
+  };
+}
+
 /** Create a manual draft (a valid starter bundle) and return its id. */
 async function newDraft(h: Harness, token: string, name = 'Flow draft'): Promise<string> {
   const created = await request(h.app)
@@ -108,6 +144,9 @@ describe('M28 B flow routes', () => {
         request(h.app).get('/v1/skills/drafts/x/flow'),
         request(h.app).put('/v1/skills/drafts/x/flow').send(textFlow('{{text}}')),
         request(h.app).post('/v1/skills/drafts/x/flow/compile'),
+        request(h.app).post('/v1/skills/drafts/x/flow/refine').send({ instruction: 'anything' }),
+        request(h.app).post('/v1/skills/drafts/x/flow/from-code'),
+        request(h.app).post('/v1/skills/drafts/x/flow/explain'),
       ];
       for (const pending of checks) {
         const res = await pending.set('Host', ALLOWED_HOST);
@@ -469,6 +508,295 @@ describe('M28 B flow routes', () => {
         errorCount: 0,
       });
       expect(typeof JSON.parse(String(compile?.details)).codeBytes).toBe('number');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('404s an unknown draft on the three AI verbs too', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const checks = [
+        request(h.app)
+          .post('/v1/skills/drafts/nope/flow/refine')
+          .set(headers)
+          .send({ instruction: 'x' }),
+        request(h.app).post('/v1/skills/drafts/nope/flow/from-code').set(headers),
+        request(h.app).post('/v1/skills/drafts/nope/flow/explain').set(headers),
+      ];
+      for (const pending of checks) {
+        const res = await pending;
+        expect(res.status).toBe(404);
+        expect(res.body.error).toBe('not_found');
+      }
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses a mobile or extension session BY NAME on the three AI verbs', async () => {
+    const h = demoHarness();
+    try {
+      const desktop = await pairToken(h);
+      const draftId = await newDraft(h, desktop);
+      for (const clientClass of ['mobile', 'extension']) {
+        const headers = authed(await classToken(h, clientClass));
+        const checks = [
+          request(h.app)
+            .post(`/v1/skills/drafts/${draftId}/flow/refine`)
+            .set(headers)
+            .send({ instruction: 'x' }),
+          request(h.app).post(`/v1/skills/drafts/${draftId}/flow/from-code`).set(headers),
+          request(h.app).post(`/v1/skills/drafts/${draftId}/flow/explain`).set(headers),
+        ];
+        for (const pending of checks) {
+          const res = await pending;
+          expect(res.status).toBe(403);
+          expect(res.body).toMatchObject({ error: 'capability_denied' });
+        }
+      }
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses a refine with no flow, and one with an empty instruction, writing nothing', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const draftId = await newDraft(h, token);
+      const before = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+
+      // A code-authored draft has no flow, so there is nothing to propose
+      // against (D7) — refused by name, not a silent no-op.
+      const noFlow = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/flow/refine`)
+        .set(headers)
+        .send({ instruction: 'add a branch' });
+      expect(noFlow.status).toBe(400);
+      expect(noFlow.body.error).toBe('invalid_input');
+
+      await request(h.app)
+        .put(`/v1/skills/drafts/${draftId}/flow`)
+        .set(headers)
+        .send(textFlow('{{text}}'));
+      const empty = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/flow/refine`)
+        .set(headers)
+        .send({ instruction: '   ' });
+      expect(empty.status).toBe(400);
+      expect(empty.body.error).toBe('invalid_input');
+
+      const after = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+      // The only difference is the flow the test itself saved.
+      expect(after.body.code).toBe(before.body.code);
+      expect(after.body.manifestText).toBe(before.body.manifestText);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('returns a refine PROPOSAL and leaves the draft byte-identical (D8)', async () => {
+    const h = demoHarness({ skillFlowAi: fakeFlowAi() });
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const draftId = await newDraft(h, token, 'Refinable');
+      await request(h.app)
+        .put(`/v1/skills/drafts/${draftId}/flow`)
+        .set(headers)
+        .send(textFlow('{{text}} before'));
+      const before = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+
+      const refined = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/flow/refine`)
+        .set(headers)
+        .send({ instruction: 'PRIVATE-INSTRUCTION make the text friendlier' });
+      expect(refined.status).toBe(200);
+      expect(refined.body.ok).toBe(true);
+      expect(refined.body.proposal.model).toBe('fake-model');
+      // The diff counts the ONE node the model changed: the template. Positions
+      // and identical edges are not changes.
+      expect(refined.body.proposal.diff).toEqual({
+        nodesAdded: [],
+        nodesRemoved: [],
+        nodesChanged: ['msg'],
+        edgesChanged: 0,
+      });
+      expect(refined.body.proposal.flow.nodes).toHaveLength(3);
+
+      // NOTHING was written: the row after the call is the row before it. This
+      // is the whole of D8 — the model cannot restructure the graph behind the
+      // user's back.
+      const after = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+      expect(after.body).toEqual(before.body);
+      expect(after.body.flow.nodes.find((n: { id: string }) => n.id === 'msg').data.text).toBe(
+        '{{text}} before',
+      );
+
+      // The audit row carries COUNTS and the model name — never the instruction,
+      // never the graph.
+      const rows = h.audit.list(200);
+      const serialized = JSON.stringify(rows.map((row) => ({ action: row.action, details: row.details })));
+      expect(serialized).not.toContain('PRIVATE-INSTRUCTION');
+      expect(serialized).not.toContain('friendlier');
+      const row = rows.find((entry) => entry.action === 'skill.flow.refine');
+      expect(JSON.parse(String(row?.details))).toEqual({
+        ok: true,
+        nodesAdded: 0,
+        nodesRemoved: 0,
+        nodesChanged: 1,
+        edgesChanged: 0,
+        model: 'fake-model',
+      });
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses an unusable model reply with a sentence, and still writes nothing', async () => {
+    const h = demoHarness({
+      skillFlowAi: fakeFlowAi({
+        refine: async () => ({ ok: false, message: 'the model returned no text' }),
+      }),
+    });
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const draftId = await newDraft(h, token);
+      await request(h.app)
+        .put(`/v1/skills/drafts/${draftId}/flow`)
+        .set(headers)
+        .send(textFlow('{{text}}'));
+      const before = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+
+      const refused = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/flow/refine`)
+        .set(headers)
+        .send({ instruction: 'anything' });
+      // 200: the request SUCCEEDED in determining the answer, exactly as
+      // /validate and /compile report a negative result.
+      expect(refused.status).toBe(200);
+      expect(refused.body.ok).toBe(false);
+      expect(refused.body.error).toBe('the model returned no text');
+
+      const after = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+      expect(after.body).toEqual(before.body);
+      const row = h.audit.list(200).find((entry) => entry.action === 'skill.flow.refine');
+      expect(JSON.parse(String(row?.details))).toMatchObject({ ok: false, model: null });
+    } finally {
+      h.close();
+    }
+  });
+
+  it('turns the entry source into a flow as an explicitly LOSSY proposal (D7)', async () => {
+    const h = demoHarness({ skillFlowAi: fakeFlowAi() });
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const draftId = await newDraft(h, token, 'Written as code');
+      const before = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+      expect(before.body.flow).toBeNull();
+
+      const proposed = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/flow/from-code`)
+        .set(headers);
+      expect(proposed.status).toBe(200);
+      expect(proposed.body.ok).toBe(true);
+      // Measured against the EMPTY graph: a code-authored draft's first proposal
+      // is "everything here is new", which is the honest reading.
+      expect(proposed.body.proposal.diff.nodesAdded).toHaveLength(3);
+      expect(proposed.body.proposal.diff.nodesRemoved).toEqual([]);
+
+      // Never applied automatically: the draft still has no flow at all.
+      const after = await request(h.app).get(`/v1/skills/drafts/${draftId}`).set(headers);
+      expect(after.body.flow).toBeNull();
+      expect(after.body.code).toBe(before.body.code);
+      expect(after.body.manifestText).toBe(before.body.manifestText);
+      const row = h.audit.list(200).find((entry) => entry.action === 'skill.flow.fromCode');
+      expect(JSON.parse(String(row?.details))).toEqual({
+        ok: true,
+        nodes: 3,
+        edges: 2,
+        model: 'fake-model',
+      });
+    } finally {
+      h.close();
+    }
+  });
+
+  it('explains a flow for the owner, writing nothing and auditing nothing', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const draftId = await newDraft(h, token, 'Explainable');
+      await request(h.app)
+        .put(`/v1/skills/drafts/${draftId}/flow`)
+        .set(headers)
+        .send(toolAndLlmFlow());
+      const actionsBefore = h.audit.list(200).map((row) => row.action);
+
+      const explained = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/flow/explain`)
+        .set(headers);
+      expect(explained.status).toBe(200);
+      expect(explained.body.ok).toBe(true);
+      expect(typeof explained.body.text).toBe('string');
+      expect(explained.body.text).toContain('notes.read');
+
+      // An explanation is not a state change: no row, and no draft mutation.
+      const actionsAfter = h.audit.list(200).map((row) => row.action);
+      expect(actionsAfter).toEqual(actionsBefore);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('creates a COMPILED, flow-backed draft from `mode: generate-flow`', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      const created = await request(h.app)
+        .post('/v1/skills/drafts')
+        .set(headers)
+        .send({ mode: 'generate-flow', name: 'Notes digest', description: 'writes the text back' });
+      expect(created.status).toBe(201);
+      const draft = created.body as {
+        id: string;
+        origin: string;
+        model: string | null;
+        flow: SkillFlow | null;
+        flowStale: boolean;
+        code: string;
+        manifestText: string;
+        validation: { ok: boolean };
+        manifest: { permissions: { tools: string[]; llm?: boolean } };
+      };
+      expect(draft.origin).toBe('flow');
+      expect(draft.model).toBe('demo');
+      expect(draft.flow?.nodes).toHaveLength(3);
+      expect(draft.flowStale).toBe(false);
+      expect(draft.validation.ok).toBe(true);
+      expect(draft.code).toContain('export async function run(args)');
+      // The manifest is DERIVED from the graph, and this graph reaches nothing.
+      expect(draft.manifest.permissions.tools).toEqual([]);
+      // `llm` is written in BOTH directions into the manifest text (D5), so the
+      // declaration and the graph are visibly equal; the parsed manifest omits a
+      // false value, exactly as the M26 validator normalises it.
+      expect(draft.manifest.permissions.llm).toBeUndefined();
+      expect(draft.manifestText).toContain('"llm": false');
+
+      // The read surface reports the same derived state, plus the palette gate.
+      const state = await request(h.app)
+        .get(`/v1/skills/drafts/${draft.id}/flow`)
+        .set(headers);
+      expect(state.body.flowStale).toBe(false);
+      expect(state.body.llmAvailable).toBe(true);
     } finally {
       h.close();
     }

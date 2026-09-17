@@ -19,6 +19,14 @@
  * author at all), and `canAdvertiseAuthoring` states the D8 rule the chat route
  * uses to decide whether a turn is even told these tools exist.
  *
+ * M28 cut E: `skills.draft` also accepts a `flow` payload instead of `code`. It
+ * is deliberately the SAME tool, not a third one: a flow is an authoring view of
+ * the SAME artifact (the core compiles it to `entry.mjs`), so a persona that can
+ * write a skill can write it as a graph, and the Studio opens the result on the
+ * canvas. The graph is untrusted input like any other bundle text — the manager
+ * validates it (`validateFlow`), compiles it (the one compiler) and derives the
+ * manifest's permissions from the graph's own `tool` nodes.
+ *
  * The model's bundle is untrusted input: `manifestText` goes through
  * `normalizeAuthoredBundle` (forced id, clamped budget, unknown tools dropped
  * and named, `network: true` refused) before it is staged, exactly as a
@@ -27,7 +35,7 @@
 import type { ToolExecResponse, ToolId, ToolManifest } from '@partner/shared/tools.js';
 import type { Persona, SkillDraft, SkillDraftValidation } from '@partner/shared';
 import { normalizeAuthoredBundle } from './authoring.js';
-import type { ChatStageInput, RequestInstallOptions } from './drafts.js';
+import type { ChatFlowStageInput, ChatStageInput, RequestInstallOptions } from './drafts.js';
 import { slugifySkillId } from './drafts.js';
 import { capabilityDenial } from '../http/capabilities.js';
 import type { Capability } from '../http/capabilities.js';
@@ -67,8 +75,12 @@ export function authoringToolSpecs(
       description: [
         'Stage or update a skill DRAFT the user can review, test-run and install.',
         'Drafting is inert: it installs nothing and runs nothing.',
-        'Give name + description + code (the manifest is built for you), or a full',
+        'Give name + description + code (JavaScript, the manifest is built for you),',
+        'or name + description + flow (a graph the core compiles for you), or a full',
         'manifestText when you need to control risk, version or budget.',
+        'A flow is the safer authoring form: it is a small typed vocabulary with no',
+        'loops, no imports and no arbitrary expressions, and its tool reach is',
+        'derived from the graph.',
         ids.length > 0
           ? `Declarable tool ids (permissions.tools): ${ids.join(', ')}.`
           : 'No tool ids are available in this build.',
@@ -88,13 +100,23 @@ export function authoringToolSpecs(
             description: 'manifest.json as text. Omit to have one built from tools.',
           },
           code: { type: 'string', description: 'The entry.mjs source (exports run).' },
+          flow: {
+            type: 'object',
+            description: [
+              'A FLOW graph ({version:1, nodes, edges}) INSTEAD of `code`.',
+              'The core validates it, compiles it into the entry and derives',
+              'permissions.tools from its `tool` nodes, so a flow cannot declare',
+              'reach its code does not use. Pass `flow` or `code`, never both.',
+            ].join(' '),
+          },
           tools: {
             type: 'array',
             items: { type: 'string' },
             description: 'Broker tool ids the skill needs (used when manifestText is omitted).',
           },
         },
-        required: ['name', 'code'],
+        required: ['name'],
+        anyOf: [{ required: ['code'] }, { required: ['flow'] }],
       },
     },
     {
@@ -157,6 +179,12 @@ export function canAdvertiseAuthoring(input: {
 export interface AuthoringDraftStore {
   get(id: string): SkillDraft | null;
   stageFromChat(input: ChatStageInput): SkillDraft;
+  /**
+   * M28 cut E: the `flow` payload. The manager validates the graph, compiles it
+   * and derives the manifest, so this stays a TWO-method seam and the tool layer
+   * never learns how a graph becomes an artifact.
+   */
+  stageFlowFromChat(input: ChatFlowStageInput): SkillDraft;
   requestInstall(id: string, options?: RequestInstallOptions): { pendingId: string };
 }
 
@@ -325,9 +353,41 @@ export function authoringToolExternal(
       const name = readString(args, 'name');
       if (name === '') return { outcome: 'denied', reason: 'missing_name' };
       const code = typeof args.code === 'string' ? args.code : '';
-      if (code.trim() === '') return { outcome: 'denied', reason: 'missing_code' };
+      const rawFlow = args.flow;
+      const hasFlow = rawFlow !== null && typeof rawFlow === 'object' && !Array.isArray(rawFlow);
+      // A payload must carry ONE of the two artifact forms. "Neither" is a
+      // refusal the model can act on; "both" is too, because staging one and
+      // ignoring the other would silently drop half of what it asked for.
+      if (!hasFlow && code.trim() === '') return { outcome: 'denied', reason: 'missing_code' };
+      if (hasFlow && code.trim() !== '') {
+        return refusedResult(name, readString(args, 'id') || null, [
+          'pass either `flow` (a graph) or `code` (JavaScript), never both',
+        ]);
+      }
       const description = readString(args, 'description');
       const existingId = readString(args, 'id');
+
+      if (hasFlow) {
+        // M28 E: the graph path. The manager does everything the code path does
+        // — schema door, compile, derived permissions, caps — so what can come
+        // back is the same kind of named problem, and the model is told it.
+        try {
+          return stagedResult(
+            drafts.stageFlowFromChat({
+              name,
+              description,
+              flow: rawFlow,
+              conversationId: options.conversationId ?? null,
+              personaId: options.personaId ?? null,
+              ...(existingId !== '' ? { id: existingId } : {}),
+            }),
+          );
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : 'the flow could not be staged';
+          return refusedResult(name, existingId === '' ? null : existingId, [message]);
+        }
+      }
+
       const manifestText = typeof args.manifestText === 'string' ? args.manifestText : '';
       const stage = (text: string): ToolExecResponse => {
         try {

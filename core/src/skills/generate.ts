@@ -26,18 +26,24 @@
  * (no key, keychain unavailable) is a DIFFERENT case and stays a typed failure:
  * the owner expects a model-drafted skill and must be told it did not happen.
  */
-import type { ChatEvent, ProviderClient, ProviderSummary } from '@partner/shared';
-import { resolveChatModel } from '../gateway/resolver.js';
+import type { ProviderSummary } from '@partner/shared';
+import type { ProviderClient } from '@partner/shared';
 import { buildAuthoringPrompt, normalizeAuthoredBundle, parseAuthoringReply } from './authoring.js';
 import type { GenerateInput, GeneratedBundle } from './drafts.js';
 import { skillError } from './errors.js';
 import { DEFAULT_RUNTIME_CAPABILITIES } from './manifest.js';
 import type { RuntimeCapabilities } from './manifest.js';
+import {
+  MODEL_CALL_TIMEOUT_MS,
+  MODEL_REPLY_CAP_BYTES,
+  runBoundedModelCall,
+  type ModelCallFailureCode,
+} from './model.js';
 
 /** D10: the streamed reply cap. */
-export const GENERATION_REPLY_CAP_BYTES = 256 * 1024;
+export const GENERATION_REPLY_CAP_BYTES = MODEL_REPLY_CAP_BYTES;
 /** D10: the one-shot timeout. */
-export const GENERATION_TIMEOUT_MS = 60_000;
+export const GENERATION_TIMEOUT_MS = MODEL_CALL_TIMEOUT_MS;
 /** The model name a deterministic (demo / no-provider) bundle reports. */
 export const DEMO_GENERATION_MODEL = 'demo';
 
@@ -56,6 +62,15 @@ export type GenerationFailureCode =
   | 'reply_too_large'
   | 'unusable_reply'
   | 'upstream';
+
+/** The shared call's codes, mapped onto this module's vocabulary (M26 D10). */
+const GENERATION_CODE: Record<Exclude<ModelCallFailureCode, 'no_model'>, GenerationFailureCode> = {
+  no_provider: 'no_provider',
+  timeout: 'timeout',
+  reply_too_large: 'reply_too_large',
+  upstream: 'upstream',
+  empty_reply: 'unusable_reply',
+};
 
 export type GenerationOutcome =
   | { ok: true; bundle: GeneratedBundle }
@@ -130,44 +145,15 @@ export function run(args = {}) {
 }
 
 /**
- * Collect a streamed reply under the byte cap. Reads only delta text; an
- * `error` event is a failed generation, not a partial answer.
- */
-async function collectReply(
-  events: AsyncIterable<ChatEvent>,
-  capBytes: number,
-): Promise<
-  { ok: true; text: string } | { ok: false; code: GenerationFailureCode; message: string }
-> {
-  const parts: string[] = [];
-  let bytes = 0;
-  for await (const event of events) {
-    if (event.type === 'delta') {
-      bytes += Buffer.byteLength(event.text, 'utf8');
-      if (bytes > capBytes) {
-        return {
-          ok: false,
-          code: 'reply_too_large',
-          message: `the model reply passed ${capBytes} bytes - generation was stopped`,
-        };
-      }
-      parts.push(event.text);
-    } else if (event.type === 'error') {
-      return { ok: false, code: 'upstream', message: 'the model provider stream failed' };
-    }
-  }
-  const text = parts.join('').trim();
-  if (text === '') {
-    return { ok: false, code: 'unusable_reply', message: 'the model returned no text' };
-  }
-  return { ok: true, text };
-}
-
-/**
  * One bounded generation. Returns a TYPED failure instead of throwing, so a
  * caller can decide what a failure means (the route renders 400; a chat turn
  * could say so in the conversation). `createSkillGenerator` is the hook the
  * draft manager takes.
+ *
+ * The bound itself is `runBoundedModelCall` (M28 extracted it so the flow
+ * authoring path inherits the same cap and timeout rather than growing a second
+ * one). What stays HERE is what is generation-specific: the demo bundle, and the
+ * reading of the reply into a sanitised skill bundle.
  */
 export async function generateAuthoredBundle(
   options: SkillGeneratorOptions,
@@ -177,86 +163,39 @@ export async function generateAuthoredBundle(
   const demoBundle: GenerationOutcome = { ok: true, bundle: demoAuthoredBundle(input) };
   if (options.demo) return demoBundle;
 
-  const resolved = resolveChatModel({ providers: options.providers.list(), taskClass: 'chat' });
-  if (resolved.provider === null || resolved.model.trim() === '') return demoBundle;
-
-  let client: ProviderClient;
-  try {
-    client = await options.providers.clientFor(resolved.provider.id);
-  } catch {
-    // The provider exists but cannot serve a call (no key / keychain down).
-    return {
-      ok: false,
-      code: 'no_provider',
-      message:
-        'this provider cannot serve a generation call - check its key, or start from a template',
-    };
-  }
-
   const prompt = buildAuthoringPrompt({
     description: input.description,
     name: input.name,
     toolIds: input.toolIds,
     capabilities,
   });
-  const timeoutMs = options.timeoutMs ?? GENERATION_TIMEOUT_MS;
-  const capBytes = options.replyCapBytes ?? GENERATION_REPLY_CAP_BYTES;
-  const now = options.now ?? Date.now;
-  const startedAt = now();
-
-  const controller = new AbortController();
-  let timedOut = false;
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-      resolve('timeout');
-    }, timeoutMs);
-  });
-
-  let outcome: Awaited<ReturnType<typeof collectReply>> | 'timeout';
-  try {
-    outcome = await Promise.race([
-      collectReply(
-        client.chatStream({
-          model: resolved.model,
-          messages: [
-            { role: 'system', content: prompt },
-            {
-              role: 'user',
-              content:
-                'Draft the skill now, answering with the single JSON object and nothing else.',
-            },
-          ],
-          signal: controller.signal,
-        }),
-        capBytes,
-      ),
-      timeout,
-    ]);
-  } catch {
-    // An aborted upstream surfaces here; a timeout is reported as one.
-    if (timedOut) {
-      return {
-        ok: false,
-        code: 'timeout',
-        message: `generation timed out after ${Math.max(1, now() - startedAt)}ms`,
-      };
-    }
-    return { ok: false, code: 'upstream', message: 'the model provider stream failed' };
-  } finally {
-    // The timer's only job is to give up; it must not outlive the call.
-    if (timer !== undefined) clearTimeout(timer);
-  }
-  if (outcome === 'timeout') {
+  const outcome = await runBoundedModelCall(
+    {
+      providers: options.providers,
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.replyCapBytes === undefined ? {} : { replyCapBytes: options.replyCapBytes }),
+    },
+    {
+      system: prompt,
+      user: 'Draft the skill now, answering with the single JSON object and nothing else.',
+    },
+  );
+  if (!outcome.ok) {
+    // D11: "no model configured" is a walkable state, not a failure — the demo
+    // bundle keeps the whole authoring flow reachable with no credentials. A
+    // provider that IS configured but unusable stays a typed failure: the owner
+    // asked for a model-drafted skill and must be told it did not happen.
+    if (outcome.code === 'no_model') return demoBundle;
     return {
       ok: false,
-      code: 'timeout',
-      message: `generation timed out after ${Math.max(1, now() - startedAt)}ms`,
+      code: GENERATION_CODE[outcome.code],
+      message:
+        outcome.code === 'no_provider'
+          ? 'this provider cannot serve a generation call - check its key, or start from a template'
+          : outcome.message,
     };
   }
-  if (!outcome.ok) return outcome;
 
   const parsed = parseAuthoringReply(outcome.text);
   if (!parsed.ok) {
@@ -280,7 +219,11 @@ export async function generateAuthoredBundle(
   }
   return {
     ok: true,
-    bundle: { manifestText: normalized.manifestText, code: normalized.code, model: resolved.model },
+    bundle: {
+      manifestText: normalized.manifestText,
+      code: normalized.code,
+      model: outcome.model,
+    },
   };
 }
 

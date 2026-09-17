@@ -17,7 +17,7 @@
  * exists.
  */
 import type { ChatMessage, IndependenceLevel } from '@partner/shared';
-import { entryContract } from '../skills/runtime.js';
+import { entryContract, flowContract } from '../skills/runtime.js';
 import { DRAFT_TOOL_ID, REQUEST_INSTALL_TOOL_ID } from '../skills/tool.js';
 
 /** Feature-flagged instruction blocks (id -> text). Order is stable. */
@@ -199,11 +199,17 @@ export function authoringInstructions(
     '',
     'Arguments:',
     `  ${DRAFT_TOOL_ID}: { name, code, tools?, description?, manifestText?, id? }`,
-    '    - name and code (the whole entry.mjs as one string) are required',
+    '    - name is required, plus EITHER code (the whole entry.mjs as one string) OR',
+    '      flow (a graph — see "Authoring as a flow" below). Never both.',
     '    - tools lists the broker tool ids the skill needs; with no manifestText the',
-    '      core builds the manifest from name, description and tools for you',
+    '      core builds the manifest from name, description and tools for you. With a',
+    '      flow payload, permissions.tools is DERIVED from the graph instead.',
     '    - pass manifestText only when you need to control risk, version or budget',
     `  ${REQUEST_INSTALL_TOOL_ID}: { draftId }`,
+    '',
+    'Authoring as a flow — prefer this when the skill is data-shaped (read, filter,',
+    'map, template, one model call):',
+    flowContract([...toolIds], { llm: llmWired }),
     '',
     'The manifest contract (when you do write manifestText):',
     '  {"id" (a slug the core replaces anyway), "name", "description", "author",',

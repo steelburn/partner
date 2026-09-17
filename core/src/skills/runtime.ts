@@ -16,6 +16,16 @@
 import type { SkillManifest } from '@partner/shared';
 import { DEFAULT_SKILL_LLM_MAX_TOKENS } from './llm.js';
 
+/**
+ * The `input` node's field types (M28 D2/D3) — ONE spelling, used by the flow
+ * contract below, by the core validator (`flow/schema.ts`) and by the Studio's
+ * palette, which mirrors this string rather than inventing its own.
+ */
+export const FLOW_FIELD_TYPE_LIST = 'string | number | boolean | json';
+
+/** The `filter`/`branch` operator whitelist (M28 D2/D3), in one place. */
+export const FLOW_OPERATOR_LIST = 'eq | neq | gt | gte | lt | lte | contains | exists';
+
 /** Plain-language consequence of one declared tool. */
 const TOOL_REACH: Readonly<Record<string, string>> = {
   'files.list': 'list directories under a root you grant',
@@ -148,5 +158,80 @@ export function entryContract(
     toolIds.length > 0
       ? `Declarable tool ids: ${toolIds.join(', ')}.`
       : 'No tool ids are available in this build.',
+  ].join('\n');
+}
+
+/**
+ * The FLOW vocabulary — the same ten node types `core/src/skills/flow/schema.ts`
+ * validates, stated once for the three surfaces that have to agree on it:
+ *
+ *   1. the model prompts (`flow/refine.ts`: generate, refine, from-code, explain)
+ *   2. the chat authoring instructions (a persona can stage a flow, M28 cut E)
+ *   3. the Studio's palette — which MIRRORS this text client-side (it cannot
+ *      import core), the same way `TOOL_LABELS` mirrors the broker registry
+ *
+ * Driven by the caller's capability object like `entryContract`, so a build
+ * without model reach does not describe an `llm` node it would refuse
+ * (`llm_not_available`), and a build whose registry is a subset never lists a
+ * tool id the compile would reject.
+ */
+export function flowContract(
+  toolIds: readonly string[],
+  options: { llm?: boolean } = {},
+): string {
+  const llmWired = options.llm === true;
+  const nodeLines: string[] = [
+    '  input    {"fields":[{"name":"text","type":"' +
+      FLOW_FIELD_TYPE_LIST +
+      '","required":true}]}',
+    '           EXACTLY ONE per flow; declares the arguments (also the test form)',
+    '  const    {"value": <any JSON>}',
+    '  tool     {"toolId":"<an id from the list below>","args":{"name":"<path>|<json>"}}',
+    '  template {"text":"literal text with {{path}} placeholders"}',
+    '  filter   {"path":"items","op":"' + FLOW_OPERATOR_LIST + '","value":<json>}',
+    '           keeps the items of an array whose path satisfies the test',
+    '  map      {"select":{"name":"path"}} — one object per array item',
+    '  branch   {"path":"…","op":"…","value":<json>} — emits a `then` and an `else` output',
+    '  merge    {"shape":"object"|"array","keys":["a","b"]} — joins its inbound edges',
+    ...(llmWired
+      ? ['  llm      {"prompt":"text with {{path}} placeholders"} — ONE model call']
+      : []),
+    '  output   {"shape":"json"|"text"} — EXACTLY ONE per flow; what run(args) returns',
+  ];
+  return [
+    'A FLOW is the other way to author the same entry: a small typed graph that',
+    'Partner COMPILES into the entry module for you. You write the graph, never',
+    'JavaScript. Its whole shape:',
+    '  {"version":1,',
+    '   "nodes":[{"id":"n1","type":"input","position":{"x":0,"y":0},"data":{…}}],',
+    '   "edges":[{"id":"e1","source":"n1","target":"n2","sourceHandle":null,"targetHandle":null}]}',
+    '',
+    'Node types and their `data` — the COMPLETE vocabulary (no other node, no',
+    'loop, no expression language, no imports):',
+    ...nodeLines,
+    '',
+    'Rules the compiler enforces (a flow that breaks one is refused BY NAME):',
+    '  · exactly one input and exactly one output node',
+    '  · data moves ONE way (a cycle is refused); a node\u2019s input is its single',
+    '    inbound edge, or the skill\u2019s args when it has none — so a node whose',
+    '    input is `undefined` does nothing, which is how `branch` skips a port',
+    '  · a path is `a.b[0].c`: identifiers and integer indexes only. It compiles to',
+    '    a safe accessor; `__proto__`, `constructor` and `prototype` are refused.',
+    '    In filter/map the path is relative to the ARRAY ITEM, elsewhere to the',
+    '    node\u2019s input value',
+    '  · a `tool` node\u2019s string arg is a PATH reference when it looks like a path,',
+    '    otherwise a literal; write {"$literal":"text"} for a string literal that',
+    '    would otherwise be mistaken for a path',
+    '  · template text is escaped on emit, so {{path}} is the ONLY substitution',
+    ...(llmWired
+      ? [
+          '  · an `llm` node needs permissions.llm, and the manifest\u2019s token ceiling',
+          '    bounds what the whole run may spend on model calls',
+        ]
+      : ['  · the `llm` node does NOT exist in this build — never emit one']),
+    '',
+    toolIds.length > 0
+      ? `A \`tool\` node may only name one of these ids: ${toolIds.join(', ')}.`
+      : 'No tool ids are available in this build, so a `tool` node cannot be used.',
   ].join('\n');
 }

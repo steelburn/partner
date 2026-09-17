@@ -76,6 +76,8 @@ export const DRAFT_ORIGIN_LABELS: Record<SkillDraftOrigin, string> = {
   fork: 'Fork',
   edit: 'Edit',
   import: 'Imported',
+  // M28: born as a flow (a generated graph, or a chat call carrying one).
+  flow: 'From a flow',
 };
 
 /** Chip label for an origin; an unknown value is named, never invented. */

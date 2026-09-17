@@ -497,7 +497,8 @@ existing `file.read` capability — **no new capability name**, so mobile keeps
   invocation's tokens are **ledger-charged**, and `skill.llm` is a desktop-only
   capability — so a skill can send what it read to the configured provider,
   **declared and bounded**, never ambient (`docs/VERIFY-M27.md`).
-- **Flow authoring (M28, slices A + B landed — `PLAN-M28.md`).** The Studio
+- **Flow authoring (M28, slices A–F landed — `PLAN-M28.md`,
+  `docs/VERIFY-M28.md`).** The Studio
   gains a fourth
   surface: a React Flow canvas (the dependency is already in `web/`, used by
   `NotesGraph.tsx`) where a skill is a graph of ten typed nodes and the model
@@ -509,9 +510,14 @@ existing `file.read` capability — **no new capability name**, so mobile keeps
   The vocabulary is deliberately not a programming language (no loops, no
   arbitrary expressions) and the compiler is total; expressions are a validated
   path grammar plus fixed operators, so an AI-written graph **cannot inject
-  code**. `permissions.tools` is derived from the graph's `tool` nodes, and
-  flow/code coherence is a derived hash comparison, not a flag. The `llm` node
-  needs M27 S5; without it the palette is nine nodes.
+  code**. `permissions.tools` and `permissions.llm` are derived from the graph,
+  and flow/code coherence is a derived comparison against the last compile, not
+  a flag. The `llm` node needs M27 S5, which landed, so the palette is the full
+  ten nodes; a node type a build cannot compile is omitted from the palette and
+  the core tells the canvas which (`llmAvailable` on the flow read). Because
+  React Flow has no keyboard path to creating an edge, the Flow tab ships an
+  equivalent **Nodes table** over the same document, and a `tool` node's `args`
+  are editable there.
 
 ---
 
@@ -593,7 +599,7 @@ any Partner-owned server (there is none in v1).
 | `project_roots` | user-granted filesystem roots |
 | `pending_tools` / `file_proposals` | approval queue + write proposals |
 | `skills` / `skill_invocations` | installed skill metadata + hashes; invocation audit |
-| `skill_drafts` | authored skill bundles in progress: manifest text + entry code + the deterministic validation result. **Inert** — nothing runs or installs from here until `promote` (M26 cut A, schema v21). M28 B (v22) adds `flow_json`/`flow_sha256`/`flow_compiled_at`: the graph a Flow-authored draft was drawn as and the hash it last compiled to (staleness is derived from those, never stored) |
+| `skill_drafts` | authored skill bundles in progress: manifest text + entry code + the deterministic validation result. **Inert** — nothing runs or installs from here until `promote` (M26 cut A, schema v21). M28 C–F (v22) adds `flow_json`/`flow_sha256`/`flow_compiled_at`: the graph a Flow-authored draft was drawn as and the hash it last compiled to — staleness is derived on every read from those plus a recompile of the current graph, never stored, and `origin` may read `'flow'` |
 | `playbook_runs` / `scheduled_runs` | playbook runs + scheduled-run state (M14) |
 | `spend_ledger` | rolling provider spend windows (M10) |
 | `deploy_profiles` | Ship/deploy targets (§6.1) |
@@ -633,8 +639,13 @@ no further table — app-scoped grants reuse the reserved `projectId='app'` —
 `PLAN-M27.md`. **v22 (M28 cut B, landed):** three additive columns on
 `skill_drafts` (`flow_json`, `flow_sha256`, `flow_compiled_at`) so a Flow-authored
 draft keeps its graph and derives staleness against the code it compiled to —
-`PLAN-M28.md`. Guarded `ensureColumn`, so a v21 DB opens unchanged and pre-v22
-rows read `NULL` = no flow.
+`PLAN-M28.md`. `flow_json` holds the `SkillFlow` document itself; `flow_sha256`
+is the hash the flow LAST compiled to, and **staleness is derived on every read**
+(never stored) as "the code is not what the CURRENT graph compiles to": the code
+side is compared to the recorded hash and the graph side is recompiled, because a
+canvas save never touches `code` (a graph edited after a compile used to read
+fresh — `docs/VERIFY-M28.md` §3.1). `origin` gained the value `'flow'`. Guarded
+`ensureColumn`, so a v21 DB opens unchanged and pre-v22 rows read `NULL` = no flow.
 
 **M20 partitions by user and by trust tier:** one whole-file-encrypted DB +
 cipher key + skills dir per user under `data/users/<id>/` (generalizing the
@@ -697,11 +708,13 @@ adds no route**: the Studio picker reads the existing `GET /v1/skills/templates`
 whose list is derived from the capability object (`pure`, `reads-files`,
 `notes-checklist`, `mcp-call` when every reach is wired — and never a template
 whose reach this build cannot honour).
-M28 (slice A + B landed) adds the Flow surface under `/v1/skills/drafts/:id/flow`:
-`GET` · `PUT` · `/compile` are live (schema v22) — a graph can be saved, compiled
-into `code` with the permissions derived from it, and installed/run over HTTP
-today. Slice D still plans `/refine` · `/from-code` · `/explain` and the
-`mode:'generate-flow'` value on the M26 create route — `PLAN-M28.md`.
+M28 adds the Flow surface under `/v1/skills/drafts/:id/flow` (schema v22, slices
+A–F landed): `GET` · `PUT` · `/compile` · `/refine` · `/from-code` · `/explain`,
+plus the `mode:'generate-flow'` value on the M26 create route. A graph can be
+drawn in the Studio, generated from a description, refined by the model as a
+proposal the owner accepts or rejects, compiled into `code` with the permissions
+derived from it, and installed/run over HTTP — `PLAN-M28.md`,
+`docs/VERIFY-M28.md`.
 
 Later milestones extend this surface: providers by purpose
 (`/v1/providers/discover`, `/v1/providers/purposes` — M13) and edited in place
@@ -1834,12 +1847,12 @@ apps/partner/
       real MCP seam instead of exercising a skill that ignores it, and a
       persona-driven run's `skill.invoke` row names actor `persona` rather than
       `web`.`
-- [ ] **M28 — Skill Studio Flow: build a skill on a canvas, with the model as a
-      collaborator (detailed spec: `PLAN-M28.md`).** **Slices A + B landed
-      2026-09-17.** The Studio (M26) gains a
-      fourth surface: a **React Flow** canvas — the dependency is already in
-      `web/` (used by `NotesGraph.tsx`), so **no new package** — where a skill
-      is a graph of ten typed nodes. The model can **build** the graph from a
+- [x] **M28 — Skill Studio Flow: build a skill on a canvas, with the model as a
+      collaborator (detailed spec: `PLAN-M28.md`, verification record:
+      `docs/VERIFY-M28.md`).** **Slices A–F landed 2026-09-17.** The Studio (M26)
+      gains a **fourth surface**: a **React Flow** canvas — the dependency is
+      already in `web/` (used by `NotesGraph.tsx`), so **no new package** — where
+      a skill is a graph of ten typed nodes. The model can **build** the graph from a
       description (`mode:'generate-flow'`), the user can draw it, and the model
       can **refine** what the user drew as a **proposal with an
       accept/reject diff** — never a silent rewrite. The load-bearing
@@ -1876,14 +1889,19 @@ apps/partner/
       `tool_requires_medium` and nothing is written** ·
       install from a stale draft allowed and documented (install consumes code) —
       **done (asserted by installing AND RUNNING a stale draft)** ·
-      refine writes nothing until accepted · `llm` only with M27 S5 · canvas and
-      nodes views edit one document, both keyboard-reachable · `ux_audit` PASSED
+      refine writes nothing until accepted — **done** · `llm` only with M27 S5 —
+      **done (the palette gate is `llmAvailable` on the flow read, and a compiled
+      `llm` node reaches a provider under the manifest's token ceiling)** ·
+      canvas and nodes views edit one document, both keyboard-reachable —
+      **done** · `ux_audit` PASSED
       on the new token-only styles **plus a looked-at canvas frame** (a passing
-      audit is the floor, not the evidence, for a visual surface) · suites
+      audit is the floor, not the evidence, for a visual surface) — **done,
+      `docs/m28/`** · suites
       root + Δ / web + Δ / shared + Δ, zero regressions · typechecks 0 · web
-      build green · both demo e2e flows green.*
-      *State: **slices A + B + the Studio split landed 2026-09-17** — root
-      **1651** (5 env-gated skips) · shared **90** · web **858** · typechecks 0 ·
+      build green · both demo e2e flows green — **done: root 1724, shared 90,
+      web 918, typechecks 0, build green, `tests/e2e-skill-flow.test.ts`.***
+      *State: **slices A–F landed 2026-09-17** — root
+      **1724** (5 env-gated skips) · shared **90** · web **918** · typechecks 0 ·
       web build
       green. **Slice A (the compiler)** is `core/src/skills/flow/schema.ts` +
       `flow/compile.ts`, both pure (no fs, no db, no routes). Determinism is
@@ -1937,9 +1955,34 @@ apps/partner/
       `core/test/skills/flowStale.test.ts` ·
       `core/test/http/skillFlowRoutes.test.ts` (+2 in `db-migrate.test.ts` for
       the v21 → v22 upgrade; the six SCHEMA_VERSION tripwires were bumped to 22).
-      **Remaining: C** canvas + nodes table · **D** AI build/
-      refine/from-code · **E** chat `flow` payload · **F** docs/verify. Depends on
-      M26 A+B; the `llm` node depends on M27 S5 (landed).*
+      **Slices C–F landed 2026-09-17.** **C** is the canvas
+      (`web/src/SkillFlow.tsx`) + its DOM-free helper layer
+      (`web/src/lib/flow-helpers.ts`) + the Flow tab in `web/src/studio/*`: the
+      palette rail, the typed inspector, per-node error decoration,
+      Auto-arrange, and the **Nodes table** that edits every field of the same
+      document (D9's answer to React Flow having no keyboard path to an edge) —
+      the ten node types register under prefixed React Flow ids because
+      `input`/`output`/`default`/`group` are reserved by the library, while the
+      DOCUMENT keeps D2's spelling. **D** is the four AI verbs
+      (`core/src/skills/flow/refine.ts` pure prompts/parse/diff,
+      `flow/ai.ts` the model seam, `core/src/skills/model.ts` the ONE bounded
+      call extracted from M26's generator so five callers share one cap and one
+      timeout): `mode:'generate-flow'`, `/flow/refine`, `/flow/from-code`,
+      `/flow/explain` — and **both proposal routes write nothing**, asserted
+      byte-identical at the manager level and over HTTP. **E** is the same
+      `skills.draft` tool accepting a `flow` payload instead of `code`, with the
+      node vocabulary (`flowContract`) joining the shared reach vocabulary the
+      authoring prompt, the chat instructions and the palette all mirror. **F**
+      is `docs/VERIFY-M28.md` (+ the looked-at frames in `docs/m28/`), which is
+      also where the four decisions taken beyond the spec's letter are recorded:
+      staleness now checks BOTH sides of the last compile (an edited graph used
+      to read fresh), the shared bounded call, `SkillDraftOrigin` gaining
+      `'flow'`, `llmAvailable` riding the flow read for the palette gate, and
+      `explain` auditing nothing. Gates: root **1724** (5 env-gated skips) ·
+      shared **90** · web **918** · typechecks 0 · web build green · `ux_audit`
+      PASSED · `tests/e2e-skill-flow.test.ts` green. Not verified: a LIVE model
+      walk for the four verbs (no endpoint in this workspace — the deterministic
+      answers and the stubbed-reply paths are what ran).*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

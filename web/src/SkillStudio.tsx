@@ -466,3 +466,7 @@ export { RunPanel } from './studio/RunPanel.js';
 export { InstallPanel } from './studio/InstallPanel.js';
 export { InstallConfirm } from './studio/InstallConfirm.js';
 export { DraftActions } from './studio/DraftActions.js';
+// M28 cut C/D: the Flow tab's panel and the from-code starter live beside the
+// editor they belong to, and are re-exported here for the same reason as the
+// rest — this module stays the one public door into the Studio.
+export { FlowPanel, FlowStarter } from './studio/FlowPanel.js';

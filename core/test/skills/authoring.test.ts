@@ -32,6 +32,9 @@ import {
 import type { RuntimeCapabilities } from '../../src/skills/manifest.js';
 import { entryContract, unknownTools } from '../../src/skills/runtime.js';
 import { availableTemplates, SKILL_TEMPLATES } from '../../src/skills/templates.js';
+import { compileFlow } from '../../src/skills/flow/compile.js';
+import { buildFlowGeneratePrompt, parseFlowReply } from '../../src/skills/flow/refine.js';
+import { demoHarness } from '../helpers.js';
 
 /** The v1 broker registry (the six files.* ids) - the real authoring input. */
 const TOOLS = [
@@ -393,5 +396,136 @@ describe('templateBundle', () => {
 
   it('returns null for an unknown template rather than inventing one', () => {
     expect(templateBundle('no-such-template', 'X', 'x')).toBeNull();
+  });
+});
+
+/**
+ * M28 cut D/E — the FLOW half of authoring (PLAN-M28.md).
+ *
+ * The flow vocabulary is not a second prompt language: it is `flowContract()`
+ * from `runtime.ts`, the same text the flow prompts and the Studio's palette
+ * mirror. These tests pin the two properties the milestone's exit criteria name
+ * for it:
+ *
+ *   1. The prompt teaches the NODE VOCABULARY and not JavaScript — it lists the
+ *      available node types (and NOT `llm` when the build has no model reach)
+ *      plus the registry's own tool ids, so a model that answers it produces a
+ *      graph the compiler can take.
+ *   2. A model reply containing a valid flow is parsed and compiled into an
+ *      INSTALLABLE draft: the whole point of authoring a graph is that it ends
+ *      as the same artifact a hand-written bundle does.
+ */
+describe('M28 D/E: the flow authoring prompt', () => {
+  it('teaches the node vocabulary and not JavaScript', () => {
+    const prompt = buildFlowGeneratePrompt({
+      name: 'Notes digest',
+      description: 'turn the text into a checklist',
+      toolIds: TOOLS,
+      llmAvailable: false,
+    });
+    // The vocabulary, stated once.
+    expect(prompt).toContain('A FLOW is the other way to author the same entry');
+    for (const type of ['input', 'const', 'tool', 'template', 'filter', 'map', 'branch', 'merge', 'output']) {
+      expect(prompt).toContain(type);
+    }
+    // The registry's own ids, not a wish list.
+    for (const tool of TOOLS) expect(prompt).toContain(tool);
+    // No model reach in this build, so the node does not exist to offer.
+    expect(prompt).not.toContain('llm      {');
+    expect(prompt).toContain('the `llm` node does NOT exist in this build');
+    // A vocabulary, not a language.
+    expect(prompt).not.toContain('export ');
+    expect(prompt).not.toContain('function ');
+    expect(prompt).not.toContain('=>');
+  });
+
+  it('offers the llm node only when this build can compile one', () => {
+    const wired = buildFlowGeneratePrompt({
+      name: 'Digest',
+      description: 'summarise',
+      toolIds: TOOLS,
+      llmAvailable: true,
+    });
+    expect(wired).toContain('llm      {"prompt"');
+    expect(wired).not.toContain('does NOT exist in this build');
+  });
+
+  it('goes from a model REPLY to an installable draft (parse -> compile -> install)', async () => {
+    // The reply is text, exactly as a model would return it: fenced, with prose
+    // around it. `parseFlowReply` is the door the hook uses.
+    const reply = [
+      'Here is the graph you asked for:',
+      '```json',
+      JSON.stringify({
+        version: 1,
+        nodes: [
+          {
+            id: 'in',
+            type: 'input',
+            position: { x: 0, y: 0 },
+            data: { fields: [{ name: 'text', type: 'string', required: true }] },
+          },
+          { id: 'msg', type: 'template', position: { x: 1, y: 0 }, data: { text: '{{text}}' } },
+          { id: 'out', type: 'output', position: { x: 2, y: 0 }, data: { shape: 'text' } },
+        ],
+        edges: [
+          { id: 'e0', source: 'in', target: 'msg' },
+          { id: 'e1', source: 'msg', target: 'out' },
+        ],
+      }),
+      '```',
+    ].join('\n');
+    const parsed = parseFlowReply(reply);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const compiled = compileFlow(parsed.flow, {
+      registry: new Set(TOOLS),
+      llmAvailable: false,
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    // The compiled module is held to the SAME M26 gates as a hand-written
+    // bundle: it must pass the entry lint and its manifest must validate.
+    expect(lintEntry(compiled.code).ok).toBe(true);
+    const manifestText = JSON.stringify({
+      id: 'flow-digest',
+      name: 'Flow digest',
+      description: 'turn the text into something else',
+      author: 'Partner',
+      version: '0.1.0',
+      entrypoint: 'entry.mjs',
+      permissions: { tools: compiled.tools, network: false, risk: 'low', llm: compiled.usesLlm },
+      budget: { timeMs: 10_000 },
+    });
+    const shape = validateManifestShape(JSON.parse(manifestText) as unknown, {
+      capabilities: { ...DEFAULT_RUNTIME_CAPABILITIES, llm: false },
+    });
+    expect(shape.ok).toBe(true);
+
+    // And it INSTALLS: a persona/Studio flow ends as the same artifact any other
+    // draft does, through the one promote path.
+    const h = demoHarness();
+    try {
+      const draft = await h.skillDrafts!.create({
+        mode: 'generate-flow',
+        name: 'Flow digest',
+        description: 'turn the text into something else',
+      });
+      const installed = h.skillDrafts!.promote(draft.id, {});
+      expect(installed.mode).toBe('created');
+      expect(installed.skill.id).toBe(draft.id);
+      // Invoke it: the compiled graph really runs, in the real M8 sandbox.
+      const runner = h.skillRunner;
+      const detail = h.skills!.get(draft.id);
+      if (runner === undefined || detail === null) {
+        throw new Error('the skills runner is unwired in this harness');
+      }
+      const run = await runner.invoke(detail, { text: 'hello' }, { record: false });
+      expect(run.ok).toBe(true);
+      if (run.ok) expect(run.result).toBe('hello');
+    } finally {
+      h.close();
+    }
   });
 });

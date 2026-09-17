@@ -37,6 +37,7 @@ import {
 } from '../../src/skills/llm.js';
 import type { SkillLlmResolver } from '../../src/skills/llm.js';
 import { permissionSummary } from '../../src/skills/runtime.js';
+import { compileFlow } from '../../src/skills/flow/compile.js';
 
 const LLM_ID = 'llm-summariser';
 const MODEL = 'gpt-4.1';
@@ -650,6 +651,93 @@ describe('M27 S5 - the worker protocol', () => {
       expect(out.ok).toBe(true);
       if (out.ok) expect(out.result).toEqual({ refused: 'bad_params' });
       expect(fake.calls).toEqual([]);
+    } finally {
+      env.close();
+    }
+  });
+});
+
+/**
+ * M28 (PLAN-M28.md exit): the SAME model reach, reached through a FLOW.
+ *
+ * The exit criterion is explicit — "the `skill.llm`/token-ceiling path is
+ * exercised through a flow end to end" — because a compiled graph is the only
+ * artifact this milestone adds, and the two ways it could break model reach are
+ * exactly the two things asserted here: the emitted call has to reach the real
+ * seam (so `partner.llm.complete` survives compilation), and the manifest's
+ * token ceiling has to BIND the run (so a graph cannot spend past the declared
+ * budget). Both run in the real sandbox, against the same fake provider the
+ * hand-written fixtures use.
+ */
+describe('M28 - the model reach, through a compiled FLOW', () => {
+  /** args -> llm -> text output. The smallest graph that can call a model. */
+  function llmFlow(): unknown {
+    return {
+      version: 1,
+      nodes: [
+        {
+          id: 'in',
+          type: 'input',
+          position: { x: 0, y: 0 },
+          data: { fields: [{ name: 'text', type: 'string', required: true }] },
+        },
+        {
+          id: 'ask',
+          type: 'llm',
+          position: { x: 1, y: 0 },
+          data: { prompt: 'summarise {{text}}' },
+        },
+        { id: 'out', type: 'output', position: { x: 2, y: 0 }, data: { shape: 'text' } },
+      ],
+      edges: [
+        { id: 'e0', source: 'in', target: 'ask' },
+        { id: 'e1', source: 'ask', target: 'out' },
+      ],
+    };
+  }
+
+  function compileLlmFlow(): { code: string; sha256: string } {
+    const compiled = compileFlow(llmFlow(), { registry: new Set<string>(), llmAvailable: true });
+    if (!compiled.ok) throw new Error(`the llm flow did not compile: ${JSON.stringify(compiled.errors)}`);
+    // The compiler derives the reach from the graph (D5): without this the
+    // manifest would refuse every call with `llm_not_declared`.
+    expect(compiled.usesLlm).toBe(true);
+    expect(compiled.tools).toEqual([]);
+    return { code: compiled.code, sha256: compiled.sha256 };
+  }
+
+  it('returns the model text, with the graph-building prompt really sent', async () => {
+    const fake = fakeProvider({ totalTokens: 18, promptTokens: 11, completionTokens: 7 });
+    const env = buildEnv(resolverFor(fake));
+    try {
+      const { code } = compileLlmFlow();
+      const detail = installSkill(env.h, { id: 'flow-llm', code, llm: true, maxTokens: 1000 });
+      const out = await env.runner.invoke(detail, { text: 'a long note' });
+
+      expect(out.ok).toBe(true);
+      // `output: text` renders the llm result's own `text` (not "[object Object]").
+      if (out.ok) expect(out.result).toBe(COMPLETION);
+      // The template really substituted the incoming value before the call.
+      expect(fake.calls).toEqual([{ model: MODEL, prompt: 'summarise a long note' }]);
+      expect(llmAuditRows(env)).toHaveLength(1);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('bounds the flow by the manifest ceiling: a graph cannot outspend its declaration', async () => {
+    const fake = fakeProvider({ totalTokens: 5000, promptTokens: 4000, completionTokens: 1000 });
+    const env = buildEnv(resolverFor(fake));
+    try {
+      const { code } = compileLlmFlow();
+      const detail = installSkill(env.h, { id: 'flow-tight', code, llm: true, maxTokens: 1000 });
+      const out = await env.runner.invoke(detail, { text: 'anything' });
+
+      expect(out.ok).toBe(false);
+      if (!out.ok) expect(out.error).toBe('budget_exceeded');
+      // The spend is still accounted and traced: the ceiling bounds the run, it
+      // does not erase what the provider charged.
+      expect(llmAuditRows(env)[0]?.details).toMatchObject({ model: MODEL, totalTokens: 5000 });
     } finally {
       env.close();
     }

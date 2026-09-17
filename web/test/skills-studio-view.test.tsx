@@ -24,6 +24,7 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { SkillDraft, SkillDraftSummary, SkillManifest } from '@partner/shared';
 import {
+  DraftEditor,
   DraftEmptyState,
   DraftRail,
   InstallConfirm,
@@ -447,5 +448,122 @@ describe('two-step install arming', () => {
     expect(html).toContain('This update does not widen what the skill can do.');
     expect(html).toContain('Update now');
     expect(html).not.toContain('What this update adds');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M28 cut C (PLAN-M28.md): the FLOW tab and the tab strip it decides.
+//
+// The strip is a property of the DRAFT KIND, so it is asserted by rendering the
+// editor: a flow-backed draft leads with Flow and opens on it; a code-authored
+// draft keeps Code · Validation and carries the honest door to a flow. Where the
+// property is an EFFECT (the tab is re-decided when the draft kind changes) it is
+// asserted against the source with comments stripped, because
+// `renderToStaticMarkup` does not run effects — the house rule this suite
+// states up front.
+// ---------------------------------------------------------------------------
+
+/** The same draft, backed by a flow that has not been compiled yet. */
+const FLOW_DRAFT: SkillDraft = {
+  ...DRAFT,
+  flow: {
+    version: 1,
+    nodes: [
+      {
+        id: 'in',
+        type: 'input',
+        position: { x: 0, y: 0 },
+        data: { fields: [{ name: 'text', type: 'string', required: true }] },
+      },
+      { id: 'msg', type: 'template', position: { x: 240, y: 0 }, data: { text: '{{text}}' } },
+      { id: 'out', type: 'output', position: { x: 480, y: 0 }, data: { shape: 'text' } },
+    ],
+    edges: [
+      { id: 'e0', source: 'in', target: 'msg' },
+      { id: 'e1', source: 'msg', target: 'out' },
+    ],
+  },
+  flowSha256: null,
+  flowCompiledAt: null,
+  flowStale: true,
+};
+
+describe('M28 C: the Flow tab', () => {
+  it('a code-authored draft keeps Code · Validation and offers the flow door by name', () => {
+    const html = renderToStaticMarkup(
+      h(DraftEditor, {
+        draft: DRAFT,
+        readOnly: false,
+        disabled: false,
+        onDraftChanged: noop,
+        onSessionLost: noop,
+      }),
+    );
+    // Two tabs, Code first and pressed.
+    expect(count(html, 'seg-tab"')).toBe(2);
+    expect(html).toContain('>Code<');
+    expect(html).toContain('>Validation<');
+    expect(html).not.toContain('>Flow<');
+    // D7's sentence, and both routes to a graph, are in the Code panel.
+    expect(html).toContain('no decompiler here');
+    expect(html).toContain('Start an empty flow');
+    expect(html).toContain('Build a flow from this code (lossy)');
+    // The entry source is still the default reading task for this draft.
+    expect(html).toContain('Entry source (entry.mjs)');
+  });
+
+  it('a flow-backed draft leads with Flow and opens on it', () => {
+    const html = renderToStaticMarkup(
+      h(DraftEditor, {
+        draft: FLOW_DRAFT,
+        readOnly: false,
+        disabled: false,
+        onDraftChanged: noop,
+        onSessionLost: noop,
+      }),
+    );
+    // Three tabs, and FLOW is the pressed one.
+    expect(count(html, 'seg-tab"')).toBe(3);
+    expect(html.indexOf('>Flow<')).toBeLessThan(html.indexOf('>Code<'));
+    expect(html.indexOf('>Code<')).toBeLessThan(html.indexOf('>Validation<'));
+    expect(html).toContain('aria-pressed="true"');
+    // The canvas panel is the open one: it reads the flow from the core first
+    // (the graph, its derived staleness and the palette gate all come from the
+    // core — nothing here is inferred), so its loading state is what renders.
+    expect(html).toContain('Loading the flow');
+    // The code-authored door is NOT offered once there is a flow.
+    expect(html).not.toContain('Start an empty flow');
+  });
+
+  it('offers no flow door on an installed draft (every write is refused)', () => {
+    const html = renderToStaticMarkup(
+      h(DraftEditor, {
+        draft: { ...DRAFT, status: 'installed', installedVersion: '0.1.0' },
+        readOnly: true,
+        disabled: false,
+        onDraftChanged: noop,
+        onSessionLost: noop,
+      }),
+    );
+    expect(html).not.toContain('Start an empty flow');
+    expect(html).not.toContain('Build a flow from this code');
+  });
+
+  /**
+   * SOURCE-LEVEL on purpose: the tab is re-decided by an effect keyed on the
+   * draft KIND, and effects do not run under static markup. What is asserted is
+   * the wiring a deep link depends on — a flow-backed draft lands on the canvas,
+   * and starting a flow from the Code panel switches to it.
+   */
+  it('wires the tab to the draft kind and the starter to the canvas', () => {
+    const editor = source('src/studio/DraftEditor.tsx');
+    expect(editor).toContain("setTab(draft.flow === null ? 'code' : 'flow')");
+    expect(editor).toContain("onFlowStarted={() => setTab('flow')}");
+    expect(editor).toContain("{ id: 'flow', label: 'Flow' }");
+    expect(editor).toContain("{ id: 'validation', label: 'Validation' }");
+    // The deep link itself is a container concern and stays where it was: a
+    // focus intent wins over the local selection (asserted above), and the draft
+    // it names is what the editor renders.
+    expect(source('src/SkillStudio.tsx')).toContain('resolveSelectedDraft');
   });
 });
