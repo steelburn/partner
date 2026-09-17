@@ -1777,8 +1777,35 @@ apps/partner/
       audit is the floor, not the evidence, for a visual surface) · suites
       root + Δ / web + Δ / shared + Δ, zero regressions · typechecks 0 · web
       build green · both demo e2e flows green.*
-      *State: spec only — nothing built. Depends on M26 A+B; the `llm` node
-      depends on M27 S5 and ships as a nine-node vocabulary without it.*
+      *State: **slice A + the Studio split landed 2026-09-17** — root **1582**
+      (5 env-gated skips) · shared **90** · web **858** · typechecks 0 · web build
+      green. **Slice A (the compiler)** is `core/src/skills/flow/schema.ts` +
+      `flow/compile.ts`, both pure (no fs, no db, no routes, not yet reachable
+      from an HTTP surface — slice B adds those). Determinism is asserted against
+      shuffled `nodes`/`edges` ARRAYS, not just a repeated call; the failures are
+      named before any byte is emitted (cycle, dangling edge, missing output,
+      duplicate input, unknown tool, `llm_not_available`, `tool_requires_medium`,
+      >1 inbound edge on a non-merge); and the emitted module is **executed**
+      against a fake `partner` and, in `flowRun.test.ts`, in the REAL M8 sandbox
+      via `runner.invoke({dirOverride})` — a compiled flow reads a real note
+      through the broker with zero roots, and fails `tool_denied` without a
+      grant. The injection boundary is proven: the path grammar refuses
+      `__proto__`/`constructor`/`a..b`/`a);process.exit(1);//`, a hostile string
+      that is NOT path-shaped round-trips as inert data, and template text is
+      escaped so a backtick or `${` in prose stays prose. Two additions beyond
+      the spec's letter, both recorded: `FlowValidationCode` gained `bad_node`
+      (a recognised type with malformed data had no name), and the compile result
+      gained `usesLlm` — without it a flow with an `llm` node installs a manifest
+      that refuses every call with `llm_not_declared`, a bundle that can never
+      run. **The Studio split** (owner decision: before C/D) turned the
+      2025-line `web/src/SkillStudio.tsx` into a 468-line container plus
+      `web/src/studio/{DraftRail,DraftEmptyState,DraftEditor,ValidationPanel,
+      RunPanel,InstallPanel,InstallConfirm,DraftActions}.tsx` + `shared.ts`,
+      re-exported from the original module so no importer or test moved. No CSS
+      changed (`app.css` byte-identical). **Remaining: B** (draft routes +
+      staleness, schema v22) · **C** canvas + nodes table · **D** AI build/
+      refine/from-code · **E** chat `flow` payload · **F** docs/verify. Depends on
+      M26 A+B; the `llm` node depends on M27 S5 (landed).*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

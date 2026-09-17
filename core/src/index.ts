@@ -340,6 +340,30 @@ export type { ThemePreset } from './theming/index.js';
 // ---- M8 skills (PLAN-M8.md) ----------------------------------------------
 export { createSkillManager } from './skills/manager.js';
 export { createSkillDraftManager, permissionDiff, slugifySkillId } from './skills/drafts.js';
+// M28 slice A — the flow compiler. Pure: no fs, no db, no routes. Slice B
+// consumes it from the drafts surface; the schema's path grammar is exported so
+// the web canvas mirrors it instead of copying it.
+export { compileFlow, sha256Of } from './skills/flow/compile.js';
+export type { FlowCompileOptions } from './skills/flow/compile.js';
+export {
+  FLOW_FIELD_TYPES,
+  FLOW_LITERAL_KEY,
+  FLOW_MAX_EDGES,
+  FLOW_MAX_FIELDS,
+  FLOW_MAX_ID_CHARS,
+  FLOW_MAX_MAP_KEYS,
+  FLOW_MAX_MERGE_KEYS,
+  FLOW_MAX_NODES,
+  FLOW_MAX_PROMPT_CHARS,
+  FLOW_MAX_TEXT_CHARS,
+  FLOW_NODE_TYPES,
+  FLOW_OPERATORS,
+  FLOW_PATH_RE,
+  isFlowNodeType,
+  isFlowOperator,
+  isFlowPath,
+  validateFlow,
+} from './skills/flow/schema.js';
 export type { SkillDraftManager, SkillGenerateHook } from './skills/drafts.js';
 export {
   buildAuthoringPrompt,

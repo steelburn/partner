@@ -272,14 +272,23 @@ Docs
 
 - [ ] Schema v22 additive (a v21 DB opens unchanged) with `flow_json`,
       `flow_sha256`, `flow_compiled_at`.
-- [ ] The compiler is total and deterministic: every node type, cycle/dangling/
-      missing-output/unknown-tool named errors, byte-identical output for one
-      flow, and the emitted code passes the unmodified M26 gates and installs.
-- [ ] D3's boundary is proven: path grammar, operator whitelist and template
-      escaping refuse injection with tests, so an AI-written graph cannot emit
-      arbitrary JS.
-- [ ] `permissions.tools` is derived from the graph and asserted equal in both
-      directions (D5).
+- [x] **The compiler is total and deterministic** (slice A, 2026-09-17): every
+      node type, cycle/dangling/missing-output/duplicate-input/unknown-tool named
+      errors, byte-identical output for one flow (asserted against shuffled
+      `nodes`/`edges` arrays), and the emitted code passes the unmodified M26
+      `lintEntry`. *The "and installs" half lands with B; `flowRun.test.ts`
+      already runs the compiled module in the real sandbox.*
+- [x] **D3's boundary is proven** (slice A): path grammar, operator whitelist and
+      template escaping refuse injection with tests, so an AI-written graph
+      cannot emit arbitrary JS — and `__proto__`/`constructor` are refused as
+      path segments on top of the grammar, because they are a prototype reach
+      even though the grammar allows them.
+- [x] **`permissions.tools` is derived from the graph** (slice A) and asserted
+      equal to the graph's `tool` node ids, de-duplicated and sorted — including
+      the empty case (no tool node => no declared tool). *Writing it into the
+      manifest is B.* Slice A also derives `usesLlm`, which the spec did not call
+      for: without it a flow with an `llm` node installs a manifest that refuses
+      every model call.
 - [ ] Flow/code staleness is derived from the hash (D6), and install from a
       stale draft is allowed and documented (install consumes code).
 - [ ] AI paths: `generate-flow` produces a compiling draft; `refine` returns a
@@ -294,7 +303,31 @@ Docs
       build green (React Flow is already a dependency — **no new package**);
       both demo e2e flows green.
 
-*State:* spec only — no code written. Depends on M26 A+B (drafts, Studio,
+**Slice A landed 2026-09-17** (`core/src/skills/flow/schema.ts` + `flow/compile.ts`,
+both pure — no fs, db or routes; the HTTP surface is slice B). What is true now:
+`validateFlow(raw)` is the runtime door (the shared TS union cannot check a value
+that arrived as JSON), `compileFlow(flow, {registry, llmAvailable?, riskCeiling?,
+riskOf?})` returns `{code, sha256, tools, usesLlm, argsForm, warnings}` or a named
+error list, and the emitted module is EXECUTED in tests — against a fake `partner`
+and, in `flowRun.test.ts`, inside the real M8 sandbox. Determinism is asserted by
+shuffling the `nodes`/`edges` arrays, not by calling twice. Two documented
+extensions to the spec's letter: `FlowValidationCode` gained `bad_node` (a
+recognised node type with malformed `data` had no code of its own), and the
+result gained `usesLlm` because `permissions.tools` alone leaves an `llm` flow
+installing a manifest that refuses every model call. Semantics fixed here: a
+node's scope is its single inbound value (else `args`); **a node whose scope is
+`undefined` does nothing**, which is what gives `branch` meaning under D2's
+sequential-await ceiling; `filter`/`map` paths are item-relative; an object `merge`
+binds each input's key by `targetHandle` (positional fallback), and `output text`
+renders a value carrying a `.text` string (an `llm` result) as that text.
+
+**The Studio split also landed** (owner decision: before slices C/D, so the canvas
+does not inherit a 2000-line file): `web/src/SkillStudio.tsx` is now a 468-line
+container, with rail / empty state / editor / validation / run / install+confirm /
+actions in `web/src/studio/*`, re-exported from the original module so no importer
+or test moved. No CSS changed.
+
+*State:* **A done; B–F remain.** Depends on M26 A+B (drafts, Studio,
 dry-run) and on **M27 S5** for the `llm` node; it can ship without S5 as a
 9-node vocabulary. Slices: **A** flow schema + compiler (pure, no UI) ·
 **B** draft routes + staleness · **C** canvas + nodes table + palette/inspector ·

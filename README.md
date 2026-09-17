@@ -76,9 +76,31 @@ the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 
 ## Status (2026-09-17)
 
-M0–M27 (S1+S3+S5) implemented (PLAN.md §15): schema **v21**; current root
-suite **1513 passed** (5 env-gated skips) · shared **90** · web **858** · typechecks 0 ·
-web build green. **M27 S1 lands app-scoped notes reach** (PLAN-M27.md): a skill
+M0–M27 (S1+S3+S5) implemented, plus **M28 slice A** (PLAN.md §15): schema
+**v21** (v22 arrives with M28 B); current root suite **1582 passed** (5 env-gated
+skips) · shared **90** · web **858** · typechecks 0 ·
+web build green. **M28 slice A lands the Flow compiler** (PLAN-M28.md) — the pure
+half of "build a skill on a canvas", with no UI and no route yet. A flow is a
+graph of ten typed nodes that compiles **deterministically to the one artifact
+the sandbox already loads**: same graph, byte-identical `entry.mjs`, which is what
+makes the later staleness check a hash comparison instead of a flag. The compiler
+is **total** — a cycle, a dangling edge, a missing `output`, two `input`s, an
+unknown tool, an `llm` node in a build with no model reach are all named errors
+emitted before a single byte of code — and the emitted module is **executed in the
+tests**, both against a fake `partner` and inside the real M8 sandbox, where a
+compiled flow reads a real note through the broker with zero roots registered.
+Expressions are a validated **path grammar plus eight fixed operators**, never
+emitted text: `__proto__`, `constructor`, `a..b` and `a);process.exit(1);//` are
+refused, a hostile string that is not path-shaped passes through as inert data,
+and a backtick or `${` in a template stays prose. `permissions.tools` and
+`permissions.llm` are **derived from the graph**, so the consent summary cannot
+drift from the code. The Studio was split first (owner decision, before the
+canvas work): the 2025-line `SkillStudio.tsx` is now a 468-line container with
+rail / empty state / editor / validation / run / install+confirm / actions in
+`web/src/studio/*`, re-exported from the original module so no importer or test
+moved, and with no CSS change at all. Next: M28 **B** (draft routes + staleness,
+schema v22), then the canvas. **M27 S1 lands app-scoped notes reach**
+(PLAN-M27.md): a skill
 can now read **your notes**, and it does so with **no project root at all**.
 `ToolScope` is `{kind:'project'} | {kind:'app'}`; three read-only app tools
 (`notes.list` / `notes.search` / `notes.read`) resolve against a reserved

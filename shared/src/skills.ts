@@ -354,7 +354,16 @@ export type FlowValidationCode =
   | 'bad_operator'
   | 'tool_requires_medium'
   | 'llm_not_available'
-  | 'unknown_node_type';
+  | 'unknown_node_type'
+  /**
+   * M28 slice A: a RECOGNISED node type whose `data` is malformed (a missing or
+   * wrong-typed field, a duplicate node id, more than one inbound data edge on a
+   * node that can only take one, an edge into a source node). The list above
+   * names every *semantic* failure; without this one, a shape problem had no
+   * code and would have had to borrow a name that means something else — which
+   * is exactly the drift this vocabulary exists to prevent.
+   */
+  | 'bad_node';
 
 export interface FlowValidationError {
   code: FlowValidationCode;
@@ -378,6 +387,13 @@ export type SkillFlowCompileResult =
       code: string;
       sha256: string;
       tools: string[];
+      /**
+       * M28 A: whether the graph uses an `llm` node. `permissions.llm` must be
+       * derived from this the same way `tools` is derived from the graph —
+       * otherwise a flow that compiles installs a manifest that refuses every
+       * model call with `llm_not_declared`, which is a bundle that can never run.
+       */
+      usesLlm: boolean;
       argsForm: FlowFieldSpec[];
       warnings: FlowValidationError[];
     }

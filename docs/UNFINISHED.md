@@ -1,6 +1,6 @@
 # UNFINISHED — the review list for the next session
 
-Date: 2026-09-17 (updated at `v0.1.18`) · Index: `PLAN.md` §15 · Specs:
+Date: 2026-09-17 (updated at `v0.1.19`) · Index: `PLAN.md` §15 · Specs:
 `PLAN-M27.md`, `PLAN-M28.md` · Records: `docs/VERIFY-M26.md`, `docs/VERIFY-M27.md`.
 
 This file exists because session context does not survive. It is a **review
@@ -8,14 +8,58 @@ list**, not a spec: each item says what is left, where it goes, what it depends
 on, and what is already true. Read the spec for detail; read the verify docs for
 what was measured.
 
-State at the time of writing: `v0.1.18` released; the container is on
-`v0.1.18 / schema v21`; tree clean; root **1513 passed** (5 env-gated skips),
+State at the time of writing: `v0.1.19` released; the container is on
+`v0.1.19 / schema v21`; tree clean; root **1582 passed** (5 env-gated skips),
 shared **90**, web **858**, typechecks 0, web build green. Zero open Dependabot
 alerts.
 
 ---
 
-## 0. What landed in v0.1.18 (M27 S1) — do not redo
+## 0. What landed in v0.1.19 — do not redo
+
+### M28 slice A — the Flow compiler (pure, no UI, no route)
+
+`core/src/skills/flow/schema.ts` (`validateFlow`) + `flow/compile.ts`
+(`compileFlow`). Both exported from `core/src/index.ts`. Read these before
+planning slices B/C, because five semantics were DECIDED here and the rest of the
+milestone has to live with them:
+
+- A node's **scope** is its single inbound data edge; with none it reads `args`
+  (so a `tool` node wired straight from args needs no edge).
+- **A node whose scope is `undefined` does nothing.** That is what gives `branch`
+  meaning under D2's "sequential awaits only" ceiling: a non-taken port yields
+  `undefined`, so the nodes behind it skip their tool and model calls. Both ports
+  are still *evaluated*, but only one does I/O.
+- `filter`/`map` paths are **item-relative**; every other path is scope-relative.
+- An object **`merge` binds each input's key by `targetHandle`** (positional
+  fallback in `(rank, source id)` order, with a warning when the produced keys
+  differ from `data.keys`). Without the handle the positional order is
+  deterministic but NOT what an author drew — that is why the handle wins.
+- **`output text` renders a value carrying a `.text` string as that text**, so
+  `llm -> output(text)` returns the model's answer instead of
+  `[object Object]` (`partner.llm.complete` resolves `{text, usage}`).
+
+Two additions beyond the spec's letter, both deliberate:
+
+1. `FlowValidationCode` gained **`bad_node`** — a recognised node type with
+   malformed `data` (or a duplicate id, or >1 inbound edge on a non-merge, or an
+   edge into a source node) had no code of its own, and borrowing a semantic name
+   for a shape problem is exactly the drift the vocabulary prevents.
+2. The compile result gained **`usesLlm`** — `permissions.tools` alone leaves a
+   flow with an `llm` node installing a manifest that refuses every model call
+   (`llm_not_declared`). Slice B must write BOTH derived fields.
+
+### The Studio split (owner decision: before M28 C/D)
+
+`web/src/SkillStudio.tsx` went 2025 -> 468 lines, with the panels in
+`web/src/studio/*` (rail, empty state, editor, validation, run, install+confirm,
+actions) and `studio/shared.ts` for the four shared helpers. **All of them are
+re-exported from `SkillStudio.tsx`**, so no importer and no test moved. No CSS
+changed (`app.css` byte-identical), so the UX gates are untouched by the split.
+**The canvas (C) and the AI panels (D) belong in this folder, not back in the
+container.**
+
+### M27 S1 — app-scoped notes reach (v0.1.18)
 
 M27 **S1** (app-scoped notes reach) is complete and tested. Read this before
 planning S2/S4, because three things changed shape:
@@ -86,42 +130,40 @@ exists, so **`notes-checklist` can be built as soon as S2 or independently**;
 
 ---
 
-## 2. M28 — the Studio Flow canvas (not started)
+## 2. M28 — the Studio Flow surface (A + split done; B–F left)
 
-`PLAN-M28.md` is complete and reviewed as a spec. **Correction to the previous
-version of this file:** "no code exists" was imprecise — the **contract layer
-already shipped in M26**. `shared/src/skills.ts` has `SkillFlow`, all ten node
-interfaces, `SkillFlowEdge`, `FlowValidationCode`, `SkillFlowCompileResult`,
-`SkillFlowProposal`, `FlowPath` and `FlowOperator`. Nothing consumes them
-(`grep -rn 'SkillFlow' --include=*.ts core web | grep -v shared/src/skills.ts`
-returns nothing). So slice A is **contracts-done, compiler-missing**:
-`core/src/skills/flow/schema.ts` + `flow/compile.ts` + tests.
+**Slice A landed in v0.1.19** (`core/src/skills/flow/schema.ts` +
+`flow/compile.ts`, 1246 lines together, plus three test files:
+`flowSchema.test.ts`, `flowCompile.test.ts`, `flowRun.test.ts`). Read §0 above for
+the five semantics it fixed and the two additions beyond the spec (`bad_node`,
+`usesLlm`) — those are what B has to honour.
 
-Its `llm` node prerequisite (`PLAN-M27.md` S5) **landed in v0.1.17**.
+**Remaining slices:**
 
-The load-bearing constraints are decided and should not be re-litigated: a flow
-**compiles deterministically to `entry.mjs`**; the vocabulary is ten typed nodes
-and deliberately **not** a programming language; expressions are a validated path
-grammar plus fixed operators, so an AI-written graph **cannot inject code**;
-`permissions.tools` is **derived** from the graph's `tool` nodes; flow/code
-coherence is a **derived hash comparison**; an AI refine is a **proposal** the
-owner accepts.
+- **B — draft routes + staleness (schema v22).** Three additive columns on
+  `skill_drafts` (`flow_json`, `flow_sha256`, `flow_compiled_at`), the six routes
+  under `/v1/skills/drafts/:id/flow`, and `flowStale` derived from
+  `sha256(code) !== flow_sha256`. **Do this next**: it is the API half of the same
+  work, needs no canvas, and makes the whole feature walkable. When writing
+  `permissions` on compile, remember **both** derived fields (`tools` AND
+  `usesLlm`).
+- **C — the canvas + Nodes table + palette/inspector.** Goes in `web/src/studio/`
+  (the folder the split created), with the client-side grammar mirrored from
+  `FLOW_PATH_RE` / `FLOW_OPERATORS` rather than copied.
+- **D — AI build/refine/from-code + the proposal diff.** `refine.ts` is specified
+  but unbuilt.
+- **E — the chat `flow` payload** on the existing `skills.draft` tool.
+- **F — docs/verify** (`docs/VERIFY-M28.md`, and a *looked-at* canvas frame: a
+  passing `ux_audit` is the floor for a visual surface, not the evidence).
 
-**Ordering decided by the owner (2026-09-17): S1 first, then M28 slice A.** S1
-has landed, so **slice A is next.** It is pure, has no UI, and is fully
-unit-testable (determinism, totality — a cycle is a named error, the injection
-refusal, the derived tool set), so it is walkable from the API before any React
-Flow work.
+Its `llm` node prerequisite (`PLAN-M27.md` S5) **landed in v0.1.17**, and slice A
+already compiles an `llm` node when the caller passes `llmAvailable: true`.
 
-### Studio split — decided: BEFORE M28 C/D
+### Studio split — DONE (v0.1.19)
 
-`web/src/SkillStudio.tsx` is ~2016 lines (`core/src/skills/drafts.ts` ~1270).
-The owner decided to **split the Studio before M28 slices C/D add canvas UI to
-the same neighbourhood**, so the new code does not inherit the problem. Slice A
-has no UI, so the split is not yet blocking — but it is due before C.
-Rail / editor / validation / install are the natural seams.
-
----
+`web/src/SkillStudio.tsx` went 2025 -> 468 lines; the panels are in
+`web/src/studio/*` and are re-exported from the original module, so no importer or
+test moved. No CSS changed. **Canvas and AI panels belong in that folder.**
 
 ## 3. Env-gated walks that were never run
 
@@ -167,7 +209,7 @@ packaged build. The owner pointed at **pi settings** for a live LiteLLM endpoint
 ## 5. How to re-verify from a clean checkout
 
 ```
-npm test                                  # root: expect 1513 passed, 5 env-gated skips
+npm test                                  # root: expect 1582 passed, 5 env-gated skips
 npx vitest run shared/test                # 90
 npx vitest run --root web                 # 858
 npm run typecheck                         # 0 errors, all four workspaces
