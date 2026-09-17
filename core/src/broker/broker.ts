@@ -26,8 +26,9 @@ import type {
   ToolManifest,
   ToolRequestedBy,
 } from '@partner/shared/tools.js';
+import { APP_SCOPE_ID } from '@partner/shared';
 import type { ProjectRoot } from '@partner/shared/tools.js';
-import { FILE_TOOL_MANIFESTS } from './toolManifests.js';
+import { TOOL_MANIFESTS } from './toolManifests.js';
 import { capabilityDenial } from '../http/capabilities.js';
 import type { Capability } from '../http/capabilities.js';
 import { toolError, ToolError } from './errors.js';
@@ -37,16 +38,33 @@ import type { ProjectRootManager } from './roots.js';
 import type { AuditService } from '../services/redaction.js';
 import type { ProposalManager, ProposalView } from '../files/proposals.js';
 import type { FileTools } from '../files/tools.js';
+import type { NotesTools } from '../tools/notes.js';
+
+/**
+ * Every executor the broker can dispatch. The file executors are required (the
+ * v1 surface); the app executors are OPTIONAL so the many M2 harnesses that
+ * build a broker with files alone keep compiling — an absent one dispatches to
+ * `unknown_tool` exactly as an unregistered manifest does.
+ */
+export type BrokerTools = FileTools & Partial<NotesTools>;
+
+/**
+ * The scope an authorized execution runs against. `app` carries no root on
+ * purpose: an app-scoped tool reaches the core-owned store, and handing it a
+ * synthetic `ProjectRoot` would let a future app tool read `root.path` and
+ * escape behind an app grant.
+ */
+type ExecScope = { kind: 'project'; root: ProjectRoot } | { kind: 'app' };
 
 export interface ToolBrokerOptions {
   roots: ProjectRootManager;
   grants: GrantManager;
   pending: PendingManager;
   proposals: ProposalManager;
-  /** The six v1 file-tool executors. */
-  tools: FileTools;
+  /** The six v1 file-tool executors plus the app-scoped notes executors. */
+  tools: BrokerTools;
   audit: AuditService;
-  /** Manifest registry; defaults to the v1 files.* set. */
+  /** Manifest registry; defaults to the v1 files.* + notes.* set. */
   manifests?: readonly ToolManifest[];
   /** Injectable clock (epoch ms). */
   now?: () => number;
@@ -112,15 +130,17 @@ const CONTENT_KEYS: ReadonlySet<string> = new Set([
 function summaryParams(toolId: string, params: AnyParams): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (typeof params.projectId === 'string') out.projectId = params.projectId;
-  // files.search keeps only a char count of the query — a query is arbitrary
-  // user text that could embed a secret.
-  if (toolId === 'files.search' && typeof params.query === 'string') {
+  // files.search and notes.search keep only a char count of the query — a query
+  // is arbitrary user text that could embed a secret (or a note body).
+  if ((toolId === 'files.search' || toolId === 'notes.search') && typeof params.query === 'string') {
     out.queryChars = params.query.length;
     return out;
   }
   for (const key of ['path', 'proposalId'] as const) {
     if (typeof params[key] === 'string') out[key] = params[key];
   }
+  // M27 S1: a note id is an identifier, not content — safe like `path`.
+  if (toolId === 'notes.read' && typeof params.id === 'string') out.id = params.id;
   return out;
 }
 
@@ -148,6 +168,19 @@ function summaryResult(toolId: string, result: AnyParams): Record<string, unknow
         const value = result[key];
         if (typeof value === 'string' || typeof value === 'number') out[key] = value;
       }
+      return out;
+    // M27 S1 — counts and lengths ONLY. `notes.read` returns a note body to the
+    // skill, and it must never reach an audit row; the char count is the trace.
+    case 'notes.list':
+      out.returned = Array.isArray(result.notes) ? result.notes.length : 0;
+      out.total = typeof result.total === 'number' ? result.total : 0;
+      return out;
+    case 'notes.search':
+      out.returned = Array.isArray(result.matches) ? result.matches.length : 0;
+      out.total = typeof result.total === 'number' ? result.total : 0;
+      return out;
+    case 'notes.read':
+      out.chars = contentChars(result.content);
       return out;
     default:
       return {};
@@ -198,6 +231,15 @@ const TOOL_CAPABILITIES: Readonly<Record<string, Capability>> = {
   'files.edit': 'file.write',
   'files.apply': 'file.write',
   'files.delete': 'file.write',
+  // M27 S1 — the app-scoped notes reach rides the EXISTING `file.read`
+  // capability on purpose. A new capability name would be absent from mobile's
+  // envelope table and therefore denied to a phone by construction, silently
+  // narrowing the product: the data plane is ungated by design, and a phone may
+  // legitimately read its own notes. The reach is bounded by the GRANT
+  // (notes.* x APP_SCOPE_ID), not by a new name.
+  'notes.list': 'file.read',
+  'notes.search': 'file.read',
+  'notes.read': 'file.read',
 };
 
 /**
@@ -219,7 +261,7 @@ export function capabilityForTool(toolId: string): Capability | '' {
 
 export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
   const { roots, grants, pending, proposals, tools, audit } = options;
-  const manifests = options.manifests ?? FILE_TOOL_MANIFESTS;
+  const manifests = options.manifests ?? TOOL_MANIFESTS;
   const now = options.now ?? Date.now;
 
   const manifestIndex = new Map<string, ToolManifest>(manifests.map((m) => [m.id, m]));
@@ -272,27 +314,42 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
       throw err;
     }
 
+    // Step 4 — resolve the SCOPE (M27 S1). A project-scoped tool needs a
+    // registered root; an app-scoped tool reaches the core-owned store, keys its
+    // grant on APP_SCOPE_ID, and NEVER calls roots.getById. The `projectId` a
+    // caller puts in params is ignored for app tools on purpose: a skill cannot
+    // widen app reach by naming a root.
     const projectId = typeof params.projectId === 'string' ? params.projectId : '';
-    const root = roots.getById(projectId);
-    if (!root) {
-      audit.log('tool', `${tool}.denied`, projectId, {
-        outcome: 'denied',
-        reason: 'unknown_project',
-        params: summaryParams(tool, params),
-        ms: now() - started,
-      });
-      return { outcome: 'denied', reason: 'unknown_project' };
+    let scope: ExecScope;
+    let scopeId: string;
+    if (manifest.scope.kind === 'app') {
+      scope = { kind: 'app' };
+      scopeId = APP_SCOPE_ID;
+    } else {
+      const root = roots.getById(projectId);
+      if (!root) {
+        audit.log('tool', `${tool}.denied`, projectId, {
+          outcome: 'denied',
+          reason: 'unknown_project',
+          params: summaryParams(tool, params),
+          ms: now() - started,
+        });
+        return { outcome: 'denied', reason: 'unknown_project' };
+      }
+      scope = { kind: 'project', root };
+      scopeId = projectId;
     }
 
-    if (!grants.hasGrant(tool, projectId)) {
+    // Step 5 — grant check, keyed on the SCOPE id for both kinds.
+    if (!grants.hasGrant(tool, scopeId)) {
       const pendingId = pending.enqueue({
         toolId: tool,
-        projectId,
+        projectId: scopeId,
         params,
         risk: manifest.risk,
         requestedBy: ctx.requestedBy,
       });
-      audit.log('tool', `${tool}.needs_approval`, projectId, {
+      audit.log('tool', `${tool}.needs_approval`, scopeId, {
         outcome: 'needs_approval',
         risk: manifest.risk,
         pendingId,
@@ -302,28 +359,35 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
       return { outcome: 'needs_approval', pendingId };
     }
 
-    const outcome = runAuthorized(tool, manifest, impl, params, root, started);
+    const outcome = runAuthorized(tool, manifest, impl, params, scope, started);
     if (!outcome.ok) return { outcome: 'denied', reason: outcome.error ?? 'exec_failed' };
     return { outcome: 'executed', result: outcome.result };
   }
 
   /** Runs a tool that already passed authorization; audits + returns the
    *  redacted result (or the ToolError code). Shared by exec (granted path)
-   *  and decide (approval executes once). */
+   *  and decide (approval executes once). App-scoped tools take no root and are
+   *  dispatched without one — see {@link AppToolExecutor}. */
   function runAuthorized(
     tool: string,
     manifest: ToolManifest,
     impl: unknown,
     params: AnyParams,
-    root: ProjectRoot,
+    scope: ExecScope,
     started: number,
   ): { ok: true; result: AnyParams } | { ok: false; error: string } {
+    // The grant key the execution traces to — `app` for an app tool, else the
+    // root id the params name. The same choice `exec` already made.
+    const scopeId = manifest.scope.kind === 'app' ? APP_SCOPE_ID : projectIdOf(params);
     try {
-      const result = (impl as { run(root: ProjectRoot, p: AnyParams): AnyParams }).run(root, params);
+      const result =
+        scope.kind === 'app'
+          ? (impl as { run(p: AnyParams): AnyParams }).run(params)
+          : (impl as { run(root: ProjectRoot, p: AnyParams): AnyParams }).run(scope.root, params);
       const details: Record<string, unknown> = {
         outcome: 'executed',
         risk: manifest.risk,
-        grantId: grants.activeGrant(tool, projectIdOf(params))?.id,
+        grantId: grants.activeGrant(tool, scopeId)?.id,
         ms: now() - started,
       };
       for (const [key, value] of Object.entries(summaryParams(tool, params))) {
@@ -332,7 +396,7 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
       for (const [key, value] of Object.entries(summaryResult(tool, result))) {
         details[`result.${key}`] = sanitizeForAudit(value, key);
       }
-      audit.log('tool', `${tool}.executed`, projectIdOf(params), details);
+      audit.log('tool', `${tool}.executed`, scopeId, details);
       return { ok: true, result: result as AnyParams };
     } catch (err) {
       if (err instanceof ToolError) {
@@ -344,7 +408,7 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
         for (const [key, value] of Object.entries(summaryParams(tool, params))) {
           details[`param.${key}`] = value;
         }
-        audit.log('tool', `${tool}.denied`, projectIdOf(params), details);
+        audit.log('tool', `${tool}.denied`, scopeId, details);
         return { ok: false, error: err.code };
       }
       throw err;
@@ -422,13 +486,21 @@ export function createToolBroker(options: ToolBrokerOptions): ToolBroker {
         }
         if (error === undefined && parsed !== undefined) {
           const params = parsed;
-          const rootId = projectIdOf(params);
-          const root = roots.getById(rootId);
           const started = now();
-          if (!root) {
+          // M27 S1: an app-scoped approval executes WITHOUT a root. The stored
+          // pending row's projectId is APP_SCOPE_ID, which is not a root id, so
+          // resolving a root here would fail every notes approval.
+          let scope: ExecScope | null = null;
+          if (manifest.scope.kind === 'app') {
+            scope = { kind: 'app' };
+          } else {
+            const root = roots.getById(projectIdOf(params));
+            if (root) scope = { kind: 'project', root };
+          }
+          if (scope === null) {
             error = 'unknown_project';
           } else {
-            const outcome = runAuthorized(tool, manifest, impl, params, root, started);
+            const outcome = runAuthorized(tool, manifest, impl, params, scope, started);
             if (outcome.ok) {
               executed = true;
               result = outcome.result;

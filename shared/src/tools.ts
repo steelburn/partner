@@ -2,14 +2,33 @@
  * M2 tool-broker wire contracts (PLAN-M2.md).
  *
  * Default-deny machinery: every executable capability declares a manifest;
- * nothing runs without a grant scoped to a project root; high-risk actions
- * always ask; every execution is audited (redacted). These shapes cross the
- * loopback between core and web.
+ * nothing runs without a grant; high-risk actions always ask; every execution
+ * is audited (redacted). These shapes cross the loopback between core and web.
+ *
+ * M27 S1 added the second SCOPE: a `files.*` tool acts inside a registered
+ * project root, while a `notes.*` tool acts on the user's own notes, which are
+ * not a filesystem root. The scope is a property of the MANIFEST, so the broker
+ * can branch on it before it ever asks for a root.
  */
 
 export type ToolRisk = 'low' | 'medium' | 'high';
 
 export type ToolConfirm = 'never' | 'once' | 'always';
+
+/**
+ * The reserved `projectId` an app-scoped grant and pending row carry.
+ *
+ * It is not a root id and MUST never be looked up in the roots manager; it
+ * exists so the (tool, projectId) grant key and the pending row keep one shape
+ * across both scopes. `files.*` with this id is refused — see the grants route.
+ */
+export const APP_SCOPE_ID = 'app';
+
+/**
+ * Where a tool acts. `project` tools resolve a registered root from their
+ * params; `app` tools act on a core-owned store and take no `projectId`.
+ */
+export type ToolScope = { kind: 'project' } | { kind: 'app' };
 
 export type ToolId =
   | 'files.list'
@@ -17,7 +36,10 @@ export type ToolId =
   | 'files.search'
   | 'files.edit'
   | 'files.apply'
-  | 'files.delete';
+  | 'files.delete'
+  | 'notes.list'
+  | 'notes.search'
+  | 'notes.read';
 
 export interface ToolManifest {
   id: ToolId;
@@ -25,8 +47,12 @@ export interface ToolManifest {
   risk: ToolRisk;
   confirm: ToolConfirm;
   network: boolean;
-  /** Tools act within a project root; parameters carry {projectId, path}. */
-  scope: { kind: 'project' };
+  /**
+   * `project` tools act within a project root (params carry {projectId, path});
+   * `app` tools act on a core-owned store (no projectId — the scope id is
+   * supplied by the broker and the manifest declares the reach instead).
+   */
+  scope: ToolScope;
 }
 
 export interface ProjectRoot {
@@ -154,4 +180,29 @@ export interface FilesEditParams extends FilesPathParams {
 export interface FilesApplyParams {
   projectId: string;
   proposalId: string;
+}
+
+// ---------------------------------------------------------------------------
+// M27 S1 — app-scoped notes reach. These params carry NO projectId: the broker
+// supplies APP_SCOPE_ID for the grant check, so a skill cannot point notes
+// reach at a root (and a root cannot be used to widen it).
+// ---------------------------------------------------------------------------
+
+/**
+ * params for `notes.list` — no required fields; `limit` is advisory and the
+ * executor clamps it to its own cap regardless.
+ */
+export interface NotesListParams {
+  limit?: number;
+}
+
+/** params for `notes.search` — the query is the content-bearing field. */
+export interface NotesSearchParams {
+  query: string;
+  limit?: number;
+}
+
+/** params for `notes.read` — one note by id. */
+export interface NotesReadParams {
+  id: string;
 }

@@ -47,6 +47,7 @@ import type { ProposalManager } from '../src/files/proposals.js';
 import type { EpisodeManager } from '../src/memory/episodes.js';
 import type { NoteManager, DailySummarizeTarget } from '../src/notes/index.js';
 import { createNoteManager } from '../src/notes/index.js';
+import { createNotesTools } from '../src/tools/notes.js';
 import { createBrainstormManager } from '../src/notes/index.js';
 import type { BrainstormManager } from '../src/notes/index.js';
 import type { PlanManager } from '../src/plans/index.js';
@@ -57,6 +58,7 @@ import { createThemeManager } from '../src/theming/index.js';
 import { createSiteScopeManager } from '../src/browser/scopes.js';
 import type { SiteScopeManager } from '../src/browser/scopes.js';
 import { FILE_TOOL_IDS } from '../src/files/tools.js';
+import { TOOL_MANIFESTS } from '../src/broker/toolManifests.js';
 import { createSkillManager } from '../src/skills/manager.js';
 import type { SkillManager } from '../src/skills/manager.js';
 import { createSkillDraftManager } from '../src/skills/drafts.js';
@@ -498,14 +500,6 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
         (grantManager as GrantManager).add(row.toolId, row.projectId ?? '', note === undefined ? {} : { note }).id,
     });
     proposalManager = createProposalManager({ store: proposalStore });
-    broker = createToolBroker({
-      roots: projectRootManager,
-      grants: grantManager,
-      pending: pendingManager,
-      proposals: proposalManager,
-      tools: createFileTools({ proposals: proposalStore }),
-      audit,
-    });
   }
 
   // M3: persona + conversation managers over the same db (default on). When
@@ -611,6 +605,25 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     });
   }
 
+  // M27 S1: the broker is built AFTER the note manager so its dispatch map can
+  // carry the app-scoped notes executors — the same ordering createCore uses.
+  // When notes are off (`notesPlans: false`) the executors are simply absent, so
+  // an app-scoped call answers `unknown_tool` rather than reaching a store that
+  // does not exist.
+  if (brokerEnabled) {
+    broker = createToolBroker({
+      roots: projectRootManager as ProjectRootManager,
+      grants: grantManager as GrantManager,
+      pending: pendingManager as PendingManager,
+      proposals: proposalManager as ProposalManager,
+      tools: {
+        ...createFileTools({ proposals: proposalStore }),
+        ...(notes !== undefined ? createNotesTools({ notes }) : {}),
+      },
+      audit,
+    });
+  }
+
   // M11 F10: asset manager over the same db (default on with notes).
   let assets: AssetManager | undefined;
   if (notesPlansEnabled) {
@@ -684,12 +697,13 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     // see exactly what the manager wrote and then wiped.
     skillRunsDir = makeTempRoot();
     const catalogDir = skillsOption.catalogDir ?? REPO_CATALOG;
-    // The broker registry is the six files.* manifests in v1; FILE_TOOL_IDS
-    // mirrors it so the harness needs no back-reference to the broker.
-    const registry = new Set<string>(FILE_TOOL_IDS);
+    // The skill tool registry is the BROKER's manifest set (M27 S1: files.* and
+    // notes.*), derived the same way createCore derives it, so the harness can
+    // never accept a tool the broker would not dispatch — or refuse one it would.
+    const registry = new Set<string>(TOOL_MANIFESTS.map((m) => m.id));
     // M27 S5: the reaches this harness's runtime honours, exactly as createCore
     // states them. Passed IN, so the bare library default stays conservative.
-    const runtimeCapabilities = { mcp: false, llm: true };
+    const runtimeCapabilities = { mcp: false, llm: true, notes: true };
     skills = createSkillManager({
       store: skillStore,
       invocations: skillInvocationStore,

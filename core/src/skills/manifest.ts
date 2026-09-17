@@ -61,10 +61,22 @@ export interface RuntimeCapabilities {
   mcp: boolean;
   /** M27 S5: `permissions.llm` (partner.llm.complete) exists. */
   llm: boolean;
+  /**
+   * M27 S1: the app-scoped notes tools (`notes.list` / `notes.search` /
+   * `notes.read`) are in the broker registry. A Studio template that needs
+   * app-data reach gates its visibility on this, exactly as the `mcp` and `llm`
+   * templates do — the picker must never offer a reach the sandbox lacks.
+   */
+  notes: boolean;
 }
 
-/** Today's truth: neither reach is wired yet (M27 adds them). */
-export const DEFAULT_RUNTIME_CAPABILITIES: RuntimeCapabilities = { mcp: false, llm: false };
+/** Today's truth: no optional reach is wired by the library default (M27 adds
+ *  them at the call sites that can honour them). */
+export const DEFAULT_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
+  mcp: false,
+  llm: false,
+  notes: false,
+};
 
 export interface ManifestValidateOptions {
   capabilities?: RuntimeCapabilities;

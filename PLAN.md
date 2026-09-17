@@ -446,14 +446,18 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   deferred). Capability `skill.author` is desktop-only; `network` stays refused.
   The *pure* and *reads-files* templates ship here; the *notes* and *MCP*
   templates need capabilities no skill has today and ship in **M27**.
-- **What a skill may reach (M27 — `PLAN-M27.md`; S3 + S5 landed).** `ToolScope`
-  is to widen to `{kind:'project'} | {kind:'app'}` so three read-only app tools
-  (`notes.list/search/read`, mapped to the existing `file.read` capability)
-  resolve against a reserved `APP_SCOPE_ID` instead of a project root, and a
-  manifest is to declare `permissions.mcpServers` so the sandbox can reach an
-  **enabled** MCP server's tools (medium-or-higher ceiling, coded denial when
-  undeclared/disabled, never an interactive pending row) — **both still
-  unbuilt (S1, S2)**.
+- **What a skill may reach (M27 — `PLAN-M27.md`; S1 + S3 + S5 landed).**
+  **Landed (S1, 2026-09-17):** `ToolScope` is `{kind:'project'} | {kind:'app'}`
+  and three read-only app tools (`notes.list/search/read`, mapped to the
+existing `file.read` capability — **no new capability name**, so mobile keeps
+  the reach it already had) resolve against a reserved `APP_SCOPE_ID='app'`
+  instead of a project root, with rootless app grants beside the roots in the
+  same grant surface (an **App data** group). `RuntimeCapabilities` gained the
+  `notes` key the two reach templates gate on. **Still unbuilt: S2** (a manifest
+  declaring `permissions.mcpServers` so the sandbox can reach an **enabled**
+  MCP server's tools — medium-or-higher ceiling, coded denial when
+  undeclared/disabled, never an interactive pending row) **and S4** (the
+  notes/MCP templates, which depend on S1/S2).
   **Landed (S3 + S5, 2026-09-16):** the **session client class now reaches the
   runner** for broker calls (read from the session row by both routes in, so an
   already-granted write can no longer walk a phone through the envelope — the
@@ -649,9 +653,12 @@ measured record: `docs/VERIFY-M26.md`). Live now:
 `skill.install` gates the promote. Registered before `/v1/skills/:id`. Still
 planned for M26: `/run` (dry-run), `/request-install` (+ the `kind:'skill_install'`
 branch on `POST /v1/tools/pending/:id`), `/bundle` export and `/import`.
-M27 (planned) adds **no route**: app-scoped grants reuse `POST /v1/grants` with
-the reserved `projectId:'app'` (accepted only for an app-scoped manifest) —
-`PLAN-M27.md`.
+M27 **S1 landed**: app-scoped grants reuse `POST /v1/grants` with the reserved
+`projectId:'app'`, accepted only for an app-scoped manifest and **refused for a
+`files.*` tool** (and an app-scoped tool refuses any other projectId), so `app`
+can never become a root alias — `PLAN-M27.md`. The app tools
+(`notes.list`/`notes.search`/`notes.read`) dispatch through `POST /v1/tools/exec`
+like any other broker tool. S2 (MCP reach) adds no route either.
 M28 (planned) adds the Flow surface under `/v1/skills/drafts/:id/flow`
 (`GET` · `PUT` · `/compile` · `/refine` · `/from-code` · `/explain`) plus a
 `mode:'generate-flow'` value on the M26 create route — `PLAN-M28.md`.
@@ -1697,7 +1704,7 @@ apps/partner/
       *Exit (planned): a zero-root broker grants and runs `notes.read` ·
       `POST /v1/grants {projectId:'app'}` accepted only for an app-scoped
       manifest and refused for `files.read` · app tools audit ids/counts/
-      lengths only · an enabled server's tool runs, undeclared/disabled/unknown/
+      lengths only · an enabled server's tool runs, uundeclared/disabled/unknown/
       over-ceiling refused with no pending row · **mobile-with-a-grant refused**
       at the broker and the MCP path, class read from the session row · both
       templates validate *and* run.*
@@ -1718,9 +1725,21 @@ apps/partner/
       finally gives `SkillBudget.maxTokens` a runtime meaning (declared since M8,
       never read), the provider spend ledger is charged per accounted call, and
       one `skill.llm` audit row carries the model id + token counts only — never
-      the prompt or the completion. **Remaining: S1** (app-scoped notes tools +
-      rootless grants) · **S2** (MCP from the runner — D7's MCP half is NOT
-      closed) · **S4** (the notes/MCP Studio templates, which depend on S1/S2).*
+      the prompt or the completion. **S1 (2026-09-17):** the app-scoped notes
+      tools — `notes.list`/`notes.search`/`notes.read` are manifests with
+      `scope:{kind:'app'}`, the broker branches on the manifest's scope (the app
+      path keys the grant and the pending row on `APP_SCOPE_ID` and **never
+      calls `roots.getById`**, so a notes skill works with ZERO roots), a
+      sanctioned file tool asked for `projectId:'app'` is refused, and
+      `defaultToolRegistry()` is now DERIVED from the broker's manifest set so
+      installer and dispatcher cannot drift. The three ids map to the EXISTING
+      `file.read` capability on purpose — a new name would be absent from
+      mobile's allowlist and deny a phone its own notes by construction. Audit
+      rows carry ids/counts/lengths only (a note body never reaches one). Web:
+      an **App data** grant group (scope-filtered pickers on both sides) and a
+      dry-run `tool_denied` that names WHERE the grant goes. **Remaining: S2**
+      (MCP from the runner — D7's MCP half is NOT closed) · **S4** (the
+      notes/MCP Studio templates, which depend on S1/S2).*
 - [ ] **M28 — Skill Studio Flow: build a skill on a canvas, with the model as a
       collaborator (detailed spec: `PLAN-M28.md`).** The Studio (M26) gains a
       fourth surface: a **React Flow** canvas — the dependency is already in

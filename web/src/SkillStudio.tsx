@@ -61,6 +61,7 @@ import {
   slugPreview,
   templateOptions,
   toolOptions,
+  toolDeniedHint,
   validationSummary,
   warningCount,
   type ConfirmStage,
@@ -1505,6 +1506,14 @@ export function RunPanel({ draft, disabled, onSessionLost }: RunPanelProps) {
                   {outcome.code}
                 </span>
               </p>
+              {outcome.code === 'tool_denied' ? (
+                // M27 S1: name WHERE the grant goes. A dry-run runs the real
+                // sandbox, so "denied" here means "not granted yet" — and the
+                // fix differs by scope (App data vs a registered root).
+                <p className="result-meta">
+                  {toolDeniedHint(draft.manifest?.permissions.tools ?? [])}
+                </p>
+              ) : null}
               {outcome.ms > 0 ? <p className="result-meta">Ran for {outcome.ms} ms.</p> : null}
             </>
           )}

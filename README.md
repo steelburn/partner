@@ -74,29 +74,38 @@ app invisibly — the desktop reports the conflict and refuses to use it. Stop
 the dev core (Ctrl-C) before launching the desktop app; if the desktop shows
 “already serving …”, something else still holds :4390.
 
-## Status (2026-09-16)
+## Status (2026-09-17)
 
-M0–M27 (S3+S5) implemented (PLAN.md §15): schema **v21**; current root
-suite **1495 passed** (5 env-gated skips) · shared **90** · web **851** · typechecks 0 ·
-web build green. **M27 S3+S5 land skill reach** (PLAN-M27.md,
-`docs/VERIFY-M27.md`). **A skill can now call a model** — declared, bounded and
-gated: `permissions.llm` enables `partner.llm.complete`, the skill's own
-`budget.maxTokens` finally *does* something (it was declared and validated since
-M8 and never read — `runner.ts` used only `timeMs`), past the ceiling the
-invocation fails `budget_exceeded` mid-run with the worker killed rather than
-returning partial output, the provider spend ledger is charged per call, and
-`skill.llm` is a desktop-only capability that is deliberately absent from the
-mobile/extension allowlists. One `skill.llm` audit row per call carries the
-model id and token counts only — never the prompt or the completion. Because a
-skill can now send what it read to your provider, the install summary says so in
-plain words. S3 also closes the gap **M20-B S4 recorded against itself**: the
-session **client class** now reaches the runner from the session row, so an
-already-granted write can no longer walk a phone through the envelope — proven
-with `files.edit`, because the case that note described is the *write* one
-(mobile's envelope already permits `file.read`, and a test asserts it executes).
-Still unbuilt and specced: M27 **S1** (app-scoped notes tools), **S2** (MCP from
-the sandbox) and **S4** (their two Studio templates), and **M28** (the Flow
-canvas). **M26 lands skill authoring** (PLAN-M26.md,
+M0–M27 (S1+S3+S5) implemented (PLAN.md §15): schema **v21**; current root
+suite **1513 passed** (5 env-gated skips) · shared **90** · web **858** · typechecks 0 ·
+web build green. **M27 S1 lands app-scoped notes reach** (PLAN-M27.md): a skill
+can now read **your notes**, and it does so with **no project root at all**.
+`ToolScope` is `{kind:'project'} | {kind:'app'}`; three read-only app tools
+(`notes.list` / `notes.search` / `notes.read`) resolve against a reserved
+`APP_SCOPE_ID='app'` instead of a filesystem root, which is what made a notes
+skill inexpressible before. Grants live in a new **App data** group beside your
+roots (the two pickers are scope-filtered, so a root is never offered a notes
+tool and vice versa), `POST /v1/grants {projectId:'app'}` is accepted only for an
+app-scoped manifest and **refused for `files.read`** — `app` can never become a
+root alias, and an app tool never consults the roots manager. The three ids ride
+the **existing** `file.read` capability deliberately: a new name would be absent
+from mobile's allowlist and would deny a phone its own notes by construction.
+Audit rows carry ids, counts and lengths only — a note body never reaches one.
+Model reach stays as S5 left it: **a skill can call a model** — declared, bounded
+and gated — with `permissions.llm` enabling `partner.llm.complete`, the skill's
+own `budget.maxTokens` finally *doing* something (declared and validated since
+M8 and never read — `runner.ts` used only `timeMs`), a mid-run `budget_exceeded`
+with the worker killed rather than partial output, the provider spend ledger
+charged per call, and `skill.llm` desktop-only. Because a skill can send what it
+read to your provider, the install summary says so in plain words — and it no
+longer claims a token ceiling for a skill that has no model reach at all. S3
+closed the gap **M20-B S4 recorded against itself**: the session **client class**
+now reaches the runner from the session row, so an already-granted write can no
+longer walk a phone through the envelope — proven with `files.edit`, because the
+case that note described is the *write* one (mobile's envelope already permits
+`file.read`, and a test asserts it executes). Still unbuilt and specced: M27
+**S2** (MCP from the sandbox) and **S4** (their two Studio templates, whose
+`notes` half is now unblocked), and **M28** (the Flow canvas). **M26 lands skill authoring** (PLAN-M26.md,
 `docs/VERIFY-M26.md`): a skill can now be *made*, not only installed from the
 checked-in catalog. A **draft** is an inert, editable bundle held in the user's
 own encrypted DB (`skill_drafts`, schema v21) — manifest text + entry source +
@@ -113,8 +122,10 @@ refused until it is acknowledged. Because approving an ask EXECUTES, the
 approval path is class-checked as `skill.install`. `fork` copies a skill under a
 new id, `edit` opens the installed id in place, and an unsigned bundle can be
 exported/imported — an import always lands as a draft. The two Studio templates
-that need a reach no skill has yet (*notes*, *MCP*) ship with M27; the picker is
-capability-filtered so it only offers what the build can honour. **M25 lets you reconfigure existing providers**: the setup card
+that need a reach no skill had yet (*notes*, *MCP*) ship with M27; **S1 landed
+the first** (the app-scoped notes tools, so a notes skill is now installable and
+runnable), and the *MCP* one still waits on S2. The picker is capability-filtered
+so it only offers what the build can honour. **M25 lets you reconfigure existing providers**: the setup card
 gains a *Reconfigure existing* mode that rediscovers an endpoint's models
 through the key your OS keychain already holds and reassigns which models each
 purpose profile carries — no key re-entry, no delete-and-recreate. **M24 fixes
@@ -761,7 +772,8 @@ created, a request **body** cannot set or raise the class, and the same
 assertions run against the dry-run route.
 
 Suites: shared **90** · root **1495 passed** (5 env-gated skips) · web **851** ·
-typechecks 0 · web build green. Record: `docs/VERIFY-M27.md`. One tripwire was
+typechecks 0 · web build green (recorded at S5; S1 then took root to **1513** and
+web to **858**). Record: `docs/VERIFY-M27.md`. One tripwire was
 updated deliberately: `capabilities.test.ts` pins the closed vocabulary and the
 narrow per-class allowlists, and now records why `skill.llm` joins the first and
 deliberately not the others.

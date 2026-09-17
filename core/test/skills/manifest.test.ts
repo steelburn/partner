@@ -35,9 +35,11 @@ describe('validateManifestShape (shared bar for catalog + drafts)', () => {
   });
 
   it('refuses a capability the runtime cannot honour yet, naming it', () => {
-    // M27 wires these. Until then, accepting the declaration would install a
-    // skill whose permission summary promises something nothing can deliver.
-    expect(DEFAULT_RUNTIME_CAPABILITIES).toEqual({ mcp: false, llm: false });
+    // M27 wires these, reach by reach. The library default is the CONSERVATIVE
+    // one (nothing optional is honoured) so a caller that forgets to state its
+    // build cannot accidentally accept a declaration nothing can deliver. S5
+    // (llm) and S1 (notes) are wired by createCore; S2 (mcp) is not yet.
+    expect(DEFAULT_RUNTIME_CAPABILITIES).toEqual({ mcp: false, llm: false, notes: false });
     const mcp = validateManifestShape({
       ...BASE,
       permissions: { mcpServers: ['github'] },
@@ -51,7 +53,7 @@ describe('validateManifestShape (shared bar for catalog + drafts)', () => {
   });
 
   it('accepts them when the capability is declared wired', () => {
-    const caps = { mcp: true, llm: true };
+    const caps = { mcp: true, llm: true, notes: true };
     const ok = validateManifestShape(
       { ...BASE, permissions: { tools: [], network: false, risk: 'medium', mcpServers: ['github'], llm: true } },
       { capabilities: caps },
@@ -65,7 +67,7 @@ describe('validateManifestShape (shared bar for catalog + drafts)', () => {
   it('refuses an mcp: TOOL id in mcpServers (that field holds server ids)', () => {
     const result = validateManifestShape(
       { ...BASE, permissions: { mcpServers: ['mcp:github/create_issue'] } },
-      { capabilities: { mcp: true, llm: true } },
+      { capabilities: { mcp: true, llm: true, notes: true } },
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors.join(' ')).toContain('SERVER ids');

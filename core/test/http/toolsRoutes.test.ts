@@ -189,6 +189,45 @@ describe('grants CRUD over HTTP', () => {
       h.close();
     }
   });
+
+  it('scopes an APP tool to `app` and refuses to let `app` stand in for a root', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const dir = tempDir();
+      const root = await request(h.app).post('/v1/roots').set(authed(token)).send({ label: 'g', path: dir });
+      const rootId = root.body.id as string;
+
+      // An app-scoped tool takes ONLY the reserved scope id. It needs no root,
+      // so a real root id is not a legal value for it either.
+      const appGrant = await request(h.app)
+        .post('/v1/grants')
+        .set(authed(token))
+        .send({ toolId: 'notes.read', projectId: 'app' });
+      expect(appGrant.status).toBe(201);
+      expect(appGrant.body).toMatchObject({ toolId: 'notes.read', projectId: 'app' });
+      expect(h.broker?.grants.hasGrant('notes.read', 'app') ?? false).toBe(true);
+
+      const withRoot = await request(h.app)
+        .post('/v1/grants')
+        .set(authed(token))
+        .send({ toolId: 'notes.read', projectId: rootId });
+      expect(withRoot.status).toBe(400);
+      expect(withRoot.body.error).toBe('bad_params');
+
+      // ...and the app scope can NEVER be used to grant a FILE tool, or `app`
+      // would be a root alias that bypasses the roots manager entirely.
+      const fileViaApp = await request(h.app)
+        .post('/v1/grants')
+        .set(authed(token))
+        .send({ toolId: 'files.read', projectId: 'app' });
+      expect(fileViaApp.status).toBe(400);
+      expect(fileViaApp.body.error).toBe('bad_params');
+      expect(h.broker?.grants.hasGrant('files.read', 'app') ?? false).toBe(false);
+    } finally {
+      h.close();
+    }
+  });
 });
 
 describe('write-preview happy flow over HTTP', () => {

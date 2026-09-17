@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  APP_TOOL_IDS,
+  PROJECT_TOOL_IDS,
   RISK_LABELS,
+  TOOL_LABELS,
   computeLineDiff,
   formatFileSize,
   formatWhen,
@@ -15,6 +18,32 @@ import {
   validateRootLabel,
   validateRootPath,
 } from '../src/lib/roots.js';
+
+describe('M27 S1 scope vocabulary (app-scoped notes vs project-scoped files)', () => {
+  it('splits the tool vocabulary by scope, with no id in both lists', () => {
+    expect(PROJECT_TOOL_IDS).toEqual([
+      'files.list',
+      'files.read',
+      'files.search',
+      'files.edit',
+      'files.apply',
+      'files.delete',
+    ]);
+    expect(APP_TOOL_IDS).toEqual(['notes.list', 'notes.search', 'notes.read']);
+    // Together they cover the whole label vocabulary exactly once, so a new
+    // tool cannot be added to TOOL_LABELS and be unassigned to a scope.
+    expect([...PROJECT_TOOL_IDS, ...APP_TOOL_IDS].sort()).toEqual(
+      Object.keys(TOOL_LABELS).sort(),
+    );
+    expect(new Set([...PROJECT_TOOL_IDS, ...APP_TOOL_IDS]).size).toBe(9);
+  });
+
+  it('labels and tiers every notes tool', () => {
+    expect(summarizeTool('notes.list')).toEqual({ label: 'List notes', risk: 'low' });
+    expect(summarizeTool('notes.search')).toEqual({ label: 'Search notes', risk: 'low' });
+    expect(summarizeTool('notes.read')).toEqual({ label: 'Read note', risk: 'low' });
+  });
+});
 
 describe('summarizeTool + risk tiers', () => {
   it('labels the six tools and maps their risk tiers', () => {
@@ -95,6 +124,17 @@ describe('pendingLabel (params summary — never content)', () => {
     const long = pendingLabel('files.read', { path: 'a'.repeat(300) });
     expect(long.length).toBeLessThanOrEqual(141);
     expect(long.endsWith('…')).toBe(true);
+  });
+
+  it('M27 S1: summarizes an APP-scoped row by its scope, never "project root"', () => {
+    // An app-scoped row carries no projectId, so the generic path fallback
+    // would name the wrong subject entirely — and the wrong consent.
+    expect(pendingLabel('notes.list', {})).toBe('your notes');
+    expect(pendingLabel('notes.read', { id: 'n-1' })).toBe('one of your notes');
+    expect(pendingLabel('notes.search', { query: 'sk-very-secret-token' })).toBe(
+      'your notes · content search',
+    );
+    expect(pendingLabel('notes.search', { query: 'sk-very-secret-token' })).not.toContain('sk-very');
   });
 });
 

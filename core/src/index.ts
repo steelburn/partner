@@ -179,10 +179,15 @@ export type { ProviderErrorCode } from './providers/errors.js';
 
 // ---- M2 tool broker (files, roots, grants, pending, proposals) -------------
 export { createToolBroker } from './broker/broker.js';
-export type { ExecContext, DecideResult, ToolBroker, ToolBrokerOptions } from './broker/broker.js';
+export type { BrokerTools, DecideResult, ExecContext, ToolBroker, ToolBrokerOptions } from './broker/broker.js';
 export { ToolError, toolErrorStatus } from './broker/errors.js';
 export type { ToolErrorCode } from './broker/errors.js';
-export { FILE_TOOL_MANIFESTS, manifestFor } from './broker/toolManifests.js';
+export {
+  APP_TOOL_MANIFESTS,
+  FILE_TOOL_MANIFESTS,
+  TOOL_MANIFESTS,
+  manifestFor,
+} from './broker/toolManifests.js';
 export { createGrantManager } from './broker/grants.js';
 export type { GrantAddOptions, GrantManager, GrantManagerOptions } from './broker/grants.js';
 export { createPendingManager } from './broker/pending.js';
@@ -203,6 +208,10 @@ export type { ResolveResult } from './files/paths.js';
 export { createProposalManager } from './files/proposals.js';
 export type { ProposalManager, ProposalManagerOptions, ProposalView } from './files/proposals.js';
 export { createFileTools, FILE_TOOL_IDS } from './files/tools.js';
+// M27 S1 — the app-scoped notes executors (notes.list / notes.search /
+// notes.read) and their caps.
+export { createNotesTools, NOTES_LIST_CAP, NOTES_TOOL_READ_CHARS } from './tools/notes.js';
+export type { AppToolExecutor, NotesTools } from './tools/notes.js';
 export type {
   ApplyResult,
   DeleteResult,
@@ -587,6 +596,7 @@ import type { PendingManager } from './broker/pending.js';
 import { createProjectRootManager } from './broker/roots.js';
 import type { ProjectRootManager } from './broker/roots.js';
 import { createFileTools } from './files/tools.js';
+import { createNotesTools } from './tools/notes.js';
 import { createProposalManager } from './files/proposals.js';
 import type { ProposalManager } from './files/proposals.js';
 import { createCoreApp } from './http/server.js';
@@ -922,14 +932,6 @@ export function createCore(
   });
   const proposalStore = createFileProposalStore(db);
   const proposalManager = createProposalManager({ store: proposalStore });
-  const broker = createToolBroker({
-    roots: projectRootManager,
-    grants: grantManager,
-    pending: pendingManager,
-    proposals: proposalManager,
-    tools: createFileTools({ proposals: proposalStore }),
-    audit,
-  });
 
   // M3: personas + conversations over the SAME db. The persona manager seeds
   // the EIGHT starter personas on first run (empty table only) so a fresh
@@ -1032,6 +1034,21 @@ export function createCore(
     audit,
   });
 
+  // M2 broker — created HERE, after the note manager, so the dispatch map can
+  // carry the app-scoped notes executors (M27 S1) alongside the file ones. It
+  // depends on nothing below this point, so the ordering costs nothing.
+  const broker = createToolBroker({
+    roots: projectRootManager,
+    grants: grantManager,
+    pending: pendingManager,
+    proposals: proposalManager,
+    tools: {
+      ...createFileTools({ proposals: proposalStore }),
+      ...createNotesTools({ notes }),
+    },
+    audit,
+  });
+
   // M11 F10: assets over the SAME db (schema v12). Promotion bridges into
   // notes (F6): chat artifacts become notes with provenance headers.
   const assets = createAssetManager({
@@ -1084,10 +1101,11 @@ export function createCore(
   // M27: which reaches THIS core's runtime can honour, passed IN to every door
   // that validates a manifest (catalog reads, drafts, the generator) so a
   // declaration is only refused when the sandbox really cannot deliver it. S5
-  // wired model reach, so `llm` is true here; `mcp` stays false until S2 wires
-  // it. The library default stays conservative ({ mcp: false, llm: false }) —
-  // the object is the CALLER's statement about this build.
-  const skillRuntimeCapabilities: RuntimeCapabilities = { mcp: false, llm: true };
+  // wired model reach and S1 wired app-scoped notes reach, so `llm` and `notes`
+  // are true here; `mcp` stays false until S2 wires it. The library default
+  // stays conservative ({ mcp: false, llm: false, notes: false }) — the object
+  // is the CALLER's statement about this build.
+  const skillRuntimeCapabilities: RuntimeCapabilities = { mcp: false, llm: true, notes: true };
   const skillStore = createSkillStore(db);
   const skillInvocationStore = createSkillInvocationStore(db);
   const skillRegistry: ReadonlySet<string> = new Set(broker.manifests.map((m) => m.id));

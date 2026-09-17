@@ -18,7 +18,7 @@ import type {
   ToolRisk,
 } from '@partner/shared/src/tools.js';
 
-/** Human short labels for the six M2 tools. */
+/** Human short labels for the v1 tools (files.* + M27 app-scoped notes.*). */
 export const TOOL_LABELS: Record<ToolId, string> = {
   'files.list': 'List directory',
   'files.read': 'Read file',
@@ -26,7 +26,29 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   'files.edit': 'Propose edit',
   'files.apply': 'Apply edit',
   'files.delete': 'Delete file',
+  'notes.list': 'List notes',
+  'notes.search': 'Search notes',
+  'notes.read': 'Read note',
 };
+
+/**
+ * M27 S1: the tool vocabulary is split by SCOPE, because the grant surface is
+ * scope-shaped. A ROOT may only be granted a project-scoped tool (the core
+ * refuses `files.*` against the app scope, and vice versa), so the per-root
+ * picker must not offer notes tools — and the app-scope picker must not offer
+ * a tool that needs a root.
+ */
+export const PROJECT_TOOL_IDS: readonly ToolId[] = [
+  'files.list',
+  'files.read',
+  'files.search',
+  'files.edit',
+  'files.apply',
+  'files.delete',
+];
+
+/** The app-scoped TOOLS reachable from the App data group (no root involved). */
+export const APP_TOOL_IDS: readonly ToolId[] = ['notes.list', 'notes.search', 'notes.read'];
 
 export const RISK_LABELS: Record<ToolRisk, string> = {
   low: 'Low',
@@ -60,6 +82,11 @@ export function riskOf(toolId: ToolId): ToolRisk {
     case 'files.list':
     case 'files.read':
     case 'files.search':
+    // M27 S1: the app-scoped notes tools only READ the user's own data, so
+    // they sit in the same tier as files.read.
+    case 'notes.list':
+    case 'notes.search':
+    case 'notes.read':
       return 'low';
     case 'files.edit':
       return 'medium';
@@ -108,6 +135,13 @@ export function pendingLabel(
       typeof proposalId === 'string' && proposalId.length > 0
         ? `proposal ${shorten(proposalId, 12)}`
         : 'apply pending proposal';
+  } else if (APP_TOOL_IDS.includes(toolId)) {
+    // M27 S1: an app-scoped row has NO projectId, so the generic fallback
+    // below would say "project root" — the wrong subject entirely. The scope is
+    // the user's own notes, and that is what consent is asked about.
+    if (toolId === 'notes.search') summary = 'your notes · content search';
+    else if (toolId === 'notes.read') summary = 'one of your notes';
+    else summary = 'your notes';
   } else {
     summary = paramPath(params) ?? 'project root';
   }

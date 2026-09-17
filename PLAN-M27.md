@@ -239,11 +239,26 @@ model id + token counts + ms + cents and NEVER the prompt or the completion.
 The authoring prompt now describes the reach (including "anything the skill read
 can leave the machine"), driven by the passed capability object.
 
-**Remaining: S1** (app-scoped `notes.list/search/read` — rootless grants, a new
-scope kind), **S2** (MCP from the runner: `permissions.mcpServers`, the medium
+**S1 landed 2026-09-17.** `ToolScope = {kind:'project'} | {kind:'app'}`;
+`APP_SCOPE_ID = 'app'`; three `APP_TOOL_MANIFESTS` at `scope:{kind:'app'}`,
+`risk:'low'`, `confirm:'once'`, `network:false`; `core/src/tools/notes.ts` holds
+the executors (`NOTES_LIST_CAP` 200, `NOTES_SEARCH_CAP` 50 reused from the
+manager, `NOTES_TOOL_READ_CHARS` 100_000 -> `too_large`, and `NoteError`
+translated to typed `ToolError`s so a missing note is `not_found`, not an
+unhandled throw). The broker branches on the **manifest's scope**: the app path
+keys the grant and the pending row on `APP_SCOPE_ID` and never calls
+`roots.getById`. `TOOL_CAPABILITIES` maps all three to the **existing**
+`file.read`; `defaultToolRegistry()` is derived from `TOOL_MANIFESTS` so the
+installer's registry and the broker's dispatch map cannot drift;
+`RuntimeCapabilities` gained the `notes` key. `POST /v1/grants` accepts
+`projectId:'app'` only for an app-scoped manifest and refuses it for `files.*`.
+Web: an **App data** group (both grant pickers scope-filtered from one
+vocabulary) and a dry-run `tool_denied` that names where the grant goes.
+
+**Remaining: S2** (MCP from the runner: `permissions.mcpServers`, the medium
 ceiling, coded denials, no pending row; D7's MCP half is NOT closed), **S4** (the
-*notes* + *MCP* Studio templates). Those three are the whole of what is left, and
-S4 depends on S1/S2.
+*notes* + *MCP* Studio templates). S4 depends on S1/S2; S1's half of that
+dependency (the `notes` capability key) is now unblocked.
 
 *State was:* spec only.
 

@@ -56,16 +56,24 @@ export function permissionSummary(manifest: SkillManifest): string[] {
   lines.push(`is treated as ${permissions.risk} risk`);
   const seconds = Math.max(1, Math.round((manifest.budget?.timeMs ?? 30_000) / 1000));
   lines.push(`runs for at most ${seconds}s per invocation`);
-  if (typeof manifest.budget?.maxTokens === 'number') {
-    lines.push(`may spend at most ${manifest.budget.maxTokens} model tokens per invocation`);
-  } else if (permissions.llm === true) {
-    // M27 S5 D11: a declaration WITHOUT a ceiling is not unbounded - the runner
-    // applies DEFAULT_SKILL_LLM_MAX_TOKENS - and the owner has to read which
-    // number actually binds before they install. Same constant, so the summary
-    // and the runner's arithmetic cannot drift.
-    lines.push(
-      `may spend at most ${DEFAULT_SKILL_LLM_MAX_TOKENS} model tokens per invocation (the default ceiling)`,
-    );
+  // M27 S5 D11 + review fix: a token ceiling is only part of the CONSENT when
+  // the skill actually HAS model reach. A tool-only manifest may still carry a
+  // `budget.maxTokens` (the field is shared and validated whenever present), but
+  // printing it would promise a spend the runner never makes - the same lie the
+  // reach vocabulary exists to prevent. So the line is gated on `llm`, and the
+  // ceiling shown is the one that BINDS: the declared number, else the default.
+  if (permissions.llm === true) {
+    if (typeof manifest.budget?.maxTokens === 'number') {
+      lines.push(`may spend at most ${manifest.budget.maxTokens} model tokens per invocation`);
+    } else {
+      // A declaration WITHOUT a ceiling is not unbounded - the runner applies
+      // DEFAULT_SKILL_LLM_MAX_TOKENS - and the owner has to read which number
+      // actually binds before they install. Same constant, so the summary and
+      // the runner's arithmetic cannot drift.
+      lines.push(
+        `may spend at most ${DEFAULT_SKILL_LLM_MAX_TOKENS} model tokens per invocation (the default ceiling)`,
+      );
+    }
   }
   return lines;
 }

@@ -19,7 +19,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { CatalogSkill, SkillManifest, ToolId } from '@partner/shared';
-import { FILE_TOOL_IDS } from '../files/tools.js';
+import { TOOL_MANIFESTS } from '../broker/toolManifests.js';
 import { skillError, SkillError } from './errors.js';
 // M26 cut A: the shape validator moved to ./manifest.js so an authored draft and
 // an installed bundle are held to ONE bar. Re-exported here because this module
@@ -31,7 +31,7 @@ export type { ManifestValidation } from './manifest.js';
 
 
 export interface CatalogReadOptions {
-  /** Broker tool registry; defaults to the six v1 files.* ids. */
+  /** Broker tool registry; defaults to the broker's manifest set. */
   tools?: ReadonlySet<string>;
   /**
    * M27 S5: which reaches this build's runtime can honour, forwarded to the
@@ -58,9 +58,13 @@ export interface LoadedCatalogSkill {
 }
 
 
-/** The default M8 broker tool registry (six files.* ids). */
+/** The default skill tool registry — derived from the broker's manifests. */
 export function defaultToolRegistry(): ReadonlySet<string> {
-  return new Set(FILE_TOOL_IDS);
+  // M27 S1: derived from TOOL_MANIFESTS rather than hard-coding the files.*
+  // ids. The registry the INSTALLER checks and the registry the BROKER
+  // dispatches must be the same list, or a manifest that validates fails at run
+  // time (and vice versa). One derivation, no drift.
+  return new Set(TOOL_MANIFESTS.map((m) => m.id));
 }
 
 function toCatalogSkill(manifest: SkillManifest): CatalogSkill {

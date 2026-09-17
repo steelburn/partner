@@ -9,7 +9,10 @@ import type {
   ToolId,
 } from '@partner/shared/src/tools.js';
 import { ApiRequestError } from './lib/api.js';
+import { APP_SCOPE_ID } from '@partner/shared';
 import {
+  APP_TOOL_IDS,
+  PROJECT_TOOL_IDS,
   RISK_LABELS,
   RISK_TONE_CLASS,
   TOOL_LABELS,
@@ -48,14 +51,18 @@ function isSessionLost(cause: unknown): boolean {
   return cause instanceof ApiRequestError && (cause.status === 401 || cause.status === 403);
 }
 
-const GRANT_TOOLS = Object.keys(TOOL_LABELS) as ToolId[];
-
 /**
  * M2 Files view (provisional): project-root manager (add/list/remove), the
  * per-root grant list with quick add/revoke, an approval queue with
  * Approve / Approve+remember / Deny, plus per-root "try a tool" and
  * "edit preview" demo panels. Token discipline: pending rows are summarized
  * (path/label only) and never show file content or search terms.
+ *
+ * M27 S1 adds the **App data** group: the app-scoped notes tools are granted
+ * ONCE against a scope id (`app`), not per root, so they get their own card
+ * rather than appearing in every root's picker (where the core would refuse
+ * them). The two pickers are scope-filtered from ONE vocabulary — see
+ * `PROJECT_TOOL_IDS` / `APP_TOOL_IDS` in lib/roots.ts.
  */
 export default function FilesView({
   onUnpair,
@@ -222,6 +229,33 @@ export default function FilesView({
             {rootsFixed ? null : (
               <AddRootCard disabled={sessionLost} onAdded={appendRoot} onSessionLost={handleSessionLost} />
             )}
+          </section>
+        ) : null}
+
+        {/*
+          M27 S1 — App data. Sits OUTSIDE the roots list on purpose: the
+          app-scoped notes tools need no root, so this group must be usable on a
+          machine with zero roots registered (which is exactly the case S1 was
+          added for).
+        */}
+        {!sessionLost && roots !== null ? (
+          <section className="card app-data-card" aria-label="App data">
+            <h2 className="card-title">App data</h2>
+            <p className="card-copy">
+              Partner&apos;s own data — your notes — is not a folder, so it is granted here rather
+              than per root. A tool you allow can read your notes; a tool you do not allow cannot
+              see them at all.
+            </p>
+            <GrantSection
+              scopeId={APP_SCOPE_ID}
+              scopeLabel="app data"
+              tools={APP_TOOL_IDS}
+              grants={(grants ?? []).filter((grant) => grant.projectId === APP_SCOPE_ID)}
+              emptyCopy="No app grants yet — nothing can read your notes until you allow it."
+              onSessionLost={handleSessionLost}
+              onGrantAdded={replaceGrant}
+              onGrantRemoved={dropGrant}
+            />
           </section>
         ) : null}
       </div>
@@ -518,8 +552,12 @@ function RootCard({
       ) : null}
 
       <GrantSection
-        root={root}
+        scopeId={root.id}
+        scopeLabel={root.label}
+        tools={PROJECT_TOOL_IDS}
         grants={grants}
+        disabled={root.readOnly}
+        emptyCopy="No grants yet — nothing runs in this root until you allow it."
         onSessionLost={onSessionLost}
         onGrantAdded={onGrantAdded}
         onGrantRemoved={onGrantRemoved}
@@ -547,21 +585,33 @@ function RootCard({
 }
 
 function GrantSection({
-  root,
+  scopeId,
+  scopeLabel,
+  tools,
   grants,
+  disabled = false,
+  emptyCopy,
   onSessionLost,
   onGrantAdded,
   onGrantRemoved,
 }: {
-  root: ProjectRoot;
+  /** The grant key the core expects: a root id, or the app scope id. */
+  scopeId: string;
+  /** Human name for the scope, used in labels and aria strings. */
+  scopeLabel: string;
+  /** The tools THIS scope may be granted (scope-filtered). */
+  tools: readonly ToolId[];
   grants: GrantRecord[];
+  /** True when the scope cannot be granted (a read-only root, fixed roots). */
+  disabled?: boolean;
+  emptyCopy: string;
   onSessionLost: () => void;
   onGrantAdded: (grant: GrantRecord) => void;
   onGrantRemoved: (id: string) => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const [grantTool, setGrantTool] = useState<ToolId>('files.list');
+  const [grantTool, setGrantTool] = useState<ToolId>(tools[0] as ToolId);
   const [error, setError] = useState<string | null>(null);
 
   const revoke = async (grantId: string): Promise<void> => {
@@ -595,7 +645,7 @@ function GrantSection({
     setAdding(true);
     setError(null);
     try {
-      const created = await addGrant(token, { toolId: grantTool, projectId: root.id });
+      const created = await addGrant(token, { toolId: grantTool, projectId: scopeId });
       onGrantAdded(created);
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -609,15 +659,19 @@ function GrantSection({
   };
 
   const busy = adding || busyId !== null;
+  // The picker is a SCOPE-filtered list, but a grant may predate a scope change
+  // (or be made by another client), so anything already granted still shows its
+  // label rather than a blank row.
+  const pickable = tools;
 
   return (
     <div className="grant-section">
       <div className="grant-head">
-        <span className="grant-title">Grants for this root</span>
+        <span className="grant-title">Grants for {scopeLabel}</span>
         {grants.length > 0 ? <span className="chip">{grants.length}</span> : null}
       </div>
       {grants.length === 0 ? (
-        <p className="grant-empty">No grants yet — nothing runs here until you allow it.</p>
+        <p className="grant-empty">{emptyCopy}</p>
       ) : (
         <ul className="grant-list">
           {grants.map((grant) => (
@@ -630,7 +684,7 @@ function GrantSection({
                 disabled={busy}
                 onClick={() => void revoke(grant.id)}
                 aria-busy={busyId === grant.id}
-                aria-label={`Revoke ${grant.toolId} grant for ${root.label}`}
+                aria-label={`Revoke ${grant.toolId} grant for ${scopeLabel}`}
               >
                 {busyId === grant.id ? 'Revoking…' : 'Revoke'}
               </button>
@@ -639,21 +693,21 @@ function GrantSection({
         </ul>
       )}
       <div className="quick-grant-row">
-        <label className="label quick-grant-label" htmlFor={`grant-tool-${root.id}`}>
+        <label className="label quick-grant-label" htmlFor={`grant-tool-${scopeId}`}>
           Add grant
         </label>
         <select
-          id={`grant-tool-${root.id}`}
+          id={`grant-tool-${scopeId}`}
           className="field grant-select"
           value={grantTool}
-          disabled={busy || root.readOnly}
+          disabled={busy || disabled}
           onChange={(event) => {
             setGrantTool(event.target.value as ToolId);
             setError(null);
           }}
-          aria-label={`Tool to grant for ${root.label}`}
+          aria-label={`Tool to grant for ${scopeLabel}`}
         >
-          {GRANT_TOOLS.map((id) => (
+          {pickable.map((id) => (
             <option key={id} value={id}>
               {TOOL_LABELS[id]}
             </option>
@@ -662,7 +716,7 @@ function GrantSection({
         <button
           type="button"
           className="btn btn-secondary btn-sm"
-          disabled={busy || root.readOnly}
+          disabled={busy || disabled}
           onClick={() => void add()}
           aria-busy={adding}
         >

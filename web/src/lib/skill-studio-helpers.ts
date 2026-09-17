@@ -36,6 +36,7 @@ import type {
   SkillManifest,
 } from '@partner/shared';
 import { TOOL_LABELS } from './roots.js';
+import { APP_TOOL_IDS } from './roots.js';
 import { validateArgsJson, type ArgsValidation } from './skill-helpers.js';
 import type { SkillTemplateSummary } from './skills.js';
 
@@ -131,6 +132,36 @@ export function toolOptions(declared: readonly string[] = []): StudioToolOption[
     if (typeof tool === 'string' && tool !== '' && !ids.includes(tool)) ids.push(tool);
   }
   return ids.map((id) => ({ id, label: TOOL_LABELS[id as keyof typeof TOOL_LABELS] ?? id }));
+}
+
+// ---------------------------------------------------------------------------
+// M27 S1 — the actionable line under a `tool_denied` dry-run
+// ---------------------------------------------------------------------------
+
+/**
+ * A dry-run executes the REAL sandbox, so a validated draft that reaches an
+ * ungranted tool fails exactly as an installed skill would — skills are
+ * non-interactive, so there is no approval prompt to wait for.
+ *
+ * "A tool request was denied" is true but useless to someone authoring: the fix
+ * is a grant, and WHERE the grant lives depends on the tool's SCOPE. File tools
+ * need a registered root; app-scoped note tools need the App data group and no
+ * root at all. This names the right place, and for the pure app-scope case it
+ * names the group exactly.
+ *
+ * Only meaningful for a draft whose validation passed: a declared-but-unknown
+ * tool or a risk-ceiling refusal is already named by the validator, so those
+ * cannot be the cause here.
+ */
+export function toolDeniedHint(declaredTools: readonly string[]): string {
+  const appTools = declaredTools.filter((id) => (APP_TOOL_IDS as readonly string[]).includes(id));
+  if (appTools.length === 0) {
+    return 'Nothing is granted yet, so the tool call was refused. Register a root under Files \u2192 Project roots, grant the tool there, then run again.';
+  }
+  if (appTools.length === declaredTools.length) {
+    return `Your notes are not granted yet, so nothing can read them. Allow ${appTools.join(', ')} under Files \u2192 App data, then run again.`;
+  }
+  return 'A tool call was refused. Allow the note tools under Files \u2192 App data, and grant the file tools for a registered root, then run again.';
 }
 
 // ---------------------------------------------------------------------------

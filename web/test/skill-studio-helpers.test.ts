@@ -23,6 +23,7 @@ import {
   resolveSelectedDraft,
   slugPreview,
   templateOptions,
+  toolDeniedHint,
   toolOptions,
   validationSummary,
   warningCount,
@@ -138,14 +139,48 @@ describe('toolOptions', () => {
   });
 
   it('keeps an id a draft already declares, so it can be seen and removed', () => {
-    const options = toolOptions(['notes.read']);
-    expect(options.map((option) => option.id)).toContain('notes.read');
-    expect(options.find((option) => option.id === 'notes.read')?.label).toBe('notes.read');
+    // An id the registry does NOT know still needs a row, or the owner cannot
+    // see (or remove) reach their draft declares. Falls back to the id itself.
+    // NOTE (M27 S1): this used to use 'notes.read', which S1 added to the
+    // vocabulary — the fallback now needs an id that is still unknown.
+    const options = toolOptions(['files.write']);
+    expect(options.map((option) => option.id)).toContain('files.write');
+    expect(options.find((option) => option.id === 'files.write')?.label).toBe('files.write');
+    // ...and a NOW-known id resolves to its friendly label.
+    const known = toolOptions(['notes.read']);
+    expect(known.find((option) => option.id === 'notes.read')?.label).toBe('Read note');
   });
 
   it('does not duplicate an id that is in both the registry and the manifest', () => {
     const options = toolOptions(['files.read']);
     expect(options.filter((option) => option.id === 'files.read')).toHaveLength(1);
+  });
+});
+
+describe('toolDeniedHint (M27 S1 — a refused dry-run names the fix)', () => {
+  it('names the App data group for a pure app-scoped draft, and no root', () => {
+    const hint = toolDeniedHint(['notes.read']);
+    expect(hint).toContain('App data');
+    expect(hint).toContain('notes.read');
+    // The point of S1: no root is involved, so the hint must not send the
+    // owner to register one.
+    expect(hint).not.toContain('Project roots');
+  });
+
+  it('names Project roots for a file-only draft', () => {
+    const hint = toolDeniedHint(['files.read']);
+    expect(hint).toContain('Project roots');
+    expect(hint).not.toContain('App data');
+  });
+
+  it('names BOTH doors when a draft declares both scopes', () => {
+    const hint = toolDeniedHint(['files.read', 'notes.read']);
+    expect(hint).toContain('App data');
+    expect(hint).toContain('root');
+  });
+
+  it('names Project roots for a draft with no declared tools', () => {
+    expect(toolDeniedHint([])).toContain('Project roots');
   });
 });
 

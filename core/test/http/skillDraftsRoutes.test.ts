@@ -123,12 +123,27 @@ describe('M26 draft routes', () => {
       expect(installedDuringAuthoring.body.skills).toEqual([]);
 
       const edited = await request(h.app)
+        .post(`/v1/skills/drafts/${draftId}/validate`)
+        .set(headers);
+      expect(edited.status).toBe(200);
+      // M27 S1: the app-scoped notes tools are now in the broker registry, so
+      // a draft declaring one VALIDATES. Reach is bounded by the grant at run
+      // time, not refused at author time.
+      const notesDraft = await request(h.app)
         .put(`/v1/skills/drafts/${draftId}`)
         .set(headers)
         .send({ manifestText: MANIFEST(draftId, { permissions: { tools: ['notes.read'] } }) });
-      expect(edited.status).toBe(200);
-      expect(edited.body.validation.ok).toBe(false);
-      expect((edited.body.validation.errors as string[]).join(' ')).toContain('notes.read');
+      expect(notesDraft.status).toBe(200);
+      expect(notesDraft.body.validation.ok).toBe(true);
+
+      // An id that is NOT in the registry still refuses, naming it.
+      const unknown = await request(h.app)
+        .put(`/v1/skills/drafts/${draftId}`)
+        .set(headers)
+        .send({ manifestText: MANIFEST(draftId, { permissions: { tools: ['files.write'] } }) });
+      expect(unknown.status).toBe(200);
+      expect(unknown.body.validation.ok).toBe(false);
+      expect((unknown.body.validation.errors as string[]).join(' ')).toContain('files.write');
 
       const fixed = await request(h.app)
         .put(`/v1/skills/drafts/${draftId}`)

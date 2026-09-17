@@ -86,6 +86,7 @@ import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderPatch, ProviderPurpose, ProviderSource } from '@partner/shared';
 import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
+import { APP_SCOPE_ID } from '@partner/shared';
 import type { SiteScope } from '@partner/shared';
 import { redactString, isProviderPurpose, isSearchProvider, PROVIDER_PURPOSES } from '@partner/shared';
 import { demoProvider } from '../gateway/demo.js';
@@ -5401,11 +5402,32 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.status(400).json({ error: 'bad_params', message: 'toolId is required' });
       return;
     }
-    if (!broker.manifests.some((m) => m.id === toolId)) {
+    const manifest = broker.manifests.find((m) => m.id === toolId);
+    if (!manifest) {
       res.status(400).json({ error: 'unknown_tool', message: 'no such tool' });
       return;
     }
-    if (projectId === '' || broker.roots.getById(projectId) === null) {
+    // M27 S1 — the SCOPE decides which projectId is even admissible:
+    //   - an app-scoped manifest (notes.*) takes ONLY the reserved APP_SCOPE_ID
+    //     and never consults the roots manager;
+    //   - a project-scoped manifest REFUSES APP_SCOPE_ID even though it is a
+    //     legal-looking string, so 'app' can never become a root alias that
+    //     grants a FILE tool through the app door.
+    if (manifest.scope.kind === 'app') {
+      if (projectId !== APP_SCOPE_ID) {
+        res.status(400).json({
+          error: 'bad_params',
+          message: `projectId must be '${APP_SCOPE_ID}' for this tool`,
+        });
+        return;
+      }
+    } else if (projectId === APP_SCOPE_ID) {
+      res.status(400).json({
+        error: 'bad_params',
+        message: `'${APP_SCOPE_ID}' is not a project root`,
+      });
+      return;
+    } else if (projectId === '' || broker.roots.getById(projectId) === null) {
       res.status(404).json({ error: 'not_found', message: 'project root not found' });
       return;
     }

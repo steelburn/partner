@@ -430,6 +430,13 @@ describe('M27 S5 - the token ceiling bounds the invocation', () => {
     ).toBe(true);
     // A skill with no model reach says nothing about tokens.
     expect(installSummary({ llm: false }).some((line) => line.includes('model tokens'))).toBe(false);
+    // ...even when a ceiling is declared: a tool-only skill that carries a
+    // `budget.maxTokens` must not promise a spend the runner never makes.
+    expect(
+      installSummary({ llm: false, maxTokens: 2500 }).some((line) =>
+        line.includes('model tokens'),
+      ),
+    ).toBe(false);
   });
 });
 

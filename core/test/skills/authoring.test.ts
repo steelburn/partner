@@ -43,8 +43,8 @@ const TOOLS = [
   'files.delete',
 ];
 
-const OFF: RuntimeCapabilities = { mcp: false, llm: false };
-const ON: RuntimeCapabilities = { mcp: true, llm: true };
+const OFF: RuntimeCapabilities = { mcp: false, llm: false, notes: false };
+const ON: RuntimeCapabilities = { mcp: true, llm: true, notes: true };
 
 function manifest(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {

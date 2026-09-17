@@ -267,7 +267,7 @@ describe('the tool pass with the authoring provider', () => {
           name: DRAFT_TOOL_ID,
           arguments: JSON.stringify({
             name: 'Wants Notes',
-            tools: ['notes.read'],
+            tools: ['files.write'],
             code: 'export function run(){ return 1; }',
           }),
         },
@@ -275,6 +275,10 @@ describe('the tool pass with the authoring provider', () => {
       expect(result.decisions).toEqual([{ toolId: DRAFT_TOOL_ID, decision: 'executed' }]);
       // Nothing staged: the tool was dropped by the sanitiser, and a draft with
       // less reach than declared is worse than a refusal.
+      // NOTE (M27 S1): this used to use 'notes.read'. S1 put the app-scoped
+      // notes tools IN the broker registry, so that id is now deliverable and
+      // the guarantee has to be asserted with one that still is not —
+      // `files.write` has never existed (the writers are edit/apply/delete).
       expect(h.skillDrafts?.list()).toEqual([]);
     } finally {
       h.close();
