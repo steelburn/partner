@@ -193,6 +193,64 @@ function withName(code: string, name: string): string {
   return code.replace('${name}', name);
 }
 
+const CONTENT_AUDIT_CODE = `/**
+ * ${'{name}'} — finds a phrase under a project root you have granted.
+ *
+ * ONE declared tool: \`files.search\`, the broker's own capped, binary-skipping
+ * content search. Every call goes through the broker, so without a grant it is
+ * refused with \`tool_denied\` — and this entry REPORTS that code rather than
+ * returning an empty match list that would read as "the phrase is not there".
+ *
+ * The result is reduced to a shape worth reading: per-file hit counts plus a
+ * couple of sample lines, capped, with the total before the cap.
+ */
+const MAX_FILES = 40;
+const MAX_SAMPLES = 2;
+
+export async function run(args = {}) {
+  const projectId = typeof args.projectId === 'string' ? args.projectId.trim() : '';
+  if (projectId === '') {
+    return { ok: false, reason: 'projectId is required (a granted project root)' };
+  }
+  const query = typeof args.query === 'string' ? args.query.trim() : '';
+  if (query === '') return { ok: false, reason: 'query is required' };
+  const path = typeof args.path === 'string' && args.path !== '' ? args.path : '.';
+
+  let listing;
+  try {
+    listing = await partner.tools.exec('files.search', { projectId, path, query });
+  } catch (err) {
+    return { ok: false, reason: err && err.code ? err.code : 'failed' };
+  }
+
+  const hits = Array.isArray(listing && listing.hits) ? listing.hits : [];
+  const byFile = new Map();
+  for (const hit of hits) {
+    const file = typeof hit.path === 'string' ? hit.path : '(unknown)';
+    const group = byFile.get(file) ?? { path: file, count: 0, samples: [] };
+    group.count += 1;
+    if (group.samples.length < MAX_SAMPLES) {
+      group.samples.push({
+        line: typeof hit.line === 'number' ? hit.line : 0,
+        text: typeof hit.text === 'string' ? hit.text.trim().slice(0, 160) : '',
+      });
+    }
+    byFile.set(file, group);
+  }
+
+  const files = [...byFile.values()].sort((a, b) => b.count - a.count);
+  return {
+    ok: true,
+    query,
+    root: path,
+    hits: hits.length,
+    files: files.length,
+    truncated: files.length > MAX_FILES || hits.length >= 500,
+    matches: files.slice(0, MAX_FILES),
+  };
+}
+`;
+
 export const SKILL_TEMPLATES: readonly SkillTemplate[] = [
   {
     id: 'pure',
@@ -298,6 +356,30 @@ export const SKILL_TEMPLATES: readonly SkillTemplate[] = [
         budget: { timeMs: 30_000 },
       },
       code: withName(MCP_CALL_CODE, name),
+    }),
+  },
+  {
+    // The authorable twin of the catalog's `content-audit` bundle: same idea,
+    // same single declared tool, so "install it from the Catalog" and "start it
+    // from a template" are two doors onto one worked example (skills-catalog/
+    // README.md says so). `requires` is absent on purpose — the files tools are
+    // always wired, so the picker offers this in every build.
+    id: 'content-audit',
+    name: 'Audit file contents',
+    description: 'Searches the text inside a project root for a phrase and groups the hits by file.',
+    reach: 'File contents under a root you grant — read-only, and only while the grant exists.',
+    build: (name, id) => ({
+      manifest: {
+        id,
+        name,
+        description: 'Searches file contents under a granted project root and groups the hits by file.',
+        author: 'You',
+        version: '0.1.0',
+        entrypoint: 'entry.mjs',
+        permissions: { tools: ['files.search'], network: false, risk: 'medium' },
+        budget: { timeMs: 30_000 },
+      },
+      code: withName(CONTENT_AUDIT_CODE, name),
     }),
   },
 ];

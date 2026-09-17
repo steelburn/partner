@@ -440,7 +440,12 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   **install is the owner's act on both surfaces** — the Studio button, or an
   approval card in the chat the persona asked from (`skills.requestInstall`
   writes a `pending_tools` row of kind `skill_install`, and Approve calls the
-  same `promote()` the Studio calls). Installed authored skills carry
+  same `promote()` the Studio calls). The same door accepts an **UPDATE**: a
+  persona passes the installed skill's id as `skillId` to `skills.draft`, the
+  core opens that skill's `edit` draft, and the owner approves the change from
+  the same card — which shows the permission summary, and the before→after table
+  for a widening update, before it can send the acknowledgement. Installed
+authored skills carry
   `source:'authored'`; a widened permission set on update forces re-consent on
   either path; unsigned bundle export/import lands as an inert draft (signing
   deferred). Capability `skill.author` is desktop-only; `network` stays refused.
@@ -692,9 +697,18 @@ measured record: `docs/VERIFY-M26.md`). Live now:
 `GET|PUT|DELETE /v1/skills/drafts/:id` · `POST /v1/skills/drafts/:id/validate` ·
 `POST /v1/skills/drafts/:id/install` · `POST /v1/skills/:id/fork` and
 `POST /v1/skills/:id/edit`. `skill.author` gates authoring (desktop-only) and
-`skill.install` gates the promote. Registered before `/v1/skills/:id`. Still
-planned for M26: `/run` (dry-run), `/request-install` (+ the `kind:'skill_install'`
-branch on `POST /v1/tools/pending/:id`), `/bundle` export and `/import`.
+`skill.install` gates the promote. Registered before `/v1/skills/:id`. Also live
+(2026-09-18): `/run` (dry-run), `/request-install` (the `kind:'skill_install'`
+branch on `POST /v1/tools/pending/:id`, which now also carries
+`acknowledgePermissions` for a widened update), `/bundle` export and `/import`.
+**A persona can propose an UPDATE**: `skills.draft` takes an optional `skillId`
+(an INSTALLED skill), which opens the skill's `edit` draft through
+`SkillDraftManager.openUpdate()` — the same row `POST /v1/skills/:id/edit`
+manages — so the manifest keeps the installed id binding and promoting it is an
+update. The ask rides the same queue row; the approval card (chat + Files queue,
+`web/src/SkillInstallCard.tsx`) renders the draft's permission summary and, when
+the update widens, the before→after table — and sends
+`acknowledgePermissions` only once that table is on screen.
 M27 **S1 landed**: app-scoped grants reuse `POST /v1/grants` with the reserved
 `projectId:'app'`, accepted only for an app-scoped manifest and **refused for a
 `files.*` tool** (and an app-scoped tool refuses any other projectId), so `app`
@@ -1911,7 +1925,7 @@ apps/partner/
       build green · both demo e2e flows green — **done: root 1724, shared 90,
       web 918, typechecks 0, build green, `tests/e2e-skill-flow.test.ts`.***
       *State: **slices A–F landed 2026-09-17** — root
-      **1726** (5 env-gated skips) · shared **90** · web **923** · typechecks 0 ·
+      **1746** (5 env-gated skips) · shared **90** · web **937** · typechecks 0 ·
       web build
       green. **Review fixup 2026-09-18** (M26/M28 Studio surfaces: draft
       description, the Edit/Fork deep link, creating a draft when one exists,

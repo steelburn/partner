@@ -34,6 +34,7 @@ import {
   type BrowseResult,
 } from './lib/tools.js';
 import { readStoredToken } from './lib/token.js';
+import { SkillInstallCard } from './SkillInstallCard.js';
 import EditPreviewPanel from './RootEditor.js';
 import TryToolPanel from './RootTryTool.js';
 
@@ -296,14 +297,22 @@ function QueueSection({ pending, roots, onRefreshPending, onRemembered }: QueueS
         <ul className="queue-list">
           {pending.map((item) => (
             <li key={item.id} className="queue-item">
-              <QueueItem
-                item={item}
-                projectLabel={
-                  roots.find((root) => root.id === item.params.projectId)?.label
-                }
-                onRefreshPending={onRefreshPending}
-                onRemembered={onRemembered}
-              />
+              {item.kind === 'skill_install' ? (
+                /* M26 D2b: a skill install/update ask has a DRAFT behind it, so
+                 * it renders with the draft's own permission summary — and an
+                 * update that widens gets the before→after table before the
+                 * acknowledgement can travel. */
+                <SkillInstallRow item={item} onRefreshPending={onRefreshPending} />
+              ) : (
+                <QueueItem
+                  item={item}
+                  projectLabel={
+                    roots.find((root) => root.id === item.params.projectId)?.label
+                  }
+                  onRefreshPending={onRefreshPending}
+                  onRemembered={onRemembered}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -325,6 +334,58 @@ function queueRequesterLabel(item: PendingToolCall): string {
   }
   if (item.requestedBy === 'skill') return 'Skill';
   return 'Web';
+}
+
+/**
+ * The queue's own view of a skill install/update ask: it owns the decide call
+ * (the card is presentational plus the consent rule) so the Files queue and the
+ * chat card cannot disagree about what approving sends.
+ */
+function SkillInstallRow({
+  item,
+  onRefreshPending,
+}: {
+  item: PendingToolCall;
+  onRefreshPending: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const decide = async (
+    decision: 'approve' | 'deny',
+    options: { acknowledgePermissions?: boolean } = {},
+  ): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) {
+      setError('Your session has expired — pair again.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await decidePending(token, item.id, { decision, ...options });
+      // A refusal is the core's answer, not a transport failure: `permission_change`
+      // means the acknowledgement is still owed and the card says so.
+      if (decision === 'approve' && !outcome.executed && outcome.error !== undefined) {
+        setError(outcome.error);
+      }
+      onRefreshPending();
+    } catch (cause) {
+      setError(cause instanceof ApiRequestError ? cause.message : 'Could not reach the Partner core.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SkillInstallCard
+      row={item}
+      busy={busy}
+      deciding={busy}
+      error={error}
+      onDecide={(decision, options) => void decide(decision, options)}
+    />
+  );
 }
 
 function QueueItem({

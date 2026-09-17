@@ -1,0 +1,16 @@
+{
+  "id": "notes-digest",
+  "name": "Notes Digest",
+  "description": "Summarises the notes you have granted it: titles, tags, word counts and checklist tallies — never note bodies. Declares the app-scoped notes.list, notes.search and notes.read tools.",
+  "author": "Partner Samples",
+  "version": "0.1.0",
+  "entrypoint": "entry.mjs",
+  "permissions": {
+    "tools": ["notes.list", "notes.search", "notes.read"],
+    "network": false,
+    "risk": "medium"
+  },
+  "budget": {
+    "timeMs": 30000
+  }
+}

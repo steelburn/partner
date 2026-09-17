@@ -23,6 +23,13 @@ import request from 'supertest';
 import { ALLOWED_HOST, demoHarness } from '../helpers.js';
 import type { Harness } from '../helpers.js';
 import { ToolError } from '../../src/broker/errors.js';
+import { DRAFT_TOOL_ID, authoringToolExternal } from '../../src/skills/tool.js';
+
+/** Install the catalog's smallest skill, the subject every update test changes. */
+function installHello(h: Harness): void {
+  const installed = h.skills?.install('hello-skill');
+  if (installed === undefined) throw new Error('the harness wired no skill manager');
+}
 
 async function pairToken(h: Harness): Promise<string> {
   const code = await h.pairing.issue();
@@ -364,6 +371,85 @@ describe('M26 install approval routes', () => {
       expect(serialized).not.toContain('export function run');
       expect(serialized).not.toContain('entrypoint');
       expect(serialized).not.toContain('uppercases text');
+    } finally {
+      h.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M26 review — the ask the CHAT makes about an INSTALLED skill.
+//
+// The Studio's `/edit` route already covered "an update that widens needs the
+// acknowledgement" (above). What this adds is the door a persona actually uses:
+// `skills.draft` with `skillId` stages the update into the skill's edit draft,
+// `skills.requestInstall` opens the ask, and approving it twice is what the
+// owner does in the card — once to see the change table, once to acknowledge it.
+// Without this the chat could only ever create NEW skills.
+// ---------------------------------------------------------------------------
+
+describe('M26 review: a persona-proposed UPDATE through the same approval door', () => {
+  it('needs the acknowledgement, then updates the installed skill in place', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const headers = authed(token);
+      // A real installed skill, then a staged update that adds a tool.
+      installHello(h);
+      const provider = authoringToolExternal({
+        drafts: h.skillDrafts,
+        toolIds: new Set(['files.list', 'files.read', 'files.search']),
+      });
+      const staged = provider?.exec(DRAFT_TOOL_ID, {
+        skillId: 'hello-skill',
+        name: 'Hello Skill',
+        description: 'greets, and now reads a file',
+        tools: ['files.read'],
+        code: 'export function run(){ return { ok: true }; }',
+      });
+      const result = (staged as { result: Record<string, unknown> }).result;
+      expect(result).toMatchObject({ ok: true, mode: 'update', draftId: 'hello-skill-edit' });
+      expect(result.widens).toBe(true);
+
+      const ask = await askInstall(h, headers, 'hello-skill-edit');
+      // The queue row names the draft, so the card renders without a manifest.
+      const queue = await request(h.app).get('/v1/tools/pending').set(headers);
+      expect(queue.body.pending).toHaveLength(1);
+      expect(queue.body.pending[0]).toMatchObject({
+        kind: 'skill_install',
+        draftId: 'hello-skill-edit',
+        draftName: 'Hello Skill',
+      });
+
+      // First approve: refused until the change table has been acknowledged.
+      const unacked = await request(h.app)
+        .post(`/v1/tools/pending/${ask}`)
+        .set(headers)
+        .send({ decision: 'approve' });
+      expect(unacked.body).toMatchObject({ ok: true, executed: false, error: 'permission_change' });
+      const stillOpen = await request(h.app).get('/v1/tools/pending').set(headers);
+      expect(stillOpen.body.pending).toHaveLength(1);
+      const unchanged = await request(h.app).get('/v1/skills/hello-skill').set(headers);
+      expect(unchanged.body.manifest.permissions.tools).toEqual([]);
+
+      // Second approve, WITH the acknowledgement the card sends: in place.
+      const acked = await request(h.app)
+        .post(`/v1/tools/pending/${ask}`)
+        .set(headers)
+        .send({ decision: 'approve', acknowledgePermissions: true });
+      expect(acked.status).toBe(200);
+      expect(acked.body).toMatchObject({ ok: true, executed: true });
+      expect(acked.body.result).toMatchObject({ skillId: 'hello-skill', mode: 'updated' });
+
+      const updated = await request(h.app).get('/v1/skills/hello-skill').set(headers);
+      expect(updated.body.manifest.permissions.tools).toEqual(['files.read']);
+      expect(updated.body.manifest.description).toContain('reads a file');
+      // ONE skill, not a second one.
+      const listed = await request(h.app).get('/v1/skills').set(headers);
+      expect(listed.body.skills).toHaveLength(1);
+      // The draft is spent history now, so the rail cannot re-install it.
+      const draft = await request(h.app).get('/v1/skills/drafts/hello-skill-edit').set(headers);
+      expect(draft.body.status).toBe('installed');
     } finally {
       h.close();
     }

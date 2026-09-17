@@ -100,7 +100,13 @@ describe('M26 draft routes', () => {
       // the same capability object createCore uses — so the two templates that
       // need those reaches are offered here, and the picker's list IS what the
       // sandbox can honour (D9).
-      expect(ids).toEqual(['pure', 'reads-files', 'notes-checklist', 'mcp-call']);
+      expect(ids).toEqual([
+        'pure',
+        'reads-files',
+        'notes-checklist',
+        'mcp-call',
+        'content-audit',
+      ]);
     } finally {
       h.close();
     }

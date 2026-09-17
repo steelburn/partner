@@ -14,6 +14,17 @@
  * discipline. Approving the row the second tool writes calls the SAME
  * `drafts.promote()` the Studio button calls.
  *
+ * M26 review addition — a persona can propose an UPDATE to an installed skill.
+ * `skills.draft` takes an optional `skillId`: the installed skill it wants to
+ * change. That path opens (or reuses) the skill's `edit` draft through the same
+ * manager method the Studio's "Edit in Studio" calls, so the manifest keeps the
+ * INSTALLED id binding and promoting it is an update rather than a second skill.
+ * It still installs nothing — the ask goes through `skills.requestInstall`, and a
+ * WIDENING permission set cannot be approved from the card until the owner has
+ * been shown the before→after table and acknowledged it (`acknowledgePermissions`,
+ * the same D6 gate the Studio applies). Without this a persona could only ever
+ * create NEW skills, which is the gap the owner's review found.
+ *
  * The provider carries `capability: 'skill.author'`, so the tool pass refuses it
  * by CLIENT CLASS before execute-vs-queue (a mobile or extension session may not
  * author at all), and `canAdvertiseAuthoring` states the D8 rule the chat route
@@ -33,10 +44,10 @@
  * generated bundle is.
  */
 import type { ToolExecResponse, ToolId, ToolManifest } from '@partner/shared/tools.js';
-import type { Persona, SkillDraft, SkillDraftValidation } from '@partner/shared';
+import type { Persona, SkillDraft, SkillDraftValidation, SkillManifest } from '@partner/shared';
 import { normalizeAuthoredBundle } from './authoring.js';
 import type { ChatFlowStageInput, ChatStageInput, RequestInstallOptions } from './drafts.js';
-import { slugifySkillId } from './drafts.js';
+import { permissionDiff, slugifySkillId } from './drafts.js';
 import { capabilityDenial } from '../http/capabilities.js';
 import type { Capability } from '../http/capabilities.js';
 import { DEFAULT_RUNTIME_CAPABILITIES } from './manifest.js';
@@ -88,11 +99,24 @@ export function authoringToolSpecs(
         ...(refused.length > 0 ? [`Refused in this build: ${refused.join(', ')}.`] : []),
         'Returns the draft id and the deterministic validation result; re-call with',
         'the same id and a fixed bundle to clear the errors.',
+        'To CHANGE a skill the user already has installed, pass skillId (its id):',
+        'the bundle is staged as an UPDATE to that skill, and nothing changes until',
+        'the user approves an install ask. Never invent a skillId — use an id the',
+        'user gave you or one that is installed.',
       ].join(' '),
       parameters: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Existing draft id to update.' },
+          skillId: {
+            type: 'string',
+            description: [
+              'An INSTALLED skill id to stage this bundle as an UPDATE to.',
+              'The core opens that skill\'s edit draft and binds the manifest to',
+              'its id, so approving the install ask updates the skill in place.',
+              'Mutually exclusive with `id` (which names a DRAFT).',
+            ].join(' '),
+          },
           name: { type: 'string', description: 'The skill name.' },
           description: { type: 'string', description: 'One sentence on what it does.' },
           manifestText: {
@@ -185,6 +209,13 @@ export interface AuthoringDraftStore {
    * never learns how a graph becomes an artifact.
    */
   stageFlowFromChat(input: ChatFlowStageInput): SkillDraft;
+  /**
+   * M26 review: the edit draft of an INSTALLED skill, plus that skill's current
+   * manifest (the `before` side of the consent table). Throws `not_found` when
+   * the id is not installed — a persona may propose changes to a skill the owner
+   * has, never to one that does not exist.
+   */
+  openUpdate(skillId: string): { draft: SkillDraft; installed: SkillManifest };
   requestInstall(id: string, options?: RequestInstallOptions): { pendingId: string };
 }
 
@@ -286,14 +317,37 @@ export function authoringToolExternal(
   }
 
   /** A compact, legible result: the model reads this text, not a data shape. */
-  function stagedResult(draft: SkillDraft): ToolExecResponse {
+  function stagedResult(
+    draft: SkillDraft,
+    update: { installed: SkillManifest } | null = null,
+  ): ToolExecResponse {
     const validation: SkillDraftValidation = draft.validation;
+    // On an UPDATE the consent table the owner will be shown IS this diff, so the
+    // model gets the same list — it has to be able to tell the user what changes
+    // before asking them to approve it.
+    const changes =
+      update === null || draft.manifest === null
+        ? []
+        : permissionDiff(update.installed, draft.manifest);
+    const updateFacts =
+      update === null
+        ? {}
+        : {
+            mode: 'update' as const,
+            skillId: update.installed.id,
+            installedVersion: update.installed.version,
+            changes,
+            // `null` = unknown (the manifest does not parse yet), which is
+            // honest: a broken draft has no permission set to compare.
+            widens: draft.manifest === null ? null : changes.length > 0,
+          };
     return {
       outcome: 'executed',
       result: {
         ok: validation.ok,
         draftId: draft.id,
         name: draft.name,
+        ...(update === null ? { mode: 'create' as const } : updateFacts),
         // The structured result for a caller that wants it...
         validation: {
           ok: validation.ok,
@@ -304,12 +358,49 @@ export function authoringToolExternal(
         // summarizer collapses an array to "[n items]" - the model has to be
         // able to read the problem it must fix.
         problems: validation.errors.join('; '),
-        next:
-          'Nothing has been installed. You cannot install or run a skill - the user does. ' +
-          'Re-call skills.draft with the same draftId to fix problems, or ask with ' +
-          'skills.requestInstall. The user can review, test and install it in Skills > Build.',
+        next: nextFor(update, draft, changes, validation),
       },
     };
+  }
+
+  /** What the model should do once the bundle is staged (and nothing is live). */
+  function nextFor(
+    update: { installed: SkillManifest } | null,
+    draft: SkillDraft,
+    changes: ReturnType<typeof permissionDiff>,
+    validation: SkillDraftValidation,
+  ): string {
+    if (update === null) {
+      return (
+        'Nothing has been installed. You cannot install or run a skill - the user does. ' +
+        'Re-call skills.draft with the same draftId to fix problems, or ask with ' +
+        'skills.requestInstall. The user can review, test and install it in Skills > Build.'
+      );
+    }
+    if (!validation.ok) {
+      return (
+        `Nothing has changed yet: this UPDATE to "${update.installed.id}" does not validate. ` +
+        'Re-call skills.draft with the same skillId and a fixed bundle.'
+      );
+    }
+    if (draft.manifest === null) {
+      return (
+        `Nothing has changed yet: the manifest for this UPDATE to "${update.installed.id}" ` +
+        'does not parse, so this build cannot tell what it would grant. Fix it first.'
+      );
+    }
+    if (changes.length > 0) {
+      const lines = changes.map((change) => `${change.field}: ${change.before} -> ${change.after}`);
+      return (
+        `Nothing has changed yet. This UPDATE to "${update.installed.id}" WIDENS what the skill may do ` +
+        `(${lines.join('; ')}), so the user has to see the change table and acknowledge it. ` +
+        'Tell them exactly what it adds, then ask with skills.requestInstall - they decide.'
+      );
+    }
+    return (
+      `Nothing has changed yet. This UPDATE to "${update.installed.id}" does not widen anything. ` +
+      'Ask with skills.requestInstall and the user decides whether to apply it.'
+    );
   }
 
   return {
@@ -366,6 +457,34 @@ export function authoringToolExternal(
       }
       const description = readString(args, 'description');
       const existingId = readString(args, 'id');
+      const skillId = readString(args, 'skillId');
+
+      // M26 review: an UPDATE is addressed by the INSTALLED skill's id, a draft
+      // edit by the DRAFT's id. Both at once is ambiguous (which id would the
+      // staged manifest carry?), so it is refused rather than guessed.
+      if (skillId !== '' && existingId !== '') {
+        return refusedResult(name, existingId, [
+          'pass either `id` (a draft to update) or `skillId` (an installed skill to update), never both',
+        ]);
+      }
+      // The update target: the skill's edit draft (ONE per skill - the same row
+      // the Studio's "Edit in Studio" manages) plus the manifest being changed.
+      let update: { draftId: string; installed: SkillManifest } | null = null;
+      if (skillId !== '') {
+        try {
+          const opened = drafts.openUpdate(skillId);
+          update = { draftId: opened.draft.id, installed: opened.installed };
+        } catch {
+          // Not installed (or the id is not a skill): nothing was staged, and the
+          // model is told so it can stop guessing ids.
+          return refusedResult(name, null, [
+            `no installed skill with id "${skillId}" - nothing was staged. Ask the user which skill, or create a new one with `+
+              'skills.draft without skillId.',
+          ]);
+        }
+      }
+      /** The row the bundle is written into: the edit draft, or the model's draft. */
+      const targetId = update === null ? existingId : update.draftId;
 
       if (hasFlow) {
         // M28 E: the graph path. The manager does everything the code path does
@@ -379,12 +498,13 @@ export function authoringToolExternal(
               flow: rawFlow,
               conversationId: options.conversationId ?? null,
               personaId: options.personaId ?? null,
-              ...(existingId !== '' ? { id: existingId } : {}),
+              ...(targetId !== '' ? { id: targetId } : {}),
             }),
+            update === null ? null : { installed: update.installed },
           );
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : 'the flow could not be staged';
-          return refusedResult(name, existingId === '' ? null : existingId, [message]);
+          return refusedResult(name, targetId === '' ? null : targetId, [message]);
         }
       }
 
@@ -399,8 +519,9 @@ export function authoringToolExternal(
               code,
               conversationId: options.conversationId ?? null,
               personaId: options.personaId ?? null,
-              ...(existingId !== '' ? { id: existingId } : {}),
+              ...(targetId !== '' ? { id: targetId } : {}),
             }),
+            update === null ? null : { installed: update.installed },
           );
         } catch {
           return { outcome: 'denied', reason: 'stage_failed' };
@@ -429,7 +550,12 @@ export function authoringToolExternal(
       // one for a NEW draft - the manager re-points the manifest at the id it
       // actually allocated, exactly as an imported bundle is re-pointed.
       const clean = normalizeAuthoredBundle(raw, {
-        slug: slugifySkillId(existingId !== '' ? existingId : name) || 'skill',
+        // For an UPDATE the id that must survive is the INSTALLED one (the
+        // manager re-points the manifest anyway, but naming it here keeps the
+        // sanitiser's own slug in step with the skill being changed).
+        slug:
+          slugifySkillId(update !== null ? update.installed.id : existingId !== '' ? existingId : name) ||
+          'skill',
         toolIds: [...options.toolIds],
         capabilities,
       });
@@ -438,7 +564,7 @@ export function authoringToolExternal(
         // does not have, so staging anyway would install a skill with LESS reach
         // than the model declared - and the model would never find out. Saying
         // no, with every reason, is the honest answer.
-        return refusedResult(name, existingId === '' ? null : existingId, clean.errors);
+        return refusedResult(name, targetId === '' ? null : targetId, clean.errors);
       }
       return stage(clean.manifestText);
     },

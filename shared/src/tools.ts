@@ -117,6 +117,12 @@ export interface PendingToolCall {
   kind?: 'tool' | 'skill_install';
   /** M26: the draft an install ask refers to (kind 'skill_install' only). */
   draftId?: string | null;
+  /**
+   * M26: the draft's NAME, enriched by `GET /v1/tools/pending` so the approval
+   * card can label the ask without a broker manifest to look up. Only present on
+   * a kind 'skill_install' row.
+   */
+  draftName?: string | null;
 }
 
 export type ToolExecResponse =
@@ -129,6 +135,13 @@ export interface ToolDecisionInput {
   /** Approve + persist a grant for (tool, project) when true. */
   remember?: boolean;
   note?: string;
+  /**
+   * M26 D6: acknowledge a WIDENED permission set on a skill-install ask. The
+   * deciding surface sends this only after the before→after table is on screen
+   * (the Studio's confirmation, or the approval card); without it the core
+   * refuses the widening with `permission_change`.
+   */
+  acknowledgePermissions?: boolean;
 }
 
 export interface FileProposal {

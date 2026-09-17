@@ -86,8 +86,8 @@ treats it as its own. So a leftover dev core no longer hijacks the app invisibly
 
 ## Status (2026-09-18)
 
-M0–M28 (slices A–F) implemented (PLAN.md §15). The current root suite is **1726
-passed** (5 env-gated skips) · shared **90** · web **923** · typechecks 0 · web
+M0–M28 (slices A–F) implemented (PLAN.md §15). The current root suite is **1746
+passed** (5 env-gated skips) · shared **90** · web **937** · typechecks 0 · web
 build green. The **Skill Studio fixup** (+6 tests) closes four findings from a
 live review of the Build segment — a template/blank draft could invalidate
 itself on its first save, `Edit in Studio`/`Fork` opened the wrong draft, a
@@ -859,6 +859,58 @@ live-mode walk details; browser-actuator research capture; S0 companion API in
 `~/apps/llm-self-service`. Read `HANDOFF-WINDOWS.md` first when picking up from
 a Windows machine.
 
+### Sample set + the update ask — a persona can propose, the owner grants (2026-09-18, implemented)
+
+Two additive changes that answer "can chat modify a skill, and if so how does the
+owner give permission?":
+
+**A reference set in the catalog, mirrored by one template.** Three new
+checked-in bundles — `file-inventory` (`files.list` only), `content-audit`
+(`files.search` only) and `notes-digest` (`notes.list|search|read`) — plus
+`skills-catalog/README.md` stating the three rules they follow: declare the
+narrowest reach that does the job, report a broker refusal as a CODE rather than
+an empty result, and bound every loop with an explicit `truncated`.
+`content-audit` exists a second time as the Studio template `content-audit`
+(no capability flag — the files tools are always wired), so "install it from the
+Catalog" and "start it from a template" are two doors onto one worked example.
+Both halves are held to a real RUN, not a lint:
+`core/test/skills/catalogSet.test.ts` installs all three and invokes them through
+the real sandbox and broker (including the no-grant `tool_denied` refusal, and
+asserting that no note body or file content travels in a result), and
+`templates.test.ts` dry-runs the template against a granted project root.
+
+**A persona can propose an UPDATE to an installed skill — and the owner can grant
+it where the ask appears.** `skills.draft` accepts an optional `skillId`:
+`SkillDraftManager.openUpdate()` opens that skill's `edit` draft (the SAME row
+"Edit in Studio" manages, so two competing drafts cannot exist) and the manifest
+keeps the INSTALLED id, which is what makes promoting it an update rather than a
+second skill. The tool result reports `mode: 'update'`, the installed version and
+the before→after `changes`, and says plainly when the update WIDENS. The ask is
+the existing `skills.requestInstall` → `pending_tools` row; approving it is still
+the only thing that promotes anything.
+
+On the web side `web/src/SkillInstallCard.tsx` is the surface that was missing:
+the chat and the Files queue now render an install ask as a **skill card** —
+draft name, the version it moves from → to, the plain-language permission chips,
+and the before→after table for a widening — instead of the raw `skill.install`
+id with no summary and an Approve button that could never acknowledge anything.
+`skillInstallDecision()` is the whole consent rule (the acknowledgement travels
+only when the table is on screen), and a `permission_change` refusal is rendered
+as the next step *and* re-reads the draft, so the table it asks about is actually
+displayed.
+
+Walked live end to end (demo core, real browser): a widened update asked from the
+queue was refused unacknowledged, the card re-read the draft and showed
+`Tools — files.read` / `Risk low → medium` with "The core wants this widening
+acknowledged: read the table above, then press Update now", and the confirming
+press applied it in place — `Hello Skill · You@0.2.0`, one skill, queue back to
+0 pending.
+
+**Not changed:** a skill still cannot install or run itself; `skill.author` and
+`skill.install` still gate both doors; `permissions.network: true` is still
+refused (a network/exec reach would need the enforcement work described in the
+review answer, and that decision is the owner's).
+
 ### Deploy fixup — the container can run a skill, and `stage.ps1` runs on Windows (2026-09-18, fix)
 
 Refreshing the live container (`partner-server:local` at `partner.teliti.app`)
@@ -930,9 +982,9 @@ answer the dry-run exists to remove. `finalizeError()` in
 other log — asserted, secret included, in
 `core/test/skills/draftRun.test.ts`.
 
-Suites after both fixups: root **1726** (5 env-gated skips) · shared **90** · web
-**923** (1726 = 1719 + 6 Studio tests + 1 deploy guard) · typechecks 0 · web build
-green · `ux_audit` PASSED on the Studio
+Suites after the 2026-09-18 fixups: root **1746** (5 env-gated skips) · shared **90** · web
+**937** (+6 Studio, +1 deploy guard, +19 for the sample set and the install card)
+typechecks 0 · web build green · `ux_audit` PASSED on the Studio
 slice (no CSS was added — `web/src/app.css` is byte-identical, and the new rail
 action reuses `.btn .btn-secondary .btn-sm`, whose focus/disabled/hover states
 already exist). All five flows were re-walked live after the fix.

@@ -391,6 +391,7 @@ describe('templateBundle', () => {
     expect(availableTemplates(DEFAULT_RUNTIME_CAPABILITIES).map((t) => t.id)).toEqual([
       'pure',
       'reads-files',
+      'content-audit',
     ]);
   });
 

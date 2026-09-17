@@ -325,6 +325,18 @@ export interface SkillDraftManager {
    * hand-editing a manifest to reuse an id, which is not a user flow.
    */
   edit(skillId: string): SkillDraft;
+  /**
+   * M26 review: the CHAT path's door into an UPDATE, in one call.
+   *
+   * `skills.draft` may name an installed skill it wants to change; this returns
+   * that skill's edit draft (the same row `edit` manages, so there is still ONE
+   * editable copy per skill) together with the skill's CURRENT manifest — the
+   * `before` side of the consent table the owner will be shown. Throws
+   * `not_found` when the id is not installed, which is the refusal the tool
+   * reports; a persona can propose changes to a skill the owner has, never to
+   * one that does not exist.
+   */
+  openUpdate(skillId: string): { draft: SkillDraft; installed: SkillManifest };
   promote(id: string, options?: PromoteOptions): SkillDraftInstallResult;
   /** The templates this build can honour (the Studio picker's source). */
   templates(): Array<{ id: string; name: string; description: string; reach: string }>;
@@ -1532,6 +1544,21 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
   }
 
   /**
+   * M26 review: what `skills.draft` calls when a persona names an installed
+   * skill. One lookup, one draft row (the SAME `-edit` draft the Studio uses,
+   * so a chat edit and a Studio edit cannot become two competing drafts), plus
+   * the installed manifest the ask is measured against.
+   */
+  function openUpdate(skillId: string): { draft: SkillDraft; installed: SkillManifest } {
+    const clean = typeof skillId === 'string' ? skillId.trim() : '';
+    const installed = clean === '' ? null : skills.get(clean);
+    if (installed === null) {
+      throw skillError('not_found', `skill "${clean}" is not installed`);
+    }
+    return { draft: draftFromInstalled(clean, true), installed: installed.manifest };
+  }
+
+  /**
    * The manifest budget for a dry-run, clamped by the caller's `timeoutMs` and
    * by the runtime ceiling. `timeoutMs` can only ever SHORTEN a run: a caller
    * must not be able to hold a worker past what the manifest claims.
@@ -2186,6 +2213,7 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
     requestInstall,
     fork,
     edit,
+    openUpdate,
     promote,
     templates,
     getFlow,

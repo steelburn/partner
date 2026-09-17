@@ -62,16 +62,19 @@ describe('M8 skills HTTP surface', () => {
     }
   });
 
-  it('catalog is read-only and lists the three sample skills', async () => {
+  it('catalog is read-only and lists the checked-in sample set', async () => {
     const h = demoHarness();
     try {
       const token = await pairToken(h);
       const res = await request(h.app).get('/v1/skills/catalog').set(authed(token));
       expect(res.status).toBe(200);
       expect(res.body.skills.map((s: { id: string }) => s.id).sort()).toEqual([
+        'content-audit',
+        'file-inventory',
         'files-preview',
         'hello-skill',
         'note-echo',
+        'notes-digest',
       ]);
       expect(res.body.warnings).toEqual([]);
     } finally {

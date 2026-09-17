@@ -1,0 +1,16 @@
+{
+  "id": "content-audit",
+  "name": "Content Audit",
+  "description": "Searches the text of a granted project root for a phrase and reports where it appears, grouped by file. Declares files.search only.",
+  "author": "Partner Samples",
+  "version": "0.1.0",
+  "entrypoint": "entry.mjs",
+  "permissions": {
+    "tools": ["files.search"],
+    "network": false,
+    "risk": "medium"
+  },
+  "budget": {
+    "timeMs": 30000
+  }
+}

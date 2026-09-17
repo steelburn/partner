@@ -1,0 +1,16 @@
+{
+  "id": "file-inventory",
+  "name": "File Inventory",
+  "description": "Walks a granted project root to a chosen depth and reports per-extension file counts and total bytes. Declares files.list only — it never reads a file's contents.",
+  "author": "Partner Samples",
+  "version": "0.1.0",
+  "entrypoint": "entry.mjs",
+  "permissions": {
+    "tools": ["files.list"],
+    "network": false,
+    "risk": "medium"
+  },
+  "budget": {
+    "timeMs": 30000
+  }
+}

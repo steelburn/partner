@@ -9,15 +9,56 @@ on, and what is already true. Read the spec for detail; read the verify docs for
 what was measured.
 
 State at the time of writing: `v0.1.21` released, with **M27 S1/S2/S4 and M28
-slices A–F on `master`** (the parent owns releases); schema **v22**; root **1726
-passed** (5 env-gated skips), shared **90**, web **923**, typechecks 0, web build
+slices A–F on `master`** (the parent owns releases); schema **v22**; root **1746
+passed** (5 env-gated skips), shared **90**, web **937**, typechecks 0, web build
 green. Zero open Dependabot alerts. (1719/918 before the 2026-09-18 fixups; they
-added 7 tests — 6 for the Studio, 1 for the deploy files — and are recorded in
-§0 below.)
+added 27 tests — 6 Studio, 1 deploy guard, 19 for the sample set and the install
+card — and are recorded in §0 below.)
 
 ---
 
 ## 0. What landed on master since v0.1.19 — do not redo
+
+### The 2026-09-18 sample set + the update ask (catalog, templates, chat)
+
+Two additive changes on top of the Studio fixups; neither moves a schema or a
+route signature.
+
+1. **A reference set in the catalog, mirrored by one template.** Three new
+   checked-in bundles — `file-inventory` (`files.list` only), `content-audit`
+   (`files.search` only) and `notes-digest` (`notes.list|search|read`) — plus
+   `skills-catalog/README.md` stating the three rules they follow (narrowest
+   declared reach; a refusal reported as a CODE, never an empty result; bounds
+   with an explicit `truncated`). `content-audit` exists a second time as the
+   Studio template `content-audit`, so "install from the Catalog" and "start
+   from a template" are two doors onto one worked example. Both halves are held
+to a real run: `core/test/skills/catalogSet.test.ts` installs and INVOKES all
+   three through the real sandbox (including the no-grant `tool_denied` refusal),
+   and `templates.test.ts` dry-runs the template against a granted root. The
+   template + catalog lists in four tests were updated deliberately (that is the
+   house rule for a picker list).
+2. **A persona can propose an UPDATE to an installed skill, and the owner can
+   grant it where the ask appears.** `skills.draft` gained an optional `skillId`
+   (`SkillDraftManager.openUpdate()` opens the skill's `edit` draft, bound to the
+   installed id; the tool result reports `mode:'update'`, the installed version
+   and the before→after `changes`, and says plainly when it WIDENS). The gap it
+   closes was one-directional: a persona could create a NEW skill and ask to
+   install it, but had no way to propose a change to one the user already has.
+   On the web side `web/src/SkillInstallCard.tsx` renders the ask (chat + Files
+   queue) with the draft's permission summary, the version it moves from → to,
+   and the change table for a widening — and sends `acknowledgePermissions` only
+   when that table is on screen (the same rule the Studio applies;
+   `skillInstallDecision()` is the whole rule). A `permission_change` refusal is
+   rendered as the next step AND re-reads the draft, so the table it asks about is
+   actually displayed rather than promised. Walked live end to end: a widened
+   update was refused unacknowledged, the card showed the table, the confirm
+   applied it in place (v0.1.0 → v0.2.0, one skill), and the queue emptied.
+
+**What this does NOT change:** a skill still cannot install or run itself, the
+`skill.author`/`skill.install` class gates still apply, a widening still cannot
+be approved without the acknowledgement, and `permissions.network: true` is
+still refused (see the previous answer's §0 for what a network/exec reach would
+actually need — that decision is untouched).
 
 ### The 2026-09-18 deploy fixup — the container could never run a skill
 

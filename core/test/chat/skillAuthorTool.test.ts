@@ -26,6 +26,7 @@ import {
   DRAFT_TOOL_ID,
   REQUEST_INSTALL_TOOL_ID,
   authoringToolExternal,
+  authoringToolSpecs,
   canAdvertiseAuthoring,
 } from '../../src/skills/tool.js';
 import { ALLOWED_HOST, demoHarness } from '../helpers.js';
@@ -920,4 +921,158 @@ describe('M28 E at the route: a chat turn can stage a flow', () => {
       h.close();
     }
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// M26 review — a persona can propose an UPDATE to an installed skill.
+//
+// The gap this closes: `skills.draft` could create a NEW draft and edit its own
+// draft, but a persona had no way to propose a change to a skill the user
+// already HAS — the only route into an update was the Studio's "Edit in Studio".
+// The tool now takes `skillId`, opens that skill's edit draft (the SAME row the
+// Studio manages, so two competing drafts cannot exist), binds the manifest to
+// the INSTALLED id, and reports the before→after changes the owner will be shown.
+// It still installs nothing: the ask is `skills.requestInstall` and the owner's
+// approval is what promotes it (with the D6 acknowledgement when it widens).
+// ---------------------------------------------------------------------------
+
+describe('M26 review: `skills.draft` can propose an UPDATE to an installed skill', () => {
+  it('advertises skillId, on the tool the model is shown', () => {
+    const provider = authoringToolExternal({ drafts: undefined, toolIds: new Set() });
+    expect(provider).toBeUndefined();
+    const h = harness();
+    try {
+      const provider = authoringProvider(h);
+      expect(provider).toBeDefined();
+      // The advertised tool carries the argument, so the model can use it. `id`
+      // is the closed broker union widened for external tools, hence String().
+      const spec = provider?.manifests.find((entry) => String(entry.id) === DRAFT_TOOL_ID);
+      expect(spec?.description).toContain('skillId');
+      const live = authoringToolSpecs(new Set(['files.read']));
+      const draftSpec = live.find((entry) => entry.id === DRAFT_TOOL_ID);
+      const params = draftSpec?.parameters as { properties: Record<string, unknown> };
+      expect(Object.keys(params.properties)).toContain('skillId');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('stages into the skill edit draft and reports the widening it would grant', async () => {
+    const h = harness();
+    try {
+      // A real installed skill (the catalog's smallest one), then an update that
+      // asks for one MORE tool than it declares today.
+      h.skills?.install('hello-skill');
+      const provider = authoringProvider(h);
+      expect(provider).toBeDefined();
+      const response = provider?.exec(DRAFT_TOOL_ID, {
+        skillId: 'hello-skill',
+        name: 'Hello Skill',
+        description: 'greets, and now can read a file',
+        tools: ['files.read'],
+        code: 'export function run(){ return { ok: true }; }',
+      });
+      expect(response?.outcome).toBe('executed');
+      const result = (response as { result: Record<string, unknown> }).result;
+      expect(result).toMatchObject({
+        ok: true,
+        mode: 'update',
+        skillId: 'hello-skill',
+        installedVersion: '0.1.0',
+        widens: true,
+        draftId: 'hello-skill-edit',
+      });
+      // The diff the owner will be shown: the tool it adds AND the risk tier
+      // the built manifest moves to (a skill that reaches the user's files is
+      // no longer `low` — the tool-level manifest builder decides that, and the
+      // consent table must say so).
+      expect(result.changes).toEqual([
+        { field: 'tools', before: '—', after: 'files.read' },
+        { field: 'risk', before: 'low', after: 'medium' },
+      ]);
+      // The ask itself is explicit that the owner must see the table.
+      expect(String(result.next)).toContain('WIDENS');
+      expect(String(result.next)).toContain('acknowledge');
+
+      // The draft is the skill's EDIT draft: bound to the installed id, so
+      // promoting it is an update rather than a second skill.
+      const draft = h.skillDrafts?.get('hello-skill-edit');
+      expect(draft?.origin).toBe('edit');
+      expect(draft?.manifest?.id).toBe('hello-skill');
+      expect(draft?.validation.ok).toBe(true);
+      // …and NOTHING has changed on the installed skill yet.
+      expect(h.skills?.get('hello-skill')?.version).toBe('0.1.0');
+      expect(h.skills?.get('hello-skill')?.manifest.permissions.tools).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('reports a non-widening update as not widening, and still asks', async () => {
+    const h = harness();
+    try {
+      h.skills?.install('hello-skill');
+      const response = authoringProvider(h)?.exec(DRAFT_TOOL_ID, {
+        skillId: 'hello-skill',
+        name: 'Hello Skill',
+        description: 'greets more warmly',
+        code: 'export function run(){ return { ok: true, warm: true }; }',
+      });
+      const result = (response as { result: Record<string, unknown> }).result;
+      expect(result).toMatchObject({ ok: true, mode: 'update', widens: false, changes: [] });
+      expect(String(result.next)).toContain('does not widen');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses an unknown skillId, staging nothing', async () => {
+    const h = harness();
+    try {
+      const response = authoringProvider(h)?.exec(DRAFT_TOOL_ID, {
+        skillId: 'no-such-skill',
+        name: 'Ghost',
+        code: 'export function run(){ return {}; }',
+      });
+      const result = (response as { result: Record<string, unknown> }).result;
+      expect(result.ok).toBe(false);
+      expect(String(result.problems)).toContain('no installed skill with id "no-such-skill"');
+      expect(result.draftId).toBeNull();
+      expect(h.skillDrafts?.list()).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses `id` and `skillId` together rather than guessing', async () => {
+    const h = harness();
+    try {
+      h.skills?.install('hello-skill');
+      const response = authoringProvider(h)?.exec(DRAFT_TOOL_ID, {
+        id: 'some-draft',
+        skillId: 'hello-skill',
+        name: 'Both',
+        code: 'export function run(){ return {}; }',
+      });
+      const result = (response as { result: Record<string, unknown> }).result;
+      expect(result.ok).toBe(false);
+      expect(String(result.problems)).toContain('never both');
+      expect(h.skillDrafts?.list()).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('M26 review: the instructions teach the UPDATE path', () => {
+  it('tells the model to pass skillId for an installed skill, and that it must say what widens', () => {
+    const text = authoringInstructions(['files.read']);
+    expect(text).toContain('To CHANGE a skill the user already has installed');
+    expect(text).toContain('"skillId"');
+    expect(text).toContain('WIDEN');
+    expect(text).toContain('acknowledge');
+    // The invariant is unchanged: a persona still cannot install or run anything.
+    expect(text).toContain('You CANNOT install a skill');
+    expect(text).toContain('Nothing');
+  });
 });

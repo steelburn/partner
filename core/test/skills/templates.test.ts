@@ -135,7 +135,13 @@ function ids(capabilities: RuntimeCapabilities): string[] {
 
 describe('M27 S4 — the picker offers a template only when its reach is wired (D9)', () => {
   it('offers every template when every reach is wired', () => {
-    expect(ids(ALL_ON)).toEqual(['pure', 'reads-files', 'notes-checklist', 'mcp-call']);
+    expect(ids(ALL_ON)).toEqual([
+      'pure',
+      'reads-files',
+      'notes-checklist',
+      'mcp-call',
+      'content-audit',
+    ]);
   });
 
   it('drops the notes template when `notes` is false, and keeps the MCP one', () => {
@@ -143,6 +149,7 @@ describe('M27 S4 — the picker offers a template only when its reach is wired (
       'pure',
       'reads-files',
       'mcp-call',
+      'content-audit',
     ]);
   });
 
@@ -151,11 +158,16 @@ describe('M27 S4 — the picker offers a template only when its reach is wired (
       'pure',
       'reads-files',
       'notes-checklist',
+      'content-audit',
     ]);
   });
 
   it('offers neither under the library default, so an unwired build cannot show them', () => {
-    expect(ids(DEFAULT_RUNTIME_CAPABILITIES)).toEqual(['pure', 'reads-files']);
+    expect(ids(DEFAULT_RUNTIME_CAPABILITIES)).toEqual([
+      'pure',
+      'reads-files',
+      'content-audit',
+    ]);
   });
 
   it('names the capability each new template needs', () => {
@@ -398,5 +410,99 @@ describe('M27 S4 — the MCP template runs against a real local stdio server', (
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.result).toMatchObject({ ok: false, reason: 'mcp_disabled' });
     expectNoPendingRows(h);
+  }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// The content-audit template — the authorable twin of the catalog's
+// `content-audit` sample. `skills-catalog/README.md` says the two exist as one
+// worked example behind two doors, so both halves are asserted here: the
+// template validates against the build that offers it (no capability flag), and
+// its bundle RUNS — the rule templates.ts states in its own header is that every
+// template is held to a real dry-run, never to a lint.
+// ---------------------------------------------------------------------------
+
+describe('the content-audit template (catalog sample, authorable form)', () => {
+  it('needs no capability flag, validates against the registry, and lints', () => {
+    const bundle = template('content-audit').build('My audit', 'my-audit');
+    // The files tools are always wired, so the picker offers this in every
+    // build — that is WHY it carries no `requires`.
+    expect(template('content-audit').requires).toBeUndefined();
+    expect(ids(DEFAULT_RUNTIME_CAPABILITIES)).toContain('content-audit');
+    const shape = validateManifestShape(bundle.manifest, {
+      capabilities: DEFAULT_RUNTIME_CAPABILITIES,
+    });
+    expect(shape.ok, shape.ok ? '' : shape.errors.join(' ')).toBe(true);
+    expect(bundle.manifest.permissions.tools).toEqual(['files.search']);
+    expect(bundle.manifest.permissions.network).toBe(false);
+    // files.search is a LOW-risk broker tool, so `medium` is a deliberate
+    // choice here (the same tier `reads-files` declares), not a floor.
+    expect(bundle.manifest.permissions.risk).toBe('medium');
+    const lint = lintEntry(bundle.code);
+    expect(lint.ok, lint.errors.join(' ')).toBe(true);
+  });
+
+  it('drafts it at an install-grade bar through the real door', async () => {
+    const h = env();
+    const drafts = h.skillDrafts;
+    if (drafts === undefined) throw new Error('the drafts manager is unwired in this harness');
+    const draft = await drafts.create({
+      mode: 'template',
+      template: 'content-audit',
+      name: 'My audit',
+      description: '',
+    });
+    expect(draft.origin).toBe('template');
+    expect(draft.validation.ok, draft.validation.errors.join(' ')).toBe(true);
+    expect(draft.manifest?.permissions.tools).toEqual(['files.search']);
+  }, 20_000);
+
+  it('searches a granted root through the real sandbox and broker', async () => {
+    const h = env();
+    const drafts = h.skillDrafts;
+    const broker = h.broker;
+    if (drafts === undefined || broker === undefined) {
+      throw new Error('the drafts manager or broker is unwired in this harness');
+    }
+    const draft = await drafts.create({
+      mode: 'template',
+      template: 'content-audit',
+      name: 'My audit',
+      description: '',
+    });
+    expect(draft.validation.ok, draft.validation.errors.join(' ')).toBe(true);
+
+    const rootPath = makeTempRoot();
+    dirs.push(rootPath);
+    writeFileSync(join(rootPath, 'notes.md'), 'send the invites on Friday\n');
+    writeFileSync(join(rootPath, 'other.md'), 'nothing to see\n');
+    const root = broker.roots.add({ label: 'audit', path: rootPath, readOnly: true });
+
+    // No grant yet: the refusal is REPORTED as a code, not swallowed as "no hits".
+    const refused = await drafts.runDraft(draft.id, {
+      args: { projectId: root.id, query: 'invites' },
+    });
+    expect(refused.ok).toBe(true);
+    if (refused.ok) expect(refused.result).toMatchObject({ ok: false, reason: 'tool_denied' });
+
+    broker.grants.add('files.search', root.id);
+    const found = await drafts.runDraft(draft.id, {
+      args: { projectId: root.id, query: 'invites' },
+    });
+    expect(found.ok).toBe(true);
+    if (found.ok) {
+      expect(found.result).toMatchObject({
+        ok: true,
+        query: 'invites',
+        hits: 1,
+        files: 1,
+        truncated: false,
+      });
+      const matches = (
+        found.result as { matches: Array<{ path: string; samples: Array<{ text: string }> }> }
+      ).matches;
+      expect(matches[0]?.path).toBe('notes.md');
+      expect(matches[0]?.samples[0]?.text).toContain('send the invites');
+    }
   }, 20_000);
 });

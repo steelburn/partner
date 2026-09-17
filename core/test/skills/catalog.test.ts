@@ -18,10 +18,17 @@ import { SkillError } from '../../src/skills/errors.js';
 import { REPO_CATALOG, makeTempRoot, removeTempRoot } from '../helpers.js';
 
 describe('catalog reader (repo skills-catalog/)', () => {
-  it('lists the three sample skills with their declared permissions', () => {
+  it('lists the sample set with their declared permissions', () => {
     const { skills, warnings } = readCatalog(REPO_CATALOG);
     expect(warnings).toEqual([]);
-    expect(skills.map((s) => s.id).sort()).toEqual(['files-preview', 'hello-skill', 'note-echo']);
+    expect(skills.map((s) => s.id).sort()).toEqual([
+      'content-audit',
+      'file-inventory',
+      'files-preview',
+      'hello-skill',
+      'note-echo',
+      'notes-digest',
+    ]);
     const hello = skills.find((s) => s.id === 'hello-skill');
     expect(hello).toMatchObject({
       name: 'Hello Skill',
@@ -37,6 +44,24 @@ describe('catalog reader (repo skills-catalog/)', () => {
     });
     const note = skills.find((s) => s.id === 'note-echo');
     expect(note?.permissions.tools).toEqual([]);
+
+    // The reference set: each declares the NARROWEST reach that does its job,
+    // which is the habit the samples exist to teach.
+    expect(skills.find((s) => s.id === 'file-inventory')?.permissions).toMatchObject({
+      tools: ['files.list'],
+      network: false,
+      risk: 'medium',
+    });
+    expect(skills.find((s) => s.id === 'content-audit')?.permissions).toMatchObject({
+      tools: ['files.search'],
+      network: false,
+      risk: 'medium',
+    });
+    expect(skills.find((s) => s.id === 'notes-digest')?.permissions).toMatchObject({
+      tools: ['notes.list', 'notes.search', 'notes.read'],
+      network: false,
+      risk: 'medium',
+    });
   });
 
   it('validateManifestShape applies M8 defaults and rejects malformed input', () => {

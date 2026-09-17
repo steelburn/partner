@@ -272,6 +272,7 @@ export async function decidePending(
   const fetchImpl = options.fetchImpl ?? fetch;
   const body: Record<string, unknown> = { decision: input.decision };
   if (input.remember === true) body.remember = true;
+  if (input.acknowledgePermissions === true) body.acknowledgePermissions = true;
   if (typeof input.note === 'string' && input.note.length > 0) body.note = input.note;
   const response = await fetchImpl(`${TOOLS_PENDING_PATH}/${encodeURIComponent(pendingId)}`, {
     method: 'POST',

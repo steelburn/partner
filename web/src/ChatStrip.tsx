@@ -13,6 +13,7 @@ import { ApiRequestError, listProviders, streamChat, type StreamDoneMeta } from 
 import { purposeLabel } from './lib/providers.js';
 import { getConversation } from './lib/conversations.js';
 import { RISK_LABELS, RISK_TONE_CLASS, pendingLabel, summarizeTool } from './lib/roots.js';
+import { SkillInstallCard } from './SkillInstallCard.js';
 import { decidePending } from './lib/tools.js';
 import {
   deleteAttachment,
@@ -873,6 +874,7 @@ export default function ChatStrip({
   const decideChatApproval = async (
     row: PendingToolCall,
     decision: 'approve' | 'deny',
+    options: { acknowledgePermissions?: boolean } = {},
   ): Promise<void> => {
     if (approvalBusy) return;
     const token = readStoredToken();
@@ -883,7 +885,7 @@ export default function ChatStrip({
     setDecidingId(row.id);
     setQueueErrors((prev) => ({ ...prev, [row.id]: '' }));
     try {
-      const outcome = await decidePending(token, row.id, { decision });
+      const outcome = await decidePending(token, row.id, { decision, ...options });
       if (decision === 'approve' && !outcome.executed && outcome.error !== undefined) {
         setQueueErrors((prev) => ({
           ...prev,
@@ -1483,13 +1485,28 @@ export default function ChatStrip({
           <ul className="queue-list approval-in-chat-list">
             {chatPending.map((row) => (
               <li key={row.id} className="queue-item">
-                <InChatApprovalRow
-                  row={row}
-                  busy={approvalBusy}
-                  deciding={decidingId === row.id}
-                  error={queueErrors[row.id] ?? null}
-                  onDecide={(decision) => void decideChatApproval(row, decision)}
-                />
+                {row.kind === 'skill_install' ? (
+                  /* M26 D2b: an install ask is not a tool call — it has a draft
+                   * behind it, and an UPDATE shows the before→after table the
+                   * owner has to acknowledge. */
+                  <SkillInstallCard
+                    row={row}
+                    busy={approvalBusy}
+                    deciding={decidingId === row.id}
+                    error={queueErrors[row.id] ?? null}
+                    onDecide={(decision, options) =>
+                      void decideChatApproval(row, decision, options)
+                    }
+                  />
+                ) : (
+                  <InChatApprovalRow
+                    row={row}
+                    busy={approvalBusy}
+                    deciding={decidingId === row.id}
+                    error={queueErrors[row.id] ?? null}
+                    onDecide={(decision) => void decideChatApproval(row, decision)}
+                  />
+                )}
               </li>
             ))}
           </ul>
