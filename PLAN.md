@@ -774,6 +774,10 @@ apps/partner/
 > model, §13 API surface, §14 stack) and `README.md`. `[x]` only when the full
 > exit is locally green; `[ ]` + a `*State:*` line when an env-gated walk
 > remains.
+>
+> **Unfinished work across milestones is consolidated in `docs/UNFINISHED.md`**
+> (the review list: what is left, why, the dependency order, the exact entry
+> points, and every env-gated walk that was never run). Start there.
 
 - [x] ~~**S0 — Self-service companion API**~~ **CLOSED as obsolete in M22** — the
       llm-self-service import it existed to unblock was removed (§2), so the
