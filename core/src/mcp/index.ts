@@ -9,5 +9,6 @@ export { createMcpStdioClient, DEFAULT_CALL_TIMEOUT_MS } from './client.js';
 export type { McpStdioClient } from './client.js';
 export { createMcpManager } from './manager.js';
 export type { McpManager, McpManagerOptions } from './manager.js';
+export { createMcpSkillReach, MCP_SKILL_TOOL_RE, parseMcpToolId } from './skillReach.js';
 export { McpError, mcpError, mcpErrorStatus } from './errors.js';
 export type { McpErrorCode } from './errors.js';

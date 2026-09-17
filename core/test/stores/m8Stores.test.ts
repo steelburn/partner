@@ -20,12 +20,12 @@ describe('M8 skills stores (additive, idempotent)', () => {
   // title therefore does NOT name a version — it drifted to "at 11" while
   // asserting 18, which is precisely the contradiction a schema guard exists to
   // surface.
-  it('stamps the current SCHEMA_VERSION into the meta row (20 at the time of writing)', () => {
+  it('stamps the current SCHEMA_VERSION into the meta row (22 at the time of writing)', () => {
     const db = openDatabase(':memory:');
     const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as {
       value: string;
     };
-    expect(SCHEMA_VERSION).toBe(21);
+    expect(SCHEMA_VERSION).toBe(22);
     expect(meta.value).toBe(String(SCHEMA_VERSION));
     db.close();
   });

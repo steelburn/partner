@@ -43,6 +43,21 @@ export const MAX_SKILL_TIME_MS = 300_000;
  * already far past anything reviewable by a human, which is the real limit.
  */
 export const MAX_ENTRY_BYTES = 256 * 1024;
+/**
+ * How many MCP servers one skill may declare (M27 S2, PLAN-M27 D5). A skill's
+ * declared reach is what the owner reads on the install card, so it has to stay
+ * a short list: eight servers is already a skill doing several distinct things,
+ * and a manifest that declares more is far more likely to be a generated mistake
+ * than an intent.
+ */
+export const MAX_SKILL_MCP_SERVERS = 8;
+/**
+ * The risk tier an MCP-calling skill must present (M27 S2, PLAN-M27 D6). An MCP
+ * tool's own risk is unknowable in advance, so the manifest must declare at
+ * least this much and the owner consents to the worst case at install.
+ */
+export const MCP_MIN_RISK = 'medium';
+const RISK_ORDER: readonly string[] = ['low', 'medium', 'high'];
 
 export type ManifestValidation =
   | { ok: true; manifest: SkillManifest }
@@ -155,23 +170,40 @@ export function validateManifestShape(
   if (!RISKS.has(risk)) errors.push('permissions.risk must be one of low|medium|high');
 
   // M27 S2: MCP reach is declared per SERVER (the user enables a server; a
-  // skill may not name a tool that does not exist yet). Shape now, reach later.
+  // skill may not name a tool that does not exist yet). Shape, ceiling and
+  // reach all checked here, at DRAFT time, so a manifest that could never run
+  // is refused before it is reviewable rather than at run time (D9).
   const mcpRaw = permsObj.mcpServers;
   const mcpServers: string[] = [];
   if (mcpRaw !== undefined) {
     if (!Array.isArray(mcpRaw)) {
       errors.push('permissions.mcpServers must be an array of server ids');
+    } else if (mcpRaw.length > MAX_SKILL_MCP_SERVERS) {
+      errors.push(
+        `permissions.mcpServers may declare at most ${MAX_SKILL_MCP_SERVERS} servers`,
+      );
     } else {
+      const seen = new Set<string>();
       for (const entry of mcpRaw) {
         if (typeof entry !== 'string' || entry.trim() === '') {
           errors.push('permissions.mcpServers must contain only non-empty string ids');
           break;
         }
-        if (entry.trim().startsWith('mcp:')) {
+        const id = entry.trim();
+        if (id.startsWith('mcp:')) {
           errors.push('permissions.mcpServers holds SERVER ids, not "mcp:" tool ids');
           break;
         }
-        mcpServers.push(entry.trim());
+        // De-duplicate rather than refuse: a repeated server id grants nothing
+        // extra, and the install card must list reach once.
+        if (seen.has(id)) continue;
+        seen.add(id);
+        mcpServers.push(id);
+      }
+      if (RISK_ORDER.indexOf(risk) < RISK_ORDER.indexOf(MCP_MIN_RISK) && mcpServers.length > 0) {
+        errors.push(
+          `an MCP-calling skill must declare at least "${MCP_MIN_RISK}" risk — an MCP tool's own risk cannot be known in advance`,
+        );
       }
       if (!capabilities.mcp && mcpServers.length > 0) {
         errors.push(

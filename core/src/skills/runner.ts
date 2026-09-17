@@ -46,6 +46,23 @@
  *   partial success is returned, because a skill that loops model calls could
  *   otherwise spend the user's provider budget a call at a time.
  *
+ *   mcp (M27 S2): {type:'tools.exec'} with an `mcp:<server>/<tool>` id is MCP
+ *   REACH, declared as `permissions.mcpServers` (server ids, never tool names -
+ *   a server is configured and enabled later, so a manifest cannot name a tool
+ *   that does not exist yet). It is dispatched to the injected `mcp` seam
+ *   INSTEAD of the broker: an MCP id is not a broker tool, it is not in
+ *   `permissions.tools`, and the access rules are its own (D5-D8). The seam
+ *   applies them in one fixed order and answers with a CODED denial - the
+ *   class envelope, the declaration, the medium ceiling, and whether the
+ *   server is configured and enabled at all. NO pending row is ever created
+ *   here: skills
+ *   are non-interactive, so an MCP server must be enabled BEFORE the run,
+ *   exactly as a root must be granted before it.
+ *
+ *   That seam is dependency-INJECTED, not imported: this file never imports
+ *   `mcp/` (see `SkillMcpReach`). The composition root wires the two, which is
+ *   the same shape `search/tool.ts` uses for the chat tool pass.
+ *
  *   The reach never grows a content channel: each call writes ONE audit row
  *   (`skill.llm`) carrying the model id and token counts only, and the
  *   invocation's meta row keeps its counts/ids shape. The prompt and the
@@ -55,7 +72,9 @@
  *   logs: {type:'log'} lines are printed to the CORE console (console.error)
  *   with redactString applied. Skill logs/args/results NEVER reach audit:
  *   each run records one skill_invocations meta row (ok/toolCalls/ms/error
- *   code) + one skill.invoke audit row (ids/version/counts only).
+ *   code) + one skill.invoke audit row (ids/version/counts only), whose ACTOR
+ *   is who asked - `persona` when the run carries a `ctx.personaId` (a chat
+ *   turn with that persona, or its schedule), `web` otherwise.
  *
  *   dry-run (M26 D5): `ctx.dirOverride` runs a bundle the core materialized
  *   somewhere else, `ctx.logSink` sends the same redacted lines to the author's
@@ -120,6 +139,16 @@ export interface SkillRunnerOptions {
   maxArgsBytes?: number;
   /** Result JSON-size cap (default 1 MiB). */
   maxResultBytes?: number;
+  /**
+   * M27 S2 (PLAN-M27 D5-D8): the MCP seam a skill's
+   * `partner.tools.exec('mcp:<server>/<tool>')` call is dispatched to, INSTEAD
+   * of the broker. Absent means this core has no MCP reach for skills and every
+   * `mcp:` id is refused `tool_denied` - the honest state of a build with no
+   * MCP manager, and of a test double that does not care.
+   *
+   * Injected rather than imported so this file never depends on `mcp/`.
+   */
+  mcp?: SkillMcpReach;
   /**
    * M27 S5: resolve the model `partner.llm.complete` rides, ONCE per
    * invocation, or null when nothing usable is configured (`no_provider`).
@@ -205,11 +234,78 @@ export interface SkillInvokeContext {
   record?: boolean;
 }
 
+/**
+ * M27 S2 — the MCP reach contract the runner consumes (PLAN-M27 D5–D8).
+ *
+ * The implementation is `core/src/mcp/skillReach.ts` and the composition root
+ * connects the two, so `skills/` never imports `mcp/` — the same shape
+ * `search/tool.ts` uses for the chat tool pass. The seam owns EVERY access rule
+ * for MCP-from-a-skill, so it takes the manifest facts it needs rather than
+ * letting the runner re-derive them and drift.
+ */
+export interface SkillMcpRequest {
+  /** The `mcp:<server>/<tool>` id the skill asked for. */
+  toolId: string;
+  args: Record<string, unknown>;
+  /** `permissions.mcpServers` — the declaration that makes a server reachable. */
+  declaredServers: readonly string[];
+  /** The manifest's own risk tier; an MCP call needs >= medium (D6). */
+  manifestRisk: ToolRisk;
+  /**
+   * The acting session's class, forwarded verbatim from the route (D7). Absent
+   * means an internal caller with no session (persona/scheduled run), which
+   * keeps the desktop envelope — see {@link SkillInvokeContext.clientClass}.
+   */
+  clientClass?: string;
+}
+
+/**
+ * The closed set a skill MCP call may answer with (D8).
+ *
+ * `capability_denied` is the class envelope (the same code the broker answers,
+ * so a client can tell "your device may not" apart from "the policy refused"),
+ * `mcp_not_declared` is the manifest's fault, `mcp_disabled` means "that server
+ * is not usable right now" — never configured in this core, or switched off —
+ * because both are fixed by the same user act (configure it, then enable it),
+ * `tool_denied` is the risk ceiling, and `upstream` is anything the server did.
+ */
+export type SkillMcpDenialCode =
+  | 'capability_denied'
+  | 'mcp_not_declared'
+  | 'mcp_disabled'
+  | 'tool_denied'
+  | 'upstream';
+
+export type SkillMcpOutcome =
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; code: SkillMcpDenialCode };
+
+export interface SkillMcpReach {
+  /** True when this id is an MCP id at all, so the runner routes it here. */
+  matches(toolId: string): boolean;
+  /**
+   * Apply every access rule and, when they all hold, make the call.
+   *
+   * Never throws: a failure is a CODE, because a thrown error would fail the
+   * whole invocation instead of arriving at the skill as a refusal it can catch
+   * and react to. No pending row is ever created — skills are non-interactive.
+   */
+  exec(request: SkillMcpRequest): Promise<SkillMcpOutcome>;
+}
+
 export interface SkillRunner {
   invoke(skill: SkillDetail, args: unknown, ctx?: SkillInvokeContext): Promise<SkillInvokeResult>;
 }
 
 const RISK_RANK: Record<ToolRisk, number> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * The id shape a skill uses to reach an MCP server's tool. Duplicated from the
+ * `mcp/` seam on purpose: this module must recognise the shape to ROUTE it,
+ * and importing the seam's constant would be the `skills/` -> `mcp/` dependency
+ * the seam exists to avoid. `mcpReach.test.ts` pins the two together.
+ */
+const MCP_TOOL_ID_RE = /^mcp:([^/]+)\/(.+)$/;
 
 /**
  * The conservative byte/4 token estimate the chat route also falls back to
@@ -228,6 +324,16 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
   const { dataDir, broker, audit, invocations } = options;
   const resolveLlm = options.llm;
   const spendLedger = options.spendLedger;
+  /**
+   * M27 S2: the MCP seam, or a closed one. A build with no MCP manager wired
+   * still ROUTES `mcp:` ids here (so the refusal is a coded one the skill can
+   * catch, and so the broker never sees an id it has no manifest for) — the
+   * blank reach simply denies every call.
+   */
+  const mcpReach: SkillMcpReach = options.mcp ?? {
+    matches: (toolId: string) => MCP_TOOL_ID_RE.test(toolId),
+    exec: async (): Promise<SkillMcpOutcome> => ({ ok: false, code: 'tool_denied' }),
+  };
   const now = options.now ?? Date.now;
   const logSink = options.log ?? ((line: string) => console.error(line));
   const maxArgsBytes = options.maxArgsBytes ?? DEFAULT_MAX_ARGS_BYTES;
@@ -308,7 +414,13 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
     };
     if (personaId !== null) details.personaId = personaId;
     if (error !== null) details.error = error;
-    audit.log('web', 'skill.invoke', skill.id, details);
+    // `actor` is WHO ASKED, and the skill is the SUBJECT of the row (its id is
+    // the target). A persona-driven or scheduled run has a `personaId`, so it is
+    // a persona's ask; every other run reached the runner from a web session, so
+    // that keeps the value it always had (services/redaction.ts: session / web /
+    // persona / skill — `skill` is the actor of what a skill does ITSELF, e.g.
+    // `skill.llm`).
+    audit.log(personaId !== null ? 'persona' : 'web', 'skill.invoke', skill.id, details);
     return meta;
   }
 
@@ -495,6 +607,43 @@ export function createSkillRunner(options: SkillRunnerOptions): SkillRunner {
         };
         if (nonce === '' || toolId === '') {
           deny('tool_denied');
+          return;
+        }
+        // --- M27 S2: MCP reach ----------------------------------------------
+        // An `mcp:<server>/<tool>` id is NOT a broker tool: it is declared in
+        // `permissions.mcpServers` (not `permissions.tools`) and it is executed
+        // through the MCP seam instead of the broker. Routed BEFORE the
+        // declared-tools check below, which would otherwise refuse every MCP id
+        // — no manifest lists `mcp:...` in `permissions.tools`.
+        if (mcpReach.matches(toolId)) {
+          const rawArgs = params;
+          const args =
+            typeof rawArgs === 'object' && rawArgs !== null && !Array.isArray(rawArgs)
+              ? (rawArgs as Record<string, unknown>)
+              : {};
+          void mcpReach
+            .exec({
+              toolId,
+              args,
+              declaredServers: skill.manifest.permissions.mcpServers ?? [],
+              manifestRisk: skill.manifest.permissions.risk,
+              ...(clientClass === undefined ? {} : { clientClass }),
+            })
+            .then((outcome) => {
+              if (outcome.ok) {
+                try {
+                  child.send({ type: 'tools.result', nonce, ok: true, result: outcome.result });
+                } catch {
+                  // Channel gone.
+                }
+                return;
+              }
+              deny(outcome.code);
+            })
+            // The seam promises not to throw; this is the belt for that brace,
+            // because an unhandled rejection would hang the worker instead of
+            // answering it.
+            .catch(() => deny('upstream'));
           return;
         }
         // Intersect: declared in manifest AND exists in the broker registry

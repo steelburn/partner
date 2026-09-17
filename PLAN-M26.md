@@ -523,8 +523,9 @@ approval branch · `skill.author` (desktop-only) · the Studio Build segment wit
 the editor, validation, dry-run, two-step install, fork/edit, export/import,
 deep link and the `skills` attention badge.
 
-**Remaining:** the *notes* and *MCP* templates (need `PLAN-M27.md` S1/S2 — the
-picker is capability-filtered, so it offers only what this build can honour).
+**Remaining:** nothing in M26 itself. The *notes* and *MCP* templates that were
+waiting on `PLAN-M27.md` S1/S2 **landed with M27 S4 (2026-09-17)**; the picker is
+capability-filtered, so it offers only what this build can honour.
 Env-gated and NOT run: a live-endpoint generation walk, and a packaged-app Studio
 walk.
 
@@ -569,11 +570,11 @@ and unsigned bundle export/import · **F** their verify record.
 - Env-gated (recorded, not claimed): a real-endpoint generation walk against
   the user's own LiteLLM endpoint, and a packaged-app Studio walk.
 
-*State:* COMPLETE except the notes/MCP templates (blocked on `PLAN-M27.md`
-S1/S2). Slices A drafts core (+ schema) · B generator · C chat authoring +
-install approval · D Studio + deep link + badge · E export/import · F
-docs/verify — all landed; the two remaining templates are the only gap, and the
-Studio deliberately offers only the templates this build can honour.
+*State:* **COMPLETE** (2026-09-16; the notes/MCP templates completed it on
+2026-09-17 as `PLAN-M27.md` S4). Slices A drafts core (+ schema) · B generator ·
+C chat authoring + install approval · D Studio + deep link + badge ·
+E export/import · F docs/verify — all landed, and the Studio offers only the
+templates this build can honour.
 
 ## Out of scope (v1)
 
@@ -588,4 +589,5 @@ Studio deliberately offers only the templates this build can honour.
   survive the *installed* copy path).
 - Aligning core-side one-shot model calls onto the chat spend ledger (D10's
   recorded gap, not fixed here).
-- The *notes* and *MCP* templates — `PLAN-M27.md`.
+- The *notes* and *MCP* templates — landed with `PLAN-M27.md` S4 (they needed
+  S1's app-scoped tools and S2's MCP reach first).

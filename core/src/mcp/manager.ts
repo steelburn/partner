@@ -8,7 +8,10 @@
  * persona auto-calls arrive with the broker integration slice.
  *
  * Every sensitive action audits id/name only — never tool args or results
- * (owner data stays in the calling surface).
+ * (owner data stays in the calling surface). The row's `actor` records WHO
+ * asked: `web` for the user's paired session (the default), `skill` for a
+ * skill reaching MCP through `./skillReach.js`, `persona` for a persona
+ * auto-call through `./tool.js` — the labels `services/redaction.ts` lists.
  */
 import { randomUUID } from 'node:crypto';
 import type { McpCallInput, McpCallResult, McpServerInput, McpServerSummary, McpServerUpdate, McpToolInfo } from '@partner/shared';
@@ -35,8 +38,15 @@ export interface McpManager {
   remove(id: string): void;
   /** Tool catalog for an ENABLED server (spawn + handshake + close). */
   listTools(id: string): Promise<McpToolInfo[]>;
-  /** One user-initiated tool call on an ENABLED server. */
-  call(id: string, input: McpCallInput): Promise<McpCallResult>;
+  /**
+   * One tool call on an ENABLED server.
+   *
+   * `actor` is the audit actor — WHO asked — and defaults to `web`, the user's
+   * paired session. A caller that is not the user names itself: a skill's reach
+   * is `skill`, a persona auto-call is `persona`. Without this the execution row
+   * of a skill's reach read as a web request nobody made.
+   */
+  call(id: string, input: McpCallInput, actor?: string): Promise<McpCallResult>;
 }
 
 function toSummary(row: McpServerRow): McpServerSummary {
@@ -174,7 +184,7 @@ export function createMcpManager(options: McpManagerOptions): McpManager {
     return tools;
   }
 
-  async function call(id: string, input: McpCallInput): Promise<McpCallResult> {
+  async function call(id: string, input: McpCallInput, actor?: string): Promise<McpCallResult> {
     const body = (input ?? {}) as McpCallInput;
     if (typeof body.tool !== 'string' || body.tool.trim() === '') {
       throw mcpError('invalid_input', 'tool is required');
@@ -186,7 +196,7 @@ export function createMcpManager(options: McpManagerOptions): McpManager {
     const result = await withSession(id, (client) =>
       client.callTool(body.tool.trim(), body.args ?? {}, timeoutMs),
     );
-    audit.log('web', 'mcp.call', id, {
+    audit.log(actor ?? 'web', 'mcp.call', id, {
       tool: body.tool,
       isError: result.isError,
       ms: result.ms,

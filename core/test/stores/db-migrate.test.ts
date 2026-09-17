@@ -10,11 +10,14 @@
  * already-opened v11-era DB upgrades in place on the next open (simulated by
  * dropping the columns and re-running applySchema, which is what openDatabase
  * does); data survives; ensureColumn is a no-op when the column exists.
+ *
+ * The v22 block at the bottom does the same for M28 B's three flow columns on
+ * `skill_drafts` (PLAN-M28.md), which is the v21 → v22 upgrade.
  */
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '@partner/shared';
-import { applySchema, createMessageStore, ensureColumn, openDatabase } from '../../src/stores/db.js';
+import { applySchema, createMessageStore, createSkillDraftStore, ensureColumn, openDatabase } from '../../src/stores/db.js';
 
 function columnNames(db: Database.Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
@@ -30,7 +33,7 @@ describe('M11 schema v12 (guarded columns)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(21);
+      expect(SCHEMA_VERSION).toBe(22);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');
@@ -144,6 +147,80 @@ describe('M11 schema v12 (guarded columns)', () => {
         | { purpose: string }
         | undefined;
       expect(row ?? null).toBeNull(); // no schema churn: still empty table
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * M28 B — schema v22's three additive columns on `skill_drafts`.
+ *
+ * The v21 world had no `flow_json` / `flow_sha256` / `flow_compiled_at`, so the
+ * upgrade is simulated the way the v12 test does it: drop the columns, re-run
+ * `applySchema` (what every open does), and assert a pre-v22 draft row comes
+ * back unchanged — with the flow columns reading NULL, which is exactly "this
+ * draft has no flow". An upgrade must never invent a graph.
+ */
+describe('M28 schema v22 (flow columns on skill_drafts)', () => {
+  it('opens at v22 with the three flow columns present', () => {
+    const db = openDatabase(':memory:');
+    try {
+      const meta = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as
+        | { value: string }
+        | undefined;
+      expect(meta?.value).toBe(String(SCHEMA_VERSION));
+      expect(SCHEMA_VERSION).toBe(22);
+      expect(columnNames(db, 'skill_drafts')).toEqual(
+        expect.arrayContaining(['flow_json', 'flow_sha256', 'flow_compiled_at']),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('opens a v21-era skill_drafts row unchanged: columns appear, row survives', () => {
+    const db = openDatabase(':memory:');
+    try {
+      const drafts = createSkillDraftStore(db);
+      drafts.insert({
+        id: 'legacy-draft',
+        name: 'Legacy',
+        description: 'authored before flows existed',
+        status: 'draft',
+        origin: 'manual',
+        manifestJson: null,
+        manifestText: '{}',
+        code: 'export async function run() { return 1; }',
+        prompt: '',
+        model: null,
+        validationJson: JSON.stringify({ ok: false, errors: [], warnings: [], checkedAt: 1 }),
+        conversationId: null,
+        personaId: null,
+        installedVersion: null,
+        flowJson: null,
+        flowSha256: null,
+        flowCompiledAt: null,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+
+      // Simulate the v21 world: the flow columns never existed.
+      for (const column of ['flow_json', 'flow_sha256', 'flow_compiled_at']) {
+        db.exec(`ALTER TABLE skill_drafts DROP COLUMN ${column}`);
+      }
+      expect(columnNames(db, 'skill_drafts')).not.toContain('flow_json');
+
+      // The next open (applySchema) restores them and keeps the row.
+      applySchema(db);
+      expect(columnNames(db, 'skill_drafts')).toEqual(
+        expect.arrayContaining(['flow_json', 'flow_sha256', 'flow_compiled_at']),
+      );
+      const row = drafts.findById('legacy-draft');
+      expect(row?.code).toBe('export async function run() { return 1; }');
+      expect(row?.flowJson).toBeNull();
+      expect(row?.flowSha256).toBeNull();
+      expect(row?.flowCompiledAt).toBeNull();
     } finally {
       db.close();
     }

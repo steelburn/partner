@@ -127,6 +127,34 @@ describe('buildAuthoringPrompt', () => {
     expect(on).not.toContain('"permissions.llm" is refused in this build');
     expect(on).not.toContain('"permissions.mcpServers" is refused in this build');
   });
+
+  it('DESCRIBES each wired reach, so the prompt and the validator agree (M27 S2 D9)', () => {
+    // The wiring is what decides the text: an unwired reach is refused in words,
+    // a wired one is described with the same rules the validator enforces.
+    const on = buildAuthoringPrompt({
+      description: 'x',
+      name: 'X',
+      toolIds: TOOLS,
+      capabilities: ON,
+    });
+    // MCP: the id shape, that the owner must have enabled the server, and the
+    // ceiling rule that a `low` manifest declaring MCP is refused.
+    expect(on).toContain('mcp:<server-id>/<tool-name>');
+    expect(on).toContain('at least "medium" risk');
+    expect(on).toContain('mcp_not_declared');
+    // Model reach keeps its own description (regression guard on the same block).
+    expect(on).toContain('partner.llm.complete');
+
+    const off = buildAuthoringPrompt({
+      description: 'x',
+      name: 'X',
+      toolIds: TOOLS,
+      capabilities: OFF,
+    });
+    // Unwired: the reach is refused AND never described.
+    expect(off).not.toContain('mcp:<server-id>/<tool-name>');
+    expect(off).not.toContain('partner.llm.complete');
+  });
 });
 
 describe('parseAuthoringReply', () => {
@@ -335,16 +363,23 @@ describe('normalizeAuthoredBundle', () => {
 });
 
 describe('templateBundle', () => {
+  // M27 S4: the palette now includes the notes and MCP templates, so every
+  // template is validated against the build that OFFERS it (the wiring the
+  // picker reads) and against a registry that has the app-scoped tool ids too.
+  const ALL_TOOLS = [...TOOLS, 'notes.list', 'notes.search', 'notes.read'];
+
   it('delegates to the shipped templates and yields bundles that validate ok', () => {
     for (const template of SKILL_TEMPLATES) {
       const bundle = templateBundle(template.id, 'Tidy Text', 'tidy-text');
       expect(bundle).not.toBeNull();
       if (bundle === null) throw new Error('unreachable');
-      const shape = validateManifestShape(parseJson(bundle.manifestText));
-      expect(shape.ok).toBe(true);
+      const shape = validateManifestShape(parseJson(bundle.manifestText), {
+        capabilities: ON,
+      });
+      expect(shape.ok, `${template.id}: ${shape.ok ? '' : shape.errors.join(' ')}`).toBe(true);
       if (!shape.ok) continue;
       expect(shape.manifest.id).toBe('tidy-text');
-      expect(unknownTools(shape.manifest, new Set(TOOLS))).toEqual([]);
+      expect(unknownTools(shape.manifest, new Set(ALL_TOOLS))).toEqual([]);
       expect(lintEntry(bundle.code).ok).toBe(true);
     }
   });
@@ -357,6 +392,6 @@ describe('templateBundle', () => {
   });
 
   it('returns null for an unknown template rather than inventing one', () => {
-    expect(templateBundle('notes-checklist', 'X', 'x')).toBeNull();
+    expect(templateBundle('no-such-template', 'X', 'x')).toBeNull();
   });
 });

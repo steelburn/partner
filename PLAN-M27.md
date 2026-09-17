@@ -104,6 +104,11 @@ its own. Three properties make that the right call:
 - `core/src/skills/runtime.ts`: the reach vocabulary gains the `mcpServers`
   line, so the authoring prompt, the instructions, the validator and the
   install summary all describe it identically (D9).
+- `core/src/mcp/manager.ts`: `call()` takes an OPTIONAL audit `actor`, defaulting
+  to `web` so the HTTP route (the user's own session) is unchanged; the skill
+  seam passes `skill` and the chat external in `core/src/mcp/tool.ts` passes
+  `persona`, because the row is the execution record of WHO asked. Details stay
+  ids/counts — never the server command line, never tool arguments.
 
 ### S3 — Class propagation (the M20-B S4 close-out)
 
@@ -115,10 +120,11 @@ its own. Three properties make that the right call:
 - A test asserts the mobile path is refused at the broker **even with a grant
   present** — the exact case M20-B S4 wrote down as unproven.
 
-### S4 — Templates + docs
+### S4 — Templates + docs *(done 2026-09-17)*
 
-- `core/src/skills/authoring.ts`: the two templates (`notes-checklist`,
-  `mcp-call`), emitted only when S1/S2 are wired (D9).
+- `core/src/skills/templates.ts`: the two templates (`notes-checklist`,
+  `mcp-call`), each with its `requires` key, so the picker emits them only when
+  S1/S2 are wired (D9).
 - `docs/VERIFY-M27.md`; PLAN.md §9/§12/§13/§15 updates.
 
 ### S5 — Model reach (`partner.llm`) — *independent of S1–S4; can land as M27-B*
@@ -169,7 +175,12 @@ gets the same reach for free.
 - `core/test/skills/mcpReach.test.ts` — a declared+enabled server's tool
   executes; **undeclared** → `mcp_not_declared`; **disabled** → `mcp_disabled`;
   unknown tool → denied; a `low`-ceiling manifest is refused at validate (D6);
-  no pending row is ever created (D8); the result cap and budget still apply.
+  no pending row is ever created (D8 — asserted as the WHOLE `pending_tools`
+  count, not just the open rows); every refusal writes exactly one
+  `mcp.call.denied` row naming the server and the code; a multi-segment
+  `mcp:<server>/a/b` id is driven through the RUNNER so its duplicated id regex
+  is held to the seam's; the result cap is exercised by a real oversized MCP
+  result, and the budget by a server that never answers.
 - `core/test/skills/classPropagation.test.ts` — a mobile-class session invoking
   a granted skill is refused at the broker and at the MCP path; the class comes
   from the session row (a body field cannot set it).
@@ -196,24 +207,78 @@ gets the same reach for free.
 - [ ] `notes.list/search/read` are read-only, low-risk, `file.read`-mapped, and
       audit rows carry ids/counts/lengths only.
 - [ ] Rootless app grants work end to end (route + UI group + Studio hint).
-- [ ] `permissions.mcpServers` validates; the runner reaches an enabled server's
+- [x] `permissions.mcpServers` validates; the runner reaches an enabled server's
       tool and refuses undeclared/disabled/unknown/over-ceiling with coded
-      denials and no pending rows.
-- [ ] Session class propagates into the runner for broker **and** MCP calls; the
-      mobile-with-a-grant case is refused and tested (M20-B S4 closed).
+      denials and no pending rows. *(S2, 2026-09-17 — the ceiling is refused at
+      VALIDATE time as well as at run time, and the server is reached through a
+      local stdio fixture, so the walk is offline. The execution row records the
+      truthful actor — `skill` for this path, `persona` for the chat auto-call,
+      `web` unchanged for the HTTP route. A REFUSAL is audited too, since
+      2026-09-17: one `mcp.call.denied` row per denial, ids/codes only.)*
+- [x] Session class propagates into the runner for broker **and** MCP calls; the
+      mobile-with-a-grant case is refused and tested (M20-B S4 closed). *(The
+      MCP half closed with S2; the class is checked FIRST, above the
+      declaration.)*
 - [ ] Model reach (S5): declared, bounded by the skill's own token ceiling,
       ledger-charged, `skill.llm`-gated, and never logged; a skill without the
       declaration is refused `llm_not_declared`.
-- [ ] The notes + MCP templates produce bundles that validate and run; the
-      Studio offers a template only when its capability is wired.
-- [ ] Suites root + Δ / web + Δ / shared + Δ, zero regressions; typechecks 0;
+- [x] The notes + MCP templates produce bundles that validate and run; the
+      Studio offers a template only when its capability is wired. *(S4,
+      2026-09-17 — `notes-checklist` runs through a real Studio DRY-RUN against a
+      real granted note; `mcp-call` runs against a local stdio server. No
+      network either way. The MCP template's manifest carries a placeholder
+      server id, because server ids are generated when a server is added.)*
+- [x] Suites root + Δ / web + Δ / shared + Δ, zero regressions; typechecks 0;
       web build green; a demo e2e walk runs the notes template against a seeded
-      note and the MCP template against a stub stdio server.
+      note and the MCP template against a stub stdio server. *(The walk is the
+      two real runs in `core/test/skills/templates.test.ts`, not a separate
+      script.)*
 - Env-gated: a real MCP server walk against a user-configured server.
 
-*State:* **S3 + S5 landed 2026-09-16** — measured record: `docs/VERIFY-M27.md`.
-Root **1495 passed / 5 env-gated skips** · web **851** · typechecks 0 · web build
-green.
+*State:* **S1 + S2 + S3 + S4 + S5 landed** (S3+S5 2026-09-16, S1 and S2
+2026-09-17, S4 2026-09-17) — every slice is on the tree; the only thing left is
+an env-gated walk against a real MCP server the owner configures.
+Measured record: `docs/VERIFY-M27.md`.
+Root **1651 passed / 5 env-gated skips** · shared **90** · web **858** ·
+typechecks 0 · web build green. (1614 before S4 — that figure includes the S2
+audit-actor attribution fix; the slice added 14 tests — the new
+`templates.test.ts` plus the drafts-door capability gate; M28 B brought it to
+1645, and the 2026-09-17 review fixup below added 6.)
+
+**S2 DONE (2026-09-17):** MCP reach from the sandbox. `permissions.mcpServers`
+(server ids, never tool names; de-duplicated; capped at 8) is validated with the
+**D6 ceiling at VALIDATE time** — a `low`-risk manifest declaring MCP is refused
+because an MCP tool's own risk is unknowable in advance. The runner routes
+`partner.tools.exec('mcp:<server>/<tool>')` to an INJECTED seam
+(`core/src/mcp/skillReach.ts`) rather than the broker, so `skills/` still never
+imports `mcp/`; the seam applies five gates in a fixed order — **class envelope
+(`mcp.call`) FIRST**, then the declaration, then the ceiling, then whether the
+server is configured and enabled, then the call — and answers only with coded
+denials (`capability_denied` / `mcp_not_declared` / `mcp_disabled` /
+`tool_denied` / `upstream`). **No pending row is ever created**: there is no
+enqueue path on this branch at all, because a skill cannot be asked anything.
+D7's MCP half is therefore closed. D9 was completed for the whole vocabulary:
+the authoring prompt, the chat instructions and the install summary now describe
+the reach from the SAME capability object the validator consumes — and the chat
+instructions also gained the `llm` description they had been missing since S5.
+
+**S2 also fixed a pre-existing defect it surfaced — audit attribution.**
+`McpManager.call()` hardcoded the row's actor as `web`, so an MCP call made by a
+SKILL (through the new seam) or by a PERSONA auto-call was attributed to a web
+request nobody made. `call()` now takes an OPTIONAL `actor` (default `web`, so
+the existing caller shape — the HTTP route, the user's own session — is
+unchanged): the seam passes `skill` and `core/src/mcp/tool.ts` passes `persona`,
+exactly the vocabulary
+`services/redaction.ts` documents (session/web/persona/skill) and the labels the
+runner and the tool pass already audit under. Details are unchanged: tool id,
+isError, ms and the content-item COUNT — never the server command line, never
+tool arguments. Tests: `mcpReach.test.ts` asserts a skill's row is `skill` and
+that no `web` row exists for it; `tool.test.ts` pins `persona`; `mcpManager.test.ts`
+pins the `web` default and an explicit actor.
+
+**S1 DONE (2026-09-17):** app-scoped notes reach — `ToolScope`,
+`APP_SCOPE_ID`, three `notes.*` manifests, `defaultToolRegistry()` derived from
+the broker's manifest set, and rootless app grants in the UI.
 
 **S3 DONE:** `SkillInvokeContext.clientClass` is read from the SESSION ROW by both
 routes into the runner (`/v1/skills/:id/invoke` and the draft dry-run) and
@@ -255,10 +320,57 @@ installer's registry and the broker's dispatch map cannot drift;
 Web: an **App data** group (both grant pickers scope-filtered from one
 vocabulary) and a dry-run `tool_denied` that names where the grant goes.
 
-**Remaining: S2** (MCP from the runner: `permissions.mcpServers`, the medium
-ceiling, coded denials, no pending row; D7's MCP half is NOT closed), **S4** (the
-*notes* + *MCP* Studio templates). S4 depends on S1/S2; S1's half of that
-dependency (the `notes` capability key) is now unblocked.
+**S4 DONE (2026-09-17):** the last slice — the *notes* and *MCP* Studio
+templates. `notes-checklist` declares the three app-scoped read tools and reads
+the user's notes through them (NO `projectId`, no root: the grant is keyed on
+`APP_SCOPE_ID`, which is what the picker's **App data** group consents to);
+`mcp-call` declares one MCP server and calls one of its tools as
+`partner.tools.exec('mcp:<server>/<tool>', args)`, at the D6 `medium` ceiling.
+Both gate their visibility on their own `requires` key (`notes` / `mcp`), so a
+build with the reach unwired does not offer them — asserted in BOTH directions,
+including through the drafts door, which is what the picker actually calls.
+Both bundles were held to a real run rather than a lint: the notes template goes
+through a Studio DRY-RUN in the real sandbox with app data granted (and reports
+the coded `tool_denied` refusal without it, queueing nothing), and the MCP
+template runs against a local stdio fixture. One honest limitation of the MCP
+template: server ids are generated when a server is added, so its manifest ships
+a placeholder id — the single field the author replaces before installing — and
+the run test performs that same edit. `core/src/skills/templates.ts` (not the
+`authoring.ts` this spec's S4 bullet named) stays the one place a template's
+source exists; `authoring.ts` only delegates to it.
+
+**Review fixup (2026-09-17, no version bump).** An independent review found four
+things about S2 that its own tests could not see, all fixed and asserted:
+
+1. **A refused MCP call wrote NO audit row at all.** The invocation SUCCEEDS —
+   both templates CATCH the coded denial, so `skill.invoke` records ok:true with
+   toolCalls:1 — and a denial above the server lookup never reaches the manager's
+   own `mcp.call` row. So an attempted-and-refused reach left no trace anywhere,
+   while the broker audits every refusal. `createMcpSkillReach(mcp, audit)` now
+   writes exactly ONE `mcp.call.denied` row per denial (actor `skill`, the
+   server id as the target, `{code, tool}` as details — never tool arguments,
+   never the server command line), and the composition root passes the core's
+   own `AuditService`.
+2. **D8's assertion could not fail.** `pendingManager.list()` returns OPEN rows
+   only, so a regression that took the broker's enqueue-then-decide(deny) route
+   would leave a CLOSED row it could not see. The MCP tests now count the WHOLE
+   `pending_tools` table; the notes template's dry-run keeps the open-row check
+   on purpose, because the BROKER route legitimately closes a row.
+3. **The result-cap test did not touch MCP** (it returned a blob from a skill
+   that ignored its args and would pass with the whole seam deleted). It now
+   calls a real tool whose result is far past the 1 MiB cap.
+4. **The duplicated id regex was only half pinned.** A `mcp:<server>/a/b` id
+   driven through the runner must answer `mcp_not_declared` (seam reached)
+   rather than `tool_denied` (fell through to the broker), which is what
+   distinguishes the runner's copy from the seam's.
+
+Two related attribution fixes landed with it: the seam's audit actor is `skill`
+(already true for the manager's row), and the RUNNER's `skill.invoke` row now
+names `persona` for a persona-driven or scheduled run instead of the `web`
+default — `actor` is who ASKED; the skill id is the row's target.
+
+**Remaining: nothing but the env-gated walk** (a real MCP server the owner
+configures).
 
 *State was:* spec only.
 

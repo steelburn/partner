@@ -173,4 +173,23 @@ describe('M11 F2 MCP manager', () => {
     expect(rows[0]?.details).not.toContain('sk-super-secret-value');
     expect(rows[0]?.details).toContain('echo');
   });
+
+  it('defaults the audit actor to `web` — the user’s paired session', async () => {
+    const { manager, serverFile, audit } = makeHarness();
+    const created = manager.create({ name: 'fake', command: NODE, args: [serverFile] });
+    manager.update(created.id, { enabled: true });
+    // The existing caller shape (the HTTP route) passes no actor at all.
+    await manager.call(created.id, { tool: 'echo' });
+    const rows = audit.query({ limit: 10, action: 'mcp.call' });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.actor).toBe('web');
+  });
+
+  it('records the actor the caller names, so a non-user caller is not read as web', async () => {
+    const { manager, serverFile, audit } = makeHarness();
+    const created = manager.create({ name: 'fake', command: NODE, args: [serverFile] });
+    manager.update(created.id, { enabled: true });
+    await manager.call(created.id, { tool: 'echo' }, 'skill');
+    expect(audit.query({ limit: 10, action: 'mcp.call' })[0]?.actor).toBe('skill');
+  });
 });

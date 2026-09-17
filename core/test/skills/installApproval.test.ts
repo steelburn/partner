@@ -14,6 +14,7 @@
  *   4. The audit rows carry ids/flags/counts — never the draft's code or text.
  */
 import { describe, expect, it } from 'vitest';
+import type { ToolRisk } from '@partner/shared';
 import {
   createSkillDraftManager,
 } from '../../src/skills/drafts.js';
@@ -40,6 +41,16 @@ const TOOLS = new Set([
   'files.edit',
   'files.apply',
   'files.delete',
+]);
+
+/** The same registry's own risks (M28 D5 — the flow-compile ceiling reads it). */
+const TOOL_RISKS = new Map<string, ToolRisk>([
+  ['files.read', 'low'],
+  ['files.list', 'low'],
+  ['files.search', 'low'],
+  ['files.edit', 'medium'],
+  ['files.apply', 'high'],
+  ['files.delete', 'high'],
 ]);
 
 const MANIFEST = (id: string, over: Record<string, unknown> = {}): string =>
@@ -76,6 +87,7 @@ function env(overrides: Partial<SkillDraftManagerOptions> = {}) {
     store: createSkillDraftStore(db),
     skills,
     tools: TOOLS,
+    riskOf: (toolId: string) => TOOL_RISKS.get(toolId) ?? null,
     audit,
     runsDir: overrides.runsDir ?? runsDir,
     ...overrides,

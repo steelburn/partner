@@ -57,7 +57,7 @@ describe('schema v6 (additive M4/M5 tables + FTS5)', () => {
       // M6 (PLAN-M6.md, 238b20a) raised the schema to 7 (themes table). M9
       // (PLAN-M9.md, ba83902) raised it to 10 (deploy_profiles + playbook_runs).
       // v11 added spend_ledger (M10 W3); v12 added M11 guarded columns.
-      expect(SCHEMA_VERSION).toBe(21);
+      expect(SCHEMA_VERSION).toBe(22);
     } finally {
       db.close();
     }

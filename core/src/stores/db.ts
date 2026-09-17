@@ -676,6 +676,10 @@ CREATE TABLE IF NOT EXISTS key_wraps (
 -- the owner's own content (which is why they live in the same encrypted DB as
 -- everything else) and they NEVER reach the audit log, which records
 -- ids/counts/lengths only.
+--
+-- M28 B (v22) adds flow_json / flow_sha256 / flow_compiled_at on this table via
+-- the guarded ensureColumn below, not here — the same additive pattern v12/v20/
+-- v21 used, so a v21 DB gains the columns on its next open with no table rewrite.
 
 CREATE TABLE IF NOT EXISTS skill_drafts (
   id TEXT PRIMARY KEY,
@@ -893,6 +897,14 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   // user's schedules can run while nobody is signed in (explicit, audited,
   // per-user — it weakens the at-rest promise for THIS user only).
   ['users', 'keep_unlocked', 'keep_unlocked INTEGER NOT NULL DEFAULT 0'],
+  // M28 B (v22) flow authoring: the graph a flow-backed draft was drawn as, the
+  // hash of the code it last compiled to, and when. NULL everywhere on a
+  // code-authored draft (and on any pre-v22 row), which reads as "no flow" —
+  // an upgrade never invents a graph. Staleness is DERIVED from these, never
+  // stored (D6).
+  ['skill_drafts', 'flow_json', 'flow_json TEXT'],
+  ['skill_drafts', 'flow_sha256', 'flow_sha256 TEXT'],
+  ['skill_drafts', 'flow_compiled_at', 'flow_compiled_at INTEGER'],
 ];
 
 /**
@@ -2329,6 +2341,7 @@ const SKILL_DRAFT_COLUMNS = `
   model, validation_json AS validationJson,
   conversation_id AS conversationId, persona_id AS personaId,
   installed_version AS installedVersion,
+  flow_json AS flowJson, flow_sha256 AS flowSha256, flow_compiled_at AS flowCompiledAt,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 const SKILL_DRAFT_UPDATE_COLUMNS: Readonly<Record<string, keyof SkillDraftRowPatch>> = {
@@ -2345,6 +2358,9 @@ const SKILL_DRAFT_UPDATE_COLUMNS: Readonly<Record<string, keyof SkillDraftRowPat
   conversation_id: 'conversationId',
   persona_id: 'personaId',
   installed_version: 'installedVersion',
+  flow_json: 'flowJson',
+  flow_sha256: 'flowSha256',
+  flow_compiled_at: 'flowCompiledAt',
 };
 
 export function createSkillDraftStore(db: Database.Database): SkillDraftStore {
@@ -2352,11 +2368,13 @@ export function createSkillDraftStore(db: Database.Database): SkillDraftStore {
     `INSERT INTO skill_drafts (id, name, description, status, origin,
                                manifest_json, manifest_text, code, prompt, model,
                                validation_json, conversation_id, persona_id,
-                               installed_version, created_at, updated_at)
+                               installed_version, flow_json, flow_sha256,
+                               flow_compiled_at, created_at, updated_at)
      VALUES (@id, @name, @description, @status, @origin,
              @manifestJson, @manifestText, @code, @prompt, @model,
              @validationJson, @conversationId, @personaId,
-             @installedVersion, @createdAt, @updatedAt)`,
+             @installedVersion, @flowJson, @flowSha256,
+             @flowCompiledAt, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${SKILL_DRAFT_COLUMNS} FROM skill_drafts WHERE id = ?`);
   const listAll = db.prepare(

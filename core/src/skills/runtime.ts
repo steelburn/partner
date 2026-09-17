@@ -94,10 +94,13 @@ export function unknownTools(
  * `options.llm` (M27 S5) adds the model verb, and only where the build can
  * honour it: describing `partner.llm.complete` to a build whose runner answers
  * `llm_not_declared` for every call would produce a draft that cannot run.
+ * `options.mcp` (M27 S2) does the same for MCP reach, which needs no new verb —
+ * it is `partner.tools.exec` with an `mcp:<server>/<tool>` id — so what it adds
+ * is the id shape and the rules that go with it.
  */
 export function entryContract(
   toolIds: readonly string[],
-  options: { llm?: boolean } = {},
+  options: { llm?: boolean; mcp?: boolean } = {},
 ): string {
   return [
     'A skill entry is ONE ES module exporting run(args):',
@@ -128,6 +131,17 @@ export function entryContract(
           '  · a model call must be declared as permissions.llm; the ceiling is',
           '    per INVOCATION (every call in one run counts against it), and passing',
           '    it fails the whole run instead of returning a partial result',
+        ]
+      : []),
+    ...(options.mcp === true
+      ? [
+          '  · partner.tools.exec("mcp:<server>/<tool>", args) reaches ONE tool on',
+          '    an MCP server the manifest declares in permissions.mcpServers. The',
+          '    user must have CONFIGURED and ENABLED that server before the run —',
+          '    there is no prompt, so a disabled or undeclared server is a coded',
+          '    refusal (mcp_not_declared / mcp_disabled / upstream); catch it',
+          '  · because an MCP tool\'s own risk cannot be known in advance, a skill',
+          '    that declares mcpServers must declare at least "medium" risk',
         ]
       : []),
     '',

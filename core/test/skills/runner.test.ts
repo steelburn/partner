@@ -460,6 +460,34 @@ describe('skill runner — budgets, crashes, caps, env', () => {
       env.close();
     }
   });
+
+  it('names the ACTOR that asked: a persona run is `persona`, a plain one is `web`', async () => {
+    const env = buildEnv();
+    try {
+      env.manager.install('hello-skill');
+      const hello = env.manager.get('hello-skill') as SkillDetail;
+      // The skill is the SUBJECT of the row (its id is the target); the actor is
+      // who asked for the run.
+      await env.runner.invoke(hello, { name: 'a' }, { personaId: 'p-maya' });
+      await invoke(env, hello, { name: 'b' });
+
+      const rows = env.audit.list(50).filter((row) => row.action === 'skill.invoke');
+      expect(rows).toHaveLength(2);
+      // The persona's run — the one a chat turn with a persona starts, or a
+      // scheduled persona run — is NOT a web request the user never made.
+      const persona = rows.filter((row) => row.actor === 'persona');
+      expect(persona).toHaveLength(1);
+      expect(persona[0]?.target).toBe('hello-skill');
+      expect(JSON.parse(persona[0]?.details ?? '{}')).toMatchObject({ personaId: 'p-maya' });
+      // Every other run reached the runner from a web session, which is the
+      // value this row always carried.
+      const web = rows.filter((row) => row.actor === 'web');
+      expect(web).toHaveLength(1);
+      expect(JSON.parse(web[0]?.details ?? '{}')).not.toHaveProperty('personaId');
+    } finally {
+      env.close();
+    }
+  });
 });
 
 describe('skill runner — integrity (M8 review finding 5)', () => {

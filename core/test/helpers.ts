@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Express, Request } from 'express';
-import type { Keychain, Persona } from '@partner/shared';
+import type { Keychain, Persona, ToolRisk } from '@partner/shared';
 import type { PlaybookChatTarget } from '../src/playbooks/index.js';
 import { SCHEMA_VERSION } from '@partner/shared';
 import { CORE_VERSION } from '../src/config.js';
@@ -87,6 +87,7 @@ import type { AttachmentManager } from '../src/attachments/index.js';
 import { createAssetManager } from '../src/assets/index.js';
 import type { AssetManager } from '../src/assets/index.js';
 import { createMcpManager } from '../src/mcp/index.js';
+import { createMcpSkillReach } from '../src/mcp/index.js';
 import type { McpManager } from '../src/mcp/index.js';
 import { createSearchManager } from '../src/search/index.js';
 import type { SearchManager } from '../src/search/index.js';
@@ -691,6 +692,11 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   let skillRunner: SkillRunner | undefined;
   let skillDrafts: import('../src/skills/drafts.js').SkillDraftManager | undefined;
   const skillDraftStore = createSkillDraftStore(db);
+  // M27: the reaches this harness's build honours, exactly as createCore states
+  // them. Declared OUT here so the app options below can forward the SAME object
+  // to the chat authoring instructions that the runner and drafts were built
+  // with — the prompt and the validator must not be told different builds.
+  const runtimeCapabilities = { mcp: true, llm: true, notes: true };
   if (skillsEnabled && brokerEnabled) {
     skillsDir = skillsOption.storeDir ?? makeTempRoot();
     // M26 cut E: dry-runs materialize under their own temp root, so a test can
@@ -701,9 +707,9 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     // notes.*), derived the same way createCore derives it, so the harness can
     // never accept a tool the broker would not dispatch — or refuse one it would.
     const registry = new Set<string>(TOOL_MANIFESTS.map((m) => m.id));
-    // M27 S5: the reaches this harness's runtime honours, exactly as createCore
-    // states them. Passed IN, so the bare library default stays conservative.
-    const runtimeCapabilities = { mcp: false, llm: true, notes: true };
+    // The same registry's own risks, derived exactly as createCore derives them
+    // (M28 D5's flow-compile ceiling reads this).
+    const toolRisks = new Map<string, ToolRisk>(TOOL_MANIFESTS.map((m) => [m.id, m.risk]));
     skills = createSkillManager({
       store: skillStore,
       invocations: skillInvocationStore,
@@ -725,6 +731,10 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       // drives the runner directly with a fake client, never the network.
       llm: createSkillLlmResolver(providerManager),
       spendLedger,
+      // M27 S2: the same MCP seam a real core injects, over the harness's own
+      // manager. A test that needs a live MCP call creates a server whose
+      // command is a local script (see mcpReach.test.ts) — never the network.
+      mcp: createMcpSkillReach(mcp, audit),
     });
     // M26: drafts over the same db, with the same registry. No generator is
     // injected by default, so `mode:'generate'` is refused — which is exactly
@@ -738,6 +748,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
       store: skillDraftStore,
       skills,
       tools: registry,
+      riskOf: (toolId: string) => toolRisks.get(toolId) ?? null,
       capabilities: runtimeCapabilities,
       audit,
       runsDir: skillRunsDir,
@@ -873,6 +884,9 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     ...(themesEnabled ? { themes } : {}),
     ...(browserEnabled ? { scopes } : {}),
     ...(skills && skillRunner ? { skills, skillRunner } : {}),
+    // M27 S2/S5: the harness states the same reaches a real core does, so the
+    // chat authoring instructions it produces are the production text.
+    skillCapabilities: runtimeCapabilities,
     ...(skillDrafts !== undefined ? { skillDrafts } : {}),
     ...(playbooks !== undefined ? { playbooks } : {}),
     ...(deployProfiles !== undefined ? { deployProfiles } : {}),

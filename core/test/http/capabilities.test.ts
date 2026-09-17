@@ -180,9 +180,12 @@ describe('the mobile envelope is narrow BY DECISION, not by omission', () => {
   it('is exactly read + browser + chat', () => {
     // Pinned so widening it is a deliberate, reviewable change. `grants`,
     // `skill.invoke` and `mcp.call` are INDIRECT routes to capabilities mobile is
-    // denied (a skill or MCP server carries its own permissions, and neither
-    // module consults the session class today), so they stay out until the S4
-    // wiring proves the class propagates into that execution.
+    // denied (a skill or MCP server carries its own permissions), so they stay
+    // out even though the class DOES propagate into that execution today: M27 S2
+    // checks `mcp.call` FIRST in the skill MCP seam, S3 forwards the class into
+    // the runner's brokered calls, and S5 gates a skill's model reach. A phone
+    // may still invoke a skill; it may not use one to reach MCP, a provider, or a
+    // write it is denied itself.
     expect([...CLIENT_ENVELOPE.mobile].sort()).toEqual(['browser', 'chat', 'file.read']);
   });
 

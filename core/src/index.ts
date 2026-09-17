@@ -651,7 +651,7 @@ import { createAttachmentManager } from './attachments/index.js';
 import type { AttachmentManager } from './attachments/index.js';
 import { createAssetManager } from './assets/index.js';
 import type { AssetManager } from './assets/index.js';
-import { createMcpManager } from './mcp/index.js';
+import { createMcpManager, createMcpSkillReach } from './mcp/index.js';
 import type { McpManager } from './mcp/index.js';
 import { createSearchManager } from './search/index.js';
 import type { SearchManager } from './search/index.js';
@@ -1124,15 +1124,17 @@ export function createCore(
   //
   // M27: which reaches THIS core's runtime can honour, passed IN to every door
   // that validates a manifest (catalog reads, drafts, the generator) so a
-  // declaration is only refused when the sandbox really cannot deliver it. S5
-  // wired model reach and S1 wired app-scoped notes reach, so `llm` and `notes`
-  // are true here; `mcp` stays false until S2 wires it. The library default
-  // stays conservative ({ mcp: false, llm: false, notes: false }) — the object
-  // is the CALLER's statement about this build.
-  const skillRuntimeCapabilities: RuntimeCapabilities = { mcp: false, llm: true, notes: true };
+  // declaration is only refused when the sandbox really cannot deliver it. S1
+  // wired app-scoped notes reach, S2 wired MCP reach and S5 wired model reach,
+  // so all three are true here. The library default stays conservative
+  // ({ mcp: false, llm: false, notes: false }) — the object is the CALLER's
+  // statement about this build.
+  const skillRuntimeCapabilities: RuntimeCapabilities = { mcp: true, llm: true, notes: true };
   const skillStore = createSkillStore(db);
   const skillInvocationStore = createSkillInvocationStore(db);
   const skillRegistry: ReadonlySet<string> = new Set(broker.manifests.map((m) => m.id));
+  /** The same registry's own risks, so a flow compile can apply D5's ceiling. */
+  const skillToolRisk = new Map(broker.manifests.map((m) => [m.id as string, m.risk]));
   const skills = createSkillManager({
     store: skillStore,
     invocations: skillInvocationStore,
@@ -1153,6 +1155,13 @@ export function createCore(
     // that provider's rolling ledger window (D13).
     llm: createSkillLlmResolver(providerManager),
     spendLedger,
+    // M27 S2: the MCP reach `partner.tools.exec('mcp:<server>/<tool>')` rides.
+    // Wired HERE, at the composition root, because the runner must not import
+    // `mcp/` — it takes the seam's interface and never learns what implements it.
+    // The audit sink goes in with it: every refusal the seam makes writes one
+    // `mcp.call.denied` row, which is the only trace an attempted-and-refused MCP
+    // reach leaves (the invocation itself succeeds — the entry catches the code).
+    mcp: createMcpSkillReach(mcp, audit),
   });
 
   // M26: skill DRAFTS over the SAME db (schema v21). A draft is inert — the
@@ -1175,6 +1184,10 @@ export function createCore(
     store: createSkillDraftStore(db),
     skills,
     tools: skillRegistry,
+    // M28 D5: the risk of each registered tool, so compiling a flow refuses a
+    // node above the DRAFT manifest's ceiling (`tool_requires_medium`) before it
+    // writes code or permissions.
+    riskOf: (toolId: string) => skillToolRisk.get(toolId) ?? null,
     capabilities: skillRuntimeCapabilities,
     audit,
     generate: skillGenerator,
@@ -1349,6 +1362,9 @@ export function createCore(
     skills,
     skillRunner,
     skillDrafts,
+    // M27 S2/S5: the reaches this build honours, so the chat authoring
+    // instructions describe exactly what the validator will accept (D9).
+    skillCapabilities: skillRuntimeCapabilities,
     playbooks,
     deployProfiles,
     schedules,

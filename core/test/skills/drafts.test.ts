@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ToolRisk } from '@partner/shared';
 import {
   createSkillDraftManager,
   permissionDiff,
@@ -43,6 +44,16 @@ const TOOLS = new Set([
   'files.delete',
 ]);
 
+/** The same registry's own risks (M28 D5 — the flow-compile ceiling reads it). */
+const TOOL_RISKS = new Map<string, ToolRisk>([
+  ['files.read', 'low'],
+  ['files.list', 'low'],
+  ['files.search', 'low'],
+  ['files.edit', 'medium'],
+  ['files.apply', 'high'],
+  ['files.delete', 'high'],
+]);
+
 function env(overrides: Partial<SkillDraftManagerOptions> = {}) {
   const db = openDatabase(':memory:');
   const storeDir = makeTempRoot();
@@ -63,6 +74,7 @@ function env(overrides: Partial<SkillDraftManagerOptions> = {}) {
     store: createSkillDraftStore(db),
     skills,
     tools: TOOLS,
+    riskOf: (toolId: string) => TOOL_RISKS.get(toolId) ?? null,
     audit,
     ...overrides,
     runsDir: overrides.runsDir ?? runsDir,
@@ -163,13 +175,33 @@ describe('draft lifecycle', () => {
     const h = env();
     try {
       const err = await h.drafts
-        .create({ mode: 'template', template: 'notes-checklist', name: 'X', description: '' })
+        .create({ mode: 'template', template: 'no-such-template', name: 'X', description: '' })
         .then(() => null)
         .catch((e: SkillError) => e);
       expect(err?.code).toBe('invalid_input');
-      // M27 has not wired the notes reach, so the picker must not offer it.
       expect(err?.message).toContain('pure');
       expect(err?.message).toContain('reads-files');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses a template whose reach this build does not have (M27 S4 D9)', async () => {
+    const h = env();
+    try {
+      // The two templates M27 S4 added are OFFERED by a build with the reaches
+      // wired; this harness has none of them, so the door refuses by name
+      // instead of drafting a bundle the sandbox would refuse.
+      for (const template of ['notes-checklist', 'mcp-call']) {
+        const err = await h.drafts
+          .create({ mode: 'template', template, name: 'X', description: '' })
+          .then(() => null)
+          .catch((e: SkillError) => e);
+        expect(err?.code, template).toBe('invalid_input');
+        expect(err?.message, template).toContain(
+          'needs a capability this build does not have',
+        );
+      }
     } finally {
       h.close();
     }
@@ -184,6 +216,44 @@ describe('draft lifecycle', () => {
         .catch((e: SkillError) => e);
       expect(err?.code).toBe('invalid_input');
       expect(err?.message).toContain('template');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('refuses `generate-flow` BY NAME until slice D builds it (no silent downgrade)', async () => {
+    // A generator IS wired, so the only thing that can refuse this is the mode
+    // itself. Before this refusal, `generate-flow` fell into the `generate`
+    // branch: the caller asked for a GRAPH and got a code bundle with
+    // `flow: null` and no error — and slice D would then change behaviour under
+    // a caller that had already shipped against it.
+    const h = env({
+      generate: async ({ description, name, id }) => ({
+        manifestText: JSON.stringify({
+          id,
+          name,
+          description,
+          author: 'model',
+          version: '0.1.0',
+          entrypoint: 'entry.mjs',
+          permissions: { tools: [], network: false, risk: 'low' },
+          budget: { timeMs: 5000 },
+        }),
+        code: 'export function run(){ return { generated: true }; }',
+        model: 'test-model',
+      }),
+    });
+    try {
+      const err = await h.drafts
+        .create({ mode: 'generate-flow', name: 'Flow', description: 'draws one' })
+        .then(() => null)
+        .catch((e: SkillError) => e);
+      expect(err?.code).toBe('invalid_input');
+      // The refusal NAMES the mode, so the caller learns which value is not
+      // implemented rather than that its request was malformed.
+      expect(err?.message).toContain('generate-flow');
+      // ...and it wrote nothing: no draft row, no generated code.
+      expect(h.drafts.list()).toEqual([]);
     } finally {
       h.close();
     }

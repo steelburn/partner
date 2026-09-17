@@ -25,6 +25,18 @@
  *                  nothing — the owner's Approve inside the chat card is what
  *                  calls `promote`, so both surfaces run one implementation.
  *
+ *   getFlow    M28 cut B: the graph a flow-backed draft is authored as, plus the
+ *   saveFlow   DERIVED `flowStale` (D6 — a hash comparison, never a flag). A
+ *              save replaces the document and touches nothing else: a save is
+ *              not a compile.
+ *   compileFlow M28 cut B D1/D5: the ONLY writer of `code` from a flow. It runs
+ *              the (pure, total, deterministic) slice-A compiler, writes the
+ *              emitted bytes plus `flow_sha256`/`flow_compiled_at`, and REWRITES
+ *              the manifest's derived permissions from the graph — both `tools`
+ *              and `llm` — before re-running the M26 validation. Install still
+ *              consumes `code`, so a stale flow is a UI-honesty state and never
+ *              a precondition.
+ *
  * The security property this file exists to hold: **drafting never executes and
  * never installs.** `promote` is the only mutating bridge to the skills store,
  * it is called by an owner-initiated route (the Studio button) or by an
@@ -47,6 +59,10 @@ import type {
   SkillDraftRun,
   SkillDraftSummary,
   SkillDraftValidation,
+  SkillFlow,
+  SkillFlowCompileResponse,
+  SkillFlowSaveResult,
+  SkillFlowState,
   SkillManifest,
   SkillSummary,
 } from '@partner/shared';
@@ -57,6 +73,11 @@ import { join } from 'node:path';
 import type { AuditService } from '../services/redaction.js';
 import type { SkillDraftRow, SkillDraftRowPatch, SkillDraftStore } from '../stores/types.js';
 import { skillError } from './errors.js';
+// M28 slice B: the compiler is slice A's, imported under a distinct name so the
+// manager method can keep the spec's word (`compileFlow`). Nothing here
+// re-implements emission — it decides WHAT to write.
+import { compileFlow as compileSkillFlow, sha256Of } from './flow/compile.js';
+import { validateFlow } from './flow/schema.js';
 import {
   DEFAULT_TIME_MS,
   ID_RE,
@@ -134,6 +155,17 @@ export interface SkillDraftManagerOptions {
   skills: DraftSkillStore;
   /** Broker tool registry — a declared tool outside it is a named error. */
   tools: ReadonlySet<string>;
+  /**
+   * M28 slice B (D5): the broker risk of a registered tool, so `compileFlow`
+   * can refuse a graph whose `tool` node outranks the draft manifest's own
+   * ceiling (`tool_requires_medium`) BEFORE it writes code or permissions.
+   *
+   * Required rather than optional on purpose: without it the compiler's ceiling
+   * check silently does nothing, and a flow installs a bundle that can never run
+   * — the same "compiles but is guaranteed to refuse" class `llm_not_available`
+   * exists to prevent.
+   */
+  riskOf: (toolId: string) => ToolRisk | null;
   audit: AuditService;
   /** Which reaches the runtime can honour (M27 flips these). */
   capabilities?: RuntimeCapabilities;
@@ -261,6 +293,27 @@ export interface SkillDraftManager {
   promote(id: string, options?: PromoteOptions): SkillDraftInstallResult;
   /** The templates this build can honour (the Studio picker's source). */
   templates(): Array<{ id: string; name: string; description: string; reach: string }>;
+  /**
+   * M28 B (PLAN-M28.md D6): the flow document, its `flowCompiledAt`, and the
+   * DERIVED `flowStale`. A code-authored draft reports `flow: null` — the
+   * honest answer for a draft that has no graph.
+   */
+  getFlow(id: string): SkillFlowState;
+  /**
+   * M28 B: replace the flow (the canvas save). The raw value is validated
+   * structurally and refused with per-node errors when malformed — nothing is
+   * written. A save is NOT a compile: `code`, and therefore the permissions
+   * derived from the graph, are untouched (D1).
+   */
+  saveFlow(id: string, raw: unknown): SkillFlowSaveResult;
+  /**
+   * M28 B (D1/D5): the ONLY writer of `code` from a flow. It emits the entry,
+   * stores `flow_sha256` + `flow_compiled_at`, REWRITES the manifest's derived
+   * permissions (`tools` and `llm`), re-runs the M26 validation, and returns
+   * the compile result with the rewritten draft — or the error list, having
+   * written nothing.
+   */
+  compileFlow(id: string): SkillFlowCompileResponse;
 }
 
 export interface DraftPatch {
@@ -436,20 +489,90 @@ function toSummary(row: SkillDraftRow, pendingInstallId: string | null): SkillDr
   };
 }
 
+/** A parsed JSON object, or null when the text is not one (never throws). */
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Not JSON; the caller names the problem it caused.
+  }
+  return null;
+}
+
+/**
+ * The stored flow document, or null when there is none (a code-authored draft)
+ * or the stored text is not one. The document was validated when it was SAVED,
+ * so this is a reader, not a second validator — but a row written by an older
+ * build, or corrupted, must read as "no flow" rather than crash the surface.
+ */
+function parseFlow(json: string | null): SkillFlow | null {
+  if (json === null || json === '') return null;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const flow = parsed as SkillFlow;
+      if (flow.version === 1 && Array.isArray(flow.nodes) && Array.isArray(flow.edges)) {
+        return flow;
+      }
+    }
+  } catch {
+    // Unreadable text is not a flow — the next save replaces it.
+  }
+  return null;
+}
+
+/**
+ * M28 D6 — the ONE staleness rule, and it is DERIVED on every read.
+ *
+ * `flow_sha256` is the hash of the code the flow last compiled to, so "stale"
+ * means "this draft's code is not what the flow produced". Nothing stores the
+ * answer: a hand-edit that restores the compiled bytes clears it by itself, and
+ * there is no boolean to drift out of sync.
+ *
+ * Two edges are deliberate:
+ *   - a draft with NO flow is never stale (there is no flow to be coherent
+ *     with), which is what keeps a code-authored draft's badge off; and
+ *   - a flow that has NEVER compiled IS stale, because its code cannot be the
+ *     flow's output. That is the honest reading of "the code is not the flow",
+ *     and it is what makes the Studio offer Recompile on a freshly drawn graph.
+ *
+ * Staleness is UI honesty, NOT a security state: install consumes `code`, which
+ * is re-validated at install time, so a stale flow never blocks anything.
+ */
+function flowStaleFor(row: SkillDraftRow, flow: SkillFlow | null): boolean {
+  if (flow === null) return false;
+  if (row.flowSha256 === null) return true;
+  return sha256Of(row.code) !== row.flowSha256;
+}
+
+/** The flow surface's read shape for one row (GET/PUT `…/flow`). */
+function flowStateOf(row: SkillDraftRow): SkillFlowState {
+  const flow = parseFlow(row.flowJson);
+  return {
+    flow,
+    flowCompiledAt: row.flowCompiledAt,
+    flowStale: flowStaleFor(row, flow),
+  };
+}
+
 function toDetail(row: SkillDraftRow, pendingInstallId: string | null): SkillDraft {
   const manifest = parseManifest(row.manifestJson);
+  const flow = parseFlow(row.flowJson);
   return {
     ...toSummary(row, pendingInstallId),
     code: row.code,
     prompt: row.prompt,
     manifestText: row.manifestText,
     installedVersion: row.installedVersion,
-    // Cut B/C (M28) supply the flow document; a code-authored draft has none,
-    // and a stale flag with no flow would be meaningless.
-    flow: null,
-    flowSha256: null,
-    flowCompiledAt: null,
-    flowStale: false,
+    // M28: the flow document and its DERIVED staleness. A code-authored draft
+    // carries no flow, and a stale flag with no flow would be meaningless.
+    flow,
+    flowSha256: row.flowSha256,
+    flowCompiledAt: row.flowCompiledAt,
+    flowStale: flowStaleFor(row, flow),
   };
 }
 
@@ -587,6 +710,17 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
     if (mode !== 'manual' && mode !== 'template' && mode !== 'generate' && mode !== 'generate-flow') {
       throw skillError('invalid_input', 'mode must be manual|template|generate|generate-flow');
     }
+    // M28 slice D owns `generate-flow` (a generated GRAPH). Until it lands the
+    // value is refused BY NAME rather than silently downgraded to `generate`,
+    // which would hand a caller asking for a flow a CODE bundle with
+    // `flow: null` and no error — and would change behaviour under that caller
+    // the day slice D is built.
+    if (mode === 'generate-flow') {
+      throw skillError(
+        'invalid_input',
+        "mode 'generate-flow' is not implemented yet — draw the flow in the Studio, or use mode 'generate'",
+      );
+    }
     const name = typeof input.name === 'string' ? input.name.trim() : '';
     if (name === '') throw skillError('invalid_input', 'name is required');
     const description = typeof input.description === 'string' ? input.description.trim() : '';
@@ -622,7 +756,7 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
       manifestText = JSON.stringify(bundle.manifest, null, 2);
       code = bundle.code;
       origin = 'template';
-    } else if (mode === 'generate' || mode === 'generate-flow') {
+    } else if (mode === 'generate') {
       if (!options.generate) {
         throw skillError(
           'invalid_input',
@@ -683,6 +817,10 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
       conversationId: null,
       personaId: null,
       installedVersion: null,
+      // M28: a newly created draft has no flow (a code-authored start).
+      flowJson: null,
+      flowSha256: null,
+      flowCompiledAt: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -823,6 +961,10 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
       conversationId: normaliseId(input.conversationId),
       personaId: normaliseId(input.personaId),
       installedVersion: null,
+      // A chat-authored draft starts as code (cut E adds the `flow` payload).
+      flowJson: null,
+      flowSha256: null,
+      flowCompiledAt: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -975,6 +1117,10 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
       conversationId: null,
       personaId: null,
       installedVersion: installed.version,
+      // A fork/edit copies the installed CODE; there is no flow to copy (D7).
+      flowJson: null,
+      flowSha256: null,
+      flowCompiledAt: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -1190,6 +1336,10 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
       conversationId: null,
       personaId: null,
       installedVersion: null,
+      // A bundle import brings manifest text + code, never a graph (D7).
+      flowJson: null,
+      flowSha256: null,
+      flowCompiledAt: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -1252,6 +1402,171 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
     return { skill: summary, mode: existing === null ? 'created' : 'updated', permissionDiff: diff };
   }
 
+  /**
+   * M28 cut B (D6): the flow document + its derived staleness. Read-only, and
+   * it never compiles anything — asking "is this stale" must not have the side
+   * effect of making it not stale.
+   */
+  function getFlow(id: string): SkillFlowState {
+    return flowStateOf(requireRow(id));
+  }
+
+  /**
+   * M28 cut B: the canvas save. Structural validation only (`validateFlow`, the
+   * slice-A door), so a half-drawn graph is refused by name and NOTHING is
+   * written — while a well-formed graph that a compile would refuse later (no
+   * output node yet, a cycle mid-edit) still saves, because drawing is not
+   * compiling.
+   *
+   * What this deliberately does NOT do: touch `code`, or the permissions derived
+   * from the graph. Those change in exactly one place — `compileFlow` below — so
+   * there is no way to make a draft runnable by saving a graph.
+   */
+  function saveFlow(id: string, raw: unknown): SkillFlowSaveResult {
+    const row = requireRow(id);
+    if (row.status === 'installed') {
+      throw skillError('conflict', 'this draft has already been installed');
+    }
+    const validated = validateFlow(raw);
+    if (!validated.ok) return { ok: false, errors: validated.errors, warnings: validated.warnings };
+
+    const at = now();
+    const flowJson = JSON.stringify(validated.flow);
+    store.update(id, { flowJson, updatedAt: at });
+    // Counts + a boolean, never the graph (repo audit rule). `stale` is the
+    // draft's derived state AFTER the save, which a save cannot change: it is a
+    // fact about the code, and the code did not move.
+    audit.log('web', 'skill.flow.save', id, {
+      nodes: validated.flow.nodes.length,
+      edges: validated.flow.edges.length,
+      stale: flowStaleFor({ ...row, flowJson }, validated.flow),
+    });
+    return { ok: true, ...flowStateOf(requireRow(id)) };
+  }
+
+  /**
+   * M28 cut B (D1/D5) — compile the stored flow into the draft's `code`.
+   *
+   * The order is the whole design:
+   *   1. the flow must exist and must COMPILE (the compiler is total, so every
+   *      failure is a named error and nothing is written) — which includes D5's
+   *      `tool_requires_medium` ceiling, supplied from the draft's own manifest,
+   *      so a graph reaching above what that manifest could ever call is refused
+   *      instead of becoming an installed bundle that always refuses at run time;
+   *   2. the manifest's derived permissions are rewritten from the graph —
+   *      `tools` AND `llm`, because deriving only the tools leaves a flow with
+   *      an `llm` node installing a manifest that refuses every model call
+   *      (`llm_not_declared`), a bundle that can never run (D5);
+   *   3. `code`, `flow_sha256` and `flow_compiled_at` are written together, so
+   *      the hash the staleness comparison reads always describes the code
+   *      beside it;
+   *   4. the M26 validation is re-run, so a compile cannot leave a draft whose
+   *      stored validation (or manifest JSON) disagrees with what is now in it.
+   *      A compile that produces a draft which fails that validation still
+   *      returns OK: the compile did exactly what it promised, and the draft
+   *      now REPORTS its problem instead of hiding it.
+   */
+  function compileFlow(id: string): SkillFlowCompileResponse {
+    const row = requireRow(id);
+    if (row.status === 'installed') {
+      throw skillError('conflict', 'this draft has already been installed');
+    }
+    const flow = parseFlow(row.flowJson);
+    if (flow === null) {
+      throw skillError('invalid_input', 'this draft has no flow — save one before compiling it');
+    }
+
+    // The manifest is the owner's own text; only its permissions are derived
+    // here, but its RISK CEILING is an INPUT to the compile (D5). An unreadable
+    // manifest cannot be reconciled with the graph, so the compile is refused
+    // BEFORE anything is written rather than inventing one.
+    const manifest = parseJsonObject(row.manifestText);
+    if (manifest === null) {
+      throw skillError(
+        'invalid_input',
+        "this draft's manifest is not a JSON object — fix it before compiling a flow into it",
+      );
+    }
+    const declaredPermissions = manifest.permissions;
+    const permissions =
+      declaredPermissions !== null &&
+      typeof declaredPermissions === 'object' &&
+      !Array.isArray(declaredPermissions)
+        ? (declaredPermissions as Record<string, unknown>)
+        : {};
+    // A missing or unreadable risk gets the STRICTEST ceiling rather than no
+    // check at all — the same default the manifest validator applies (`low`).
+    const declaredRisk = permissions.risk;
+    const riskCeiling: ToolRisk =
+      declaredRisk === 'medium' || declaredRisk === 'high' ? declaredRisk : 'low';
+
+    const compiled = compileSkillFlow(flow, {
+      registry: tools,
+      // D9's "only offer what exists", enforced at the door: a build with no
+      // model reach refuses an `llm` node instead of emitting a call that would
+      // fail at run time.
+      llmAvailable: capabilities.llm,
+      // D5's ceiling, supplied from THIS draft's manifest: without it the
+      // compiler would happily emit a call the manifest's own `permissions.tools`
+      // refuses, so the bundle would install and then fail every run — the same
+      // "compiles but is guaranteed to refuse" class as `llm_not_available`.
+      riskCeiling,
+      riskOf: options.riskOf,
+    });
+    const nodes = flow.nodes.length;
+    const edges = flow.edges.length;
+    if (!compiled.ok) {
+      audit.log('web', 'skill.flow.compile', id, {
+        ok: false,
+        nodes,
+        edges,
+        tools: [],
+        errorCount: compiled.errors.length,
+        codeBytes: 0,
+      });
+      return { ok: false, errors: compiled.errors, warnings: compiled.warnings };
+    }
+
+    // The manifest is the owner's own text; only its permissions are derived
+    // here — `tools` and `llm` — and they were read above, before the compile.
+    //
+    // `llm` is written as a boolean in BOTH directions: an absent/false value is
+    // what the manifest already means, and writing it keeps the derived set and
+    // the graph visibly equal (an unused `llm: true` grant on a graph with no
+    // `llm` node is exactly the drift D5 exists to prevent).
+    const manifestText = JSON.stringify(
+      {
+        ...manifest,
+        permissions: { ...permissions, tools: compiled.tools, llm: compiled.usesLlm },
+      },
+      null,
+      2,
+    );
+
+    const at = now();
+    const { manifest: normalised, validation } = validateParts(manifestText, compiled.code, at);
+    store.update(id, {
+      manifestText,
+      manifestJson: normalised === null ? null : JSON.stringify(normalised),
+      code: compiled.code,
+      flowSha256: compiled.sha256,
+      flowCompiledAt: at,
+      validationJson: JSON.stringify(validation),
+      updatedAt: at,
+    });
+    audit.log('web', 'skill.flow.compile', id, {
+      ok: true,
+      nodes,
+      edges,
+      // Tool IDS, never the graph or the code — the repo's audit vocabulary
+      // allows ids/counts/lengths and nothing else.
+      tools: compiled.tools,
+      errorCount: 0,
+      codeBytes: Buffer.byteLength(compiled.code, 'utf8'),
+    });
+    return { ...compiled, draft: detail(requireRow(id)) };
+  }
+
   function templates(): Array<{ id: string; name: string; description: string; reach: string }> {
     // Derived from what the runtime can honour, so a template can never produce
     // a bundle the sandbox would refuse (M26 D9).
@@ -1276,6 +1591,9 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
     edit,
     promote,
     templates,
+    getFlow,
+    saveFlow,
+    compileFlow,
     runDraft,
     exportBundle,
     importBundle,

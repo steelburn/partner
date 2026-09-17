@@ -399,6 +399,37 @@ export type SkillFlowCompileResult =
     }
   | { ok: false; errors: FlowValidationError[]; warnings: FlowValidationError[] };
 
+/**
+ * M28 D6: the flow surface's read shape. `flowStale` is DERIVED on every read
+ * (`sha256(code)` vs the hash the flow last compiled to) — it is never stored,
+ * so a hand-edit that restores the compiled bytes clears it by itself.
+ */
+export interface SkillFlowState {
+  flow: SkillFlow | null;
+  flowCompiledAt: number | null;
+  flowStale: boolean;
+}
+
+/**
+ * `PUT /v1/skills/drafts/:id/flow` — the canvas save. A save is NOT a compile:
+ * a malformed flow is refused with per-node errors (nothing is written), and a
+ * valid one replaces the document without touching `code` (D1).
+ */
+export type SkillFlowSaveResult =
+  | ({ ok: true } & SkillFlowState)
+  | { ok: false; errors: FlowValidationError[]; warnings: FlowValidationError[] };
+
+/**
+ * `POST /v1/skills/drafts/:id/flow/compile` — D1's only writer of `code` from a
+ * flow. On success the REWRITTEN draft rides along, because a compile is a
+ * write: it replaces `code`, derives `permissions` from the graph (D5) and
+ * re-runs the M26 validation; the caller must not have to guess at that state.
+ * A flow that does not compile writes nothing and returns the error list.
+ */
+export type SkillFlowCompileResponse =
+  | (Extract<SkillFlowCompileResult, { ok: true }> & { draft: SkillDraft })
+  | Extract<SkillFlowCompileResult, { ok: false }>;
+
 /** M28 D8: a refine returns a PROPOSAL — the user accepts or rejects it. */
 export interface SkillFlowProposal {
   flow: SkillFlow;

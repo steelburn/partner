@@ -186,7 +186,12 @@ export const SEARCH_TOOL_APPROVAL_INSTRUCTION = [
  * cannot install anything, and it may fix validation errors by re-calling the
  * same tool with the same id.
  */
-export function authoringInstructions(toolIds: readonly string[]): string {
+export function authoringInstructions(
+  toolIds: readonly string[],
+  capabilities?: { mcp?: boolean; llm?: boolean },
+): string {
+  const mcpWired = capabilities?.mcp === true;
+  const llmWired = capabilities?.llm === true;
   return [
     'Skill authoring is available to you in this conversation.',
     `  ${DRAFT_TOOL_ID} — stage or update a skill DRAFT`,
@@ -205,6 +210,15 @@ export function authoringInstructions(toolIds: readonly string[]): string {
     '   "version": "0.1.0", "entrypoint": "entry.mjs",',
     '   "permissions": {"tools": [<ids below>], "network": false, "risk":',
     '                    "low" | "medium" | "high"},',
+    ...(mcpWired
+      ? [
+          '                    "mcpServers": [<server ids, at most 8>] (optional;',
+          '                    a manifest declaring it must declare at least "medium"',
+          '                    risk), "llm": <boolean> (optional),',
+        ]
+      : llmWired
+        ? ['                    "llm": <boolean> (optional),']
+        : []),
     '   "budget": {"timeMs": <ms, at most 300000>}}',
     '',
     'Caps the core enforces (a bundle that breaks one is refused, not fixed):',
@@ -215,7 +229,7 @@ export function authoringInstructions(toolIds: readonly string[]): string {
     '    dropped and reported as a problem',
     '  - the entry must export run(args) (named, default, or export { run })',
     '',
-    entryContract([...toolIds]),
+    entryContract([...toolIds], { llm: llmWired, mcp: mcpWired }),
     '',
     'How it works, in the order it happens:',
     '  1. You stage a draft; the result tells you whether it validates and names',

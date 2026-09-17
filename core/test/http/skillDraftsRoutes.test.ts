@@ -96,9 +96,11 @@ describe('M26 draft routes', () => {
       const res = await request(h.app).get('/v1/skills/templates').set(authed(token));
       expect(res.status).toBe(200);
       const ids = (res.body.templates as Array<{ id: string }>).map((t) => t.id);
-      expect(ids).toEqual(['pure', 'reads-files']);
-      // M27 has not wired notes/MCP, so no template may claim them.
-      expect(ids).not.toContain('notes-checklist');
+      // M27 S1/S2 wired app-scoped notes + MCP, and this harness is built with
+      // the same capability object createCore uses — so the two templates that
+      // need those reaches are offered here, and the picker's list IS what the
+      // sandbox can honour (D9).
+      expect(ids).toEqual(['pure', 'reads-files', 'notes-checklist', 'mcp-call']);
     } finally {
       h.close();
     }

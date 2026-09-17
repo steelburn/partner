@@ -8,21 +8,118 @@ list**, not a spec: each item says what is left, where it goes, what it depends
 on, and what is already true. Read the spec for detail; read the verify docs for
 what was measured.
 
-State at the time of writing: `v0.1.19` released; the container is on
-`v0.1.19 / schema v21`; tree clean; root **1582 passed** (5 env-gated skips),
-shared **90**, web **858**, typechecks 0, web build green. Zero open Dependabot
-alerts.
+State at the time of writing: `v0.1.19` released, with **M27 S1, S2 and S4 plus
+M28 slices A and B unreleased on `master`** (the parent owns releases); the
+container is on
+`v0.1.19 / schema v21` (the tree is at **v22** since M28 B); root **1651 passed**
+(5 env-gated skips), shared **90**,
+web **858**, typechecks 0, web build green. Zero open Dependabot alerts.
+(1645 before the 2026-09-17 review fixup; that fixup added 6 tests and is
+recorded in §0 below.)
 
 ---
 
-## 0. What landed in v0.1.19 — do not redo
+## 0. What landed on master since v0.1.19 — do not redo
 
-### M28 slice A — the Flow compiler (pure, no UI, no route)
+### M28 slice B — the flow routes + derived staleness (schema v22)
+
+`core/src/skills/drafts.ts` (`getFlow` / `saveFlow` / `compileFlow`), the three
+routes, the three `skill_drafts` columns and the shared wire types. §2 below has
+the decisions a later slice must not undo; the tests are
+`core/test/skills/flowStale.test.ts` and
+`core/test/http/skillFlowRoutes.test.ts`. **Do not redo it, and do not add a
+web client for it yet** (slice C adds the helpers where they are used).
+
+### M27 S4 — the notes + MCP Studio templates (last slice)
+
+`notes-checklist` and `mcp-call` exist in `core/src/skills/templates.ts`, each
+with the `requires` key the picker gates on (`notes` / `mcp`). Nothing else
+moved: no route, no schema, no capability name.
+
+Two details worth knowing before touching them:
+
+- **The notes template reaches app data with no root.** It declares
+  `notes.list` / `notes.search` / `notes.read` and passes **no `projectId`** —
+  the broker keys the grant on `APP_SCOPE_ID`. Its refusal before the grant is a
+  reported `tool_denied` (the entry catches it), never a thrown run, and never a
+  queued row.
+- **The MCP template's manifest carries a PLACEHOLDER server id.** MCP server
+  ids are `randomUUID()` at `mcp.create()`, so no template can name the owner's
+  server. `MCP_TEMPLATE_SERVER_ID` (`'your-mcp-server'`) is the one field an
+  author replaces before installing; the run test performs that same edit against
+  a local stdio fixture rather than asserting a weaker thing.
+
+The tests are `core/test/skills/templates.test.ts` (gating in both directions,
+manifest validation under the wired capability object, a real Studio dry-run for
+the notes template, a real stdio run for the MCP one) plus the capability gate at
+`core/test/skills/drafts.test.ts` and the picker's list at
+`core/test/http/skillDraftsRoutes.test.ts` (both updated deliberately — they used
+to assert `notes-checklist` was *unoffered*, which is now false).
+
+### M27 S2 — MCP reach from the sandbox
+
+`permissions.mcpServers` (server ids, de-duplicated, capped at 8) is now a real
+reach: the entry calls `partner.tools.exec('mcp:<server>/<tool>', args)`.
+`core/src/mcp/skillReach.ts` (new) owns every rule; the runner takes a
+`SkillMcpReach` by INJECTION (`SkillRunnerOptions.mcp`) and never imports `mcp/`.
+
+Gates, in the order the seam applies them (this order is the control):
+
+1. id shape (`mcp:<server>/<tool>`);
+2. **class envelope `mcp.call` FIRST** — above the declaration, so a session that
+   may not call MCP learns nothing about what is behind it (D7's MCP half closed);
+3. the server is in `permissions.mcpServers`;
+4. the manifest presents at least **medium** (D6);
+5. the server is configured AND enabled — else `mcp_disabled`.
+
+Codes: `capability_denied` / `mcp_not_declared` / `mcp_disabled` / `tool_denied` /
+`upstream`. **No pending row is ever created** (there is no enqueue path here at
+all) — asserted as the WHOLE `pending_tools` count, not just the open rows, since
+`pendingManager.list()` cannot see a row that was enqueued and then closed.
+`RuntimeCapabilities.mcp` is `true` in `createCore` and in
+`core/test/helpers.ts`.
+
+Four things worth knowing before touching it:
+
+- **Every refusal is AUDITED (fixed 2026-09-17).** The invocation SUCCEEDS when a
+  skill catches a coded denial — the MCP template does exactly that, so
+  `skill.invoke` records ok:true with toolCalls:1 — and a denial above the server
+  lookup never reaches the manager's own `mcp.call` row. So an
+  attempted-and-refused reach used to leave NO trace anywhere.
+  `createMcpSkillReach(mcp, audit)` now writes exactly ONE `mcp.call.denied`
+  row per denial: actor `skill`, the server id as the target, `{code, tool}` as
+  details — never tool arguments, never the server command line. The composition
+  root passes the core's own `AuditService`, and `mcpReach.test.ts` asserts one
+  row per code.
+- **The D6 ceiling is enforced at VALIDATE time too** (`core/src/skills/manifest.ts`):
+  a `low`-risk manifest declaring `mcpServers` is refused when the draft
+  validates, and the seam re-checks at run time so a manifest installed before
+  the rule is not a loophole. If you add a test fixture with `mcpServers`, give it
+  `risk: 'medium'` or higher.
+- **The authoring surfaces are now capability-driven.** `entryContract` takes
+  `{llm, mcp}`; `buildAuthoringPrompt` passes `capabilities`; and
+  `authoringInstructions(toolIds, capabilities?)` — threaded from
+  `CoreAppOptions.skillCapabilities` — also gained the `llm` description it had
+  been missing since S5. Passing no capabilities keeps the old text exactly.
+- **The audit row names the truthful actor.** `McpManager.call()` had the
+  actor hardcoded as `web`, so an MCP call made by a skill read as a web request
+  nobody made. It now takes an OPTIONAL third argument (default `web`, so the
+  HTTP route is untouched): `core/src/mcp/skillReach.ts` passes `skill` and
+  `core/src/mcp/tool.ts` (the persona auto-call) passes `persona`. If you add a
+  caller of `mcp.call()`, pass the actor — the default is right only for the
+  user's own session. Details are unchanged: ids/counts, never the command line
+  and never tool arguments. The RUNNER's own `skill.invoke` row follows the same
+  rule since 2026-09-17: `actor` is WHO ASKED, so a persona-driven or scheduled
+  run (a `ctx.personaId`) says `persona` and only a session-less/web run says
+  `web` — the skill is the row's SUBJECT (its id is the target), not the actor.
+
+### M28 slice A — the Flow compiler (pure, no UI, no route of its own)
 
 `core/src/skills/flow/schema.ts` (`validateFlow`) + `flow/compile.ts`
 (`compileFlow`). Both exported from `core/src/index.ts`. Read these before
-planning slices B/C, because five semantics were DECIDED here and the rest of the
-milestone has to live with them:
+planning slices C/D/E, because five semantics were DECIDED here and the rest of
+the milestone has to live with them (slice B's HTTP surface, below, only decides
+WHAT to write with them):
 
 - A node's **scope** is its single inbound data edge; with none it reads `args`
   (so a `tool` node wired straight from args needs no edge).
@@ -47,7 +144,10 @@ Two additions beyond the spec's letter, both deliberate:
    for a shape problem is exactly the drift the vocabulary prevents.
 2. The compile result gained **`usesLlm`** — `permissions.tools` alone leaves a
    flow with an `llm` node installing a manifest that refuses every model call
-   (`llm_not_declared`). Slice B must write BOTH derived fields.
+   (`llm_not_declared`). **Slice B writes BOTH derived fields** into the manifest
+   at `/flow/compile` (`core/src/skills/drafts.ts` `compileFlow`), and writes
+   `llm: false` for a graph with no `llm` node, so an earlier compile cannot
+   leave model reach behind.
 
 ### The Studio split (owner decision: before M28 C/D)
 
@@ -75,52 +175,47 @@ planning S2/S4, because three things changed shape:
   `notes.read` name would be absent from mobile's allowlist and would deny a
   phone its own notes **by construction**. Do not "fix" this.
 
-Two slices remain in M27, and the **S4 blocker is now half-cleared**:
-`RuntimeCapabilities` has a `notes` key, so a template can express "needs
-app-scoped notes reach". S2 still needs its own key decision (see §1).
+Two slices remained in M27; **the S4 blocker was cleared by S1/S2** and S4 has
+since landed (see §1).
 
-## 1. M27 — what a skill may reach (2 of 5 slices left)
+## 1. M27 — what a skill may reach (all five slices landed; one walk left)
 
-**S2 — MCP from the sandbox.** MCP is reachable only as a chat-side external tool
-(`core/src/mcp/tool.ts`); it is not in the broker registry, so a skill declaring
-it is refused at install and denied at run time.
+**S2 — DONE (2026-09-17).** Read §0 for the semantics it fixed; the short version
+is `permissions.mcpServers` + a coded, class-gated, ceiling-checked reach through
+an injected seam, with no pending row ever. **D7's MCP half is closed.**
 
-What is left:
+**S4 — DONE (2026-09-17).** The two templates (`notes-checklist` and `mcp-call`)
+in `core/src/skills/templates.ts`, each with its `requires` key. Both capability
+dependencies existed (S1 `notes`, S2 `mcp`), so there was no blocker left on the
+slice. Note the file: the templates live in `core/src/skills/templates.ts`, and
+`authoring.ts` only delegates to it (`templateBundle`) — S4's own bullet in
+`PLAN-M27.md` named `authoring.ts`, which was wrong; the spec is now corrected.
+Both bundles VALIDATE **and** RUN (a Studio dry-run for the notes one, a local
+stdio server for the MCP one).
 
-1. `permissions.mcpServers` is already **shape-validated** in
-   `core/src/skills/manifest.ts`; flip `capabilities.mcp` to `true` at the call
-   sites the way S5 did for `llm` **and S1 did for `notes`**.
-2. A `mcp:` branch in `core/src/skills/runner.ts`'s `tools.exec` handling,
-   reached only when the server is declared, **enabled**, the tool exists, and
-   the manifest ceiling is ≥ `medium` (an MCP tool's own risk is unknowable in
-   advance — this is D6).
-3. **Coded denials, never a pending row** (`mcp_not_declared`, `mcp_disabled`,
-   `upstream`) — skills are non-interactive, matching M8's rule.
-4. `core/src/mcp/skillReach.ts` (new) so `skills/` does not import `mcp/` direct —
-   mirror how `search/tool.ts` owns its own seam.
-5. The class: S3 already put `clientClass` on the runner context — pass the same
-   value into this seam. **D7's MCP half is NOT closed until this lands.**
-
-**S4 — the two templates that need S2.** `notes-checklist` and `mcp-call` in
-`core/src/skills/templates.ts`, each with a `requires` key. The `notes` key now
-exists, so **`notes-checklist` can be built as soon as S2 or independently**;
-`mcp-call` waits on S2.
+**What is left in M27:** nothing but the env-gated walk — a real MCP server the
+owner configures (§3). No code item remains.
 
 ### M27 gaps that are decision-shaped, not work-shaped
 
-- **The spend ledger diverges — PARKED, awaiting an owner decision (do not act
-  without one).** Three paths behave three ways: **chat**
-  (`server.ts:2872`) hard-blocks at a declared cap and writes NO ledger row at
-  all when the provider has no `budgetCents`; the **skill runner**
-  (`runner.ts:610`) charges unconditionally and **never checks the rolling cap**;
-  the **M26 one-shot calls** (workshop generation, daily-summarize,
-  auto-remember) never settle (D10's recorded gap). So an uncapped provider is
-  invisible to the ledger, and a skill can silently spend past a capped
-  provider's rolling window. The owner said "disable this for now" without
-  specifying which of the two readings was meant, and one of them (turning the
-  ledger off) also removes the chat route's budget block — a cost control — so
-  it was **not** done. Ask: (a) actually disable the ledger (and accept losing
-  the chat cap gate), or (b) park the divergence and change nothing?
+- **The spend ledger diverges — PARKED PERMANENTLY by the owner
+  (decision (b), 2026-09-17): change nothing. Do not "fix" any of the three
+  paths without the owner reversing that decision.** Three paths behave three
+  ways, and they still do: the **chat route's budget gate** (in the
+  `POST /v1/chat` handler, beside the `provider.budget` audit row) hard-blocks
+  BEFORE the turn streams when a declared `budgetCents` cap is reached and
+  writes NO ledger row at all when the provider has no cap; the **skill
+  runner's `account()`** (`core/src/skills/runner.ts`) charges the provider's
+  rolling window unconditionally and **reads no cap at all**; and the **M26
+  one-shot calls** (workshop generation, daily-summarize, auto-remember) never
+  settle (D10's recorded gap). So an uncapped provider is invisible to the
+  ledger, and a skill can silently spend past a capped provider's rolling
+  window. The owner was asked plainly: (a) actually disable the ledger — which
+  also removes the chat route's cap gate, a cost control — or (b) park the
+  divergence and change nothing. **The answer is (b): park it, change nothing.**
+  Aligning the three is therefore a deliberate **non-goal for now**, not an
+  oversight; the divergence stays documented here so it is a known state rather
+  than a surprise.
 - **`budget.maxTokens` for non-llm calls — SETTLED (2026-09-17).** The install
   summary printed "may spend at most N model tokens" for a tool-only skill that
   has no model reach. The line is now gated on `permissions.llm === true`
@@ -130,7 +225,7 @@ exists, so **`notes-checklist` can be built as soon as S2 or independently**;
 
 ---
 
-## 2. M28 — the Studio Flow surface (A + split done; B–F left)
+## 2. M28 — the Studio Flow surface (A + B + split done; C–F left)
 
 **Slice A landed in v0.1.19** (`core/src/skills/flow/schema.ts` +
 `flow/compile.ts`, 1246 lines together, plus three test files:
@@ -138,20 +233,62 @@ exists, so **`notes-checklist` can be built as soon as S2 or independently**;
 the five semantics it fixed and the two additions beyond the spec (`bad_node`,
 `usesLlm`) — those are what B has to honour.
 
+**Slice B landed (schema v22).** Three additive columns on `skill_drafts`
+(`flow_json`, `flow_sha256`, `flow_compiled_at`, guarded `ensureColumn`; a v21 DB
+opens unchanged and pre-v22 rows read NULL = no flow), and three routes on the
+M26 drafts surface: `GET|PUT /v1/skills/drafts/:id/flow` and
+`POST /v1/skills/drafts/:id/flow/compile`. The lifecycle is in
+`core/src/skills/drafts.ts` (`getFlow` / `saveFlow` / `compileFlow`). Decisions a
+later slice must not undo:
+
+- **A save is not a compile.** `PUT` validates structurally (`validateFlow`, 400
+  with every offender in `flowErrors` otherwise, writing nothing) and changes
+  only the graph — never `code`, never the derived permissions. A half-drawn
+  graph saves: structural shape is the save's bar, not compilability.
+- **`flowStale` is recomputed on every read** (`sha256(code) !== flow_sha256`).
+  A draft with no flow is never stale; **a flow that has never compiled IS
+  stale** (its code cannot be that flow's output) — that is why the Studio can
+  offer Recompile on a freshly drawn graph. Nothing stores the flag.
+- **`/compile` is the only writer of code from a flow**, and it writes `code` +
+  `flow_sha256` + `flow_compiled_at` together, rewrites the manifest's permissions
+  from the graph (**`tools` AND `llm`**), then re-runs the M26 validation. A flow
+  that cannot compile answers **200 with `ok:false` + the named errors and writes
+  nothing** (the `/validate` convention), and its response carries the rewritten
+  `draft` because a compile IS a write.
+- **Install from a stale draft is allowed** and asserted (manager AND HTTP: the
+  stale draft is installed and RUN, and the run shows the hand-edited
+  behaviour). Do not add a precondition — install consumes `code`.
+- Audit: `skill.flow.save {nodes, edges, stale}` /
+  `skill.flow.compile {ok, nodes, edges, tools, errorCount, codeBytes}` — counts
+  and tool ids only, never the graph, the code or the manifest text.
+- **No web helper was added** (slice B has no web consumer); the canvas (C) adds
+  them where they are used.
+- **The compile door enforces the manifest's OWN ceiling** (fixed 2026-09-17).
+  `compileFlow` used to call the compiler with `{registry, llmAvailable}` and
+  never supplied `riskCeiling`/`riskOf`, so D5's `tool_requires_medium` was
+  dead in production: a `low` manifest whose graph held a `files.edit` node
+  compiled, wrote `permissions.tools:['files.edit']`, re-validated ok and
+  INSTALLED — a bundle that can never do what the graph says. The draft manager
+  now takes the registry's risks (`SkillDraftManagerOptions.riskOf`, REQUIRED so
+  it cannot go dead again — wire it from the broker's manifests) and the compile
+  path parses the manifest BEFORE compiling and passes its tier as `riskCeiling`.
+  A manifest whose risk is missing/unreadable gets the strictest ceiling (`low`),
+  the same default the validator applies.
+- **`mode:'generate-flow'` is REFUSED BY NAME until slice D.** The wire type
+  (`SkillDraftCreateMode`) still advertises it and the route still accepts the
+  field, but `create` answers `invalid_input` naming the mode instead of falling
+  into the `generate` branch — which had handed a caller asking for a graph a
+  CODE bundle with `flow: null` and no error. Do NOT narrow the shared union
+  (that is a wire change); slice D replaces the refusal with the real path.
+
 **Remaining slices:**
 
-- **B — draft routes + staleness (schema v22).** Three additive columns on
-  `skill_drafts` (`flow_json`, `flow_sha256`, `flow_compiled_at`), the six routes
-  under `/v1/skills/drafts/:id/flow`, and `flowStale` derived from
-  `sha256(code) !== flow_sha256`. **Do this next**: it is the API half of the same
-  work, needs no canvas, and makes the whole feature walkable. When writing
-  `permissions` on compile, remember **both** derived fields (`tools` AND
-  `usesLlm`).
 - **C — the canvas + Nodes table + palette/inspector.** Goes in `web/src/studio/`
   (the folder the split created), with the client-side grammar mirrored from
-  `FLOW_PATH_RE` / `FLOW_OPERATORS` rather than copied.
+  `FLOW_PATH_RE` / `FLOW_OPERATORS` rather than copied. It should read/write the
+  schema v22 routes above and add the thin fetch helpers to `web/src/lib/skills.ts`.
 - **D — AI build/refine/from-code + the proposal diff.** `refine.ts` is specified
-  but unbuilt.
+  but unbuilt (`refine` / `from-code` / `explain` and `mode:'generate-flow'`).
 - **E — the chat `flow` payload** on the existing `skills.draft` tool.
 - **F — docs/verify** (`docs/VERIFY-M28.md`, and a *looked-at* canvas frame: a
   passing `ux_audit` is the floor for a visual surface, not the evidence).
@@ -165,18 +302,21 @@ already compiles an `llm` node when the caller passes `llmAvailable: true`.
 `web/src/studio/*` and are re-exported from the original module, so no importer or
 test moved. No CSS changed. **Canvas and AI panels belong in that folder.**
 
-## 3. Env-gated walks that were never run
+## 3. Env-gated walks — attempted for real (2026-09-17)
 
-Recorded in the verify docs as *not verified*; each needs a live endpoint or a
-packaged build. The owner pointed at **pi settings** for a live LiteLLM endpoint
-— use that for the two model walks rather than a fake client.
+**Read `docs/VERIFY-LIVE.md` first: it is the measured record of the four walks
+this section used to list as "never run".** They were attempted against a scratch
+LIVE core on :4399 with the machine's own model targets — a local llama.cpp
+`gemma-4-E4B-it-Q4_K_M` server (CUDA) and the remote LiteLLM gateway
+(`deepseek-v4-flash`). Two are now **VERIFIED**, two remain **NOT RUN**, each
+with its reason. Do not restate this table as "verified" wholesale.
 
-| Walk | Milestone | What it proves |
-|---|---|---|
-| Live-endpoint generation | M26 | That a real LiteLLM/model reply parses and normalises into an installable draft (today: a fake `ProviderClient` and the demo generator). |
-| Packaged-app Studio | M26 | That the Studio works in a packaged shell, not only in the dev SPA. |
-| Live-model skill run | M27 S5 | That `partner.llm.complete` reaches a real provider with a real token ceiling. |
-| Real MCP server from a skill | M27 S2 | Blocked until S2 exists. |
+| Walk | Milestone | Status | Evidence / reason |
+|---|---|---|---|
+| Live-endpoint generation | M26 | **VERIFIED** | Both targets: a real model reply parsed, normalised, validated and **installed** (model ids `gemma-4-E4B-it-Q4_K_M` / `deepseek-v4-flash`, not `demo`). `docs/VERIFY-LIVE.md` (a). |
+| Live-model skill run | M27 S5 | **VERIFIED** | `partner.llm.complete` reached both targets and returned text; with `budget.maxTokens: 1` the invocation **failed `budget_exceeded`** with no partial result; the `skill.llm` rows carried model + token counts only (a whole-audit scan found no content). `docs/VERIFY-LIVE.md` (b). |
+| Real (third-party) MCP server from a skill | M27 S2 | **NOT RUN** | **No third-party MCP server is configured or available on this machine** (LM Studio MCP config, editor configs, repo/parent `.mcp.json`, `PATH`, the npx/pi caches and Python all checked empty). The local stdio fixture was explicitly **not** substituted. Owner action first: configure AND enable a real server, then walk it. The S2/S4 tests prove the seam itself; this walk is the only thing that would prove a third-party server. |
+| Packaged-app Studio | M26 | **NOT RUN** | **The installed artifact PREDATES M26/M27, so it cannot contain the screen: a REBUILD is required.** The 2026-09-06 build (`%LOCALAPPDATA%\Partner`, `resources/core-bundle.cjs`) has **zero** hits for `v1/skills/drafts`, `v1/skills/templates` and `skill.author` while the pre-M26 `v1/skills/catalog` route is present; the web bundle has zero hits for `SkillStudio`. Rebuild (`npm run build -w web` + a fresh `tauri build`), then launch with `:4390` free and walk generate → validate → install as in the live walk. |
 
 ---
 
@@ -202,20 +342,22 @@ packaged build. The owner pointed at **pi settings** for a live LiteLLM endpoint
   and unprivileged by construction — a bundle always lands as an inert draft —
   so signing can be added later without changing the trust model.
 - **`docs/VERIFY-M26.md` / `VERIFY-M27.md`** each carry their own *Not verified*
-  section; read those before claiming a milestone is fully proven.
+  section, and both now point at **`docs/VERIFY-LIVE.md`** — the measured record
+  of the 2026-09-17 live walks (two VERIFIED, two NOT RUN with their reasons).
+  Read those three before claiming a milestone is fully proven.
 
 ---
 
 ## 5. How to re-verify from a clean checkout
 
 ```
-npm test                                  # root: expect 1582 passed, 5 env-gated skips
+npm test                                  # root: expect 1651 passed, 5 env-gated skips
 npx vitest run shared/test                # 90
 npx vitest run --root web                 # 858
 npm run typecheck                         # 0 errors, all four workspaces
 npm run build -w web                      # green
 cd docker/server && ./stage.sh && docker compose up -d   # container refresh (needs openssl)
-docker compose logs partner --tail 3      # expect "partner-core vX up ... schema=v21"
+docker compose logs partner --tail 3      # expect "partner-core vX up ... schema=v22"
 ```
 
 Guard tests that M26/M27 deliberately updated are the schema version (six files
@@ -224,5 +366,13 @@ more**, all tripwires working as intended: `core/test/chat/skillAuthorTool.test.
 and `core/test/http/skillDraftsRoutes.test.ts` (both asserted `notes.read` was
 *undeliverable* — they now assert the same guarantee with `files.write`, which
 has never existed), and `core/test/skills/manifest.test.ts` +
-`web/test/skill-studio-helpers.test.ts` (vocabulary shape). If one fires, update
-it deliberately and say so.
+`web/test/skill-studio-helpers.test.ts` (vocabulary shape). **S4 updated two**
+more of the same kind: `core/test/skills/drafts.test.ts` (it asked for
+`notes-checklist` as an *unknown* template — now it asks for a genuinely unknown
+id, and a new test pins the capability gate that took its place) and
+`core/test/http/skillDraftsRoutes.test.ts` (the picker list is four ids now).
+**M28 B bumped the six schema tripwires to 22** (`db-migrate`, `m4Stores`,
+`m5Stores`, `m6Stores`, `m8Stores`, `m9Stores`) and added the v21 → v22 upgrade
+case to `db-migrate.test.ts` (drop the three flow columns, re-open, assert the
+row survives and the columns read NULL).
+If one fires, update it deliberately and say so.

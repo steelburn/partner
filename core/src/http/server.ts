@@ -86,6 +86,7 @@ import type { PlanInput, TaskStatusInput } from '@partner/shared';
 import type { ProviderInput, ProviderPatch, ProviderPurpose, ProviderSource } from '@partner/shared';
 import type { McpCallInput, McpServerInput, McpServerUpdate, SearchConfigInput } from '@partner/shared';
 import type { ProjectRootInput, ToolExecResponse } from '@partner/shared/tools.js';
+import type { RuntimeCapabilities } from '../skills/manifest.js';
 import { APP_SCOPE_ID } from '@partner/shared';
 import type { SiteScope } from '@partner/shared';
 import { redactString, isProviderPurpose, isSearchProvider, PROVIDER_PURPOSES } from '@partner/shared';
@@ -439,6 +440,13 @@ export interface CoreAppOptions {
    */
   skillRunner?: SkillRunner;
   /**
+   * M27: which optional reaches THIS build's skill sandbox can honour, passed
+   * through to the chat authoring instructions so the model is told about the
+   * same vocabulary the validator accepts (D9). Omitted keeps the conservative
+   * library default, which is the honest answer for a harness that did not say.
+   */
+  skillCapabilities?: RuntimeCapabilities;
+  /**
    * M9 playbook manager (optional so M0-M8 harnesses compile unchanged).
    * When absent the /v1/playbooks surface responds 501 not_configured.
    */
@@ -670,6 +678,13 @@ function assembleRequestMessages(input: {
    */
   authoringToolIds?: readonly string[] | null;
   /**
+   * M27 S2/S5: the reaches this build's skill sandbox honours, so the authoring
+   * contract names exactly the vocabulary the validator accepts (D9). Omitted
+   * keeps the conservative default — a caller that did not say gets the
+   * instruction text that promises nothing extra.
+   */
+  skillCapabilities?: RuntimeCapabilities;
+  /**
    * M12.6 approval continuation: resume the conversation WITHOUT a new user
    * turn — prompts + the stored history tail only, so the next assistant
    * round answers against the outcome notes the decision just posted.
@@ -745,7 +760,7 @@ function assembleRequestMessages(input: {
         if (base) {
           out[systemIndex] = {
             ...base,
-            content: `${base.content}\n\n${authoringInstructions(input.authoringToolIds)}`,
+            content: `${base.content}\n\n${authoringInstructions(input.authoringToolIds, input.skillCapabilities)}`,
           };
         }
       }
@@ -2958,6 +2973,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
                 options,
               )
             : null,
+        skillCapabilities: options.skillCapabilities,
         continueTurn,
       });
 
@@ -6010,6 +6026,88 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       if (!drafts) return;
       try {
         res.json(drafts.validate(String(req.params.id ?? '')));
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // M28 cut B (PLAN-M28.md D1/D5/D6): the FLOW surface — the canvas's own
+  // document. A flow is an AUTHORING view, never a second artifact: these routes
+  // keep the graph, and the ONLY thing that turns it into runnable code is
+  // `/compile`, which writes `code` + the derived permissions and then re-runs
+  // the M26 validation. `skill.author` gates every write, exactly as the other
+  // authoring routes do (desktop-only by the envelope table), and reads need no
+  // capability beyond the session.
+  //
+  // `/refine`, `/from-code` and `/explain` (slice D) are deliberately absent:
+  // this slice has no model round-trip.
+  //
+  // GET /v1/skills/drafts/:id/flow -> the flow + the DERIVED `flowStale`.
+  api.get('/v1/skills/drafts/:id/flow', requireSession(sessions), (req: Request, res: Response) => {
+    const drafts = requireSkillDrafts(options, res);
+    if (!drafts) return;
+    try {
+      res.json(drafts.getFlow(String(req.params.id ?? '')));
+    } catch (err) {
+      if (sendSkillError(res, err)) return;
+      throw err;
+    }
+  });
+
+  // PUT /v1/skills/drafts/:id/flow -> replace the flow (the canvas save).
+  // A save is NOT a compile: it validates the graph structurally and touches
+  // `code` (and therefore the derived permissions) not at all. The body is the
+  // flow document itself; `{flow: …}` is accepted too, because that is the
+  // shape every other draft write uses and a tolerant reader costs one line.
+  api.put(
+    '/v1/skills/drafts/:id/flow',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const raw =
+        body.flow !== null && typeof body.flow === 'object' && !Array.isArray(body.flow)
+          ? body.flow
+          : body;
+      try {
+        const result = drafts.saveFlow(String(req.params.id ?? ''), raw);
+        if (!result.ok) {
+          // A malformed graph writes nothing and names every offender, so the
+          // canvas can decorate the node the error points at.
+          res.status(400).json({
+            error: 'invalid_input',
+            message: result.errors[0]?.message ?? 'the flow is not a valid flow document',
+            flowErrors: result.errors,
+            warnings: result.warnings,
+          });
+          return;
+        }
+        res.json(result);
+      } catch (err) {
+        if (sendSkillError(res, err)) return;
+        throw err;
+      }
+    },
+  );
+
+  // POST /v1/skills/drafts/:id/flow/compile -> D1's ONLY writer of code from a
+  // flow. Answers with the compiler's result (and, on success, the rewritten
+  // draft — a compile IS a write); a flow that does not compile answers 200 with
+  // `ok:false` and the named error list, exactly as `/validate` reports a draft
+  // that does not validate, and writes nothing.
+  api.post(
+    '/v1/skills/drafts/:id/flow/compile',
+    requireSession(sessions),
+    capability('skill.author'),
+    (req: Request, res: Response) => {
+      const drafts = requireSkillDrafts(options, res);
+      if (!drafts) return;
+      try {
+        res.json(drafts.compileFlow(String(req.params.id ?? '')));
       } catch (err) {
         if (sendSkillError(res, err)) return;
         throw err;

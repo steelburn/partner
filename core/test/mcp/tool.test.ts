@@ -93,6 +93,29 @@ describe('M11 F2 MCP chat tool', () => {
     }
   });
 
+  it('names the PERSONA as the actor — a persona auto-call is not a web request', async () => {
+    const actors: Array<string | undefined> = [];
+    const external = mcpToolExternal(
+      stubMcp({
+        call: async (
+          id: string,
+          input: { tool: string; args?: Record<string, unknown>; timeoutMs?: number },
+          actor?: string,
+        ) => {
+          actors.push(actor);
+          return {
+            content: [{ type: 'text', text: `ran ${input.tool} on ${id}` }],
+            isError: false,
+            ms: 1,
+          };
+        },
+      }),
+    );
+    await external?.exec('mcp:fs-box/list', {});
+    // Same label the tool pass already audits its decisions under ('persona').
+    expect(actors).toEqual(['persona']);
+  });
+
   it('denies unknown formats, disabled servers, and empty output', async () => {
     const external = mcpToolExternal(stubMcp({}));
     expect(await external?.exec('search', {})).toMatchObject({ outcome: 'denied', reason: 'unknown_tool' });

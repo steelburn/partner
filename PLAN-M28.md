@@ -1,6 +1,8 @@
 # M28 — Skill Studio Flow: build a skill on a canvas, with the model as a collaborator
 
-Status: **spec** (not implemented) · Companion to `PLAN.md` §9, §15 (index) ·
+Status: **slices A + B implemented** (A: the compiler; B: the draft routes,
+schema v22 and derived staleness) · C–F remain — see *State* at the bottom ·
+Companion to `PLAN.md` §9, §15 (index) ·
 Builds on: `PLAN-M26.md` (drafts + Studio) · Uses: `PLAN-M27.md` S5
 (`partner.llm`) for its `llm` node · Reuses: `@xyflow/react` ^12.11.6 (already a
 web dependency, used by `NotesGraph.tsx`) and `web/src/lib/graph-layout.ts`.
@@ -128,8 +130,8 @@ export interface SkillFlowProposal {
 }
 ```
 
-Schema v21 → **v22** (additive, `ensureColumn` — the v12/v20/v21 pattern), three
-columns on `skill_drafts`:
+Schema v21 → **v22** (additive, `ensureColumn` — the v12/v20/v21 pattern; landed
+with slice B), three columns on `skill_drafts`:
 
 ```sql
 ALTER TABLE skill_drafts ADD COLUMN flow_json TEXT;        -- SkillFlow | NULL
@@ -144,13 +146,13 @@ just code + manifest.
 
 | Route | Capability | Notes |
 |---|---|---|
-| `GET /v1/skills/drafts/:id/flow` | — | The flow, the derived `flowStale`, and `flowCompiledAt`. |
-| `PUT /v1/skills/drafts/:id/flow` | `skill.author` | Replace the flow (the canvas save). Validates structurally; **does not** touch `code` (a save is not a compile). |
-| `POST /v1/skills/drafts/:id/flow/compile` | `skill.author` | D1: emit `code`, write `flow_sha256` + `flow_compiled_at`, derive `permissions.tools` (D5), re-run the M26 validation. Returns `{code, sha256, tools, argsForm}` or the error list. |
-| `POST /v1/skills/drafts/:id/flow/refine` | `skill.author` | D8: `{instruction}` → `SkillFlowProposal`. **Writes nothing.** |
-| `POST /v1/skills/drafts/:id/flow/from-code` | `skill.author` | D7's declared-lossy conversion: asks the model for a flow that reproduces the current code's intent, returned as a proposal (never auto-applied). |
-| `POST /v1/skills/drafts/:id/flow/explain` | `skill.author` | Optional: a plain-language walkthrough for the UI. Returns text to the owner only. |
-| `POST /v1/skills/drafts {mode:'generate-flow', description}` | `skill.author` | M26's create route gains a mode: the model returns a **flow** (not code), which the core validates and compiles. |
+| `GET /v1/skills/drafts/:id/flow` | — | **Landed (B).** The flow, the derived `flowStale`, and `flowCompiledAt`. |
+| `PUT /v1/skills/drafts/:id/flow` | `skill.author` | **Landed (B).** Replace the flow (the canvas save). Validates structurally; **does not** touch `code` (a save is not a compile). |
+| `POST /v1/skills/drafts/:id/flow/compile` | `skill.author` | **Landed (B).** D1: emit `code`, write `flow_sha256` + `flow_compiled_at`, derive `permissions.tools` **and** `permissions.llm` (D5), re-run the M26 validation. Returns `{ok, code, sha256, tools, usesLlm, argsForm, warnings, draft}` or `{ok:false, errors, warnings}` having written nothing. |
+| `POST /v1/skills/drafts/:id/flow/refine` | `skill.author` | *D:* D8: `{instruction}` → `SkillFlowProposal`. **Writes nothing.** |
+| `POST /v1/skills/drafts/:id/flow/from-code` | `skill.author` | *D:* D7's declared-lossy conversion: asks the model for a flow that reproduces the current code's intent, returned as a proposal (never auto-applied). |
+| `POST /v1/skills/drafts/:id/flow/explain` | `skill.author` | *D:* Optional: a plain-language walkthrough for the UI. Returns text to the owner only. |
+| `POST /v1/skills/drafts {mode:'generate-flow', description}` | `skill.author` | *D:* M26's create route gains a mode: the model returns a **flow** (not code), which the core validates and compiles. **Until D lands the value is refused by name** (`invalid_input`) rather than downgraded to `mode:'generate'`. |
 
 Audit (counts/ids only — never the flow body, the code, or the instruction):
 
@@ -229,14 +231,26 @@ Core
   added/removed/changed node ids and an edge-changed count; a refine reply that
   is not a valid flow is refused with errors and no partial write; the audit row
   carries counts and never the flow body or instruction.
-- `core/test/skills/flowStale.test.ts` — a flow-backed draft compiles, then a
-  hand-edit of `code` marks `flowStale`; restoring the compiled bytes clears it
-  (D6); install works from a **stale** draft because install consumes `code`
-  (asserted explicitly, so nobody later "helpfully" blocks it).
-- `core/test/http/skillFlowRoutes.test.ts` — flow get/put/compile/refine/
-  from-code: 401/404/409-on-installed/501; `skill.author` enforced; mobile and
-  extension classes refused; `generate-flow` returns a compiled draft in demo
-  mode (no provider) via the deterministic generator.
+- `core/test/skills/flowStale.test.ts` **(landed, B)** — a flow-backed draft
+  compiles, then a hand-edit of `code` marks `flowStale`; restoring the compiled
+  bytes clears it (D6); install works from a **stale** draft because install
+  consumes `code` (asserted explicitly, so nobody later "helpfully" blocks it).
+  B added to the same file: a save does not touch the code, a never-compiled
+  flow reads stale, a malformed save writes nothing, and a compile derives
+  `permissions.tools` AND `permissions.llm`. The review fixup added D5's
+  ceiling in the same file: a `files.edit` (medium) node under the `low`
+  starter manifest fails `tool_requires_medium` and writes nothing, and the
+  SAME graph compiles once the manifest declares `medium`.
+- `core/test/http/skillFlowRoutes.test.ts` **(get/put/compile landed, B)** —
+  401/404/409-on-installed/501; `skill.author` enforced; mobile and extension
+  classes refused; a PUT does not touch `code`; a compile rewrites
+  `permissions.tools` and `permissions.llm`; a stale draft installs AND runs.
+  *Still D:* `refine` / `from-code` and `generate-flow` (the create route's
+  demo-mode deterministic generator). Until D lands, `mode:'generate-flow'` on
+  `POST /v1/skills/drafts` is **refused by name** (`invalid_input`) rather
+  than falling into the `generate` branch — the wire type keeps advertising the
+  value, but a caller asking for a graph can no longer receive a code bundle
+  with `flow: null` and no error (asserted in `core/test/skills/drafts.test.ts`).
 - `core/test/skills/authoring.test.ts` (extend) — the authoring prompt teaches
   the node vocabulary **and not JavaScript**; it lists exactly the available
   node types (no `llm` when M27 S5 is absent) and the registry's tool ids; a
@@ -270,8 +284,10 @@ Docs
 
 ## Exit criteria
 
-- [ ] Schema v22 additive (a v21 DB opens unchanged) with `flow_json`,
-      `flow_sha256`, `flow_compiled_at`.
+- [x] Schema v22 additive (a v21 DB opens unchanged) with `flow_json`,
+      `flow_sha256`, `flow_compiled_at` (slice B, 2026-09-17): the guarded
+      `ensureColumn` pattern, with `core/test/stores/db-migrate.test.ts` dropping
+      the three columns and re-opening to prove a v21 row survives untouched.
 - [x] **The compiler is total and deterministic** (slice A, 2026-09-17): every
       node type, cycle/dangling/missing-output/duplicate-input/unknown-tool named
       errors, byte-identical output for one flow (asserted against shuffled
@@ -283,14 +299,19 @@ Docs
       cannot emit arbitrary JS — and `__proto__`/`constructor` are refused as
       path segments on top of the grammar, because they are a prototype reach
       even though the grammar allows them.
-- [x] **`permissions.tools` is derived from the graph** (slice A) and asserted
-      equal to the graph's `tool` node ids, de-duplicated and sorted — including
-      the empty case (no tool node => no declared tool). *Writing it into the
-      manifest is B.* Slice A also derives `usesLlm`, which the spec did not call
-      for: without it a flow with an `llm` node installs a manifest that refuses
-      every model call.
-- [ ] Flow/code staleness is derived from the hash (D6), and install from a
-      stale draft is allowed and documented (install consumes code).
+- [x] **`permissions.tools` is derived from the graph** and asserted equal to
+      the graph's `tool` node ids, de-duplicated and sorted — including the empty
+      case (no tool node => no declared tool). Slice A also derives `usesLlm`,
+      which the spec did not call for: without it a flow with an `llm` node
+      installs a manifest that refuses every model call. **Slice B writes BOTH
+      into the manifest** (`/flow/compile`), so the installed summary provably
+      matches the emitted code, and the wiring is asserted over HTTP.
+- [x] Flow/code staleness is derived from the hash (D6) — `sha256(code) !==
+      flow_sha256`, computed on every read and never stored, so a hand-edit that
+      restores the compiled bytes clears it by itself — and install from a stale
+      draft is allowed and documented (install consumes code). Slice B asserts
+      the stale install **and the stale RUN**, so a later "helpful" block fails
+      a test instead of silently redefining install.
 - [ ] AI paths: `generate-flow` produces a compiling draft; `refine` returns a
       proposal that writes nothing until accepted; `from-code` is offered as
       explicitly lossy; audits carry counts only.
@@ -303,8 +324,9 @@ Docs
       build green (React Flow is already a dependency — **no new package**);
       both demo e2e flows green.
 
-**Slice A landed 2026-09-17** (`core/src/skills/flow/schema.ts` + `flow/compile.ts`,
-both pure — no fs, db or routes; the HTTP surface is slice B). What is true now:
+**Slices A + B landed 2026-09-17** (`core/src/skills/flow/schema.ts` +
+`flow/compile.ts`, both pure — no fs, db or routes — plus the flow lifecycle in
+`core/src/skills/drafts.ts`). What is true now:
 `validateFlow(raw)` is the runtime door (the shared TS union cannot check a value
 that arrived as JSON), `compileFlow(flow, {registry, llmAvailable?, riskCeiling?,
 riskOf?})` returns `{code, sha256, tools, usesLlm, argsForm, warnings}` or a named
@@ -321,18 +343,76 @@ sequential-await ceiling; `filter`/`map` paths are item-relative; an object `mer
 binds each input's key by `targetHandle` (positional fallback), and `output text`
 renders a value carrying a `.text` string (an `llm` result) as that text.
 
+**Slice B landed 2026-09-17** — schema **v22** (three additive columns on
+`skill_drafts` via the v12/v20/v21 guarded `ensureColumn` pattern, so a v21 DB
+opens unchanged and pre-v22 rows read `NULL` = "no flow") plus the three routes
+under the existing M26 drafts surface: `GET|PUT /v1/skills/drafts/:id/flow` and
+`POST /v1/skills/drafts/:id/flow/compile`. The lifecycle lives in
+`core/src/skills/drafts.ts` (`getFlow` / `saveFlow` / `compileFlow`) so the HTTP
+surface stays a translator. Decisions fixed here, beyond the spec's letter:
+
+- **A save is not a compile.** `PUT` validates the graph with slice A's
+  `validateFlow` (a malformed body is 400 `invalid_input` with every offender in
+  `flowErrors`, and nothing is written) and then touches NOTHING but the flow:
+  `code`, `manifest_text` and therefore the derived permissions are untouched.
+  A half-drawn graph still saves — structural shape, not compilability, is the
+  save's bar.
+- **`flowStale` is derived on every read** (`sha256(code) !== flow_sha256`) and
+  is never stored. Two edges are deliberately chosen: a draft with NO flow is
+  never stale, and **a flow that has never compiled IS stale**, because its code
+  cannot be that flow's output — which is what makes the Studio offer Recompile
+  on a freshly drawn graph.
+- **`/compile` is the only writer of code from a flow**, and it writes the code,
+  `flow_sha256` and `flow_compiled_at` together, rewrites the manifest's derived
+  permissions from the graph (**`tools` AND `llm`** — a graph with no `llm` node
+  writes `llm: false`, so an earlier compile cannot leave model reach behind),
+  then re-runs the M26 validation. A flow that does not compile answers **200
+  with `ok:false` and the named error list and writes nothing**, matching the
+  `/validate` convention (the request succeeded in determining the answer).
+- **The compile response carries the rewritten draft** (`{ok, code, sha256,
+  tools, usesLlm, argsForm, warnings, draft}`): a compile IS a write, so the
+  caller must not have to guess at the new `code`, permissions and validation.
+  A `PUT` answers with the flow state. Three shared wire types were added for
+  this (`SkillFlowState`, `SkillFlowSaveResult`, `SkillFlowCompileResponse`) —
+  the spec named the fields but no shapes.
+- **`PUT` accepts the bare flow document, and `{flow: …}` too** — the body IS
+  the representation at that URL, but every other draft write is a named-field
+  object, and a one-line tolerant reader costs nothing.
+- **Audit carries counts and ids only**: `skill.flow.save {nodes, edges, stale}`
+  and `skill.flow.compile {ok, nodes, edges, tools, errorCount, codeBytes}` —
+  never the graph, the code or the manifest text (asserted).
+- **No web helper was added**: slice B has no web consumer yet (the canvas is
+  slice C), and an unused API client would be scaffolding.
+
 **The Studio split also landed** (owner decision: before slices C/D, so the canvas
 does not inherit a 2000-line file): `web/src/SkillStudio.tsx` is now a 468-line
 container, with rail / empty state / editor / validation / run / install+confirm /
 actions in `web/src/studio/*`, re-exported from the original module so no importer
 or test moved. No CSS changed.
 
-*State:* **A done; B–F remain.** Depends on M26 A+B (drafts, Studio,
+**Review fixup (2026-09-17, no version bump).** Independent review found that
+D5's ceiling was dead on the only path that matters: `compileFlow` in
+`core/src/skills/drafts.ts` called the compiler with `{registry, llmAvailable}`
+and never supplied `riskCeiling`/`riskOf`, so a `low` manifest whose graph
+held a `files.edit` node compiled silently, wrote
+`permissions.tools:['files.edit']`, re-validated ok and INSTALLED — a bundle
+guaranteed to refuse the moment a run reached that node (the same class
+`llm_not_available` exists to prevent). The draft manager now takes the
+registry's risks (`riskOf`, a REQUIRED option so it cannot go dead again) and
+the compile path parses the manifest BEFORE compiling, passing the manifest's own
+tier as `riskCeiling`; the same compile also covers `mode:'generate-flow'`
+(above). Test counts: root **1651** (5 env-gated skips) · shared **90** · web
+**858** · typechecks 0 · web build green.
+
+*State:* **A + B done; C–F remain.** Depends on M26 A+B (drafts, Studio,
 dry-run) and on **M27 S5** for the `llm` node; it can ship without S5 as a
 9-node vocabulary. Slices: **A** flow schema + compiler (pure, no UI) ·
-**B** draft routes + staleness · **C** canvas + nodes table + palette/inspector ·
+**B** draft routes + staleness (schema v22, `core/src/skills/drafts.ts` +
+`core/test/http/skillFlowRoutes.test.ts` + `core/test/skills/flowStale.test.ts`) ·
+**C** canvas + nodes table + palette/inspector ·
 **D** AI build/refine/from-code + proposal diff · **E** chat `flow` payload ·
-**F** docs/verify. A+B are fully walkable from the API before any canvas work.
+**F** docs/verify. A+B are fully walkable from the API before any canvas work —
+a flow can be saved, compiled, validated, installed and run over HTTP today.
 
 ## Out of scope
 

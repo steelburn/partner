@@ -943,7 +943,7 @@ export interface SkillStore {
   remove(id: string): void;
 }
 
-/** `skill_drafts` row — an INERT authored bundle (M26, schema v21). */
+/** `skill_drafts` row — an INERT authored bundle (M26, schema v21; flow v22). */
 export interface SkillDraftRow {
   id: string;
   name: string;
@@ -968,6 +968,15 @@ export interface SkillDraftRow {
   personaId: string | null;
   /** Set on promote: the version that shipped (audit trail). */
   installedVersion: string | null;
+  /**
+   * M28 (v22): the flow document (JSON `SkillFlow`), NULL for a code-authored
+   * draft. It is an AUTHORING view — install still consumes `code`.
+   */
+  flowJson: string | null;
+  /** The sha256 of the code the flow last compiled to (NULL = never compiled). */
+  flowSha256: string | null;
+  /** When that compile happened (NULL = never compiled). */
+  flowCompiledAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -989,6 +998,9 @@ export type SkillDraftRowPatch = Partial<
     | 'conversationId'
     | 'personaId'
     | 'installedVersion'
+    | 'flowJson'
+    | 'flowSha256'
+    | 'flowCompiledAt'
   >
 > & { updatedAt: number };
 

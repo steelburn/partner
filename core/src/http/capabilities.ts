@@ -86,10 +86,12 @@ export type Capability = (typeof CAPABILITIES)[number];
  * `mcp.call` are INDIRECT routes to the very capabilities mobile is denied.
  * Creating a grant is an authorization act for something mobile may not do;
  * a skill or an MCP server can carry file-write permissions of its own. That is
- * why the class has to travel WITH the work: M27 S3 propagates the session class
- * into the skill runner (so a brokered call from a skill applies THIS table
- * before the skill's own grants) and M27 S5 extends it to a skill's model reach
- * (`skill.llm` below), while a skill's MCP path (M27 S2) is not wired yet.
+ * why the class has to travel WITH the work — and it does: M27 S2 gates a
+ * skill's MCP path with this table FIRST, above the manifest's declaration
+ * (`mcp/skillReach.ts`), M27 S3 propagates the session class into the skill
+ * runner (so a brokered call from a skill applies THIS table before the skill's
+ * own grants), and M27 S5 extends it to a skill's model reach (`skill.llm`
+ * below).
  *
  * So this FAILS CLOSED. Those three may be added back only together with a test
  * proving the session class propagates into skill and MCP execution (the S4

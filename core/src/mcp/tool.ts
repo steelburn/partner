@@ -6,6 +6,10 @@
  * ENABLED servers (default-deny), gated like any medium-risk external tool
  * (auto+ personas), and executed through the MCP manager (one stdio session
  * per call, sandboxed + timed out server-side).
+ *
+ * The actor the call executes under is `persona` — the same label the tool pass
+ * audits its own decisions under — so the manager's execution row does not read
+ * as a web request the user made.
  */
 import type { ToolExecResponse, ToolId, ToolManifest } from '@partner/shared/tools.js';
 import type { McpManager } from './manager.js';
@@ -59,7 +63,7 @@ export function mcpToolExternal(
       if (parts === null) return { outcome: 'denied', reason: 'unknown_tool' };
       if (!serverEnabled(parts.serverId)) return { outcome: 'denied', reason: 'disabled' };
       try {
-        const result = await mcp.call(parts.serverId, { tool: parts.tool, args: args ?? {} });
+        const result = await mcp.call(parts.serverId, { tool: parts.tool, args: args ?? {} }, 'persona');
         // Flatten text content so the generic summarizer keeps it legible.
         const flat: Record<string, unknown> = { tool: parts.tool, server: parts.serverId };
         let textIndex = 0;

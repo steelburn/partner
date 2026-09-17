@@ -142,7 +142,7 @@ export interface ProviderClient {
 // Versioning
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 export const WIRE_VERSION = 'v1';
 
 /**

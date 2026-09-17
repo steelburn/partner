@@ -88,7 +88,7 @@ export function buildAuthoringPrompt(input: AuthoringPromptInput): string {
     'list below is refused, so declaring reach you do not use only makes the',
     'bundle invalid.',
     '',
-    entryContract(input.toolIds, { llm: capabilities.llm }),
+    entryContract(input.toolIds, { llm: capabilities.llm, mcp: capabilities.mcp }),
     '',
     'LIMITS THE CORE ENFORCES (a bundle that breaks one is refused, not fixed):',
     '  - args are capped at 64 KiB and the result at 1 MiB',
@@ -118,6 +118,24 @@ export function buildAuthoringPrompt(input: AuthoringPromptInput): string {
   }
   if (!capabilities.mcp) {
     lines.push('  - "permissions.mcpServers" is refused in this build - do not declare it');
+  } else {
+    // M27 S2 D9: the reach exists, so DESCRIBE it - what it is declared as,
+    // that the server must already be enabled, and the ceiling rule the
+    // validator enforces - driven by the capability the caller passed, so the
+    // prompt and the validator cannot disagree about what is declarable.
+    lines.push(
+      '  - "permissions.mcpServers": ["<server-id>", ...] lets the skill call a',
+      '    tool on an MCP server the OWNER has configured and enabled. Ask for it',
+      '    only when the task genuinely needs that server; the entry reaches it as',
+      '    partner.tools.exec("mcp:<server-id>/<tool-name>", args). The server id',
+      '    is the id the owner configured, NOT a tool name.',
+      '  - because an MCP tool\'s own risk cannot be known in advance, a manifest',
+      '    that declares mcpServers must also declare at least "medium" risk; a',
+      '    "low" manifest declaring MCP is refused.',
+      '  - an MCP call can fail (mcp_not_declared, mcp_disabled, upstream,',
+      '    capability_denied); catch it and still return a useful result, because',
+      '    the server is the user\'s to configure and may not be enabled yet',
+    );
   }
   lines.push(
     '',

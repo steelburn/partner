@@ -8,10 +8,13 @@
  *
  * Rule that keeps this module small: a template may only use capabilities the
  * runtime can actually honour. The palette is therefore derived from reality,
- * not from a wish list (a `notes` or `mcp` template appears only once M27 wires
- * that reach). `availableTemplates(capabilities)` is the single source of that
- * decision, so the Studio picker, the authoring prompt and the docs cannot
- * drift apart.
+ * not from a wish list (the `notes` and `mcp` templates appeared only once M27
+ * wired those reaches — S1 and S2). `availableTemplates(capabilities)` is the
+ * single source of that decision, so the Studio picker, the authoring prompt
+ * and the docs cannot drift apart.
+ *
+ * Every template's bundle must BOTH validate and run: `templates.test.ts` holds
+ * each one to a real dry-run, not to a lint.
  */
 import type { SkillManifest, ToolId } from '@partner/shared';
 import type { RuntimeCapabilities } from './manifest.js';
@@ -69,6 +72,123 @@ export async function run(args = {}) {
 }
 `;
 
+const NOTES_CHECKLIST_CODE = `/**
+ * ${'{name}'} — one checklist out of the checklist items in your notes.
+ *
+ * All three calls are APP-SCOPED: they take no \`projectId\` and touch no
+ * project root — the core's own note store IS the scope, and the owner grants it
+ * once as app data ("your notes, read-only") beside their roots. Until that
+ * grant exists every call is refused with \`tool_denied\`, which this entry
+ * reports rather than throwing.
+ *
+ * The work is bounded: at most \`limit\` notes are listed or matched and one
+ * \`notes.read\` per note, so a large store cannot turn this into an unbounded
+ * loop of tool calls that the manifest's time budget would kill.
+ */
+export async function run(args = {}) {
+  const query = typeof args.query === 'string' ? args.query.trim() : '';
+  const requested = typeof args.limit === 'number' && args.limit > 0 ? Math.floor(args.limit) : 10;
+  const limit = Math.min(requested, 25);
+  try {
+    let notes = [];
+    if (query === '') {
+      const listed = await partner.tools.exec('notes.list', { limit });
+      notes = Array.isArray(listed && listed.notes) ? listed.notes : [];
+    } else {
+      const found = await partner.tools.exec('notes.search', { query, limit });
+      notes = Array.isArray(found && found.matches) ? found.matches : [];
+    }
+    const items = [];
+    for (const summary of notes) {
+      const note = await partner.tools.exec('notes.read', { id: summary.id });
+      const content = typeof note?.content === 'string' ? note.content : '';
+      // Markdown task items only: "- [ ] …" / "* [x] …".
+      for (const line of content.split('\\n')) {
+        const match = /^\\s*[-*]\\s*\\[([ xX])\\]\\s*(.+?)\\s*$/.exec(line);
+        if (match === null) continue;
+        items.push({
+          note: typeof note.title === 'string' ? note.title : summary.id,
+          done: match[1].toLowerCase() === 'x',
+          text: match[2],
+        });
+      }
+    }
+    return {
+      ok: true,
+      notes: notes.length,
+      open: items.filter((item) => item.done === false).length,
+      done: items.filter((item) => item.done === true).length,
+      items,
+    };
+  } catch (err) {
+    // A refusal is a CODE (tool_denied until app data is granted), never an
+    // empty checklist that would read as "nothing left to do".
+    return { ok: false, reason: err && typeof err.code === 'string' ? err.code : 'failed' };
+  }
+}
+`;
+
+const MCP_CALL_CODE = `/**
+ * ${'{name}'} — calls ONE tool on an MCP server you configured.
+ *
+ * The server must be declared in this skill's manifest
+ * \`permissions.mcpServers\` AND configured and ENABLED in Partner before the
+ * run. A skill cannot be asked anything, so an undeclared, disabled or failing
+ * server is a coded refusal this entry reports — never a prompt, and never a
+ * failed run:
+ *
+ *   mcp_not_declared  the manifest does not name that server
+ *   mcp_disabled      the server is not configured, or not enabled
+ *   tool_denied       the manifest's risk is below "medium"
+ *   upstream         the server failed, or serves no tool by that name
+ *
+ * Server ids are generated when a server is added, so a template cannot know
+ * yours: the manifest shipped with this one carries a placeholder id to replace
+ * before install.
+ */
+export async function run(args = {}) {
+  const server = typeof args.server === 'string' ? args.server.trim() : '';
+  const tool = typeof args.tool === 'string' ? args.tool.trim() : '';
+  if (server === '' || tool === '') {
+    return {
+      ok: false,
+      reason: 'server and tool are required: an MCP server id you configured, and a tool it serves',
+    };
+  }
+  const params = args.params !== null && typeof args.params === 'object' ? args.params : {};
+  try {
+    const out = await partner.tools.exec('mcp:' + server + '/' + tool, params);
+    const result = out !== null && typeof out === 'object' ? out : {};
+    // The reach flattens the server's text items to output_1…n and counts every
+    // item, so a result is never silently thinner than the server sent.
+    const text = [];
+    for (let index = 1; typeof result['output_' + index] === 'string'; index += 1) {
+      text.push(result['output_' + index]);
+    }
+    return {
+      ok: true,
+      server,
+      tool,
+      contentItems: typeof result.contentItems === 'number' ? result.contentItems : 0,
+      ms: typeof result.ms === 'number' ? result.ms : 0,
+      text: text.join('\\n'),
+    };
+  } catch (err) {
+    return { ok: false, reason: err && typeof err.code === 'string' ? err.code : 'failed' };
+  }
+}
+`;
+
+/**
+ * The placeholder server id in the MCP template's manifest.
+ *
+ * MCP server ids are generated when the owner adds a server, so no template can
+ * name the real one. The id must still be PRESENT for the manifest to be a
+ * truthful example of the reach — `permissions.mcpServers` plus the `medium`
+ * ceiling — and it is the one field the author edits before installing.
+ */
+export const MCP_TEMPLATE_SERVER_ID = 'your-mcp-server';
+
 function withName(code: string, name: string): string {
   return code.replace('${name}', name);
 }
@@ -114,6 +234,70 @@ export const SKILL_TEMPLATES: readonly SkillTemplate[] = [
         budget: { timeMs: 30_000 },
       },
       code: withName(READS_FILES_CODE, name),
+    }),
+  },
+  {
+    id: 'notes-checklist',
+    name: 'Checklist from your notes',
+    description:
+      'Collects the checklist items out of the notes you have granted it.',
+    reach:
+      'Your notes — read-only, and only while you have granted this skill app data.',
+    requires: 'notes',
+    build: (name, id) => ({
+      manifest: {
+        id,
+        name,
+        description: 'Collects the checklist items from the notes the user grants it.',
+        author: 'You',
+        version: '0.1.0',
+        entrypoint: 'entry.mjs',
+        permissions: {
+          // App-scoped: no `projectId`, and no root to grant — the grant is
+          // keyed on APP_SCOPE_ID, which is exactly what the picker's "App
+          // data" group consents to (M27 D1/D4).
+          tools: ['notes.list', 'notes.search', 'notes.read'] as ToolId[],
+          network: false,
+          // Same ceiling the other read-only template presents: reading the
+          // owner's own notes is data they consent to explicitly, and the
+          // broker manifests for all three tools are `low`, so nothing is
+          // refused by declaring it here.
+          risk: 'medium',
+        },
+        budget: { timeMs: 30_000 },
+      },
+      code: withName(NOTES_CHECKLIST_CODE, name),
+    }),
+  },
+  {
+    id: 'mcp-call',
+    name: 'Calls an MCP server tool',
+    description:
+      'Calls one tool on an MCP server you have configured and enabled.',
+    reach:
+      'One tool on an MCP server you enable — nothing else on it is reachable.',
+    requires: 'mcp',
+    build: (name, id) => ({
+      manifest: {
+        id,
+        name,
+        description: 'Calls one tool on a declared MCP server and returns its text content.',
+        author: 'You',
+        version: '0.1.0',
+        entrypoint: 'entry.mjs',
+        permissions: {
+          // No broker tool: the reach is the server, not a tool id (M27 D5).
+          tools: [],
+          network: false,
+          // D6: an MCP tool's own risk is unknowable in advance, so a manifest
+          // that declares a server must present at least `medium` — the
+          // validator refuses anything lower at draft time.
+          risk: 'medium',
+          mcpServers: [MCP_TEMPLATE_SERVER_ID],
+        },
+        budget: { timeMs: 30_000 },
+      },
+      code: withName(MCP_CALL_CODE, name),
     }),
   },
 ];
