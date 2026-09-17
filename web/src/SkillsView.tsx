@@ -149,6 +149,14 @@ export default function SkillsView({
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(false);
+  /**
+   * Bumped when a draft is created HERE (Edit in Studio / Fork) so the Studio
+   * re-reads its rail. The Studio reloads its list when the view becomes active,
+   * which is not this case — the view is already open — and without the re-read
+   * the rail showed fewer drafts than the core held (the nav badge and the rail
+   * disagreed) and the focus intent below could not be resolved against it.
+   */
+  const [studioReloadToken, setStudioReloadToken] = useState(0);
   /** Per-row op busy map: {skillId: op} — one op at a time per row. */
   const [busy, setBusy] = useState<Record<string, RowOp>>({});
   /** Two-step uninstall arming per skill id. */
@@ -367,7 +375,9 @@ export default function SkillsView({
           : await editSkill(token, skillId);
       // The shell owns the intent; opening the draft is its decision, so the
       // Studio and a chat card cannot disagree about what "open in the Studio"
-      // means.
+      // means. The token is bumped FIRST so the rail re-read happens alongside
+      // the intent, not after it has been resolved against a stale list.
+      setStudioReloadToken((count) => count + 1);
       onOpenStudioDraft?.(draft.id);
       onAttentionChanged?.();
     } catch (cause) {
@@ -727,6 +737,7 @@ export default function SkillsView({
             personas={personas}
             focusDraftId={studioFocus?.draftId ?? null}
             onFocusHandled={onStudioFocusConsumed}
+            reloadToken={studioReloadToken}
             onOpenConversation={onOpenConversation}
             onSessionLost={handleSessionLost}
             onReadyCountChange={handleReadyCount}

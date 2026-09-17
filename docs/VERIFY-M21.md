@@ -115,8 +115,19 @@ n/a (no new UI).
 - **Cloudflare Access** (extra auth in front of the hostname) is recommended in
   the README and not configured here.
 - The `desktop`-class gap in finding 2 (a product decision, not a defect).
-- Windows-native (`stage.ps1`) was not executed on this box; only `stage.sh`
-  under Git-Bash. The PowerShell script needs OpenSSL on PATH.
+- **The container shipped no skill worker harness until 2026-09-18.** The
+  runner forks `worker-runner.mjs` as its own process, and in a bundled CJS
+  artifact `import.meta.url` is empty, so it resolves `$PWD/worker-runner.mjs`
+  (WORKDIR `/app`) — a file the image never copied. Every skill invocation and
+  Studio dry-run in the deployed container failed `no_worker`. The image now
+  COPYs it and both stage scripts copy it out of `core/src/skills/`, and a real
+  forked invocation inside the container is measured (ready → invoke → result).
+- **`stage.ps1` did not run on Windows PowerShell 5.1 until 2026-09-18.** It
+  failed to PARSE (not to execute): a UTF-8 em dash inside a double-quoted
+  string is read as a smart quote under the ANSI code page, closing the string
+  early. `docker/server/stage.ps1` is ASCII-only now (the same one-line hazard
+  was fixed in `shell/windows/build-windows.ps1`), and the script was run end to
+  end on Windows: SPA + core bundle + staging + certificate reuse + image build.
 
 ---
 

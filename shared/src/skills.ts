@@ -142,6 +142,18 @@ export interface SkillDraftValidation {
 export interface SkillDraftSummary {
   id: string;
   name: string;
+  /**
+   * The draft's own short description — the SKILL's description, not the prompt
+   * it was generated from (`prompt` is that, and may be '').
+   *
+   * It mirrors `manifest.description`: `create()` and `stageFromChat()` write the
+   * manifest's own description into this column (`rowDescriptionOf` in
+   * `core/src/skills/drafts.ts`), and the Studio's Description field is seeded
+   * from the manifest and writes back to both. A draft created without one
+   * typing it therefore carries the same fallback the manifest does, instead of
+   * an empty row over a real manifest value — the mismatch that let a first save
+   * invalidate a draft nobody had edited.
+   */
   description: string;
   status: SkillDraftStatus;
   origin: SkillDraftOrigin;
@@ -161,7 +173,11 @@ export interface SkillDraftSummary {
 export interface SkillDraft extends SkillDraftSummary {
   /** The editable entry source (owner's content; never audited). */
   code: string;
-  /** The description the draft was generated from, verbatim (may be ''). */
+  /**
+   * The description the draft was generated FROM, verbatim (may be '') — the
+   * prompt, not the skill's description. A template/blank draft carries no
+   * prompt at all; `description` above is the field the Studio shows and edits.
+   */
   prompt: string;
   /** Raw manifest text while it does not parse. */
   manifestText: string;

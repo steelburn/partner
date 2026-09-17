@@ -47,6 +47,7 @@ import { timeAgo } from './lib/persona-helpers.js';
 import { readStoredToken } from './lib/token.js';
 
 import { DraftActions } from './studio/DraftActions.js';
+import { DraftComposer } from './studio/DraftComposer.js';
 import { DraftEditor } from './studio/DraftEditor.js';
 import { DraftEmptyState } from './studio/DraftEmptyState.js';
 import { DraftRail } from './studio/DraftRail.js';
@@ -77,6 +78,13 @@ export interface SkillStudioProps {
   onReadyCountChange?: (ready: number) => void;
   /** A skill was installed — the shell refreshes its Installed list. */
   onInstalled?: (skillId: string) => void;
+  /**
+   * Bumped by the shell when another surface created a draft (Installed ->
+   * Edit in Studio / Fork). The rail only re-reads on ACTIVATION otherwise, so
+   * without this the list would show fewer drafts than the core holds — and a
+   * focus intent naming the new one could not be resolved against it.
+   */
+  reloadToken?: number;
 }
 
 /**
@@ -97,6 +105,7 @@ export default function SkillStudio({
   disabled,
   onReadyCountChange,
   onInstalled,
+  reloadToken,
 }: SkillStudioProps) {
   const [drafts, setDrafts] = useState<SkillDraftSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -104,6 +113,20 @@ export default function SkillStudio({
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /**
+   * A focus intent that has not been satisfied yet.
+   *
+   * The shell clears its half as soon as the segment switch is applied, and the
+   * list this Studio holds reloads asynchronously — so between those two facts
+   * there is a window in which the intent names a draft the loaded list does not
+   * have. Resolving against that list fell through to `drafts[0]`: the owner
+   * asked for the draft Edit/Fork just made and got an unrelated (often
+   * read-only) one. Held here until the detail for it is on screen, or until the
+   * owner picks a row.
+   */
+  const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
+  /** Open the create form in the work area (rail's "New draft"). */
+  const [composing, setComposing] = useState(false);
   const [detail, setDetail] = useState<SkillDraft | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -183,23 +206,32 @@ export default function SkillStudio({
     // another surface (the persona's install ask approved in the chat, a
     // provider added in Providers), so a once-only load would leave the rail
     // showing "awaiting your approval" for a draft that is already installed.
+    // `reloadToken` extends the same rule to a draft CREATED elsewhere while
+    // this view is already open (Installed -> Edit in Studio / Fork).
     // It is summaries only - no draft source is fetched here.
     void loadDraftList();
     void loadTemplates();
     void loadProviderFlag();
     setReloadKey((key) => key + 1);
-    // Intended: refresh whenever the view becomes visible; the loads are stable
-    // callbacks over mounted state.
+    // Intended: refresh whenever the view becomes visible or a draft was born
+    // elsewhere; the loads are stable callbacks over mounted state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [active, reloadToken]);
 
   // The deep-link intent wins for the render it arrives in, then the local
   // choice takes over (the shell clears its half as soon as we have it).
-  const activeId = resolveSelectedDraft(drafts ?? [], focusDraftId, selectedId);
+  const activeId = resolveSelectedDraft(
+    drafts ?? [],
+    pendingFocusId ?? focusDraftId,
+    selectedId,
+  );
 
   useEffect(() => {
     if (focusDraftId === null || focusDraftId === undefined || focusDraftId === '') return;
     setSelectedId(focusDraftId);
+    // Held, not consumed: the list may not contain it yet (see pendingFocusId).
+    setPendingFocusId(focusDraftId);
+    setComposing(false);
     onFocusHandled?.();
     // Intended: apply each intent once; `focusDraftId` is the signal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -231,6 +263,9 @@ export default function SkillStudio({
         if (cancelled) return;
         setDetail(full);
         target = full.manifest?.id ?? full.id;
+        // The intent has landed: the local selection now names a draft that
+        // exists, so the rail (and the resolver) can own the choice again.
+        setPendingFocusId((current) => (current === activeId ? null : current));
       } catch (cause) {
         if (cancelled) return;
         if (isSessionLost(cause)) {
@@ -267,6 +302,8 @@ export default function SkillStudio({
 
   const selectDraft = (id: string): void => {
     setSelectedId(id);
+    setPendingFocusId(null);
+    setComposing(false);
     setDetailError(null);
     setInstallNote(null);
   };
@@ -279,6 +316,8 @@ export default function SkillStudio({
     });
     setDetail(draft);
     setSelectedId(draft.id);
+    setPendingFocusId(null);
+    setComposing(false);
     setLoadError(null);
     setInstallNote(null);
   };
@@ -294,6 +333,8 @@ export default function SkillStudio({
     setDrafts((prev) => (prev ?? []).filter((row) => row.id !== id));
     setDetail(null);
     setSelectedId(null);
+    setPendingFocusId(null);
+    setComposing(false);
     setInstalled(null);
   };
 
@@ -316,6 +357,13 @@ export default function SkillStudio({
   const shape = detail === null ? null : detail.manifest;
   const diffRows = detail === null ? [] : permissionDiffRows(installed?.manifest ?? null, shape);
 
+  /** Open the create form beside the list it adds to. */
+  const startComposing = (): void => {
+    setComposing(true);
+    setDetailError(null);
+    setInstallNote(null);
+  };
+
   return (
     <div className="studio">
       <DraftRail
@@ -326,6 +374,7 @@ export default function SkillStudio({
         loading={drafts === null && loadError === null}
         loadError={loadError}
         onRetry={() => void loadDraftList()}
+        onCompose={startComposing}
       />
 
       <div className="studio-work">
@@ -338,6 +387,37 @@ export default function SkillStudio({
             onCreated={adoptDraft}
             onSessionLost={handleSessionLost}
           />
+        ) : composing ? (
+          /* The same form the empty state mounts: a draft that exists no longer
+           * has that door, and discarding the whole rail to get it back was
+           * never a flow. */
+          <section className="card" aria-label="New draft">
+            <div className="section-head">
+              <h2 className="card-title">New draft</h2>
+            </div>
+            <p className="card-copy">
+              A draft is inert — nothing it contains runs or installs until you test it and
+              install it yourself.
+            </p>
+            <DraftComposer
+              templates={templates}
+              templatesError={templatesError}
+              providerConfigured={providerConfigured}
+              disabled={disabled === true}
+              onCreated={adoptDraft}
+              onSessionLost={handleSessionLost}
+            />
+            <div className="studio-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setComposing(false)}
+                disabled={disabled === true}
+              >
+                Back to the draft
+              </button>
+            </div>
+          </section>
         ) : activeId === null ? (
           <p className="skills-loading" aria-busy="true">
             Loading drafts…
@@ -460,6 +540,7 @@ export default function SkillStudio({
 // public door into the Studio (importers and the web tests did not have to move).
 export { DraftRail } from './studio/DraftRail.js';
 export { DraftEmptyState } from './studio/DraftEmptyState.js';
+export { DraftComposer } from './studio/DraftComposer.js';
 export { DraftEditor } from './studio/DraftEditor.js';
 export { ValidationPanel } from './studio/ValidationPanel.js';
 export { RunPanel } from './studio/RunPanel.js';

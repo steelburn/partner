@@ -234,17 +234,29 @@ describe('M26 draft dry-run', () => {
     }
   });
 
-  it('maps a throw inside run() to skill_error', async () => {
+  it('maps a throw inside run() to skill_error, with the worker own reason', async () => {
     const h = demoHarness();
     try {
       const drafts = draftsOf(h);
       const id = await draft(h, {
         name: 'Runtime Throw',
-        code: 'export function run(){ throw new Error("nope"); }',
+        code:
+          'export function run(){ throw new Error("nope: token=sk-abcdefgh12345678"); }',
       });
       const run = await drafts.runDraft(id);
       expect(run.ok).toBe(false);
-      if (!run.ok) expect(run.error).toBe('skill_error');
+      if (run.ok) return;
+      expect(run.error).toBe('skill_error');
+      const joined = run.logs.join('\n');
+      // D5's whole point, extended to the runtime path: the CODE names the class
+      // of failure, and the message is what the author can act on. An opaque
+      // `skill_error` beside an empty log is the `crashed` this milestone
+      // exists to remove.
+      expect(joined).toContain('skill_error');
+      expect(joined).toContain('nope');
+      // …and the reason follows the SAME redaction rule as every other log line.
+      expect(joined).toContain('***[redacted]');
+      expect(joined).not.toContain('sk-abcdefgh12345678');
     } finally {
       h.close();
     }

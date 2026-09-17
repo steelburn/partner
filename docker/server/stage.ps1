@@ -36,6 +36,11 @@ Copy-Item -Recurse web/dist docker/server/web
 Remove-Item -Recurse -Force docker/server/skills-catalog -ErrorAction SilentlyContinue
 Copy-Item -Recurse skills-catalog docker/server/skills-catalog
 
+# The skill worker harness is forked as its own process, so it is STAGED next to
+# the bundle rather than bundled: in a bundled CJS artifact `import.meta.url` is
+# empty and the runner resolves it as `$PWD/worker-runner.mjs` (WORKDIR /app).
+Copy-Item core/src/skills/worker-runner.mjs docker/server/worker-runner.mjs -Force
+
 Write-Host "==> origin certificate for $partnerHost"
 $secrets = Join-Path $PSScriptRoot 'secrets'
 New-Item -ItemType Directory -Force -Path $secrets | Out-Null
@@ -48,7 +53,7 @@ $covers = $false
 if ((Test-Path $crt) -and (Test-Path $key)) {
   openssl x509 -in $crt -noout -checkhost $partnerHost *> $null
   $covers = ($LASTEXITCODE -eq 0)
-  if (-not $covers) { Write-Host "    existing certificate does not cover $partnerHost — regenerating" }
+  if (-not $covers) { Write-Host "    existing certificate does not cover $partnerHost - regenerating" }
 }
 if ($covers) {
   Write-Host '    existing certificate kept (delete docker\server\secrets to regenerate)'

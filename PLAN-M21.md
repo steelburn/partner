@@ -63,11 +63,15 @@ container behind a tunnel":
       doing nothing (no `hashchange` listener). Both fixed, both falsified by
       injection, and the cross-module seam is now pinned by
       `tests/pair-payload-agreement.test.ts`.
-- [ ] `stage.ps1` on Windows PowerShell (unused here — `stage.sh` under Git-Bash
-      was validated instead).
+- [x] `stage.ps1` on Windows PowerShell — **run on Windows PowerShell 5.1 on
+      2026-09-18**. It did not parse at all (a UTF-8 em dash inside a
+      double-quoted string is read as a smart quote by PS 5.1, so the string
+      closed early); the script is ASCII-only now and stages the skill worker
+      harness too. See `docs/VERIFY-M21.md`.
 - [ ] A phone (handset) walk: the browser walk above used this machine's desktop
       browser over the tunnel.
 
-*State: implemented + container-verified + live-verified 2026-09-13. The two
-unchecked boxes are env-gated conveniences, not blockers; see
-`docs/VERIFY-M21.md` for the live record and the two defects it caught.*
+*State: implemented + container-verified + live-verified 2026-09-13, refreshed
+2026-09-18 (rebuilt image, container recreated, public host healthy). One
+unchecked box remains (a handset walk — an env-gated convenience, not a blocker);
+see `docs/VERIFY-M21.md` for the live record and the defects it caught.*

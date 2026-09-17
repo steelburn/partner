@@ -36,6 +36,11 @@ cp -R web/dist docker/server/web
 rm -rf docker/server/skills-catalog
 cp -R skills-catalog docker/server/skills-catalog
 
+# The skill worker harness is forked as its own process, so it is STAGED next to
+# the bundle rather than bundled: in a bundled CJS artifact `import.meta.url` is
+# empty and the runner resolves it as `$PWD/worker-runner.mjs` (WORKDIR /app).
+cp core/src/skills/worker-runner.mjs docker/server/worker-runner.mjs
+
 echo "==> origin certificate for ${HOST}"
 mkdir -p docker/server/secrets
 # Reuse the certificate ONLY when it already covers the current hostname. A

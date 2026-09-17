@@ -428,6 +428,28 @@ function normaliseId(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
+/**
+ * The description the ROW carries, given the manifest it was just built from.
+ *
+ * `description` is the skill's own short description (`prompt` is the ask it was
+ * generated from, a different column), and the Studio shows and edits exactly
+ * this one — seeded from the MANIFEST, written back to both
+ * (`web/src/studio/DraftEditor.tsx`). A create that let them start out different
+ * (a template or blank draft is created with no description typed, while its
+ * manifest carries one) therefore showed an empty field over a real manifest
+ * value — and the first save wrote that emptiness back into the manifest,
+ * invalidating a draft nobody had edited.
+ *
+ * Birth is the only place this can be settled: whenever the manifest parses, its
+ * own description is the one that travels with the skill. The caller's text
+ * stays the fallback for a manifest that does not parse (an author's broken
+ * JSON, where there is nothing better to show).
+ */
+function rowDescriptionOf(manifest: SkillManifest | null, fallback: string): string {
+  const fromManifest = manifest?.description;
+  return typeof fromManifest === 'string' && fromManifest.trim() !== '' ? fromManifest : fallback;
+}
+
 /** Deterministic slug that satisfies ID_RE, or '' when nothing usable remains. */
 export function slugifySkillId(raw: string): string {
   const slug = String(raw ?? '')
@@ -1051,7 +1073,8 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
     store.insert({
       id,
       name,
-      description,
+      // The row and the manifest carry ONE description (see rowDescriptionOf).
+      description: rowDescriptionOf(manifest, description),
       status: 'draft',
       origin,
       manifestJson: manifest === null ? null : JSON.stringify(manifest),
@@ -1194,7 +1217,9 @@ export function createSkillDraftManager(options: SkillDraftManagerOptions): Skil
     store.insert({
       id,
       name,
-      description,
+      // Same one-description rule as `create`: the model's manifest is the
+      // skill's description, and the row mirrors it (see rowDescriptionOf).
+      description: rowDescriptionOf(manifest, description),
       status: 'draft',
       origin: 'chat',
       manifestJson: manifest === null ? null : JSON.stringify(manifest),

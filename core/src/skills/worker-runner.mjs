@@ -48,6 +48,12 @@ const maxResultBytes = Number(process.env.PARTNER_SKILL_MAX_RESULT_BYTES ?? 1024
  */
 const MAX_IN_FLIGHT_REQUESTS = 8;
 const MAX_ERROR_CODE = 200;
+/**
+ * How much of a failure's own message travels as a log line. Generous enough for
+ * a real stack-free explanation, bounded so a skill cannot turn one throw into
+ * an unbounded log.
+ */
+const MAX_ERROR_MESSAGE = 500;
 
 function send(message) {
   if (typeof process.send !== 'function') return;
@@ -63,6 +69,34 @@ function errorCodeOf(err) {
     return err.code.slice(0, MAX_ERROR_CODE);
   }
   return 'skill_error';
+}
+
+/**
+ * A human-readable reason for a failed run.
+ *
+ * The CODE names the CLASS of failure (`skill_error`); this names the CAUSE, and
+ * it is the difference between "your skill failed" and "your skill failed
+ * because ...". It travels as an ordinary log line, so the parent redacts it
+ * exactly like every other line a worker sends, and the owner reads it beside
+ * the code in the Test run panel.
+ *
+ * A stack is deliberately NOT sent: it names paths inside the scratch bundle the
+ * owner cannot act on, and the message is the part they fix.
+ */
+function describeError(err) {
+  let text;
+  if (err instanceof Error) {
+    text = err.message === '' ? err.name : `${err.name}: ${err.message}`;
+  } else if (typeof err === 'string') {
+    text = err;
+  } else {
+    try {
+      text = JSON.stringify(err) ?? String(err);
+    } catch {
+      text = String(err);
+    }
+  }
+  return text.length > MAX_ERROR_MESSAGE ? `${text.slice(0, MAX_ERROR_MESSAGE)}…` : text;
 }
 
 /** The one error shape both broker verbs reject with: message = code. */
@@ -240,6 +274,11 @@ function finalizeOk(value) {
   try {
     text = JSON.stringify(value === undefined ? null : value);
   } catch {
+    // The same rule as a throw: name the cause, not just the code.
+    send({
+      type: 'log',
+      line: 'skill error (skill_error): the value run() returned is not JSON-serializable',
+    });
     sendErrResult('skill_error');
     return;
   }
@@ -254,7 +293,12 @@ function finalizeOk(value) {
 function finalizeError(err) {
   if (settled) return;
   settled = true;
-  sendErrResult(errorCodeOf(err));
+  const code = errorCodeOf(err);
+  // D5: a coded failure the owner cannot read is the opaque `crashed` this
+  // harness exists to remove, so the reason ships WITH the code (and is redacted
+  // by the parent like any other log line).
+  send({ type: 'log', line: `skill error (${code}): ${describeError(err)}` });
+  sendErrResult(code);
 }
 
 process.on('message', (msg) => {

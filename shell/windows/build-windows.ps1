@@ -44,7 +44,7 @@ if ($Run) {
   $env:PARTNER_STATIC_DIR  = "$root/web/dist"
   Write-Host "Start the core first:" -ForegroundColor Yellow
   Write-Host "  cd $root; `$env:PORT='4390'; `$env:DEMO_MODE='1'; node shell/artifacts/core-bundle.cjs"
-  Write-Host "Launching shell…"
+  Write-Host "Launching shell..."
   & $exe
 } else {
   Write-Host "Built: $exe" -ForegroundColor Green

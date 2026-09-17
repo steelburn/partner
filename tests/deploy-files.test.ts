@@ -110,13 +110,28 @@ describe('Dockerfile <-> stage script agreement', () => {
   const stagePs1 = read('stage.ps1');
 
   it('every staged artifact the Dockerfile COPYs is produced by both stage scripts', () => {
-    const needed = ['core-bundle.cjs', 'web', 'skills-catalog', 'tools'];
+    // `worker-runner.mjs` is here because it went missing exactly this way: the
+    // runner forks it as its own process, the esbuild bundle does not contain it,
+    // and in the bundled CJS artifact `import.meta.url` is empty so the fallback
+    // is `$PWD/worker-runner.mjs` = `/app/worker-runner.mjs`. Both stage scripts
+    // and the Dockerfile have to carry it, or every skill invocation in the
+    // container fails `no_worker`.
+    const needed = ['core-bundle.cjs', 'worker-runner.mjs', 'web', 'skills-catalog', 'tools'];
     for (const artifact of needed) {
       if (artifact === 'tools') continue; // committed, not staged
       expect(dockerfile, artifact).toContain(artifact);
       expect(stageSh, artifact).toContain(artifact);
       expect(stagePs1, artifact).toContain(artifact);
     }
+  });
+
+  it('stages the skill worker harness the runner resolves at cwd', () => {
+    // The file the harness is staged FROM, so a rename in core/ cannot leave a
+    // stale copy behind in the image.
+    for (const script of [stageSh, stagePs1]) {
+      expect(script).toMatch(/core\/src\/skills\/worker-runner\.mjs/);
+    }
+    expect(dockerfile).toMatch(/COPY worker-runner\.mjs \/app\/worker-runner\.mjs/);
   });
 
   it('healthchecks the real tool with node (no curl in the image)', () => {
@@ -140,7 +155,14 @@ describe('Dockerfile <-> stage script agreement', () => {
 
   it('keeps secrets and staged artifacts out of git', () => {
     const ignore = read('.gitignore');
-    for (const pattern of ['secrets/', '.env', 'core-bundle.cjs', 'web/', 'skills-catalog/']) {
+    for (const pattern of [
+      'secrets/',
+      '.env',
+      'core-bundle.cjs',
+      'worker-runner.mjs',
+      'web/',
+      'skills-catalog/',
+    ]) {
       expect(ignore, pattern).toContain(pattern);
     }
   });

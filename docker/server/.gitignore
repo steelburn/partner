@@ -2,6 +2,7 @@
 # machines (the core bundle embeds nothing secret, but the artifacts are
 # platform-specific and the certs definitely are).
 core-bundle.cjs
+worker-runner.mjs
 web/
 skills-catalog/
 secrets/

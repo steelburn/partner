@@ -1,6 +1,6 @@
 # UNFINISHED — the review list for the next session
 
-Date: 2026-09-17 (updated at `v0.1.19`) · Index: `PLAN.md` §15 · Specs:
+Date: 2026-09-18 (updated at `v0.1.21`) · Index: `PLAN.md` §15 · Specs:
 `PLAN-M27.md`, `PLAN-M28.md` · Records: `docs/VERIFY-M26.md`, `docs/VERIFY-M27.md`.
 
 This file exists because session context does not survive. It is a **review
@@ -8,18 +8,94 @@ list**, not a spec: each item says what is left, where it goes, what it depends
 on, and what is already true. Read the spec for detail; read the verify docs for
 what was measured.
 
-State at the time of writing: `v0.1.19` released, with **M27 S1, S2 and S4 plus
-M28 slices A and B unreleased on `master`** (the parent owns releases); the
-container is on
-`v0.1.19 / schema v21` (the tree is at **v22** since M28 B); root **1651 passed**
-(5 env-gated skips), shared **90**,
-web **858**, typechecks 0, web build green. Zero open Dependabot alerts.
-(1645 before the 2026-09-17 review fixup; that fixup added 6 tests and is
-recorded in §0 below.)
+State at the time of writing: `v0.1.21` released, with **M27 S1/S2/S4 and M28
+slices A–F on `master`** (the parent owns releases); schema **v22**; root **1726
+passed** (5 env-gated skips), shared **90**, web **923**, typechecks 0, web build
+green. Zero open Dependabot alerts. (1719/918 before the 2026-09-18 fixups; they
+added 7 tests — 6 for the Studio, 1 for the deploy files — and are recorded in
+§0 below.)
 
 ---
 
 ## 0. What landed on master since v0.1.19 — do not redo
+
+### The 2026-09-18 deploy fixup — the container could never run a skill
+
+Refreshing the live container found two deployment defects. Both are fixed and
+measured; **do not re-open them, and do not "simplify" either away**:
+
+1. **The image shipped no skill worker harness.** `runner.ts` forks
+   `worker-runner.mjs` as its own process; in a bundled CJS artifact
+   `import.meta.url` is empty, so the fallback is
+   `join(process.cwd(), 'worker-runner.mjs')` — `/app/worker-runner.mjs` under the
+   image's `WORKDIR /app`, a file the Dockerfile never copied. Every skill
+   invocation and Studio dry-run in the container failed `no_worker`, and the
+   suite could not see it (no test builds the image). The Dockerfile COPYs it,
+   both stage scripts stage it from `core/src/skills/`, and `.gitignore` covers
+   the staged copy. Proof: a real forked invocation inside the container
+   (`ready` → `invoke` → `result ok:true`).
+2. **`stage.ps1` did not parse on Windows PowerShell 5.1.** A UTF-8 em dash in a
+   double-quoted string is read as a smart quote under the ANSI code page, so the
+   string closed early and the script never ran (recorded as "not executed on
+   Windows" in `docs/VERIFY-M21.md`). It is ASCII-only now — keep it that way, or
+   give the file a BOM — and `shell/windows/build-windows.ps1` had the same
+   one-line hazard, fixed too. Run end to end on Windows on 2026-09-18: build →
+   staging → cert reuse → image → container recreated healthy; the public host
+   answers 200 and the `/data` volume (account, DB, keychain) is intact.
+
+The live deployment (`partner.teliti.app`, `partner-server:local`) was refreshed
+with this image and is `demo=off`, `authMode=login`, schema v22, `hasUsers=true`.
+
+### The 2026-09-18 Studio fixup — four review findings (M26 D / M28 C surfaces)
+
+A live walk of the Build segment (real browser, demo core: template create →
+edit → dry-run → install → update → discard → uninstall) found four defects. All
+four are fixed, each with a test that fails without the fix. **Do not re-open
+these as "possible issues", and do not re-fix them the other way round:**
+
+1. **Draft description (two fields, one name).** `SkillDraft.description` is the
+   ROW's ("what the draft was generated from", `''` for template/blank) and
+   `manifest.description` is the skill's own. The editor seeded its Description
+   field from the row and wrote the field into the manifest, so the first save
+   of a template or blank draft replaced a real description with `''` and the
+   draft failed `description is required` — with the field then unable to fix it
+   (a manifest that does not parse is edited as raw JSON). Fix: the field is
+   seeded from the MANIFEST (`draftDescription()`, and the dirty check uses the
+   same seed), and `create()`/`stageFromChat()` write the manifest's description
+   into the row (`rowDescriptionOf()`) so they cannot start out different.
+   Tests: `core/test/skills/drafts.test.ts` (row == manifest for template/blank/
+   typed) and the `Description field` describe in
+   `web/test/skills-studio-view.test.tsx` (the field renders the manifest's value
+   for a row whose description is `''`).
+2. **The deep-link intent was resolved against a stale rail.** `Edit in Studio`
+   and `Fork` create the draft server-side, and the Studio's rail only reloads
+   when the Skills VIEW becomes active — so the intent named a draft the loaded
+   list did not have, `resolveSelectedDraft` fell through to `drafts[0]`, and the
+   owner was shown an unrelated read-only draft (the rail also disagreed with the
+   nav badge until a reload). Fix: `pendingFocusId` holds the intent until its
+   detail has loaded (cleared on success or on an explicit row pick), and
+   `SkillsView` bumps a `reloadToken` when Edit/Fork creates a draft. The rule
+   `resolveSelectedDraft` implements is unchanged.
+3. **A draft could not be created once one existed.** `DraftEmptyState` — the
+   only caller of `createDraft` — renders at `drafts.length === 0`, so the moment
+   an owner had one draft, generate / start-blank / create-from-template were
+   gone and the only way back was to discard everything. Fix: the rail header
+   offers **New draft** (`.studio-pane-head` + `.btn .btn-secondary .btn-sm`; no
+   CSS added) and the form moved to `web/src/studio/DraftComposer.tsx`, mounted
+   by the empty state AND the new action. The empty state keeps the invitation
+   copy and the numbered guide.
+4. **A thrown run reported a code and nothing else.** `skill_error` with an
+   empty Worker log is the opaque answer the dry-run exists to remove. Fix:
+   `finalizeError()` (and the un-serializable-result path) in
+   `core/src/skills/worker-runner.mjs` emit the cause as an ordinary log line —
+   `skill error (skill_error): Error: …`, redacted by the parent like any other
+   log. Test: `core/test/skills/draftRun.test.ts` (message present, secret
+   redacted, `run.logs` still empty on the success path).
+
+**Not walked after the fixup:** the chat card's "Review in Studio" (the other
+producer of the same intent — it reloads on view activation, so it was never the
+broken path, but it is unproven), live-model generation, and the packaged
+Studio.
 
 ### M28 slice B — the flow routes + derived staleness (schema v22)
 

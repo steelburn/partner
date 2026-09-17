@@ -24,6 +24,12 @@ export interface DraftRailProps {
   loading: boolean;
   loadError: string | null;
   onRetry: () => void;
+  /**
+   * Open the create form. Offered only when there ARE drafts: the empty state
+   * already owns creation at `drafts.length === 0`, and two doors to one form
+   * would be two copies of the same ids.
+   */
+  onCompose?: () => void;
 }
 
 /**
@@ -40,10 +46,26 @@ export function DraftRail({
   loading,
   loadError,
   onRetry,
+  onCompose,
 }: DraftRailProps) {
+  const canCompose = onCompose !== undefined && drafts !== null && drafts.length > 0;
   return (
     <nav className="studio-rail" aria-label="Drafts">
-      <h2 className="studio-rail-title">Drafts</h2>
+      {/* .studio-pane-head is the shared title-beside-action row: no new rule,
+       * no new shadow, and the action keeps the .btn state contract. */}
+      <div className="studio-pane-head">
+        <h2 className="studio-rail-title">Drafts</h2>
+        {canCompose ? (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onCompose}
+            disabled={disabled}
+          >
+            New draft
+          </button>
+        ) : null}
+      </div>
       {loading ? (
         <p className="skills-loading" aria-busy="true">
           Loading drafts…

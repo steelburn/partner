@@ -24,6 +24,7 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { SkillDraft, SkillDraftSummary, SkillManifest } from '@partner/shared';
 import {
+  DraftComposer,
   DraftEditor,
   DraftEmptyState,
   DraftRail,
@@ -33,7 +34,11 @@ import {
   ValidationPanel,
 } from '../src/SkillStudio.js';
 import { SkillsSegments } from '../src/SkillsView.js';
-import { permissionDiffRows, resolveSelectedDraft } from '../src/lib/skill-studio-helpers.js';
+import {
+  draftDescription,
+  permissionDiffRows,
+  resolveSelectedDraft,
+} from '../src/lib/skill-studio-helpers.js';
 import { source } from './helpers/css.js';
 
 const MANIFEST: SkillManifest = {
@@ -163,6 +168,26 @@ describe('draft rail states', () => {
     expect(real).not.toContain('canned example');
   });
 
+  /**
+   * The rail is the list; creating the next draft belongs beside it. Before this
+   * existed the ONLY door to a new draft was the empty state, which renders at
+   * `drafts.length === 0` — so the moment an owner had one draft, generate /
+   * blank / template all became unreachable and the only way back was to discard
+   * everything.
+   */
+  it('offers a New draft action whenever there is a list to add to', () => {
+    const withDrafts = renderToStaticMarkup(
+      h(DraftRail, { ...base, drafts: [SUMMARY], onCompose: noop }),
+    );
+    expect(withDrafts).toContain('New draft');
+    expect(withDrafts).toMatch(/<button[^>]*>\s*New draft\s*<\/button>/);
+
+    // With no drafts the empty state owns creation; two doors to one form would
+    // be two copies of the same IDs.
+    const empty = renderToStaticMarkup(h(DraftRail, { ...base, drafts: [], onCompose: noop }));
+    expect(empty).not.toContain('New draft');
+  });
+
   it('names name, origin, validation state and the approval marker per row', () => {
     const rows: SkillDraftSummary[] = [
       SUMMARY,
@@ -246,6 +271,29 @@ describe('deep-link focus intent', () => {
     expect(studio).toContain('target = full.manifest?.id ?? full.id');
     expect(studio).toContain('getSkill(token, target)');
   });
+
+  /**
+   * SOURCE-LEVEL on purpose: this is effect wiring, and the wiring WAS the
+   * defect. The intent was resolved against a draft list that only reloads when
+   * the Skills VIEW becomes active, so a draft created by the Installed list
+   * (Edit in Studio / Fork) was not in it: the intent fell through to
+   * `drafts[0]` and the owner landed on an unrelated, read-only draft while the
+   * one they asked for sat on the server.
+   *
+   * Two halves, both asserted: the intent is HELD until the draft it names has
+   * loaded, and a draft born on another surface re-reads the list so the rail
+   * cannot show fewer drafts than the core holds.
+   */
+  it('holds the intent until its draft loads, and re-reads the list after Edit/Fork', () => {
+    const studio = source('src/SkillStudio.tsx');
+    expect(studio).toContain('pendingFocusId');
+    expect(studio).toContain('setPendingFocusId');
+    expect(studio).toContain('reloadToken');
+
+    const view = source('src/SkillsView.tsx');
+    expect(view).toContain('setStudioReloadToken');
+    expect(view).toContain('reloadToken={studioReloadToken}');
+  });
 });
 
 describe('empty state (describe / template / blank)', () => {
@@ -308,6 +356,71 @@ describe('empty state (describe / template / blank)', () => {
       h(DraftEmptyState, { ...base, templates: [], providerConfigured: false }),
     );
     expect(html).toContain('This build offers no templates.');
+  });
+
+  /**
+   * The form itself lives in DraftComposer, which TWO surfaces mount: the empty
+   * state (no drafts) and the rail's New draft action (a list that exists). The
+   * ids are therefore asserted on the piece that is mounted exactly once — and
+   * the composer alone renders no invitation copy, so a second door cannot
+   * duplicate the first-run prose.
+   */
+  it('the composer carries the three creation doors and the template picker', () => {
+    const html = renderToStaticMarkup(
+      h(DraftComposer, { ...base, templates: TEMPLATES, providerConfigured: true }),
+    );
+    expect(html).toContain('id="studio-new-name"');
+    expect(html).toContain('Generate draft');
+    expect(html).toContain('Start blank');
+    expect(html).toContain('id="studio-new-template"');
+    expect(html).toContain('Create from template');
+    expect(html).not.toContain('No drafts yet');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Description field edits the MANIFEST's description.
+//
+// The wire carries two descriptions with one name: the draft's own
+// (`SkillDraftSummary.description` — the skill's short description) and the
+// manifest's. A template or blank draft is created with the row's empty while its
+// manifest carries a real one, so an editor that seeded the field from the row
+// showed nothing over a real value — and then wrote that nothing back into the
+// manifest on the first save, leaving a draft nobody had edited failing
+// `description is required`. Both halves are asserted here: the rule is pure
+// (`draftDescription`), and the field it seeds is the rendered one.
+// ---------------------------------------------------------------------------
+
+describe('Description field (manifest, not the row)', () => {
+  const TEMPLATE_SHAPED: SkillDraft = {
+    ...DRAFT,
+    description: '', // what `create({mode:'template'})` stored in the row
+    manifest: MANIFEST, // …while the template's manifest carried this
+  };
+
+  it('prefers the manifest description and falls back only when it cannot parse', () => {
+    expect(draftDescription(TEMPLATE_SHAPED)).toBe(MANIFEST.description);
+    expect(draftDescription(DRAFT)).toBe(MANIFEST.description);
+    // A broken manifest has no description to offer, so the row's is shown —
+    // the raw JSON above it is then the thing to fix.
+    expect(draftDescription({ ...TEMPLATE_SHAPED, manifest: null, description: 'typed earlier' })).toBe(
+      'typed earlier',
+    );
+  });
+
+  it('renders the manifest description in the field for a draft created from a template', () => {
+    const html = renderToStaticMarkup(
+      h(DraftEditor, {
+        draft: TEMPLATE_SHAPED,
+        readOnly: false,
+        disabled: false,
+        onDraftChanged: noop,
+        onSessionLost: noop,
+      }),
+    );
+    expect(html).toMatch(
+      /<textarea[^>]*id="studio-description"[^>]*>Turns scratch notes into a checklist<\/textarea>/,
+    );
   });
 });
 

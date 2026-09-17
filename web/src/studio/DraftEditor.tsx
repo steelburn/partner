@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { SkillDraft, SkillManifest } from '@partner/shared';
 import type { ToolId } from '@partner/shared/src/tools.js';
 import { formatBytes } from '../lib/skill-helpers.js';
-import { toolOptions, type ConfirmStage } from '../lib/skill-studio-helpers.js';
+import { draftDescription, toolOptions, type ConfirmStage } from '../lib/skill-studio-helpers.js';
 import { updateDraft, validateDraft } from '../lib/skills.js';
 import { readStoredToken } from '../lib/token.js';
 
@@ -56,7 +56,8 @@ export function DraftEditor({
 }: DraftEditorProps) {
   const [tab, setTab] = useState<EditorTab>(draft.flow === null ? 'code' : 'flow');
   const [name, setName] = useState(draft.name);
-  const [description, setDescription] = useState(draft.description);
+  // The MANIFEST's description, not the row's: see draftDescription().
+  const [description, setDescription] = useState(draftDescription(draft));
   const [version, setVersion] = useState(draft.manifest?.version ?? '');
   const [tools, setTools] = useState<string[]>(draft.manifest?.permissions.tools ?? []);
   const [risk, setRisk] = useState(draft.manifest?.permissions.risk ?? 'low');
@@ -72,7 +73,7 @@ export function DraftEditor({
   // one) arrives; otherwise a save could push stale values back.
   useEffect(() => {
     setName(draft.name);
-    setDescription(draft.description);
+    setDescription(draftDescription(draft));
     setVersion(draft.manifest?.version ?? '');
     setTools(draft.manifest?.permissions.tools ?? []);
     setRisk(draft.manifest?.permissions.risk ?? 'low');
@@ -109,7 +110,7 @@ export function DraftEditor({
   const budgetOk = Number.isFinite(budgetValue) && budgetValue > 0;
   const dirty =
     name !== draft.name ||
-    description !== draft.description ||
+    description !== draftDescription(draft) ||
     code !== draft.code ||
     manifestText !== draft.manifestText ||
     (manifest !== null &&
@@ -153,6 +154,9 @@ export function DraftEditor({
     try {
       const updated = await updateDraft(token, draft.id, {
         name: name.trim() === '' ? draft.name : name.trim(),
+        // Seeded from the manifest (draftDescription), so saving an untouched
+        // field writes the skill's own description back to BOTH the manifest
+        // (below) and the row — they can no longer drift apart.
         description,
         manifestText: buildManifestText(),
         code,

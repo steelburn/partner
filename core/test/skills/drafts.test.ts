@@ -139,6 +139,49 @@ describe('draft lifecycle', () => {
     }
   });
 
+  /**
+   * One description, not two. The Studio's Description input is seeded from the
+   * MANIFEST and writes its value back to the row, so a draft whose row
+   * description started out different (empty, for a template/blank draft the
+   * owner never typed a description into) showed an empty field over a real
+   * manifest value — and the first save wrote that emptiness into the manifest,
+   * leaving `description is required` on a draft nobody had edited.
+   */
+  it('creates a template draft whose row and manifest descriptions agree', async () => {
+    const h = env();
+    try {
+      const fromTemplate = await h.drafts.create({
+        mode: 'template',
+        template: 'pure',
+        name: 'No Description Typed',
+        description: '',
+      });
+      expect(fromTemplate.manifest?.description).toBe(
+        'Transforms the text argument it is given.',
+      );
+      expect(fromTemplate.description).toBe(fromTemplate.manifest?.description);
+      expect(fromTemplate.validation.ok, fromTemplate.validation.errors.join(' ')).toBe(true);
+
+      // The blank path: the core already writes a fallback into the manifest, so
+      // the row must carry the same text rather than ''.
+      const blank = await h.drafts.create({ mode: 'manual', name: 'Blank', description: '' });
+      expect(blank.manifest?.description).toBe('Describe what this skill does.');
+      expect(blank.description).toBe(blank.manifest?.description);
+      expect(blank.validation.ok, blank.validation.errors.join(' ')).toBe(true);
+
+      // A description the owner DID type is the one both sides carry.
+      const typed = await h.drafts.create({
+        mode: 'manual',
+        name: 'Typed',
+        description: 'what the owner asked for',
+      });
+      expect(typed.description).toBe('what the owner asked for');
+      expect(typed.manifest?.description).toBe('what the owner asked for');
+    } finally {
+      h.close();
+    }
+  });
+
   it('de-duplicates slugs against drafts AND installed skills', async () => {
     const h = env();
     try {

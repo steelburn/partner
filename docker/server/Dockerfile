@@ -38,6 +38,13 @@ RUN npm install --no-save --no-audit --no-fund \
   && rm -rf /root/.npm
 
 COPY core-bundle.cjs /app/core-bundle.cjs
+# The skill worker harness. It is NOT part of the esbuild bundle (the runner
+# forks it as a separate node process), and in a bundled CJS artifact
+# `import.meta.url` is empty so `runner.ts` falls back to
+# `join(process.cwd(), 'worker-runner.mjs')` — with WORKDIR /app that is exactly
+# this path. Without it every skill invocation and Studio dry-run fails
+# `no_worker`.
+COPY worker-runner.mjs /app/worker-runner.mjs
 COPY web /app/web
 COPY skills-catalog /app/skills-catalog
 COPY tools /app/tools

@@ -84,11 +84,16 @@ treats it as its own. So a leftover dev core no longer hijacks the app invisibly
 (Ctrl-C) before launching the desktop app; if the desktop shows “already serving
 …”, something else still holds :4390.
 
-## Status (2026-09-17)
+## Status (2026-09-18)
 
-M0–M28 (slices A–F) implemented (PLAN.md §15). The current root suite is **1724
-passed** (5 env-gated skips) · shared **90** · web **918** · typechecks 0 · web
-build green. **M28 lands the Flow canvas end to end** (`PLAN-M28.md`,
+M0–M28 (slices A–F) implemented (PLAN.md §15). The current root suite is **1726
+passed** (5 env-gated skips) · shared **90** · web **923** · typechecks 0 · web
+build green. The **Skill Studio fixup** (+6 tests) closes four findings from a
+live review of the Build segment — a template/blank draft could invalidate
+itself on its first save, `Edit in Studio`/`Fork` opened the wrong draft, a
+draft could not be created once one existed, and a failing test run reported
+only `skill_error` — see **Skill Studio fixup** below.
+**M28 lands the Flow canvas end to end** (`PLAN-M28.md`,
 `docs/VERIFY-M28.md`): the Studio's fourth surface is a **React Flow** graph of
 ten typed nodes — `input` · `const` · `tool` · `template` · `filter` · `map` ·
 `branch` · `merge` · `llm` · `output` — where the model can **build** the graph
@@ -655,8 +660,9 @@ nothing (fragment-only navigation does not remount the SPA) — `PairGate` now
 re-reads on `hashchange`.
 
 Root **1166** · web **639** · typechecks 0 · build green. The Cloudflare edge
-leg is now verified too; `stage.ps1` and a handset walk remain. Record:
-`docs/VERIFY-M21.md`, spec `PLAN-M21.md`.
+leg is now verified too; a handset walk remains (`stage.ps1` was added to the
+verified list on 2026-09-18 — it needed an encoding fix before it would parse on
+Windows PowerShell 5.1). Record: `docs/VERIFY-M21.md`, spec `PLAN-M21.md`.
 
 **M22 — remote-hosted accounts, deployment-owned files, no llm-self-service
 (2026-09-13, container-verified).** Three changes for the hosted shape.
@@ -852,6 +858,84 @@ theme walkthrough (`docs/theme-conformance.md`); the `docs/VERIFY-M10.md`
 live-mode walk details; browser-actuator research capture; S0 companion API in
 `~/apps/llm-self-service`. Read `HANDOFF-WINDOWS.md` first when picking up from
 a Windows machine.
+
+### Deploy fixup — the container can run a skill, and `stage.ps1` runs on Windows (2026-09-18, fix)
+
+Refreshing the live container (`partner-server:local` at `partner.teliti.app`)
+turned up two deployment defects, both fixed and measured:
+
+1. **The image shipped no skill worker harness.** The runner forks
+   `worker-runner.mjs` as its own process; in a bundled CJS artifact
+   `import.meta.url` is empty, so it resolves `$PWD/worker-runner.mjs` — with
+   `WORKDIR /app` that is `/app/worker-runner.mjs`, which the Dockerfile never
+   copied (and neither stage script staged). Every skill invocation and Studio
+   dry-run in the container therefore failed `no_worker`. `docker/server/Dockerfile`
+   COPYs it now, `stage.sh`/`stage.ps1` copy it out of `core/src/skills/`, and
+   `.gitignore` covers the staged copy. Verified by a real forked invocation
+   inside the container: `ready` → `invoke` →
+   `{"type":"result","ok":true,…}`, and pinned by `tests/deploy-files.test.ts`
+   (both stage scripts + the Dockerfile + the ignore file, falsified by removing
+   the three lines).
+2. **`stage.ps1` could not parse on Windows PowerShell 5.1.** A UTF-8 em dash
+   inside a double-quoted `Write-Host "… — regenerating"` is misread under the
+   ANSI code page as a smart quote, which closes the string early — the script
+   died with a cascade of parse errors before doing anything (which is why
+   `docs/VERIFY-M21.md` recorded it as never executed on Windows). The script is
+   ASCII-only now; the same one-line hazard in `shell/windows/build-windows.ps1`
+   was fixed too. Run end to end on Windows: SPA build → core bundle → staging →
+   certificate reuse → `docker compose build` → container recreated and healthy,
+   with the public host answering 200 over the tunnel and the volume's account
+   intact.
+
+### Skill Studio fixup — four review findings closed (2026-09-18, fix)
+
+A live review of the Build segment (walked in a real browser against the demo
+core: template create → edit → dry-run → install → update → discard → uninstall)
+found four defects, all fixed with tests that fail without the fix:
+
+1. **A draft could invalidate itself on its first save.** The wire carries two
+descriptions with one name — the draft's own (`description`: the skill's short
+description, empty for a template or blank draft) and the MANIFEST's. The editor's Description field is seeded from the ROW but writes into the
+MANIFEST, so `Save draft` on a freshly created template/blank draft wrote `""`
+over a real description and returned `description is required and must be a
+non-empty string` on a draft nobody had edited (the field then stopped affecting
+the manifest at all, because a broken manifest is edited as raw JSON). Fixed on
+both sides of the seam: the field is seeded from the MANIFEST
+(`draftDescription()` in `web/src/lib/skill-studio-helpers.ts`, used for the
+initial value, the re-seed and the dirty check in `studio/DraftEditor.tsx`), and
+`create()`/`stageFromChat()` now write the manifest's own description into the
+row (`rowDescriptionOf()`, `core/src/skills/drafts.ts`) so the two can never
+start out different. `core/test/skills/drafts.test.ts` pins the
+row-equals-manifest invariant for the template, blank and typed cases.
+2. **`Edit in Studio` / `Fork` opened the wrong draft.** Both create the draft
+server-side and hand the shell a focus intent; the Studio's rail only reloads
+when the Skills VIEW becomes active, so the intent named a draft the loaded list
+did not contain — `resolveSelectedDraft` fell through to `drafts[0]` and the
+owner landed on an unrelated, read-only installed draft (the rail disagreed with
+the nav badge until a reload). Fixed by holding the intent until its detail has
+loaded (`pendingFocusId` in `web/src/SkillStudio.tsx`) and by re-reading the rail
+when another surface created a draft (`reloadToken` from `web/src/SkillsView.tsx`).
+3. **No way to create a draft once one existed.** The only door to a new draft
+was the empty state, which renders at `drafts.length === 0`: with one draft
+present, generate / start-blank / create-from-template were unreachable and the
+only way back was to discard everything. The rail header now offers **New draft**
+(reusing `.studio-pane-head`, no new CSS) and the form itself moved into
+`web/src/studio/DraftComposer.tsx`, mounted by both the empty state and the new
+action — one form, two doors, no duplicated ids.
+4. **A failing test run named the code and nothing else.** A throw inside
+`run()` returned `skill_error` with an empty Worker log, which is the opaque
+answer the dry-run exists to remove. `finalizeError()` in
+`core/src/skills/worker-runner.mjs` now emits the cause as an ordinary log line
+(`skill error (skill_error): Error: …`), redacted by the parent exactly like any
+other log — asserted, secret included, in
+`core/test/skills/draftRun.test.ts`.
+
+Suites after both fixups: root **1726** (5 env-gated skips) · shared **90** · web
+**923** (1726 = 1719 + 6 Studio tests + 1 deploy guard) · typechecks 0 · web build
+green · `ux_audit` PASSED on the Studio
+slice (no CSS was added — `web/src/app.css` is byte-identical, and the new rail
+action reuses `.btn .btn-secondary .btn-sm`, whose focus/disabled/hover states
+already exist). All five flows were re-walked live after the fix.
 
 ### M28 — Flow: build a skill on a canvas, with the model as a collaborator (2026-09-17, implemented)
 

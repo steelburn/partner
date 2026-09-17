@@ -368,3 +368,27 @@ export function resolveSelectedDraft(
   if (selectedId !== null && drafts.some((draft) => draft.id === selectedId)) return selectedId;
   return drafts[0]?.id ?? null;
 }
+
+/**
+ * The description the editor's Description field shows and owns.
+ *
+ * The wire carries TWO descriptions with one name: the draft's own (`description`
+ * — the skill's short description, and what the Studio's field shows) and the
+ * manifest's. A template or blank draft is created with the row's empty while its
+ * manifest carries a real one, so an editor that seeded the field from the row
+ * showed nothing over a real value — and then wrote that nothing back into the
+ * manifest on the first save, leaving a draft nobody had edited failing
+ * `description is required`. The CORE now settles that at birth
+ * (`rowDescriptionOf()` in `core/src/skills/drafts.ts`); this is the other half:
+ * the MANIFEST is the field's source of truth.
+ *
+ * The row's description is the fallback, and only for a manifest that does not
+ * parse: there the raw JSON above the field is what has to be fixed, and the
+ * closest thing to a description the draft still has is the row's.
+ */
+export function draftDescription(draft: {
+  description: string;
+  manifest: { description: string } | null;
+}): string {
+  return draft.manifest === null ? draft.description : draft.manifest.description;
+}

@@ -1465,6 +1465,12 @@ apps/partner/
       are now **verified against a real tunnel** — the user deployed it at
       `partner.teliti.app` on 2026-09-13 and the whole path (edge → tunnel → core
       → pairing → mobile session → authenticated read) was checked in a browser.
+      **2026-09-18:** `stage.ps1` now RUNS on Windows PowerShell 5.1 (it needed an
+      encoding fix — a UTF-8 em dash parsed as a smart quote closed a string
+      early), and the image ships the skill worker harness it was missing, so a
+      skill can actually run in the container (measured by a real forked
+      invocation inside it). The image was rebuilt and the container recreated
+      against the same volume; see `docs/VERIFY-M21.md`.
       That live check found a **blocker the suite had certified**: the SPA's
       payload validator counted decoded CHARACTERS instead of BYTES, so every
       genuine pairing link was refused ("missing a valid certificate
@@ -1714,6 +1720,10 @@ apps/partner/
       provider · typechecks 0 · web build green · `ux_audit` PASSED.*
       *State: **COMPLETE** (2026-09-16) — including the two templates that
       needed M27, which landed with M27 S4 (2026-09-17).
+      **Review fixup 2026-09-18:** the Studio's four live-walk findings (draft
+      description, the Edit/Fork deep link, creating a draft when one exists,
+      the failing run's reason) are fixed — see `docs/UNFINISHED.md` §0 and
+      `README.md` “Skill Studio fixup”.
       Measured: root **1468 passed / 5 env-gated skips** · shared **90** ·
       web **851** · typechecks 0 · web build green · `ux_audit` PASSED (16 token
       pairs, light + dark) · record `docs/VERIFY-M26.md`. All slices landed:
@@ -1901,9 +1911,13 @@ apps/partner/
       build green · both demo e2e flows green — **done: root 1724, shared 90,
       web 918, typechecks 0, build green, `tests/e2e-skill-flow.test.ts`.***
       *State: **slices A–F landed 2026-09-17** — root
-      **1724** (5 env-gated skips) · shared **90** · web **918** · typechecks 0 ·
+      **1726** (5 env-gated skips) · shared **90** · web **923** · typechecks 0 ·
       web build
-      green. **Slice A (the compiler)** is `core/src/skills/flow/schema.ts` +
+      green. **Review fixup 2026-09-18** (M26/M28 Studio surfaces: draft
+      description, the Edit/Fork deep link, creating a draft when one exists,
+      the failing run's reason — `docs/UNFINISHED.md` §0) lives in
+      `web/src/studio/DraftComposer.tsx` + `DraftRail`/`SkillStudio`, not in the
+      canvas. **Slice A (the compiler)** is `core/src/skills/flow/schema.ts` +
       `flow/compile.ts`, both pure (no fs, no db, no routes). Determinism is
       asserted against
       shuffled `nodes`/`edges` ARRAYS, not just a repeated call; the failures are
