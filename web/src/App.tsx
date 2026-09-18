@@ -3,6 +3,7 @@ import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
 } from 'react';
 import type {
   BrainstormSessionSummary,
@@ -21,6 +22,7 @@ import { NotesMini } from './NotesMini.js';
 import {
   IconAudit,
   IconChat,
+  IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
   IconClose,
@@ -202,19 +204,68 @@ function SideNav({
   attention,
   minimized,
   onSelect,
+  chatTree,
+  chatTreeOpen,
+  onToggleChatTree,
 }: {
   current: ViewName;
   attention: AttentionCounts;
   minimized: boolean;
   onSelect: (view: ViewName) => void;
+  /** M30: the conversation + folder tree, rendered under the Chat entry. */
+  chatTree: ReactNode;
+  chatTreeOpen: boolean;
+  onToggleChatTree: () => void;
 }) {
   return (
     <nav className="side-nav" aria-label="Partner views">
       {NAV_GROUPS.map((group) => (
-        <div className="side-group" role="group" aria-label={group.name} key={group.name}>
+        <div
+          className="side-group"
+          role="group"
+          aria-label={group.name}
+          key={group.name}
+        >
           <span className="side-group-title">{group.name}</span>
           {group.views.map((view) => {
             const label = NAV_LABELS[view];
+            if (view === 'chat') {
+              // M30: the conversation tree (and its folders) lives under the
+              // Chat entry, so the sidebar is the one left panel. The
+              // disclosure is separate from the destination button: selecting
+              // Chat and expanding the tree are two different intents.
+              return (
+                <div className="side-chat" key={view}>
+                  <div className="side-chat-row">
+                    <NavButton
+                      item={{ view, label, icon: iconFor(view), badge: badgeFor(view, attention) }}
+                      current={current}
+                      minimized={minimized}
+                      onSelect={onSelect}
+                    />
+                    <button
+                      type="button"
+                      className="side-chat-toggle"
+                      onClick={onToggleChatTree}
+                      aria-expanded={chatTreeOpen}
+                      aria-controls={chatTreeOpen ? 'side-chat-tree' : undefined}
+                      aria-label={
+                        chatTreeOpen ? 'Collapse conversations' : 'Expand conversations'
+                      }
+                      title={chatTreeOpen ? 'Collapse conversations' : 'Expand conversations'}
+                      disabled={minimized}
+                    >
+                      <IconChevronDown />
+                    </button>
+                  </div>
+                  {chatTreeOpen && !minimized ? (
+                    <div className="side-chat-tree" id="side-chat-tree">
+                      {chatTree}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }
             return (
               <NavButton
                 key={view}
@@ -951,7 +1002,6 @@ export default function App() {
    * user's collapse choice is pinned per session (sessionStorage). */
   const NOTES_LANE_KEY = 'partner.notesLane';
 const RAIL_OPEN_KEY = 'partner.railOpen';
-const RAIL_W_KEY = 'partner.railWidth';
 const NOTES_W_KEY = 'partner.notesWidth';
 const ASSETS_LANE_KEY = 'partner.assetsLane';
 const ASSETS_W_KEY = 'partner.assetsWidth';
@@ -1261,19 +1311,15 @@ function ColumnDivider({
     }
   }, [panelsFit, assetsLaneOpen, notesLaneOpen]);
 
-  /* M12.5: conversations rail visibility + resizable column widths. The
-   * widths are per-session; defaults come from CSS (breakpoint-tuned), so a
-   * null width means "follow the responsive default". */
+  /* M12.5 / M30: the conversation rail is now the phone overlay only — the
+   * conversation list and folder tree live in the sidebar under Chat. This
+   * state (and its session pin) is just the overlay's open/closed flag. */
   const [railOpen, setRailOpen] = useState<boolean>(() => {
     const stored = readSession(RAIL_OPEN_KEY);
     if (stored !== null) return stored === '1';
-    // M20.A: on a phone the rail is an overlay over the transcript, so an open
-    // rail on first paint would hide the very content the user opened. Default
-    // closed there; the desktop default stays open. The width comes from
-    // lib/panels.ts, so this default and the CSS tier are the same number.
-    return !(
-      typeof window !== 'undefined' && window.matchMedia(maxWidthQuery(PHONE_MAX_WIDTH)).matches
-    );
+    // Closed by default: on a phone an open rail would cover the transcript the
+    // user just navigated to.
+    return false;
   });
 
   /* M20.A follow-up 10: the sidebar minimize toggle. Above the tablet boundary
@@ -1313,7 +1359,11 @@ function ColumnDivider({
       return !minimized;
     });
   }, []);
-  const [railW, setRailW] = useState<number | null>(() => readIntSession(RAIL_W_KEY));
+  /** M30: whether the sidebar's Chat section shows the conversation tree.
+   *  A shell preference, not content — held in memory only (the sidebar's own
+   *  minimize state already persists the layout choice, and nothing here is
+   *  worth a storage key). */
+  const [chatTreeOpen, setChatTreeOpen] = useState<boolean>(true);
   const [notesW, setNotesW] = useState<number | null>(() => readIntSession(NOTES_W_KEY));
   const toggleRail = useCallback((): void => {
     if (railOpen) {
@@ -1321,8 +1371,8 @@ function ColumnDivider({
       return;
     }
     // Two floating panes overlap on a phone, so opening one puts the others
-    // away. Below the phone tier the rail is a column and keeps its width —
-    // only the two right-hand lanes swap there.
+    // away; the rail only floats at the phone tier now (the sidebar carries
+    // the conversation tree everywhere else).
     if (laneOverlayTier) {
       if (notesLaneOpen) closeNotesLane();
       if (assetsLaneOpen) setAssetsLaneOpen(false);
@@ -1338,7 +1388,6 @@ function ColumnDivider({
     setAssetsLaneOpen,
     dismissPane,
   ]);
-  const commitRailW = useCallback((value: number): void => writeSession(RAIL_W_KEY, String(value)), []);
   const commitNotesW = useCallback((value: number): void => writeSession(NOTES_W_KEY, String(value)), []);
   const [assetsW, setAssetsW] = useState<number | null>(() => readIntSession(ASSETS_W_KEY));
 
@@ -1393,11 +1442,9 @@ function ColumnDivider({
    *  session-pinned): collapses on pane close or conversation switch. */
   const [assetsExpanded, setAssetsExpanded] = useState<boolean>(false);
   const workspaceStyle = {
-    ...(railOpen && railW !== null ? { '--rail-w': `${railW}px` } : {}),
     ...(notesLaneOpen && notesW !== null ? { '--notes-w': `${notesW}px` } : {}),
     ...(assetsLaneOpen && assetsW !== null ? { '--assets-w': `${assetsW}px` } : {}),
   } as CSSProperties;
-  const railDefaultW = typeof window !== 'undefined' && window.innerWidth <= 1024 ? 260 : 288;
   const notesDefaultW = 232;
   const assetsDefaultW = 300;
 
@@ -1425,6 +1472,32 @@ function ColumnDivider({
    * were removed — capture happens in context (the lane ＋Capture beside
    * the transcript, or the Notes page Quick capture). */
 
+  /** M30: one definition of the conversation + folder tree, rendered either in
+   *  the sidebar's Chat section (desktop/tablet) or as the phone overlay — the
+   *  same rows, folders and drag targets, so the two surfaces cannot drift. */
+  const conversationRail = (embedded: boolean): ReactNode => (
+    <ConversationRail
+      embedded={embedded}
+      conversations={conversations}
+      folders={folders}
+      loadError={conversationsError ?? foldersError}
+      disabled={railLocked}
+      creating={creatingChat}
+      activeConversationId={activeConversationId}
+      onNewChat={() => void handleNewChat()}
+      onOpen={handleOpenConversation}
+      onDelete={handleDeleteConversation}
+      onRetry={() => {
+        void refreshConversations();
+        void refreshFolders();
+      }}
+      onCreateFolder={(name, parentId) => void handleCreateFolder(name, parentId)}
+      onRenameFolder={(id, name) => void handleRenameFolder(id, name)}
+      onDeleteFolder={(id) => void handleDeleteFolder(id)}
+      onMoveConversation={(id, folderId) => void handleMoveConversation(id, folderId)}
+    />
+  );
+
   return (
     <div className={sideMin ? 'app side-minimized' : 'app'}>
       <aside className="app-side" aria-label="App">
@@ -1444,7 +1517,17 @@ function ColumnDivider({
           </button>
         </div>
         {paired ? (
-          <SideNav current={view} attention={attention} minimized={sideMin} onSelect={setView} />
+          <SideNav
+            current={view}
+            attention={attention}
+            minimized={sideMin}
+            onSelect={setView}
+            chatTreeOpen={chatTreeOpen}
+            onToggleChatTree={() => setChatTreeOpen((open) => !open)}
+            /* The phone tier hides the sidebar; there the rail is the overlay,
+             * so the tree would only be a wasted second render. */
+            chatTree={phoneTier ? null : conversationRail(true)}
+          />
         ) : null}
         {paired ? (
           <div className="side-foot">
@@ -1473,16 +1556,21 @@ function ColumnDivider({
                 onSelect={setActivePersonaId}
               />
             ) : null}
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={toggleRail}
-              aria-pressed={railOpen}
-              aria-label={railOpen ? 'Hide conversations' : 'Show conversations'}
-              title={railOpen ? 'Hide conversations' : 'Show conversations'}
-            >
-              <IconPanelLeft />
-            </button>
+            {/* The conversation toggle only exists where the rail is an
+             *  overlay (the phone tier); everywhere else the conversation tree
+             *  is the sidebar's Chat section. */}
+            {phoneTier ? (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={toggleRail}
+                aria-pressed={railOpen}
+                aria-label={railOpen ? 'Hide conversations' : 'Show conversations'}
+                title={railOpen ? 'Hide conversations' : 'Show conversations'}
+              >
+                <IconPanelLeft />
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn btn-secondary btn-sm"
@@ -1555,7 +1643,6 @@ function ColumnDivider({
             <div
               className={[
                 notesLaneOpen ? 'chat-workspace notes-lane-open' : 'chat-workspace notes-lane-collapsed',
-                railOpen ? '' : 'rail-hidden',
                 assetsLaneOpen ? 'assets-pane-open' : '',
                 assetsExpanded ? 'assets-expanded' : '',
                 exiting === null ? '' : PANEL_EXIT_CLASS[exiting],
@@ -1576,38 +1663,11 @@ function ColumnDivider({
                   onClick={() => dismissPane(scrimPane)}
                 />
               ) : null}
-              <ConversationRail
-                  conversations={conversations}
-                  folders={folders}
-                  loadError={conversationsError ?? foldersError}
-                  disabled={railLocked}
-                  creating={creatingChat}
-                  activeConversationId={activeConversationId}
-                  onNewChat={() => void handleNewChat()}
-                  onOpen={handleOpenConversation}
-                  onDelete={handleDeleteConversation}
-                  onRetry={() => {
-                    void refreshConversations();
-                    void refreshFolders();
-                  }}
-                  onCreateFolder={(name, parentId) => void handleCreateFolder(name, parentId)}
-                  onRenameFolder={(id, name) => void handleRenameFolder(id, name)}
-                  onDeleteFolder={(id) => void handleDeleteFolder(id)}
-                  onMoveConversation={(id, folderId) => void handleMoveConversation(id, folderId)}
-                />
-                {railOpen ? (
-                  <ColumnDivider
-                    label="Resize conversations"
-                    direction={1}
-                    current={railW}
-                    fallback={railDefaultW}
-                    min={170}
-                    max={520}
-                    onSet={setRailW}
-                    onCommit={commitRailW}
-                  />
-                ) : null}
-                <ChatStrip
+              {/* M30: at the phone tier the sidebar is hidden, so the
+               * conversation tree is the floating rail overlay. Above it the
+               * tree lives in the sidebar's Chat section. */}
+              {phoneTier && railOpen ? conversationRail(false) : null}
+              <ChatStrip
                   onUnpair={handleSessionLost}
                   conversationId={activeConversationId}
                   personaId={activePersonaId}

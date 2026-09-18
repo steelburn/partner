@@ -57,4 +57,17 @@ describe('nav model', () => {
       expect(group.views.length).toBeGreaterThan(0);
     }
   });
+
+  it('keeps the administrative views together under Settings (M31)', () => {
+    // The request: move Providers, Themes and Audit (plus the account-level
+    // Members) under Settings, so the sidebar is three working groups over one
+    // administrative group. Breaks if a config surface drifts back into Studio
+    // or a new one is added somewhere else.
+    const settings = NAV_GROUPS.find((group) => group.name === 'Settings');
+    expect(settings?.views).toEqual(['providers', 'themes', 'audit', 'members']);
+    const studio = NAV_GROUPS.find((group) => group.name === 'Studio');
+    expect(studio?.views).toEqual(['personas', 'skills', 'playbooks']);
+    // Settings is the LAST group, so the working surfaces lead the panel.
+    expect(NAV_GROUPS[NAV_GROUPS.length - 1]?.name).toBe('Settings');
+  });
 });

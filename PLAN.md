@@ -1325,6 +1325,39 @@ apps/partner/
       the tier-only *default*, the badge, the touch floor and the absence of a
       width transition — falsified 4 ways. Web suite **689 → 699**; typecheck 0;
       `ux_audit` PASSED; bundle green.
+      **M30 — one left panel: conversations under the Chat entry (DONE).** The
+      conversation list and its folder tree moved out of the second “Chat” rail
+      column and into the sidebar, nested under the Chat destination; a
+      disclosure chevron separates “open Chat” from “show/hide the tree”
+      (session-only state, no new storage key). Above the phone tier this is the
+      only home for the tree, so the transcript reclaims the rail's width; at the
+      phone tier the sidebar is hidden, so `ConversationRail` still renders as
+      the floating overlay opened from the top bar. Folder create/rename/delete,
+      drag-to-move and drag targets are otherwise unchanged — the `embedded`
+      prop only drops the fixed 288px column width and fits the sidebar.
+      `railWidth` is retired (the tree fills the sidebar), so
+      `security-guards.test.ts`'s storage allowlist dropped
+      `partner.railWidth`. DESIGN.md §Responsive updated.
+      `one-left-panel.test.ts` (+12) pins the one definition, the two render
+      sites, the bounded/sidebar geometry and the phone overlay. Web suite green
+      (57 files / 956 tests); typecheck 0; bundle green.
+      **M31 — Settings, persona cards, and a magazine Notes & Plans (DONE).**
+      Three requested changes in one pass. (1) Sidebar IA: Providers, Themes,
+      Audit and Members moved into a new **Settings** group; Studio is now
+      personas/skills/playbooks and Tools is files/memory (`NAV_GROUPS`;
+      `nav.test.ts` +1 pins the membership and that Settings is last).
+      (2) Personas became a wall of business cards (`PersonaManagerView`): the
+      card face opens a slide-out `role="dialog"` drawer holding the full
+      editor plus the theme bind, while Pause (the kill switch) and Delete stay
+      on the card. One editor instance; Escape and the scrim close it; dead
+      inline-editor classes removed. (3) Notes & Plans got a magazine layout
+      (`NotesView` masthead + scoped CSS): folio/kicker, `--fs-xxl` title and
+      deck, hairline section rules, a 1200px measure (1360px ≥1600), and an
+      `auto-fill` river with the newest item as a full-width lead; the note
+      editor and plan planner keep their card surface. Token-only and
+      reduced-motion safe. `m31-redesign.test.ts` (+11) pins the structure and
+      the geometry. Web suite **58 files / 967 tests**; typecheck 0; bundle
+      green; verified in-browser at 1440 and 1024.
       **M20.A follow-up — phone Notes view crowding (QUEUED, measured, NOT
       started).** Reported as "mobile view is too crowded"; a scan of all four
       phone tabs found Chat/Files/Personas clean and **Notes is the offender** —

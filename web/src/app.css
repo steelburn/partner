@@ -1594,6 +1594,23 @@ select {
   background: var(--surface);
 }
 
+/* M30: embedded in the sidebar's Chat section. Fill the column instead of the
+ * fixed rail width and let the section's own tree area own the scroll. */
+.rail-embedded {
+  width: auto;
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+}
+
+.rail-embedded .rail-head {
+  padding: var(--space-1) 0 var(--space-2);
+}
+
+.rail-embedded .rail-body {
+  padding: 0 0 var(--space-2);
+}
+
 .rail-head {
   padding: var(--space-3);
   display: flex;
@@ -1611,6 +1628,8 @@ select {
   flex-direction: column;
   gap: var(--space-1);
   padding: 0 var(--space-2) var(--space-3);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .rail-note {
@@ -1948,12 +1967,24 @@ select {
 
 .personas-panel {
   width: 100%;
-  max-width: 920px;
+  max-width: 1120px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   padding: var(--space-4);
+}
+
+.personas-masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.personas-deck {
+  max-width: 72ch;
 }
 
 .personas-loading {
@@ -1981,33 +2012,6 @@ select {
   color: var(--danger);
 }
 
-.persona-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.persona-card {
-  background: var(--surface);
-  border-radius: var(--radius-lg);
-}
-
-.persona-card-inner {
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.persona-card-head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-}
-
 .persona-avatar {
   display: inline-flex;
   align-items: center;
@@ -2022,54 +2026,165 @@ select {
   font-weight: var(--fw-semibold);
 }
 
-.persona-identity {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.persona-name {
-  margin: 0;
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.persona-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-/* M12 P1.3: persona chips clear the 12px floor (they are the densest
- * repeated element on the Personas view). */
-.persona-chips .chip {
-  font-size: var(--fs-sm);
-}
-
-.persona-tagline {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-}
-
-.persona-meta {
-  margin: 0;
-  /* M12 P1.3: meta line off the 12px floor. */
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-}
-
 .persona-hint {
   margin-top: 0;
 }
 
-.persona-card-head .row-actions {
+/* --- M31 persona deck: the wall of business cards ----------------------- */
+
+.persona-deck {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.persona-deck > li {
+  display: flex;
+  min-width: 0;
+}
+
+.persona-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+}
+
+/* A paused persona is inert — the whole card drops back, so the wall shows
+ * the kill switch at a glance without a second badge. */
+.persona-card.is-paused {
+  opacity: 0.72;
+}
+
+.persona-card-open {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border-radius: var(--radius-md);
+}
+
+.persona-card-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.persona-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.persona-card-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  height: var(--space-5);
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--accent-emphasis);
+  color: var(--accent-contrast);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.persona-card-chips {
+  display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.persona-card-name {
+  margin-top: var(--space-1);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  letter-spacing: var(--track-head);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.persona-card-tagline {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  min-height: 2.6em;
+}
+
+.persona-card-tagline-empty {
+  font-style: italic;
+}
+
+.persona-card-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.persona-card-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.persona-card-fact-value {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.persona-card-fact-label {
+  font-size: var(--fs-xs);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.persona-card-edit-hint {
+  margin-top: var(--space-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--accent);
+}
+
+.persona-card-open:hover .persona-card-edit-hint {
+  text-decoration: underline;
+}
+
+.persona-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
 }
 
 .persona-form {
@@ -2517,8 +2632,10 @@ select {
  * come from var(--…) tokens; the only bare lengths here are structural
  * geometry (progress-bar height, row min-heights). Row buttons reset the
  * default <button> chrome and declare hover/focus-visible/active; disabled
- * states come from .btn/.field. No borders used for separation — surfaces
- * shift instead.
+ * states come from .btn/.field. The base list separates by surface shift;
+ * M31's magazine pass (see the M31 section at the end of this file) lays
+ * editorial hairline rules over the Notes/Plans panel only, which is why
+ * those rules live in a scoped block rather than here.
  * ========================================================================== */
 
 .notes {
@@ -3497,20 +3614,7 @@ select {
   }
 }
 
-/* --- M6: per-persona theme bind (Personas rows) -------------------------- */
-
-.persona-theme-bind {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: var(--space-1);
-}
-
-.persona-theme-label {
-  margin-bottom: 0;
-  flex: none;
-}
+/* --- M6: per-persona theme bind (M31: rendered inside the persona drawer) -- */
 
 .persona-theme-select {
   width: auto;
@@ -3526,6 +3630,89 @@ select {
   font-size: var(--fs-sm);
   color: var(--text-muted);
   max-width: 72ch;
+}
+
+/* --- M31 persona drawer: the slide-out editor ---------------------------- */
+
+.persona-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
+.persona-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  width: min(520px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  box-shadow: var(--elevation-lg);
+  animation: pane-in-right var(--motion-base) var(--motion-ease);
+}
+
+.persona-drawer-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.persona-drawer-titles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  min-width: 0;
+}
+
+.persona-drawer-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.persona-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.persona-drawer-theme {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* On a phone the drawer owns the full width, so the form stays usable with
+ * the on-screen keyboard (the shell is already sized to dvh). */
+@media (max-width: 640px) {
+  .persona-drawer {
+    width: 100vw;
+  }
+
+  .persona-drawer-head,
+  .persona-drawer-body {
+    padding: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .persona-drawer {
+    animation: none;
+  }
 }
 
 /* ==========================================================================
@@ -6816,11 +7003,6 @@ select {
   width: var(--assets-w);
 }
 
-/* User collapse beats everything (including any drag width). */
-.chat-workspace.rail-hidden .rail {
-  display: none;
-}
-
 .chat-workspace.notes-lane-collapsed {
   --notes-w: var(--space-5);
 }
@@ -7525,6 +7707,12 @@ select {
   gap: var(--space-3);
   flex: 1;
   min-height: 0;
+  /* M30: the Chat section can be taller than the menu alone (it carries the
+   * conversation tree), so the nav scrolls rather than crushing the tree or
+   * pushing the later groups out of reach. */
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .side-group {
@@ -7582,6 +7770,91 @@ select {
   margin-left: auto;
 }
 
+/* M30 — the conversation tree under the Chat entry.
+ *
+ * The conversation rail used to be a second column beside the transcript; it
+ * now lives inside the sidebar's Chat section, so the app has one left panel
+ * and the transcript gets its width back. The Chat destination button and the
+ * disclosure are separate controls: selecting the view and showing/hiding the
+ * tree are two different intents. The folder tree rides along unchanged.
+ *
+ * The tree is bounded (and scrolls internally) because the twelve-item menu
+ * already fills a laptop-height sidebar — unbounded, it would either crush the
+ * menu or be crushed by it. The disclosure lets a user reclaim the menu space
+ * in one click. */
+.side-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.side-chat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0);
+}
+
+.side-chat-row .side-tab {
+  flex: 1;
+  min-width: 0;
+}
+
+.side-chat-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-4);
+  height: var(--space-4);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.side-chat-toggle:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.side-chat-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.side-chat-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Collapsed points right; expanded points down. */
+.side-chat-toggle svg {
+  transform: rotate(-90deg);
+}
+
+.side-chat-toggle[aria-expanded='true'] svg {
+  transform: rotate(0deg);
+}
+
+.side-chat-tree {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(40vh, 320px);
+  margin-top: var(--space-1);
+  /* A bounded scroll region needs a visible edge, so a clipped conversation
+   * row reads as "more below" rather than as broken layout. */
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-2);
+}
+
+.app.side-minimized .side-chat-tree,
+.app.side-minimized .side-chat-toggle {
+  display: none;
+}
+
 /* Content column: top bar + views. */
 .app-col {
   flex: 1;
@@ -7627,6 +7900,12 @@ select {
 
   .app-topbar .picker-label {
     display: none;
+  }
+
+  /* Tablet is a touch surface: the Chat disclosure keeps the 44px floor. */
+  .side-chat-toggle {
+    min-height: var(--target-min);
+    min-width: var(--target-min);
   }
 }
 
@@ -9347,9 +9626,9 @@ select {
 }
 
 @media (max-width: 640px) {
-  /* The overlay rail slides in from the left. It is `display: none` while
-   * hidden (base `.rail-hidden` rule), so the animation replays on every open
-   * here too. */
+  /* The overlay rail slides in from the left. M30 renders it only while it is
+   * open (the sidebar carries the tree above this tier), so the mount replays
+   * the entrance animation on every open. */
   .chat-workspace .rail {
     animation: pane-in-left var(--motion-base) var(--motion-ease);
   }
@@ -10680,4 +10959,168 @@ select {
 .shared .field:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ==========================================================================
+ * M31 — Notes & plans, magazine layout.
+ *
+ * The brief: an editorial issue rather than a stack of cards — a masthead
+ * (folio → title → deck), hairline section rules, a lead item that spans the
+ * full measure, and a "river" of entries beneath it. Wide enough to breathe
+ * on a large display, still a single column on a laptop. Everything resolves
+ * through the theme tokens: the magazine look is typography, rules and
+ * rhythm, not a new palette.
+ * ========================================================================== */
+
+.notes-panel {
+  max-width: 1200px;
+  gap: var(--space-4);
+}
+
+@media (min-width: 1600px) {
+  .notes-panel {
+    /* One more column of air on a large display; the prose measure stays
+     * capped on .mag-deck so the deck never runs the full width. */
+    max-width: 1360px;
+  }
+}
+
+/* Masthead --------------------------------------------------------------- */
+
+.mag-masthead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 2px solid var(--text);
+}
+
+.mag-folio {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.mag-kicker {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.mag-section {
+  font-size: var(--fs-xs);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mag-title {
+  margin: 0;
+  font-size: var(--fs-xxl);
+  font-weight: var(--fw-semibold);
+  line-height: 1.05;
+  letter-spacing: var(--track-head);
+  color: var(--text);
+}
+
+.mag-deck {
+  margin: 0;
+  max-width: 68ch;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.mag-masthead .seg-tabs {
+  margin-top: var(--space-2);
+}
+
+/* Editorial sections: rules instead of card surfaces --------------------- */
+
+.notes-panel .card:not(.n-editor):not(.p-planner) {
+  padding: var(--space-3) 0 0;
+  background: transparent;
+  border-radius: 0;
+  border-top: 1px solid var(--border);
+}
+
+.notes-panel .card:not(.n-editor):not(.p-planner) .card-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.notes-panel .card:not(.n-editor):not(.p-planner) .section-head {
+  align-items: baseline;
+}
+
+/* The river: one column of entries, widened to two or three on a large
+ * screen, with the newest as a full-width lead. */
+.notes-panel .n-list,
+.notes-panel .p-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 0 var(--space-4);
+}
+
+.notes-panel .n-list > li,
+.notes-panel .p-list > li {
+  min-width: 0;
+  display: flex;
+}
+
+.notes-panel .n-list > li:first-child,
+.notes-panel .p-list > li:first-child {
+  grid-column: 1 / -1;
+}
+
+.notes-panel .n-row,
+.notes-panel .p-row {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border-radius: 0;
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) 0;
+}
+
+.notes-panel .n-row:hover:not(:disabled),
+.notes-panel .p-row:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.notes-panel .n-list > li:first-child .n-row,
+.notes-panel .p-list > li:first-child .p-row {
+  padding: var(--space-4);
+}
+
+.notes-panel .n-list > li:first-child .n-row-title,
+.notes-panel .p-list > li:first-child .p-row-title {
+  font-size: var(--fs-xl);
+  line-height: 1.15;
+}
+
+.notes-panel .p-list > li:first-child .p-row-desc {
+  font-size: var(--fs-md);
+}
+
+/* Meta reads as an editorial dateline. */
+.notes-panel .n-row-meta,
+.notes-panel .p-row-meta {
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+
+/* The two working documents keep their card surface — they are documents a
+ * reader sits inside, not list entries. */
+.notes-panel .n-editor,
+.notes-panel .p-planner {
+  background: var(--surface);
 }

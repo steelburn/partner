@@ -212,6 +212,15 @@ export function IconChevronRight(props: IconProps) {
   );
 }
 
+/** Chevron down — the sidebar Chat section's expand/collapse disclosure. */
+export function IconChevronDown(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m4.2 6.2 3.8 4 3.8-4" />
+    </Svg>
+  );
+}
+
 /** Full width (focus mode) — corners outward. */
 export function IconMaximize(props: IconProps) {
   return (

@@ -46,36 +46,37 @@ export default function NotesView({ personas, onUnpair, active, captureSignal, f
   return (
     <section className="notes" aria-label="Notes and plans">
       <div className="notes-panel">
-        <div className="page-head">
-          <div className="page-head-titles">
-            <div className="kicker">Stores</div>
-            <h1 className="page-title">Notes &amp; plans</h1>
+        <header className="mag-masthead">
+          <div className="mag-folio">
+            <span className="mag-kicker">Stores</span>
+            <span className="mag-section">{tab === 'notes' ? 'Notes' : 'Plans'}</span>
           </div>
-        </div>
-        <p className="page-copy">
-          The stores you keep WITH the partner: markdown notes that link to each other, and
-          structured plans with milestones, tasks and owners. Everything lives in the core on
-          this machine.
-        </p>
+          <h1 className="mag-title">Notes &amp; plans</h1>
+          <p className="mag-deck">
+            The stores you keep with the partner: markdown notes that link to each other, and
+            structured plans with milestones, tasks and owners. Everything lives in the core on
+            this machine.
+          </p>
 
-        <div className="seg-tabs" role="group" aria-label="Notes and plans segments">
-          <button
-            type="button"
-            className="btn btn-secondary seg-tab"
-            onClick={() => setTab('notes')}
-            aria-pressed={tab === 'notes'}
-          >
-            Notes
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary seg-tab"
-            onClick={() => setTab('plans')}
-            aria-pressed={tab === 'plans'}
-          >
-            Plans
-          </button>
-        </div>
+          <div className="seg-tabs" role="group" aria-label="Notes and plans segments">
+            <button
+              type="button"
+              className="btn btn-secondary seg-tab"
+              onClick={() => setTab('notes')}
+              aria-pressed={tab === 'notes'}
+            >
+              Notes
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary seg-tab"
+              onClick={() => setTab('plans')}
+              aria-pressed={tab === 'plans'}
+            >
+              Plans
+            </button>
+          </div>
+        </header>
 
         <div className={tab === 'notes' ? 'notes-seg notes-seg-active' : 'notes-seg'}>
           <NotesSegment

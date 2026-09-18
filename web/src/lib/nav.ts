@@ -19,12 +19,12 @@ export const VIEW_NAMES = [
   'notes',
   'shared',
   'personas',
-  'providers',
-  'themes',
-  'files',
   'skills',
   'playbooks',
+  'files',
   'memory',
+  'providers',
+  'themes',
   'audit',
   'members',
 ] as const;
@@ -36,12 +36,20 @@ export interface NavGroupMeta {
   views: ViewName[];
 }
 
-/** Desktop sidebar groups (unchanged M14 order and aria semantics). */
+/**
+ * Desktop sidebar groups.
+ *
+ * M31: the configuration surfaces (providers, themes, audit, members) moved
+ * into a single Settings group, so the panel reads as three working groups
+ * over one administrative group instead of five ad-hoc buckets. Studio is now
+ * purely “things the partner is made of” (personas, skills, playbooks); Tools
+ * is the partner's working data.
+ */
 export const NAV_GROUPS: readonly NavGroupMeta[] = [
   { name: 'Workspace', views: ['chat', 'notes', 'shared'] },
-  { name: 'Studio', views: ['personas', 'providers', 'themes'] },
-  { name: 'Tools', views: ['files', 'skills', 'playbooks'] },
-  { name: 'System', views: ['memory', 'audit', 'members'] },
+  { name: 'Studio', views: ['personas', 'skills', 'playbooks'] },
+  { name: 'Tools', views: ['files', 'memory'] },
+  { name: 'Settings', views: ['providers', 'themes', 'audit', 'members'] },
 ] as const;
 
 /** Human labels, shared by the sidebar, the mobile tabs and the More sheet. */

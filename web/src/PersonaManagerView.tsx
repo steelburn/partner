@@ -33,6 +33,7 @@ import { bindPersonaTheme } from './lib/themes.js';
 import { listFolders } from './lib/folders.js';
 import { readStoredToken } from './lib/token.js';
 import { SchedulesSection } from './SchedulesSection.js';
+import { IconClose } from './icons.js';
 
 export interface PersonaManagerProps {
   /** Every persona (null while the shell is still loading them). */
@@ -58,16 +59,17 @@ export interface PersonaManagerProps {
 }
 
 /**
- * M3 provisional Persona studio: list + Pause/Resume + Edit (inline form:
- * name, tagline, voice, system prompt, temperature, task-class model
- * overrides, independence level + explainer, default toggle) + Delete with a
- * two-step confirm (the default persona's delete is refused with a hint).
+ * M3 Persona studio, M31 card-deck layout: a wall of persona “business
+ * cards” (avatar, name, tagline, independence + routing facts) with the full
+ * editor in a drawer that slides in from the side. Pause/Resume stays on the
+ * card (the kill switch must be one click); delete is a two-step confirm on
+ * the card; everything else is edited in the drawer.
+ *
  * System prompts are edited in place and sent to the core only; they are
  * never logged, echoed or listed back by this view.
  *
- * M6 adds a per-row Theme bind (None/global or one of the saved themes) that
- * writes persona.colorTheme via bindPersonaTheme — the core resolves what
- * actually applies (persona -> global active -> preset).
+ * M6 adds a per-persona Theme bind (None/global or one of the saved themes) —
+ * now inside the drawer, since it is one of the persona's editable details.
  */
 export default function PersonaManagerView({
   personas,
@@ -82,7 +84,8 @@ export default function PersonaManagerView({
   active,
 }: PersonaManagerProps) {
   const [sessionLost, setSessionLost] = useState(false);
-  const [creating, setCreating] = useState(false);
+  /** M31: which editor is open, if any. `new` creates; `edit` targets one id. */
+  const [drawer, setDrawer] = useState<{ kind: 'new' } | { kind: 'edit'; id: string } | null>(null);
 
   useEffect(() => {
     if (!active || sessionLost) return;
@@ -95,17 +98,45 @@ export default function PersonaManagerView({
   const handleSessionLost = (): void => setSessionLost(true);
   const list = personas ?? [];
   const hasDefault = list.some((p) => p.isDefault);
+  const editing = drawer?.kind === 'edit' ? list.find((p) => p.id === drawer.id) ?? null : null;
+
+  const closeDrawer = (): void => setDrawer(null);
+
+  // The drawer is a modal surface: Escape closes it, and focus moves into the
+  // form on open (a dialog the keyboard cannot enter is a dead end).
+  useEffect(() => {
+    if (drawer === null) return;
+    const nameId = drawer.kind === 'new' ? 'persona-new-name' : `persona-${drawer.id}-name`;
+    document.getElementById(nameId)?.focus();
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setDrawer(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawer]);
+
+  // If the edited persona disappears (deleted elsewhere), close the drawer
+  // rather than editing a stale object.
+  useEffect(() => {
+    if (drawer?.kind !== 'edit' || personas === null) return;
+    if (!personas.some((p) => p.id === drawer.id)) setDrawer(null);
+  }, [personas, drawer]);
 
   return (
     <section className="personas" aria-label="Personas">
       <div className="personas-panel">
-        <div className="page-head">
+        <header className="personas-masthead">
           <div className="page-head-titles">
             <div className="kicker">Identity</div>
             <h1 className="page-title">Personas</h1>
           </div>
-        </div>
-        <p className="page-copy">
+          {!sessionLost && loadError === null && personas !== null ? (
+            <button type="button" className="btn btn-primary" onClick={() => setDrawer({ kind: 'new' })}>
+              New persona
+            </button>
+          ) : null}
+        </header>
+        <p className="page-copy personas-deck">
           Personas give Partner a voice, a model routing and an independence level. Pause one to
           stop it from chatting or acting anywhere — the kill switch.
         </p>
@@ -139,23 +170,20 @@ export default function PersonaManagerView({
             <p className="empty-state-title">No personas yet</p>
             <p className="empty-state-copy">
               Until you create one, chat has no voice, routing or independence level of its own.
-              Use <strong>New persona</strong> below — a name, a voice and a system prompt are
+              Use <strong>New persona</strong> above — a name, a voice and a system prompt are
               all you need; the rest of the settings have safe defaults.
             </p>
           </div>
         ) : null}
 
         {!sessionLost && loadError === null && list.length > 0 ? (
-          <ul className="persona-list">
+          <ul className="persona-deck">
             {list.map((persona) => (
-              <li key={persona.id} className="persona-card">
-                <PersonaRow
+              <li key={persona.id}>
+                <PersonaCard
                   persona={persona}
-                  themes={themes}
-                  themesError={themesError}
+                  onEdit={() => setDrawer({ kind: 'edit', id: persona.id })}
                   onChanged={onRefresh}
-                  onPersonaThemeBound={onPersonaThemeBound}
-                  onOpenConversation={onOpenConversation}
                   onSessionLost={handleSessionLost}
                 />
               </li>
@@ -163,62 +191,92 @@ export default function PersonaManagerView({
           </ul>
         ) : null}
 
-        {!sessionLost ? (
-          <section className="card" aria-label="New persona">
-            {creating ? (
-              <PersonaEditor
-                persona={null}
-                hasDefault={hasDefault}
-                onSaved={() => {
-                  setCreating(false);
-                  onRefresh();
-                }}
-                onCancel={() => setCreating(false)}
-                onOpenConversation={onOpenConversation}
-                onSessionLost={handleSessionLost}
-              />
-            ) : (
-              <div className="section-head">
-                <h2 className="card-title">New persona</h2>
-                <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-                  New persona
-                </button>
-              </div>
-            )}
-          </section>
-        ) : null}
-
         {!sessionLost && list.length >= 2 ? (
           <PersonaCompare personas={personas} onUnpair={handleSessionLost} />
         ) : null}
       </div>
+
+      {drawer !== null ? (
+        <>
+          <div className="persona-drawer-scrim" aria-hidden="true" onClick={closeDrawer} />
+          <aside
+            className="persona-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              drawer.kind === 'new' ? 'New persona' : `Edit persona ${editing?.name ?? ''}`.trim()
+            }
+          >
+            <header className="persona-drawer-head">
+              <div className="persona-drawer-titles">
+                <span className="kicker">
+                  {drawer.kind === 'new' ? 'New persona' : 'Edit persona'}
+                </span>
+                <h2 className="persona-drawer-title">{editing?.name ?? 'Untitled'}</h2>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={closeDrawer}
+                aria-label="Close editor"
+              >
+                <IconClose />
+              </button>
+            </header>
+            <div className="persona-drawer-body">
+              {drawer.kind === 'edit' && editing !== null ? (
+                <PersonaThemeBind
+                  persona={editing}
+                  themes={themes}
+                  themesError={themesError}
+                  onChanged={onRefresh}
+                  onPersonaThemeBound={onPersonaThemeBound}
+                  onSessionLost={handleSessionLost}
+                />
+              ) : null}
+              <PersonaEditor
+                key={drawer.kind === 'new' ? 'new' : (editing?.id ?? 'edit')}
+                persona={drawer.kind === 'new' ? null : editing}
+                hasDefault={drawer.kind === 'new' ? hasDefault : Boolean(editing?.isDefault)}
+                onSaved={() => {
+                  closeDrawer();
+                  onRefresh();
+                }}
+                onCancel={closeDrawer}
+                onOpenConversation={onOpenConversation}
+                onSessionLost={handleSessionLost}
+              />
+            </div>
+          </aside>
+        </>
+      ) : null}
     </section>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Persona row
+// Persona card (M31)
 // ---------------------------------------------------------------------------
 
-type RowOp = 'pause' | 'resume' | 'delete' | 'bind';
+type CardOp = 'pause' | 'resume' | 'delete';
 
-interface PersonaRowProps {
+interface PersonaCardProps {
   persona: Persona;
-  themes: ThemeProfile[] | null;
-  themesError: string | null;
+  /** Open the slide-out editor on this persona. */
+  onEdit: () => void;
   onChanged: () => void;
-  /** A successful bind changes what theme applies to this persona. */
-  onPersonaThemeBound: () => void;
-  /** M14 runs panel: jump to a scheduled run's conversation in Chat. */
-  onOpenConversation?: (conversationId: string) => void;
   onSessionLost: () => void;
 }
 
-function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBound, onOpenConversation, onSessionLost }: PersonaRowProps) {
-  const [busy, setBusy] = useState<RowOp | null>(null);
+/**
+ * One persona as a “business card”: the card face opens the editor, while the
+ * two actions that must not hide behind a click (pause — the kill switch — and
+ * delete) sit in the card footer.
+ */
+function PersonaCard({ persona, onEdit, onChanged, onSessionLost }: PersonaCardProps) {
+  const [busy, setBusy] = useState<CardOp | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [paused, setPaused] = useState(persona.paused);
 
   // Keep the local paused chip in step when the parent list refreshes.
@@ -247,7 +305,6 @@ function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBou
     setConfirming(false);
     try {
       await (target === 'pause' ? pausePersona : resumePersona)(token, persona.id);
-      // The core is the source of truth; flip locally + confirm via refresh.
       setPaused(target === 'pause');
       onChanged();
     } catch (cause) {
@@ -282,103 +339,152 @@ function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBou
     }
   };
 
-  // M6 per-persona theme bind: '' = clear to the global active theme.
-  const handleBindTheme = async (value: string): Promise<void> => {
+  const idle = busy === null;
+  const modelCount = Object.keys(persona.model.taskClasses).length;
+
+  return (
+    <article className={paused ? 'persona-card is-paused' : 'persona-card'}>
+      <button
+        type="button"
+        className="persona-card-open"
+        onClick={onEdit}
+        aria-label={`Edit persona ${persona.name}`}
+      >
+        <span className="persona-card-top">
+          <span className="persona-card-avatar" aria-hidden="true">
+            {personaInitials(persona.name)}
+          </span>
+          <span className="persona-card-chips">
+            {persona.isDefault ? <span className="chip chip-accent">Default</span> : null}
+            {paused ? <span className="chip">Paused</span> : null}
+          </span>
+        </span>
+        <span className="persona-card-name">{persona.name}</span>
+        {persona.tagline ? (
+          <span className="persona-card-tagline">{persona.tagline}</span>
+        ) : (
+          <span className="persona-card-tagline persona-card-tagline-empty">
+            No tagline yet
+          </span>
+        )}
+        <span className="persona-card-facts">
+          <span className="persona-card-fact">
+            <span className="persona-card-fact-value">
+              {levelLabel(persona.independence.level)}
+            </span>
+            <span className="persona-card-fact-label">Level</span>
+          </span>
+          <span className="persona-card-fact">
+            <span className="persona-card-fact-value">
+              {modelCount > 0 ? `${modelCount} pinned` : 'Auto'}
+            </span>
+            <span className="persona-card-fact-label">Routing</span>
+          </span>
+          <span className="persona-card-fact">
+            <span className="persona-card-fact-value">
+              {persona.character.temperature.toFixed(1)}
+            </span>
+            <span className="persona-card-fact-label">Temp</span>
+          </span>
+        </span>
+        <span className="persona-card-edit-hint">Edit details</span>
+      </button>
+
+      <div className="persona-card-actions">
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => void togglePaused()}
+          disabled={!idle}
+          aria-busy={busy === 'pause' || busy === 'resume'}
+          aria-label={`${paused ? 'Resume' : 'Pause'} persona ${persona.name}`}
+        >
+          {busy === 'pause' ? 'Pausing…' : busy === 'resume' ? 'Resuming…' : paused ? 'Resume' : 'Pause'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm btn-danger"
+          onClick={() => void handleDelete()}
+          disabled={!idle || persona.isDefault}
+          aria-busy={busy === 'delete'}
+          aria-label={
+            confirming
+              ? `Confirm deleting persona ${persona.name}`
+              : `Delete persona ${persona.name}`
+          }
+          title={persona.isDefault ? 'The default persona cannot be deleted.' : undefined}
+        >
+          {busy === 'delete' ? 'Deleting…' : confirming ? 'Confirm delete' : 'Delete'}
+        </button>
+      </div>
+
+      {persona.isDefault ? (
+        <p className="form-hint persona-hint">
+          New chats start with this persona — set another as default to delete this one.
+        </p>
+      ) : null}
+      {error ? (
+        <p className="row-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Theme bind (M6) — shown at the top of the persona drawer
+// ---------------------------------------------------------------------------
+
+interface PersonaThemeBindProps {
+  persona: Persona;
+  themes: ThemeProfile[] | null;
+  themesError: string | null;
+  onChanged: () => void;
+  /** A successful bind changes what theme applies to this persona. */
+  onPersonaThemeBound: () => void;
+  onSessionLost: () => void;
+}
+
+function PersonaThemeBind({
+  persona,
+  themes,
+  themesError,
+  onChanged,
+  onPersonaThemeBound,
+  onSessionLost,
+}: PersonaThemeBindProps) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleBind = async (value: string): Promise<void> => {
     if (busy) return;
     const token = readStoredToken();
     if (!token) {
       onSessionLost();
       return;
     }
-    const themeId = value.length === 0 ? null : value;
-    setBusy('bind');
+    setBusy(true);
     setError(null);
-    setConfirming(false);
     try {
-      await bindPersonaTheme(token, persona.id, themeId);
+      await bindPersonaTheme(token, persona.id, value.length === 0 ? null : value);
       onChanged();
       onPersonaThemeBound();
     } catch (cause) {
-      handleOpError(cause, 'Could not update this persona\'s theme.');
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : 'Could not update this persona’s theme.');
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
-  const idle = busy === null;
-  const modelCount = Object.keys(persona.model.taskClasses).length;
-  const metaParts: string[] = [];
-  if (modelCount > 0) metaParts.push(`${modelCount} model override${modelCount === 1 ? '' : 's'}`);
-  metaParts.push(`${persona.character.temperature.toFixed(1)} temp`);
-
   return (
-    <article className="persona-card-inner">
-      <div className="persona-card-head">
-        <span className="persona-avatar" aria-hidden="true">
-          {personaInitials(persona.name)}
-        </span>
-        <div className="persona-identity">
-          <h3 className="persona-name">{persona.name}</h3>
-          <div className="persona-chips">
-            {persona.isDefault ? <span className="chip">Default</span> : null}
-            {paused ? <span className="chip">Paused</span> : null}
-            <span className="chip">{levelLabel(persona.independence.level)}</span>
-          </div>
-        </div>
-        <div className="row-actions">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => void togglePaused()}
-            disabled={!idle}
-            aria-busy={busy === 'pause' || busy === 'resume'}
-            aria-label={`${paused ? 'Resume' : 'Pause'} persona ${persona.name}`}
-          >
-            {busy === 'pause'
-              ? 'Pausing…'
-              : busy === 'resume'
-                ? 'Resuming…'
-                : paused
-                  ? 'Resume'
-                  : 'Pause'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => {
-              setConfirming(false);
-              setError(null);
-              setEditing((open) => !open);
-            }}
-            disabled={!idle}
-            aria-expanded={editing}
-          >
-            {editing ? 'Close edit' : 'Edit'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm btn-danger"
-            onClick={() => void handleDelete()}
-            disabled={!idle || persona.isDefault}
-            aria-busy={busy === 'delete'}
-            aria-label={
-              confirming
-                ? `Confirm deleting persona ${persona.name}`
-                : `Delete persona ${persona.name}`
-            }
-            title={persona.isDefault ? 'The default persona cannot be deleted.' : undefined}
-          >
-            {busy === 'delete' ? 'Deleting…' : confirming ? 'Confirm delete' : 'Delete'}
-          </button>
-        </div>
-      </div>
-
-      {persona.tagline ? <p className="persona-tagline">{persona.tagline}</p> : null}
-
-      <p className="persona-meta">{metaParts.join(' · ')}</p>
-
-      <div className="persona-theme-bind">
-        <label className="label persona-theme-label" htmlFor={`persona-theme-${persona.id}`}>
+    <div className="persona-drawer-theme">
+      <div className="form-field">
+        <label className="label" htmlFor={`persona-theme-${persona.id}`}>
           Theme
         </label>
         <PersonaThemeSelect
@@ -387,40 +493,21 @@ function PersonaRow({ persona, themes, themesError, onChanged, onPersonaThemeBou
           bound={persona.colorTheme ?? ''}
           themes={themes}
           themesError={themesError}
-          disabled={!idle}
-          busy={busy === 'bind'}
-          onChange={(value) => void handleBindTheme(value)}
+          disabled={busy}
+          busy={busy}
+          onChange={(value) => void handleBind(value)}
         />
-        <p className="persona-theme-hint">
-          Binds this persona to a theme; “None (global)” follows the active theme set in Themes.
+        <p className="form-hint">
+          Binds this persona to a theme; “None (global)” follows the active theme set in
+          Settings › Themes.
         </p>
       </div>
-
-      {persona.isDefault ? (
-        <p className="form-hint persona-hint">
-          The default persona is what new chats start with — set another persona as default to
-          delete this one.
-        </p>
-      ) : null}
       {error ? (
         <p className="row-error" role="alert">
           {error}
         </p>
       ) : null}
-
-      {editing ? (
-        <div className="row-form">
-          <PersonaEditor
-            persona={persona}
-            hasDefault={persona.isDefault}
-            onSaved={onChanged}
-            onCancel={() => setEditing(false)}
-            onOpenConversation={onOpenConversation}
-            onSessionLost={onSessionLost}
-          />
-        </div>
-      ) : null}
-    </article>
+    </div>
   );
 }
 

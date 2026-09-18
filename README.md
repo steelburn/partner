@@ -529,6 +529,34 @@ tier collapses once instead of fighting the user. Guards in
 `web/test/sidebar-collapse.test.ts` (+10), falsified four ways. Web suite **689
 → 699**; `ux_audit` PASSED; measurements in `docs/VERIFY-MOBILE.md`.
 
+**M30 — one left panel: conversations under the Chat entry.** The conversation
+list and its folder tree no longer occupy a second rail column beside the
+transcript; they live in the sidebar, nested under the Chat destination, with a
+disclosure chevron separating "open Chat" from "show/hide the tree". Above the
+phone tier this is the only home for the tree, so the transcript reclaims the
+rail's width; at the phone tier the sidebar is hidden, so the same
+`ConversationRail` still renders as the floating overlay opened from the top
+bar. Folder create/rename/delete and drag-to-move are unchanged — the new
+`embedded` prop only drops the fixed 288px column width. `railWidth` is retired
+from browser storage (the tree fills the sidebar); DESIGN.md's responsive table
+was updated and `one-left-panel.test.ts` (+12) guards the one definition, the two
+render sites and the phone overlay. Web suite green (57 files / 956 tests);
+typecheck 0; bundle green.
+
+**M31 — Settings, persona cards, and a magazine Notes & Plans.** Three requested
+changes in one pass. The sidebar now groups the configuration surfaces
+(Providers, Themes, Audit, Members) under a single **Settings** group, with
+Studio recast as personas/skills/playbooks and Tools as files/memory. Personas
+became a wall of business cards: the card face opens a slide-out editor drawer
+holding every editable detail (including the theme bind), while Pause — the kill
+switch — and Delete stay on the card; one editor instance, Escape and the scrim
+to close. Notes & Plans got a magazine layout: a masthead (folio, `--fs-xxl`
+title, deck), hairline section rules, a 1200px measure (1360px at ≥1600px), and a
+river of entries with the newest as a full-width lead; the note editor and plan
+planner keep their surface. `m31-redesign.test.ts` (+11) and a new `nav.test.ts`
+case pin the structure and geometry. Web suite green (58 files / 967 tests);
+typecheck 0; bundle green; checked in-browser at 1440 and 1024.
+
 **M20.B is executable** — `PLAN-M20-B.md` §3–§5 has the slices, the tests to
 write first, the parallelization waves, and a recommended first slice. **Its
 first wave landed 2026-09-12:** S1 per-user partition, S2/S2a `users` +

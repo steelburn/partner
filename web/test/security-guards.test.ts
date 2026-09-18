@@ -106,8 +106,7 @@ const STORAGE_ALLOWLIST = [
   MODE_STORAGE_KEY, // 'partner.mode'     — light/dark preference
   THEME_CACHE_KEY, // 'partner.theme.pair' — resolved colour tokens, for a flash-free boot
   'partner.notesLane', // UI preference: notes lane open/closed
-  'partner.railOpen', // UI preference: conversation rail open/closed
-  'partner.railWidth', // UI preference: rail drag width
+  'partner.railOpen', // UI preference: conversation rail open/closed (phone overlay)
   'partner.notesWidth', // UI preference: notes lane drag width
   'partner.assetsLane', // UI preference: assets pane open/closed
   'partner.assetsWidth', // UI preference: assets pane drag width

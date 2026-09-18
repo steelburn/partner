@@ -24,6 +24,13 @@ export interface ConversationRailProps {
   onRenameFolder: (id: string, name: string) => Promise<void> | void;
   onDeleteFolder: (id: string) => Promise<void> | void;
   onMoveConversation: (id: string, folderId: string | null) => Promise<void> | void;
+  /**
+   * M30: render as the sidebar's Chat section instead of a standalone rail
+   * column. Same tree and folder controls; the wrapper only drops the fixed
+   * column width so it fills the sidebar. The phone tier keeps the standalone
+   * overlay (sidebar is hidden there), so this defaults to false.
+   */
+  embedded?: boolean;
 }
 
 interface TreeFolder extends Folder {
@@ -54,6 +61,7 @@ export default function ConversationRail({
   onRenameFolder,
   onDeleteFolder,
   onMoveConversation,
+  embedded = false,
 }: ConversationRailProps) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   /** Drag-to-move (M11 extra): dragged chat + current drop target
@@ -457,7 +465,7 @@ export default function ConversationRail({
   const list = conversations === null ? [] : sortConversations(conversations);
 
   return (
-    <aside className="rail" aria-label="Conversations">
+    <aside className={embedded ? 'rail rail-embedded' : 'rail'} aria-label="Conversations">
       <div className="rail-head">
         <button
           type="button"
