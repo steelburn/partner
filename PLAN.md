@@ -726,6 +726,10 @@ REST + SSE + WebSocket events, all behind pairing/session auth:
 `/v1/theme` · `/v1/audit` · `/v1/budget` · `/v1/health` ·
 `/v1/conversations/:id/attachments` (+ `/content`) · `/v1/conversations/:id/assets`
 (+ `/promote`) · `/v1/folders` · `/v1/files/refs` (granted-root autocomplete) ·
+`/v1/conversations/:id/title-suggestion` (M34 — a title PROPOSAL from one
+bounded model call; accepting it is the ordinary `PUT /v1/conversations/:id`) ·
+`/v1/conversations` summaries carry `messageCount` **and** `assetCount` (M35 —
+the asset rows saved for that chat, read per list; derived, never a column) ·
 `/v1/mcp/servers` (+ `/tools`, `/call`) · `/v1/search/config|key|query` ·
 `/v1/conversations/:id/theme` · `/v1/personas/:id/theme` · `/v1/theme/active
 ?personaId=&conversationId=` · `/v1/chat` also accepts `{tools:true}` (native
@@ -1183,6 +1187,93 @@ apps/partner/
       re-scope. *Exit: core 163 files / 1633 passed · web 61 files / 999 passed ·
       typecheck 0 · bundle green · `ux_audit` green (light + dark) · verified
       in-browser against a demo core.*
+- [x] **M34 — Folders as a first-class section, and a session title you can
+      name or have suggested** (spec: this entry). A chat session now carries
+      **two organizations**: the persona that runs it (tree under Personas, M32)
+      and the folder it is filed in — a **Folders** destination in Workspace
+      that renders the SAME `ConversationRail` in its `embedded` form, so the
+      folder controls lost in M32 (create/rename/delete, drag-to-move, the move
+      select) have exactly one home and can never drift from the phone overlay.
+      The session title is displayed at the top of the chat and renamed in
+      place; **Suggest title** offers a proposal once a chat has two user turns
+      (`POST /v1/conversations/:id/title-suggestion`, one bounded model call via
+      `runBoundedModelCall`, demo/no-provider answers the derived opening-message
+      title and says so). The proposal is never stored: accepting is the ordinary
+      `PUT /v1/conversations/:id`. Audit carries counts + the title length only.
+      No schema change. *Exit: root 189 files / 1807 passed (5 skipped) · web 62
+      files / 1023 passed · shared 90 · typecheck 0 · bundle green · `ux_audit`
+      PASSED (light + dark) · walked live at 1440 on a demo core (`docs/VERIFY-M34.md`,
+      which also records the three defects the walk/gate found and fixed).*
+- [x] **M35 — Folders as an Explorer** (spec: `PLAN-M35.md`; record:
+      `docs/VERIFY-M35.md`). The owner's ask: *"Make Folders view somewhat
+      similar to Windows Explorer view. We should be able to have subfolders
+      too."* Subfolders have existed since M11 (`folders.parentId`), so this is
+      a view change: the page now has a **navigation pane** (the same rail in a
+      new folders-only `nav` mode — selectable rows, full folder controls) and a
+      **contents pane** listing the open folder's subfolders then chats under
+      Name · Type · Items · Assets · Modified, with `↑ Up`, a clickable
+      breadcrumb, the item count and one Create action scoped to the open
+      folder. **Assets** is a follow-up ask in the same milestone: a chat row
+      shows the assets saved in that session (M11 F10) and a folder row sums its
+      subtree, so the count reaches the page as `ConversationSummary.assetCount`
+      (a derived per-list read of the assets table — `AssetStore.countsByConversation`,
+      no schema change). One tree
+      definition (`lib/folder-tree.ts`; M17's helpers moved into it) and one
+      definition per control (`FolderActions`, `ChatActions`, now shared with
+      the rail). Selection is clamped to the live folder list; the phone tier
+      stacks the panes and drops the metadata columns. No schema/route change.
+      Fixed: the armed folder-delete chip (dark-mode Lc −17.3 / 1.32:1) now uses
+      `--danger` text on its own `--bg` ground plus a danger ring.
+      *Exit: root 189 files / 1812 passed (5 skipped) · web 63 files / 1048
+      passed · shared 90 · typecheck 0 · bundle green · `ux_audit` PASSED (36
+      pairs, light + dark, and again on the Assets column change) · walked live
+      at 1440 (light) and 390×844 (phone, which closes the M34 phone open end),
+      plus a live asset-count walk (2 assets on a chat, 1 on a subfolder tree).*
+- [x] **M36 — Memory view display pass** (spec: `PLAN-M36.md`; record:
+      `docs/VERIFY-M36.md`). The owner asked for a review of how the Memory
+      section displays and then to apply every suggestion. Five findings, all in
+      one view: (1) a pending suggestion stacked **five tokens for three facts**
+      — provenance is now one item (`Partner noticed` / `You`), the panel
+      heading carries the status, and **the scope text is the disclosure**
+      (`All personas ▾` replaces a `▶ Change` button that named nothing); (2) an
+      episode summary is **readable** (Show more/less at 220 chars) and
+      **Open chat appears only when the shell has that conversation** — a
+      conversation delete does not cascade to its episode, and an imported
+      episode names a chat from another machine, so the action is withheld
+      rather than offered-and-failing; (3) **no disabled control is a dead
+      end** — a demo summary says *No provider behind a demo summary* instead of
+      a dead Re-summarize whose reason was a tooltip, and Forget-before states
+      *Pick a date to enable this.*; (4) **a search hit is marked and
+      actionable** — the match is `<mark>`ed (`highlightSegments`), Edit opens
+      the fact's editor / Show expands the episode, and the note states the real
+      count; (5) the add form's per-persona **Applies to** grid collapses behind
+      one toggle for the near-always *All personas* answer, with M33's empty-set
+      semantics unchanged (verified live). No schema or route change.
+      *Exit: root 189 files / 1812 passed (5 skipped) · web 64 files / 1070
+      passed · shared 90 · typecheck 0 · bundle green · `ux_audit` PASSED
+      (17 pairs, light + dark) · walked live at 1440 and 390×844 in both themes
+      on a demo core (`docs/VERIFY-M36.md`).*
+- [x] **M37 — Memory library as responsive group cards** (spec: `PLAN-M37.md`;
+      record: `docs/VERIFY-M37.md`). The owner's ask: *"responsive cards for the
+      Memory section, & group together based on Kind/Persona … use switch to
+      view either grouping."* The confirmed library is now one card per bucket —
+      a head (name + count chip) over that bucket's rows in an M31-style
+      `auto-fill minmax(320px, 1fr)` grid (3 columns at 1440, 2 at 1100/900, 1
+      at 390; 0 crushed rows, no overflow) — switched by one `.seg-tabs` pill
+      (`Kind` ⇄ `Persona`, `aria-pressed`) persisted as **`partner.factGrouping`**
+      through `lib/storage.ts`. `groupEntries` is pure and its rule is a
+      **partition**: every fact lands in exactly one card in either mode — by
+      kind (chip order, empties omitted) or by persona (`All personas` →
+      `Shared` → each persona with facts → `Removed persona`). The head and its
+      rows no longer repeat each other (kind-grouped rows drop the kind chip;
+      a one-persona card drops the row's scope item). A card is a head + rows,
+      **not a third surface plane** (space → background shift → elevation). The
+      Suggestions inbox and Rejected audit panel stay status-first, and episodes
+      are untouched. No schema or route change.
+      *Exit: root 189 files / 1812 passed (5 skipped) · web 64 files / 1084
+      passed · shared 90 · typecheck 0 · bundle green · `ux_audit` PASSED (20
+      pairs, light + dark) · walked live at 1440 / 1100 / 900 / 390×844, light
+      and dark, on a demo core (`docs/VERIFY-M37.md`).*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no

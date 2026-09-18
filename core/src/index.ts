@@ -629,6 +629,7 @@ import { createPersonaManager } from './personas/manager.js';
 import type { PersonaManager } from './personas/manager.js';
 import { createConversationManager } from './conversations/manager.js';
 import type { ConversationManager } from './conversations/manager.js';
+import { createTitleSuggester } from './conversations/title.js';
 import { createKeychainFake, createKeychainNative } from './keychain/keychain.js';
 import { createKeychainFile, keychainFileError } from './keychain/file.js';
 import { isDirectEntryPoint } from './entry.js';
@@ -1156,10 +1157,24 @@ export function createCore(
   personaManager.seedIfEmpty();
   const conversationStore = createConversationStore(db);
   const messageStore = createMessageStore(db);
+  // M35: ONE asset store instance, shared with the asset manager below — the
+  // conversation summaries read their per-chat `assetCount` from it.
+  const assetStore = createAssetStore(db);
   const conversationManager = createConversationManager({
     personaStore,
+    assetStore,
     stores: { conversations: conversationStore, messages: messageStore },
     audit,
+  });
+
+  // M34: the session-title suggestion (PLAN-M34.md slice B). ONE bounded
+  // one-shot call — the SAME `runBoundedModelCall` the skill and flow
+  // authoring paths use, so there is one cap and one timeout for every
+  // non-chat model call, and the same demo rule: with no provider configured
+  // the title is derived from the opening message and reported as such.
+  const titleSuggester = createTitleSuggester({
+    providers: providerManager,
+    demo: config.demo,
   });
 
   // M11 F11: folders over the SAME db (schema v12). Conversations are the
@@ -1267,7 +1282,7 @@ export function createCore(
   // M11 F10: assets over the SAME db (schema v12). Promotion bridges into
   // notes (F6): chat artifacts become notes with provenance headers.
   const assets = createAssetManager({
-    store: createAssetStore(db),
+    store: assetStore,
     notes,
     audit,
   });
@@ -1566,6 +1581,7 @@ export function createCore(
     broker,
     personaManager,
     conversationManager,
+    titleSuggester,
     folders,
     attachments,
     assets,

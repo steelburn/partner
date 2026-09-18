@@ -478,6 +478,110 @@ textarea {
   color: var(--text-muted);
 }
 
+/* --- M34: the session title header ---------------------------------------
+ * The title of the session, at the top of the session. Rhyme comes from the
+ * type scale: `--fs-lg` semibold over the page-level `--fs-xxl` headings, so a
+ * chat title reads as a session name inside the workspace rather than as a
+ * second page title. The header is a SIBLING of the transcript (the transcript
+ * is the scroller), so the name stays put while the messages move under it.
+ * No border, no card: the transcript gap is the separation (DESIGN.md).
+ * ------------------------------------------------------------------------ */
+
+.chat-session,
+.chat-session-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chat-session {
+  padding-bottom: var(--space-2);
+}
+
+.chat-session-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-session-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  letter-spacing: var(--track-head);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.chat-session-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.chat-session-action {
+  font-size: var(--fs-sm);
+}
+
+.chat-session-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+/* The proposal is a well, not a card: a nested surface shift says "this is not
+ * the title yet" without a border or an elevation the page does not own. */
+.chat-session-proposal {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.chat-session-proposal-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-session-proposal-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chat-session-proposal-note {
+  flex-basis: 100%;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.chat-session-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.chat-session-note-text {
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
 .chat-error {
   display: flex;
   align-items: center;
@@ -1611,6 +1715,14 @@ select {
   padding: 0 0 var(--space-2);
 }
 
+/* M35: in the Explorer's navigation pane the rail renders no head and no chats,
+ * so `hidden` has to win — both elements carry a `display` rule of their own,
+ * which would otherwise beat the UA's `[hidden] { display: none }`. */
+.rail-head[hidden],
+.rail-total[hidden] {
+  display: none;
+}
+
 .rail-head {
   padding: var(--space-3);
   display: flex;
@@ -1762,16 +1874,22 @@ select {
 
 .rail-item:hover .rail-item-move,
 .rail-item:focus-within .rail-item-move,
+.explorer-row:hover .rail-item-move,
+.explorer-row:focus-within .rail-item-move,
 .rail-item-move:focus-visible,
 .rail-item-del-visible,
 .rail-item:hover .rail-item-del,
-.rail-item:focus-within .rail-item-del {
+.rail-item:focus-within .rail-item-del,
+.explorer-row:hover .rail-item-del,
+.explorer-row:focus-within .rail-item-del {
   max-width: 100px;
   opacity: 1;
 }
 
 .rail-item:hover .rail-item-move,
 .rail-item:focus-within .rail-item-move,
+.explorer-row:hover .rail-item-move,
+.explorer-row:focus-within .rail-item-move,
 .rail-item-move:focus-visible {
   max-width: 96px;
   padding: 2px var(--space-1);
@@ -2542,6 +2660,13 @@ select {
 
 .mem-scope-pick-summary {
   cursor: pointer;
+  /* M36: the scope TEXT is the disclosure — the control says what it changes
+   * ("All personas" / "Builder") instead of the word "Change", so the row
+   * needs no separate label to explain it. The marker becomes a chevron. */
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  list-style: none;
   /* Its own --bg ground: in light mode --accent text fails the body floor
    * directly on a --surface-2 row (Lc 69.0, DESIGN.md), so the control brings
    * the chip ground this view already uses instead of sitting on the well. */
@@ -2549,6 +2674,20 @@ select {
   color: var(--accent);
   border-radius: var(--radius-full);
   padding: var(--space-1) var(--space-2);
+}
+
+.mem-scope-pick-summary::-webkit-details-marker {
+  display: none;
+}
+
+.mem-scope-pick-caret {
+  display: inline-flex;
+  flex: none;
+}
+
+/* Closed points right, open points down — the sidebar disclosure's rule. */
+.mem-scope-pick:not([open]) .mem-scope-pick-caret {
+  transform: rotate(-90deg);
 }
 
 .mem-scope-pick-summary:hover {
@@ -2670,6 +2809,7 @@ select {
 .mem-row-hit {
   flex-direction: row;
   align-items: baseline;
+  flex-wrap: wrap;
 }
 
 .mem-snippet {
@@ -2751,6 +2891,162 @@ select {
 .label-optional {
   font-weight: var(--fw-regular);
   color: var(--text-faint);
+}
+
+/* ==========================================================================
+ * M36 — Memory display pass (suggestion rows, scope grid, episodes, search).
+ *
+ * Review findings this fixes, all inside the existing token set:
+ *  1. A suggestion row stacked FIVE tokens for three facts (an "Auto-detected"
+ *     chip + a "Suggested" chip + the scope + a "▶ Change" word + "Partner ·
+ *     5m ago"). Provenance is one item now ("Partner noticed" / "You"), the
+ *     panel heading already names the status, and the scope text itself is the
+ *     disclosure (above).
+ *  2. Episodes clamped at 220 chars with no way to read the rest, and demo
+ *     summaries offered a DISABLED "Re-summarize" whose only reason lived in a
+ *     `title` tooltip — invisible on touch. Now: Show more/less, and an inline
+ *     note in place of the impossible action.
+ *  3. Search hits were read-only muted text: the match is marked and every hit
+ *     carries one action (Edit a fact / Show an episode summary).
+ *  4. The add form's "Applies to" grid is one checkbox per persona; it now
+ *     collapses behind a toggle for the near-always "All personas" answer.
+ *
+ * Link-style controls use --accent-hover on their surface ground: light-mode
+ * --accent under-reaches the Lc 75 floor there (DESIGN.md M12 P0.3 usage rule),
+ * and hover signals with an underline rather than a colour that would fail.
+ * ========================================================================== */
+
+/* --- "Applies to": one toggle for the persona grid ----------------------- */
+.mem-scope-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  flex-basis: 100%;
+}
+
+.mem-scope-more,
+.mem-summary-toggle {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--accent-hover);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  min-height: var(--space-5);
+}
+
+.mem-scope-more:hover:not(:disabled),
+.mem-summary-toggle:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.mem-scope-more:focus-visible,
+.mem-summary-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.mem-scope-more:active:not(:disabled),
+.mem-summary-toggle:active:not(:disabled) {
+  color: var(--accent-emphasis);
+}
+
+.mem-scope-more:disabled,
+.mem-summary-toggle:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+/* --- A visible reason, inline, where a disabled control used to sit ------- */
+.mem-hint {
+  align-self: center;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* --- Search: the match is marked, the hit is actionable ------------------ */
+.mem-hit-open {
+  margin-left: auto;
+}
+
+/* A <mark> inside a --surface-2 row takes the view's own chip ground (--bg),
+ * the same contrast-safe move the chips make. */
+.mem-mark {
+  background: var(--bg);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  border-radius: var(--radius-sm);
+}
+
+/* ==========================================================================
+ * M37 — the Profile library as responsive group cards.
+ *
+ * The owner's ask: *"responsive cards for the Memory section, & group together
+ * based on Kind/Persona … use switch to view either grouping."*
+ *
+ * A group card is a HEAD plus its rows in a grid cell — deliberately not a
+ * third surface plane (.card is --surface, a row is --surface-2; a filled card
+ * here would nest a plane inside a plane). Separation is the grid gap and the
+ * head label, which is DESIGN.md's first device (space → background shift →
+ * elevation before a border).
+ *
+ * `auto-fill minmax()` is the M31 Persona-wall grid, so card width responds
+ * without a breakpoint; the phone tier pins one column so a 320px cell can
+ * never have to hold a row's actions. Inside a cell the row keeps its own
+ * wrap rules, so the value / meta / actions stack instead of crushing.
+ *
+ * Kind names use --accent-hover (not --accent): light-mode --accent measures
+ * Lc 72.6 on --surface, under the body floor (DESIGN.md M12 P0.3 rule), and the
+ * head is 14px/600 — not the large-bold step that may relax to Lc 45.
+ * ========================================================================== */
+
+.mem-group-switch {
+  margin-top: var(--space-1);
+}
+
+.mem-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.mem-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mem-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mem-group-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.mem-group-name-accent {
+  color: var(--accent-hover);
+}
+
+.mem-group-name-danger {
+  color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .mem-groups {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ==========================================================================
@@ -5005,6 +5301,50 @@ select {
   border-bottom: none;
 }
 
+/* M35: in the Explorer's navigation pane the name cell is the selection
+ * control (the rail's spanning row keeps its plain span). `.folder-name`
+ * already carries the type and the ellipsis, so this only makes it a button. */
+.folder-select {
+  border: 0;
+  background: transparent;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-select:hover:not(:disabled) {
+  color: var(--accent-hover);
+}
+
+.folder-select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.folder-select:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+/* The current folder reads as a selection: a fill plus weight, never a border. */
+.folder-row-current {
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding-left: var(--space-1);
+  padding-right: var(--space-1);
+}
+
+.folder-row-current .folder-select {
+  font-weight: var(--fw-semibold);
+}
+
+/* The navigation pane is narrower than the rail, so its tree indents by two
+ * grid steps per level instead of three. */
+.explorer-nav .folder-group {
+  padding-left: var(--space-2);
+}
+
 .folder-toggle {
   flex: none;
   width: var(--space-3);
@@ -5050,7 +5390,13 @@ select {
   flex: none;
   font-size: var(--fs-xs);
   font-weight: var(--fw-regular);
-  color: var(--text-faint);
+  /* NOT --text-faint: DESIGN.md reserves that token for DISABLED text, and a
+   * chat count is information (it is also the number a filed/unfiled decision
+   * is made from). Measured on --surface-2 it was APCA Lc 68.9 light / 48.0
+   * dark — under the body floor; --text-muted is Lc 81.4 / 75.2. (M34: the
+   * Folders page made this chip a primary surface, so the defect is fixed with
+   * the feature that exposed it.) */
+  color: var(--text-muted);
   background: var(--surface-2);
   border-radius: var(--radius-full);
   padding: 0 var(--space-1);
@@ -5065,10 +5411,16 @@ select {
   opacity: 0;
 }
 
+/* Reveal is ONE rule per control, extended to the contents pane's rows (M35):
+ * a folder's controls in the Folders list must appear exactly like the rail's,
+ * so the selector list carries both row types rather than a second copy of the
+ * rule underneath. */
 .folder-row:hover .folder-actions,
 .folder-row:focus-within .folder-actions,
 .folder-row:hover .folder-action,
-.folder-action:focus-visible {
+.folder-action:focus-visible,
+.explorer-row:hover .folder-actions,
+.explorer-row:focus-within .folder-actions {
   opacity: 1;
 }
 
@@ -5096,9 +5448,18 @@ select {
   color: var(--danger);
 }
 
+/* Armed delete: the danger colour as TEXT on the page ground plus a danger
+ * ring — never a danger FILL. Dark mode's --danger is a light peach, so the
+ * old `--accent-contrast` on `--danger` measured APCA Lc -17.3 / WCAG 1.32:1
+ * (an unreadable confirm, found by the M35 ux_audit run); and light mode's
+ * --danger on a --surface-2 well is the documented Lc 69.5 case (DESIGN.md
+ * M20.A "give the control its own ground"). The control takes its own --bg
+ * ground, which passes in both modes (Lc 80.9 light / 80.5 dark). */
 .folder-action-confirm {
-  background: var(--danger);
-  color: var(--accent-contrast);
+  background: var(--bg);
+  color: var(--danger);
+  outline: 2px solid var(--danger);
+  outline-offset: -2px;
   opacity: 1;
   border-radius: var(--radius-sm);
   padding: 0 var(--space-1);
@@ -5143,7 +5504,307 @@ select {
   display: block;
   margin-top: var(--space-2);
   font-size: var(--fs-xs);
+  /* M34: "N chats · M in folders" is information, not a disabled label — the
+   * faint token put it under the body floor, and the Folders page shows it. */
+  color: var(--text-muted);
+}
+
+/* --- M34/M35: the Folders section (the Explorer) ---------------------------
+ * The page that owns the folder half of a session's organization. Geometry
+ * mirrors the other page surfaces (.memory): the page scrolls, the panel holds
+ * the measure.
+ *
+ * M35 made it an Explorer — a navigation pane (the folder tree) beside a
+ * contents pane (the selected folder's subfolders and chats), with an address
+ * bar above them. The measure is the system's widest (1200px, the magazine
+ * layout's) because this is a dense tool surface, not prose. Neither pane gets
+ * a card: separation is space alone, per DESIGN.md (space -> background shift
+ * -> elevation), and the rows carry the hover/selection fill.
+ * ------------------------------------------------------------------------ */
+
+.folders {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.folders-panel {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.folders-stats {
+  margin: calc(var(--space-1) * -1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- The Explorer frame --------------------------------------------------- */
+
+.explorer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.explorer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.explorer-up {
+  flex: none;
+}
+
+.explorer-crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.explorer-crumb-part {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.explorer-crumb-sep {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.explorer-crumb {
+  border: 0;
+  background: transparent;
+  /* Light mode: accent text on --bg only (DESIGN.md M12 P0.3 usage rule). */
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.explorer-crumb:hover:not(:disabled) {
+  color: var(--accent-hover);
+  background: var(--surface);
+}
+
+.explorer-crumb:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.explorer-crumb[aria-current='page'] {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.explorer-count {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.explorer-new-folder {
+  flex: none;
+}
+
+.explorer-body {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  min-height: 0;
+}
+
+.explorer-nav {
+  min-width: 0;
+}
+
+/* The navigation pane is the embedded rail, in its folders-only mode: in the
+ * page it is content-height (the PAGE owns the scroll, so the tree can never be
+ * a second, nested scroll region) and it carries no surface of its own. */
+.explorer-nav .rail-embedded {
+  flex: none;
+  overflow: visible;
+}
+
+.explorer-nav .rail-embedded .rail-body {
+  overflow: visible;
+  padding: 0;
+}
+
+/* --- The contents pane ---------------------------------------------------- */
+
+.explorer-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Columns: Name grows, the metadata columns are fixed, actions take the rest.
+ * One grid definition, shared by the header row and every row, so a column can
+ * never drift from its heading. M35 follow-up: Assets joined Items (a chat's
+ * saved assets, a folder's subtree total). */
+.explorer-head,
+.explorer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 76px 76px 92px minmax(0, auto);
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.explorer-head {
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+}
+
+.explorer-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+}
+
+.explorer-row {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  min-height: var(--space-4);
+}
+
+.explorer-row:hover,
+.explorer-row:focus-within {
+  background: var(--surface);
+}
+
+.explorer-row-active {
+  background: var(--surface-2);
+}
+
+.explorer-cell-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.explorer-cell-type,
+.explorer-cell-items,
+.explorer-cell-assets,
+.explorer-cell-when {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer-cell-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* The row's open control: the name cell itself (Explorer enters a folder by
+ * clicking its name), so it must read as text until it is touched. */
+.explorer-open {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.explorer-open:hover:not(:disabled) {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.explorer-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.explorer-open:disabled {
   color: var(--text-faint);
+  cursor: default;
+}
+
+/* The Create field rides the row grid, so the name it will take sits under the
+ * Name column it will land in. */
+.explorer-new {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+}
+
+.explorer-new .field {
+  font-size: var(--fs-sm);
+}
+
+.explorer-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-2);
+}
+
+.explorer-empty-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.explorer-empty-text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+.explorer-empty .btn {
+  margin-top: var(--space-1);
 }
 
 /* --- M11 F7 markdown rendering + F9 choice cards + F8 follow-latest ------- */
@@ -9201,6 +9862,9 @@ select {
 
   .side-tab,
   .folder-action,
+  .folder-select,
+  .explorer-open,
+  .explorer-crumb,
   .rail-item-del,
   .rail-item-move,
   .more-item {
@@ -9214,8 +9878,41 @@ select {
   .btn-sm,
   .picker-trigger,
   .side-tab,
-  .folder-action {
+  .folder-action,
+  .folder-select,
+  .explorer-open,
+  .explorer-crumb {
     min-height: var(--target-min);
+  }
+}
+
+/* M35: the Folders page is an Explorer at every width, but a phone has room
+ * for ONE pane — so the navigation pane stacks above the contents list and the
+ * contents list keeps only Name + the row's controls (the metadata columns are
+ * the first thing that can go; the row's own open control carries the title). */
+@media (max-width: 640px) {
+  .explorer-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .explorer-head,
+  .explorer-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .explorer-cell-type,
+  .explorer-cell-items,
+  .explorer-cell-assets,
+  .explorer-cell-when {
+    display: none;
+  }
+
+  /* The address bar is Up + breadcrumb + New folder on a 390px row; the item
+   * count is the one part of it the pane beside/below already states, so it
+   * yields its width instead of squeezing the breadcrumb into "All fol…". */
+  .explorer-count {
+    display: none;
   }
 }
 /* M20.A addendum — the remaining measured sub-44 targets on touch tiers: the
@@ -9261,6 +9958,14 @@ select {
     opacity: 1;
   }
 
+  /* M34: the FOLDER row's own actions (add subfolder / rename / delete) are
+   * revealed on :hover/:focus-within like the chat row's, so without this the
+   * whole folder tree was read-only on a no-hover device — and Folders is now
+   * a reachable destination on a phone. Same rule, same reason. */
+  .folder-actions {
+    opacity: 1;
+  }
+
   .rail-item-del {
     padding: var(--space-1) var(--space-2);
   }
@@ -9283,7 +9988,9 @@ select {
 @media (max-width: 1150px), (hover: none) {
   .rail .btn-sm,
   .rail .field,
-  .folder-new-row .field {
+  .folder-new-row .field,
+  .explorer-new .field,
+  .explorer-new .btn {
     min-height: var(--target-min);
   }
 }

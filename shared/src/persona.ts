@@ -125,6 +125,13 @@ export interface ConversationSummary {
   /** M16 F4 discuss lineage: the asset that sparked this forked discussion. */
   sourceAssetId?: string | null;
   messageCount: number;
+  /**
+   * M35: saved assets (M11 F10) belonging to this chat. A DERIVED count read
+   * from the assets table at list/get time (never a column on `conversations`),
+   * so it needs no schema version and cannot drift from the rows it counts.
+   * 0 when the chat has none — and 0 for a harness that wired no asset store.
+   */
+  assetCount: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -150,3 +157,26 @@ export interface CreateConversationInput {
   /** M16 F4 discuss lineage: originating asset id (fork provenance). */
   sourceAssetId?: string;
 }
+
+/**
+ * M34: the accepted shape of POST /v1/conversations/:id/title-suggestion — a
+ * PROPOSAL, never a write. `source: 'transcript'` means no model named the
+ * session (demo, or nothing configured) and the title was derived from the
+ * opening message, so the UI can say so instead of implying a model spoke.
+ * A reply the core cannot use is `ok:false` with a sentence (200), mirroring
+ * the flow-authoring verbs.
+ */
+export interface TitleSuggestion {
+  title: string;
+  /** The model that named it, or `'transcript'` for the derived fallback. */
+  model: string;
+  source: 'model' | 'transcript';
+  /** User turns the core saw (the "a few back and forth" measure). */
+  userTurns: number;
+  /** Messages the suggestion was made from. */
+  messageCount: number;
+}
+
+export type TitleSuggestionReply =
+  | ({ ok: true } & TitleSuggestion)
+  | { ok: false; code: string; message: string };

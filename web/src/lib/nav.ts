@@ -16,6 +16,7 @@
 /** Every view in the app. Order here is the desktop sidebar order. */
 export const VIEW_NAMES = [
   'chat',
+  'folders',
   'notes',
   'shared',
   'personas',
@@ -44,9 +45,15 @@ export interface NavGroupMeta {
  * over one administrative group instead of five ad-hoc buckets. Studio is now
  * purely “things the partner is made of” (personas, skills, playbooks); Tools
  * is the partner's working data.
+ *
+ * M34: **Folders** joins Workspace directly under Chat — the two ways this
+ * product organizes a chat session (the persona it belongs to, by way of the
+ * tree under Personas, and the folder it is filed in). It is a destination,
+ * not a disclosure: the folder tree and its management controls live on the
+ * page, so there is one place that owns them (the M32 open end).
  */
 export const NAV_GROUPS: readonly NavGroupMeta[] = [
-  { name: 'Workspace', views: ['chat', 'notes', 'shared'] },
+  { name: 'Workspace', views: ['chat', 'folders', 'notes', 'shared'] },
   { name: 'Studio', views: ['personas', 'skills', 'playbooks'] },
   { name: 'Tools', views: ['files', 'memory'] },
   { name: 'Settings', views: ['providers', 'themes', 'audit', 'members'] },
@@ -55,6 +62,7 @@ export const NAV_GROUPS: readonly NavGroupMeta[] = [
 /** Human labels, shared by the sidebar, the mobile tabs and the More sheet. */
 export const NAV_LABELS: Record<ViewName, string> = {
   chat: 'Chat',
+  folders: 'Folders',
   notes: 'Notes',
   shared: 'Shared',
   personas: 'Personas',
@@ -81,6 +89,7 @@ export const MOBILE_TABS: readonly ViewName[] = ['chat', 'notes', 'files', 'pers
 
 /** Everything else, reached from the More sheet. */
 export const MOBILE_MORE: readonly ViewName[] = [
+  'folders',
   'shared',
   'providers',
   'themes',

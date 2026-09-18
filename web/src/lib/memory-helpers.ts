@@ -245,6 +245,84 @@ export function clampText(text: string, max = 220): string {
   return `${chars.slice(0, max).join('')}…`;
 }
 
+/** List-row budget for an episode summary (the full text is one click away). */
+export const EPISODE_SUMMARY_CLAMP = 220;
+
+/**
+ * True when a summary is longer than its list-row budget, i.e. when a row must
+ * offer "Show more". Without this the row would render a clamped teaser with
+ * no way to read the rest — the whole text is already in the row's data.
+ */
+export function isSummaryClamped(summary: string, max = EPISODE_SUMMARY_CLAMP): boolean {
+  return Array.from(summary).length > max;
+}
+
+/**
+ * Search-hit highlighting.
+ *
+ * FTS returns a snippet around the match, so the interesting word is usually
+ * IN the text but unmarked — the reader has to hunt for it. Splitting the
+ * snippet into hit/plain segments (rendered as <mark>) puts the emphasis where
+ * the match is, without touching the stored text.
+ *
+ * Rules: case-insensitive, several occurrences, original casing preserved. The
+ * whole query wins where it matches (it is tried first, longest-first), and
+ * single-character terms are ignored — highlighting every "a" in a snippet is
+ * noise, not emphasis.
+ */
+export interface HighlightSegment {
+  text: string;
+  hit: boolean;
+}
+
+export function highlightSegments(text: string, query: string): HighlightSegment[] {
+  const needles = needlesFor(query);
+  if (needles.length === 0) return [{ text, hit: false }];
+  const pattern = new RegExp(needles.map(escapeRegExp).join('|'), 'gi');
+  const out: HighlightSegment[] = [];
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const matched = match[0];
+    if (matched.length === 0) continue;
+    if (index > last) out.push({ text: text.slice(last, index), hit: false });
+    out.push({ text: matched, hit: true });
+    last = index + matched.length;
+  }
+  if (out.length === 0) return [{ text, hit: false }];
+  if (last < text.length) out.push({ text: text.slice(last), hit: false });
+  return out;
+}
+
+function needlesFor(query: string): string[] {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) return [];
+  const raw = [trimmed, ...trimmed.split(/\s+/)]
+    .map((needle) => needle.trim())
+    .filter((needle) => needle.length >= 2);
+  return [...new Set(raw)].sort((a, b) => b.length - a.length);
+}
+
+/** A user query is data, never a pattern: escape it before building a RegExp. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The core caps search at this many hits (PLAN-M4). */
+export const SEARCH_HIT_CAP = 50;
+
+/**
+ * Note under a search result list. States the real count instead of the old
+ * always-on "Showing up to 50 hits.", which printed even for a single hit.
+ */
+export function hitCountLabel(count: number): string {
+  if (count <= 0) return 'No matches.';
+  if (count >= SEARCH_HIT_CAP) {
+    return `Showing the first ${SEARCH_HIT_CAP} hits — there may be more.`;
+  }
+  return count === 1 ? '1 hit.' : `${count} hits.`;
+}
+
 // ---------------------------------------------------------------------------
 // Export / import (PLAN-M4: bundle <-> file)
 // ---------------------------------------------------------------------------
@@ -353,4 +431,124 @@ export function dateValueToForgetIso(dateValue: string): string | null {
     return null; // rolled over (e.g. Feb 30) — not a real date
   }
   return date.toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// M37 — grouping the library (by kind, or by the persona that honors it)
+// ---------------------------------------------------------------------------
+
+/** How the Memory library is bucketed. A view preference, never content. */
+export type MemoryGrouping = 'kind' | 'persona';
+
+export const MEMORY_GROUPINGS: readonly MemoryGrouping[] = ['kind', 'persona'];
+
+export const MEMORY_GROUPING_LABELS: Record<MemoryGrouping, string> = {
+  kind: 'Kind',
+  persona: 'Persona',
+};
+
+/** Parse a stored preference; anything unrecognised falls back to 'kind'. */
+export function parseGrouping(raw: string | null): MemoryGrouping {
+  return raw === 'persona' ? 'persona' : 'kind';
+}
+
+export interface MemoryEntryGroup {
+  /** Stable slug for React keys and `aria-labelledby` ids. */
+  id: string;
+  label: string;
+  /** Kind tone for the card head (kind mode only). */
+  tone?: KindTone;
+  entries: ProfileEntry[];
+  /**
+   * True when the head already states the fact's scope exactly — one named
+   * persona — so a row inside it does not repeat the persona name.
+   */
+  single: boolean;
+}
+
+/** Kind groups keep the kind order the chips use, so the grid is stable. */
+const KIND_ORDER: readonly ProfileEntryKind[] = ['preference', 'identity', 'rule', 'style'];
+
+const ALL_LABEL = 'All personas';
+const SHARED_LABEL = 'Shared';
+const REMOVED_LABEL = 'Removed persona';
+
+/**
+ * Bucket a library into cards.
+ *
+ * The invariant: **every entry lands in exactly one group** — a fact is never
+ * listed twice and never dropped. That is what makes the two groupings two
+ * views of the same data rather than two lists.
+ *
+ *  - **kind**: the four kinds, in chip order, empty ones omitted.
+ *  - **persona**: `All personas` (the empty scope set — the global form), then
+ *    `Shared` (two or more personas honor it), then each persona that has at
+ *    least one fact (in the personas list's own order), then `Removed persona`
+ *    for facts whose personas no longer exist locally. A fact scoped to a
+ *    removed persona *and* a live one stays with the live persona — the row's
+ *    own tooltip names the rest.
+ */
+export function groupEntries(
+  entries: readonly ProfileEntry[],
+  personas: readonly PersonaLike[],
+  mode: MemoryGrouping,
+): MemoryEntryGroup[] {
+  if (mode === 'kind') {
+    return KIND_ORDER.map((kind) => ({
+      id: `kind-${kind}`,
+      label: kindLabel(kind),
+      tone: kindTone(kind),
+      entries: entries.filter((entry) => entry.kind === kind),
+      single: false,
+    })).filter((group) => group.entries.length > 0);
+  }
+
+  const personaIds = new Set(personas.map((persona) => persona.id));
+  const buckets = new Map<string, MemoryEntryGroup>();
+  const bucket = (id: string, label: string, single: boolean): MemoryEntryGroup => {
+    const found = buckets.get(id);
+    if (found) return found;
+    const created: MemoryEntryGroup = { id, label, entries: [], single };
+    buckets.set(id, created);
+    return created;
+  };
+
+  for (const entry of entries) {
+    const scopes = scopesOf(entry);
+    if (scopes.length === 0) {
+      bucket('scope-all', ALL_LABEL, false).entries.push(entry);
+      continue;
+    }
+    const live = scopes.filter((id) => personaIds.has(id));
+    if (live.length === 0) {
+      bucket('scope-removed', REMOVED_LABEL, false).entries.push(entry);
+      continue;
+    }
+    if (live.length >= 2) {
+      bucket('scope-shared', SHARED_LABEL, false).entries.push(entry);
+      continue;
+    }
+    const persona = personas.find((candidate) => candidate.id === live[0]);
+    bucket(`persona-${live[0]}`, persona?.name ?? REMOVED_LABEL, true).entries.push(entry);
+  }
+
+  // Fixed order: the global baseline, what several personas share, each persona
+  // in the list's own order, then anything orphaned. Only non-empty buckets are
+  // rendered, so a persona with nothing to its name gets no card.
+  const order = [...buckets.values()].sort((a, b) => rank(a.id) - rank(b.id));
+  return order;
+
+  function rank(id: string): number {
+    if (id === 'scope-all') return -2;
+    if (id === 'scope-shared') return -1;
+    if (id === 'scope-removed') return Number.MAX_SAFE_INTEGER;
+    const personaId = id.slice('persona-'.length);
+    const index = personas.findIndex((persona) => persona.id === personaId);
+    return index === -1 ? Number.MAX_SAFE_INTEGER - 1 : index;
+  }
+}
+
+/** Short head label for a group card's count chip. */
+export function groupCountLabel(count: number): string {
+  return count === 1 ? '1 fact' : `${count} facts`;
 }

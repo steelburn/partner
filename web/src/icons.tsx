@@ -115,6 +115,21 @@ export function IconFiles(props: IconProps) {
   );
 }
 
+/**
+ * Folders — a folder holding a nested one (the chat/note folder tree).
+ * Deliberately NOT the Files folder glyph: Folders is the organization tree,
+ * Files is the filesystem, and two identical icons beside two labels is how a
+ * sidebar starts costing a second look to read.
+ */
+export function IconFolder(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M2.6 5.53 3.7 4.06c.2-.26.5-.41.82-.41h1.9l1.38 1.6h4.5c.6 0 1.1.49 1.1 1.1v3.7c0 .6-.5 1.1-1.1 1.1H3.7c-.6 0-1.1-.5-1.1-1.1Z" />
+      <path d="M6.5 11.15V8.5c0-.33.27-.6.6-.6h1.05l.8.9h1.95c.33 0 .6.27.6.6v1.75" />
+    </Svg>
+  );
+}
+
 /** Memory — chip with pins. */
 export function IconMemory(props: IconProps) {
   return (

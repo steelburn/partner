@@ -81,6 +81,8 @@ import { createPersonaManager } from '../src/personas/manager.js';
 import type { PersonaManager } from '../src/personas/manager.js';
 import { createConversationManager } from '../src/conversations/manager.js';
 import type { ConversationManager } from '../src/conversations/manager.js';
+import { createTitleSuggester } from '../src/conversations/title.js';
+import type { TitleSuggester } from '../src/conversations/title.js';
 import { createFolderManager } from '../src/folders/index.js';
 import type { FolderManager } from '../src/folders/index.js';
 import { createAttachmentManager } from '../src/attachments/index.js';
@@ -358,6 +360,16 @@ export interface HarnessOptions {
    * reach the dry-run's typed "no runner wired" refusal.
    */
   skillDraftRunner?: boolean;
+  /**
+   * M34: the session-title suggester
+   * (POST /v1/conversations/:id/title-suggestion).
+   *
+   * Default: `createTitleSuggester({ providers, demo })` — the same wiring a
+   * real core uses, so a route test exercises the demo/derived answer. Inject a
+   * fake to script a proposal (or a typed failure). `null` leaves it unwired,
+   * which is the only way to reach the 501 not_configured surface.
+   */
+  titleSuggester?: TitleSuggester | null;
 }
 
 export interface Harness {
@@ -393,6 +405,8 @@ export interface Harness {
   conversations: ConversationManager;
   /** M11 F11 folder manager + store over the SAME db (folders for chats). */
   folderStore: FolderStore;
+  /** M34: the session-title suggester the app was built with. */
+  titleSuggester?: TitleSuggester;
   /** M17 note<->folder membership store over the SAME tree (schema v16). */
   noteFolderStore: NoteFolderStore;
   folders?: FolderManager;
@@ -519,8 +533,12 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   if (personasEnabled) personas.seedIfEmpty();
   const conversationStore = createConversationStore(db);
   const messageStore = createMessageStore(db);
+  // M35: one asset store, shared with the asset manager below so a conversation
+  // summary's `assetCount` counts the rows the asset surface actually owns.
+  const assetStore = createAssetStore(db);
   const conversations = createConversationManager({
     personaStore: personasEnabled ? personaStore : undefined,
+    assetStore,
     stores: { conversations: conversationStore, messages: messageStore },
     audit,
   });
@@ -638,7 +656,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
   let assets: AssetManager | undefined;
   if (notesPlansEnabled) {
     assets = createAssetManager({
-      store: createAssetStore(db),
+      store: assetStore,
       notes: notes as NoteManager,
       audit,
     });
@@ -864,6 +882,14 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     });
   }
 
+  // M34: the session-title suggester. The DEFAULT is the real wiring (demo
+  // mode answers with the title derived from the opening message); an injected
+  // fake scripts a proposal, and `null` leaves it absent for the 501 surface.
+  const titleSuggester =
+    options.titleSuggester === undefined
+      ? createTitleSuggester({ providers: providerManager, demo })
+      : options.titleSuggester;
+
   const app = createCoreApp({
     port: 4390,
     demo,
@@ -892,6 +918,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     broker,
     personaManager: personasEnabled ? personas : undefined,
     conversationManager: personasEnabled ? conversations : undefined,
+    ...(titleSuggester === null ? {} : { titleSuggester }),
     folders: folders,
     attachments: attachments,
     assets: assets,
@@ -941,6 +968,7 @@ export function demoHarness(options: HarnessOptions = {}): Harness {
     messageStore,
     conversations,
     folderStore,
+    titleSuggester: titleSuggester ?? undefined,
     noteFolderStore,
     folders,
     attachments,

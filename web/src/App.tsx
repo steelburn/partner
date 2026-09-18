@@ -27,6 +27,7 @@ import {
   IconChevronRight,
   IconClose,
   IconFiles,
+  IconFolder,
   IconMembers,
   IconMemory,
   IconMore,
@@ -63,6 +64,7 @@ import FilesView from './FilesView.js';
 import MembersView from './MembersView.js';
 import MemoryView from './MemoryView.js';
 import NotesView from './NotesView.js';
+import FoldersView from './FoldersView.js';
 import PairGate from './PairGate.js';
 import PersonaChatTree from './PersonaChatTree.js';
 import PersonaManagerView from './PersonaManagerView.js';
@@ -136,6 +138,8 @@ function iconFor(view: ViewName): JSX.Element {
   switch (view) {
     case 'chat':
       return <IconChat />;
+    case 'folders':
+      return <IconFolder />;
     case 'notes':
       return <IconNotes />;
     case 'shared':
@@ -479,6 +483,22 @@ export default function App() {
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [foldersError, setFoldersError] = useState<string | null>(null);
+  /**
+   * M35: the folder the Folders page's contents pane shows (null = the root,
+   * "All folders"). The shell owns it because the page's navigation pane — the
+   * embedded rail in its `nav` mode — is handed in as `board`, so both panes
+   * have to read the same selection.
+   */
+  const [foldersNavId, setFoldersNavId] = useState<string | null>(null);
+  /**
+   * The selection CLAMPED to the folders that exist. A folder deleted while it
+   * was open (or a stale id) falls back to the root, so the page can never
+   * show an empty contents pane for something that is not there.
+   */
+  const foldersSelection =
+    foldersNavId !== null && (folders ?? []).some((folder) => folder.id === foldersNavId)
+      ? foldersNavId
+      : null;
   /** M12.5: quick-capture happens in context (NotesMini lane ＋Capture or the
    * Notes page Quick capture) — no global nonce plumbing. */
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
@@ -835,6 +855,24 @@ export default function App() {
   }, [paired, activePersonaId, activeConversationId, refreshActiveTheme]);
 
   const activePersona = personas?.find((p) => p.id === activePersonaId) ?? null;
+  /**
+   * M34: the open session's stored title (null = never named). Read from the
+   * conversation list rather than kept as separate state: the list is already
+   * refreshed after every write (rename, accepted suggestion, a turn that
+   * auto-titles a new chat), so the header cannot show a stale name.
+   */
+  const activeConversationTitle: string | null =
+    conversations?.find((chat) => chat.id === activeConversationId)?.title ?? null;
+
+  /**
+   * M36: the conversation ids the shell can actually open. The Memory view
+   * uses it to withhold an episode's "Open chat" when the source chat is gone
+   * (a conversation delete does not cascade to its episode) or when the
+   * episode arrived in a bundle imported from another machine. Null while the
+   * list is still loading, so nothing is offered on a guess.
+   */
+  const knownConversationIds: ReadonlySet<string> | null =
+    conversations === null ? null : new Set(conversations.map((chat) => chat.id));
 
   // -------------------------------------------------------------------------
   // Conversation actions (rail + auto-created chats)
@@ -958,6 +996,25 @@ export default function App() {
     } catch (cause) {
       railOpError('Could not move the conversation.', cause);
     }
+  };
+
+  /**
+   * M34: name the open session. A chat's title is one half of its organization
+   * (the other is its folder, and the persona is the third axis) — so this is
+   * the ONE write path: the chat header's Rename and an accepted AI suggestion
+   * both come through here. It THROWS on failure so the header can show the
+   * error where the action was taken, instead of the rail's tree banner.
+   */
+  const handleRenameConversation = async (title: string): Promise<void> => {
+    const id = activeConversationId;
+    if (id === null) return;
+    const token = readStoredToken();
+    if (!token) {
+      handleSessionLost();
+      return;
+    }
+    await updateConversation(token, id, { title });
+    await refreshConversations();
   };
 
   const handleCreateFolder = async (name: string, parentId: string | null): Promise<void> => {
@@ -1511,12 +1568,22 @@ function ColumnDivider({
    * were removed — capture happens in context (the lane ＋Capture beside
    * the transcript, or the Notes page Quick capture). */
 
-  /** M30: one definition of the conversation + folder tree, rendered either in
-   *  the sidebar's Chat section (desktop/tablet) or as the phone overlay — the
-   *  same rows, folders and drag targets, so the two surfaces cannot drift. */
-  const conversationRail = (embedded: boolean): ReactNode => (
+  /**
+   * M30/M35: one definition of the conversation + folder tree, rendered either
+   * in the sidebar's Chat section (desktop/tablet), as the phone overlay, or —
+   * M35 — as the **navigation pane** of the Folders page (`nav: true`: folder
+   * rows only, selectable). Same rows, folders, drag targets and controls, so
+   * the surfaces cannot drift.
+   */
+  const conversationRail = (
+    embedded: boolean,
+    navPane: { selectedFolderId: string | null; onSelectFolder: (id: string | null) => void } | null = null,
+  ): ReactNode => (
     <ConversationRail
       embedded={embedded}
+      nav={navPane !== null}
+      selectedFolderId={navPane?.selectedFolderId ?? null}
+      onSelectFolder={navPane?.onSelectFolder}
       conversations={conversations}
       folders={folders}
       loadError={conversationsError ?? foldersError}
@@ -1747,6 +1814,8 @@ function ColumnDivider({
                   brainstormSession={brainstormSession}
                   onBrainstormSessionChange={setBrainstormSession}
                   onOpenNote={openNoteFromChat}
+                  sessionTitle={activeConversationTitle}
+                  onRenameSession={handleRenameConversation}
                 />
                 {assetsLaneOpen ? (
                   <>
@@ -1799,6 +1868,32 @@ function ColumnDivider({
                 </p>
               ) : null}
             </div>
+            {/* M34: the folder half of a session's organization. The tree is
+              * the SAME embedded conversation rail — one definition, so its
+              * folder controls (create/rename/delete, drag-to-move) can never
+              * drift from the phone overlay that mounts it. */}
+            <div className={view === 'folders' ? 'app-view app-view-active' : 'app-view'}>
+              <FoldersView
+                folders={folders}
+                conversations={conversations}
+                selectedFolderId={foldersSelection}
+                onSelectFolder={setFoldersNavId}
+                onNewChat={() => void handleNewChat()}
+                creatingChat={creatingChat}
+                disabled={railLocked}
+                activeConversationId={activeConversationId}
+                onOpenChat={handleOpenConversation}
+                onDeleteChat={handleDeleteConversation}
+                onMoveChat={(id, folderId) => void handleMoveConversation(id, folderId)}
+                onCreateFolder={(name, parentId) => void handleCreateFolder(name, parentId)}
+                onRenameFolder={(id, name) => void handleRenameFolder(id, name)}
+                onDeleteFolder={(id) => void handleDeleteFolder(id)}
+                board={conversationRail(true, {
+                  selectedFolderId: foldersSelection,
+                  onSelectFolder: setFoldersNavId,
+                })}
+              />
+            </div>
             <div className={view === 'personas' ? 'app-view app-view-active' : 'app-view'}>
               <PersonaManagerView
                 personas={personas}
@@ -1830,6 +1925,8 @@ function ColumnDivider({
                 onUnpair={handleSessionLost}
                 active={view === 'memory'}
                 onAttentionChanged={refreshAttention}
+                onOpenConversation={handleOpenConversation}
+                knownConversationIds={knownConversationIds}
               />
             </div>
             <div className={view === 'themes' ? 'app-view app-view-active' : 'app-view'}>

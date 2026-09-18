@@ -19,6 +19,15 @@ import type {
   PlanTask,
   TaskStatus,
 } from '@partner/shared';
+import { folderSubtreeIds, folderTreeRows } from './folder-tree.js';
+
+/**
+ * M35: the folder-shaped reads moved to `lib/folder-tree.ts` (one definition,
+ * two surfaces — the conversation rail and the Explorer Folders page). They are
+ * re-exported here so every existing caller keeps its import path.
+ */
+export { folderSubtreeIds, folderTreeRows } from './folder-tree.js';
+export type { FolderTreeRow } from './folder-tree.js';
 
 /** Wiki-link targets extracted from markdown content ([[Title]]). */
 export const WIKI_LINK_RE = /\[\[([^[\]\r\n]+)\]\]/g;
@@ -101,29 +110,6 @@ export type NotesScope =
 /** Default scope used when the view first opens. */
 export const ALL_NOTES_SCOPE: NotesScope = { kind: 'all' };
 
-/**
- * The folder id plus every descendant id, breadth-first (parent before
- * children). Unknown ids resolve to [] so a stale scope selects nothing
- * rather than everything.
- */
-export function folderSubtreeIds(folders: readonly Folder[], id: string): string[] {
-  if (!folders.some((folder) => folder.id === id)) return [];
-  const out: string[] = [id];
-  const queue: string[] = [id];
-  const seen = new Set<string>([id]);
-  while (queue.length > 0) {
-    const current = queue.shift() as string;
-    for (const folder of folders) {
-      if (folder.parentId === current && !seen.has(folder.id)) {
-        seen.add(folder.id);
-        out.push(folder.id);
-        queue.push(folder.id);
-      }
-    }
-  }
-  return out;
-}
-
 /** Filter note summaries to a scope (subtree membership / unfiled / all). */
 export function notesInScope(
   list: readonly NoteSummary[],
@@ -142,37 +128,6 @@ export function scopeLabel(scope: NotesScope, folders: readonly Folder[]): strin
   if (scope.kind === 'inbox') return 'Inbox';
   const folder = folders.find((entry) => entry.id === scope.folderId);
   return folder?.name ?? 'Project';
-}
-
-/** One row of the indented project selector: folder + tree depth. */
-export interface FolderTreeRow {
-  folder: Folder;
-  depth: number;
-}
-
-/**
- * Flatten folders into tree order (roots first, then their children) with a
- * depth per row for indentation in the scope/membership selectors.
- */
-export function folderTreeRows(folders: readonly Folder[]): FolderTreeRow[] {
-  const byParent = new Map<string | null, Folder[]>();
-  for (const folder of folders) {
-    const list = byParent.get(folder.parentId) ?? [];
-    list.push(folder);
-    byParent.set(folder.parentId, list);
-  }
-  for (const list of byParent.values()) {
-    list.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-  }
-  const rows: FolderTreeRow[] = [];
-  const walk = (parentId: string | null, depth: number): void => {
-    for (const folder of byParent.get(parentId) ?? []) {
-      rows.push({ folder, depth });
-      walk(folder.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  return rows;
 }
 
 /** Folder names a note belongs to, in tree order (for project chips). */

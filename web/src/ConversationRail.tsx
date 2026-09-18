@@ -1,6 +1,9 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type ReactNode } from 'react';
+import { Fragment, useState, type CSSProperties, type DragEvent, type FormEvent, type ReactNode } from 'react';
 import type { ConversationSummary, Folder } from '@partner/shared';
-import { conversationTitle, sortConversations, timeAgo } from './lib/persona-helpers.js';
+import ChatActions from './ChatActions.js';
+import FolderActions from './FolderActions.js';
+import { buildFolderTree, type FolderNode } from './lib/folder-tree.js';
+import { conversationTitle, timeAgo } from './lib/persona-helpers.js';
 
 export interface ConversationRailProps {
   /** Sorted list (most recent first); null while loading. */
@@ -31,12 +34,28 @@ export interface ConversationRailProps {
    * overlay (sidebar is hidden there), so this defaults to false.
    */
   embedded?: boolean;
+  /**
+   * M35: render as the **navigation pane** of the Explorer-style Folders page
+   * — folder rows only (no chat rows, no Inbox bucket), plus a selectable
+   * "All folders" root. The rail stays the one definition of a folder row and
+   * of its controls; the page's contents pane is what lists chats. It is the
+   * same tree, so a folder created, renamed or deleted anywhere is the same
+   * folder here.
+   */
+  nav?: boolean;
+  /** M35: the folder the nav pane highlights (null = "All folders"). */
+  selectedFolderId?: string | null;
+  /** M35: a nav-pane row was selected (null = "All folders"). */
+  onSelectFolder?: (folderId: string | null) => void;
 }
 
-interface TreeFolder extends Folder {
-  children: TreeFolder[];
-  chats: ConversationSummary[];
-}
+/**
+ * M30 is the tree the sidebar/overlay renders; M35 reuses `buildFolderTree`
+ * from `lib/folder-tree.ts` so this component and the Folders page cannot
+ * disagree about order, nesting or which chats belong where. `TreeFolder` is
+ * that node type, kept under its historical name for the render code below.
+ */
+type TreeFolder = FolderNode;
 
 const EMPTY_FOLDER_NAME = 'New folder';
 
@@ -62,20 +81,15 @@ export default function ConversationRail({
   onDeleteFolder,
   onMoveConversation,
   embedded = false,
+  nav = false,
+  selectedFolderId = null,
+  onSelectFolder,
 }: ConversationRailProps) {
-  const [confirmingId, setConfirmingId] = useState<string | null>(null);
   /** Drag-to-move (M11 extra): dragged chat + current drop target
    *  ('' = Inbox, else a folder id; null = none). The move select on each
    *  chat row remains the accessible fallback. */
   const [dragChatId, setDragChatId] = useState<string | null>(null);
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
-
-  const dragStart = (event: DragEvent<HTMLElement>, chatId: string): void => {
-    if (disabled) return;
-    event.dataTransfer.setData('text/plain', chatId);
-    event.dataTransfer.effectAllowed = 'move';
-    setDragChatId(chatId);
-  };
 
   const dragEnd = (): void => {
     setDragChatId(null);
@@ -103,8 +117,6 @@ export default function ConversationRail({
       void onMoveConversation(chatId, targetKey === '' ? null : targetKey);
     }
   };
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [confirmingFolderId, setConfirmingFolderId] = useState<string | null>(null);
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -112,54 +124,10 @@ export default function ConversationRail({
   /** Folder id the "new folder" input is creating under (null = root). */
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
-  const disarmTimer = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (disarmTimer.current !== null) window.clearTimeout(disarmTimer.current);
-    };
-  }, []);
-
-  const armConfirm = (kind: 'chat' | 'folder', id: string): void => {
-    if (kind === 'chat') setConfirmingFolderId(null);
-    else setConfirmingId(null);
-    setRenamingId(null);
-    if (kind === 'chat') setConfirmingId(id);
-    else setConfirmingFolderId(id);
-    if (disarmTimer.current !== null) window.clearTimeout(disarmTimer.current);
-    disarmTimer.current = window.setTimeout(() => {
-      setConfirmingId(null);
-      setConfirmingFolderId(null);
-    }, 4000);
-  };
-
-  const confirmDelete = async (id: string): Promise<void> => {
-    if (deletingId !== null) return;
-    setDeletingId(id);
-    setConfirmingId(null);
-    try {
-      await onDelete(id);
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  const confirmFolderDelete = async (id: string): Promise<void> => {
-    if (deletingFolderId !== null) return;
-    setDeletingFolderId(id);
-    setConfirmingFolderId(null);
-    try {
-      await onDeleteFolder(id);
-    } finally {
-      setDeletingFolderId(null);
-    }
-  };
 
   const beginRename = (folder: Folder): void => {
     setRenamingId(folder.id);
     setRenameDraft(folder.name);
-    setConfirmingId(null);
-    setConfirmingFolderId(null);
   };
 
   const commitRename = async (id: string): Promise<void> => {
@@ -188,40 +156,25 @@ export default function ConversationRail({
     });
   };
 
-  const flat = conversations === null ? [] : sortConversations(conversations);
-
-  // Build the folder tree once per render from the flat lists.
-  const allFolders = folders === null ? [] : folders;
-  const byParent = new Map<string | null, TreeFolder[]>();
-  const lookup = new Map<string, TreeFolder>();
-  for (const folder of allFolders) {
-    const node: TreeFolder = { ...folder, children: [], chats: [] };
-    lookup.set(folder.id, node);
-    const parent = folder.parentId ?? null;
-    if (!byParent.has(parent)) byParent.set(parent, []);
-    byParent.get(parent)?.push(node);
-  }
-  for (const [, nodes] of byParent) nodes.sort((a, b) => a.position - b.position);
-  const roots = byParent.get(null) ?? [];
-  const chatByFolder = new Map<string | null, ConversationSummary[]>();
-  for (const chat of flat) {
-    const key = chat.folderId ?? null;
-    if (!chatByFolder.has(key)) chatByFolder.set(key, []);
-    chatByFolder.get(key)?.push(chat);
-  }
-  const assign = (node: TreeFolder): void => {
-    node.chats = chatByFolder.get(node.id) ?? [];
-    node.children = byParent.get(node.id) ?? [];
-    for (const child of node.children) assign(child);
-  };
-  for (const root of roots) assign(root);
-  const inboxChats = chatByFolder.get(null) ?? [];
+  const tree = buildFolderTree(folders, conversations);
+  const flat = tree.chats;
+  const allFolders = tree.folders;
+  const roots = tree.roots;
+  const inboxChats = tree.inboxChats;
   const totalFolderChats = flat.length - inboxChats.length;
 
   // M16 F4 discuss lineage: forked discussions (parentId set) render as
   // one-level threads indented under their parent conversation.
   const threadChildren = new Map<string, ConversationSummary[]>();
-  for (const chatRow of flat) {
+  for (const node of tree.byId.values()) {
+    for (const chatRow of node.chats) {
+      if (chatRow.parentId === null || chatRow.parentId === undefined) continue;
+      const list = threadChildren.get(chatRow.parentId) ?? [];
+      list.push(chatRow);
+      threadChildren.set(chatRow.parentId, list);
+    }
+  }
+  for (const chatRow of tree.inboxChats) {
     if (chatRow.parentId === null || chatRow.parentId === undefined) continue;
     const list = threadChildren.get(chatRow.parentId) ?? [];
     list.push(chatRow);
@@ -254,8 +207,6 @@ export default function ConversationRail({
 
   const renderChat = (chat: ConversationSummary): ReactNode => {
     const isActive = chat.id === activeConversationId;
-    const isConfirming = confirmingId === chat.id;
-    const isDeleting = deletingId === chat.id;
     return (
       <li key={chat.id} className={
           isActive
@@ -270,7 +221,7 @@ export default function ConversationRail({
           type="button"
           className="rail-item-open"
           onClick={() => onOpen(chat.id)}
-          disabled={disabled || isDeleting}
+          disabled={disabled}
           aria-current={isActive ? 'true' : undefined}
         >
           <span className="rail-item-title">{conversationTitle(chat)}</span>
@@ -281,65 +232,34 @@ export default function ConversationRail({
             {timeAgo(chat.updatedAt)}
           </span>
         </button>
-        <span
-          className="rail-item-drag"
-          draggable={!disabled && !isDeleting}
-          onDragStart={(event) => dragStart(event, chat.id)}
-          onDragEnd={dragEnd}
-          title="Drag to a folder"
-          role="button"
-          aria-label={`Drag ${conversationTitle(chat)} to a folder`}
-          tabIndex={-1}
-        >
-          ≡
-        </span>
-        <select
-          className="rail-item-move"
-          aria-label={`Move ${conversationTitle(chat)} to folder`}
-          value={chat.folderId ?? ''}
-          disabled={disabled || isDeleting}
-          onChange={(event) => {
-            const target = event.target.value;
-            void onMoveConversation(chat.id, target === '' ? null : target);
+        {/* M35: the row's controls are ONE component, shared with the Folders
+          * page's contents pane — move select, drag handle, two-step delete. */}
+        <ChatActions
+          chat={chat}
+          folders={allFolders}
+          disabled={disabled}
+          onMove={(folderId) => void onMoveConversation(chat.id, folderId)}
+          onDelete={() => onDelete(chat.id)}
+          drag={{
+            onStart: () => setDragChatId(chat.id),
+            onEnd: dragEnd,
           }}
-        >
-          <option value="">Inbox</option>
-          {allFolders.map((folder) => (
-            <option key={folder.id} value={folder.id}>
-              {folder.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className={
-            isConfirming || isDeleting
-              ? 'btn btn-secondary btn-sm rail-item-del rail-item-del-visible'
-              : 'btn btn-secondary btn-sm rail-item-del'
-          }
-          onClick={() =>
-            void (isConfirming ? confirmDelete(chat.id) : armConfirm('chat', chat.id))
-          }
-          disabled={disabled || isDeleting}
-          aria-busy={isDeleting}
-          aria-label={
-            isConfirming
-              ? `Confirm deleting conversation ${conversationTitle(chat)}`
-              : `Delete conversation ${conversationTitle(chat)}`
-          }
-        >
-          {isDeleting ? '…' : isConfirming ? 'Confirm' : 'Delete'}
-        </button>
+        />
       </li>
     );
   };
 
   const renderFolder = (folder: TreeFolder, depth: number): ReactNode => {
     const isCollapsed = collapsed.has(folder.id);
-    const isConfirming = confirmingFolderId === folder.id;
     const isDeleting = deletingFolderId === folder.id;
     const isRenaming = renamingId === folder.id;
-    const hasChildren = folder.children.length > 0 || folder.chats.length > 0;
+    const isSelected = nav && selectedFolderId === folder.id;
+    /* In the navigation pane there are no chat rows, so a folder is
+     * expandable exactly when it has subfolders — a caret that expands to
+     * nothing is a dead control. */
+    const hasChildren = nav
+      ? folder.children.length > 0
+      : folder.children.length > 0 || folder.chats.length > 0;
     return (
       <li
         key={folder.id}
@@ -347,7 +267,9 @@ export default function ConversationRail({
         style={{ '--folder-depth': depth } as CSSProperties}
       >
         <div
-          className={dropTargetKey === folder.id ? 'folder-row drop-target' : 'folder-row'}
+          className={`folder-row${dropTargetKey === folder.id ? ' drop-target' : ''}${
+            isSelected ? ' folder-row-current' : ''
+          }`}
           onDragOver={(event) => dropOver(event, folder.id)}
           onDragLeave={() => dropLeave(folder.id)}
           onDrop={(event) => drop(event, folder.id)}
@@ -384,6 +306,21 @@ export default function ConversationRail({
                 }}
               />
             </form>
+          ) : nav ? (
+            /* The navigation pane's name cell is the selection control. */
+            <button
+              type="button"
+              className="folder-name folder-select"
+              aria-current={isSelected ? 'true' : undefined}
+              disabled={disabled}
+              title={`${folder.chatTotal} chat${folder.chatTotal === 1 ? '' : 's'} in ${folder.name} and its subfolders`}
+              onClick={() => onSelectFolder?.(folder.id)}
+            >
+              {folder.name}
+              <span className="folder-count">
+                {folder.chatTotal > 0 ? folder.chatTotal : ''}
+              </span>
+            </button>
           ) : (
             <span className="folder-name" title={`${folder.chatCount} chat${folder.chatCount === 1 ? '' : 's'}`}>
               {folder.name}
@@ -392,51 +329,23 @@ export default function ConversationRail({
               </span>
             </span>
           )}
-          <span className="folder-actions">
-            <button
-              type="button"
-              className="folder-action"
-              aria-label={`Add subfolder under ${folder.name}`}
-              title="Add subfolder"
-              disabled={disabled || isDeleting}
-              onClick={() => {
-                setCreatingFor((current) => (current === folder.id ? null : folder.id));
-                setNewName('');
-              }}
-            >
-              +
-            </button>
-            <button
-              type="button"
-              className="folder-action"
-              aria-label={`Rename folder ${folder.name}`}
-              title="Rename"
-              disabled={disabled || isDeleting}
-              onClick={() => beginRename(folder)}
-            >
-              ✎
-            </button>
-            <button
-              type="button"
-              className={
-                isConfirming
-                  ? 'folder-action folder-action-danger folder-action-confirm'
-                  : 'folder-action folder-action-danger'
-              }
-              aria-label={
-                isConfirming
-                  ? `Confirm deleting folder ${folder.name}`
-                  : `Delete folder ${folder.name}`
-              }
-              title={isConfirming ? 'Confirm delete' : 'Delete'}
-              disabled={disabled || isDeleting}
-              onClick={() =>
-                void (isConfirming ? confirmFolderDelete(folder.id) : armConfirm('folder', folder.id))
-              }
-            >
-              {isDeleting ? '…' : isConfirming ? 'OK' : '×'}
-            </button>
-          </span>
+          <FolderActions
+            name={folder.name}
+            disabled={disabled}
+            busy={isDeleting}
+            onAddSubfolder={() => {
+              setCreatingFor((current) => (current === folder.id ? null : folder.id));
+              setNewName('');
+            }}
+            onRename={() => beginRename(folder)}
+            onDelete={() => {
+              if (deletingFolderId !== null) return;
+              setDeletingFolderId(folder.id);
+              void Promise.resolve(onDeleteFolder(folder.id)).finally(() =>
+                setDeletingFolderId(null),
+              );
+            }}
+          />
         </div>
         {creatingFor === folder.id ? (
           <form className="folder-new-row" onSubmit={(event) => void submitNewFolder(event)}>
@@ -454,7 +363,9 @@ export default function ConversationRail({
         {!isCollapsed ? (
           <ul className="folder-group">
             {folder.children.map((child) => renderFolder(child, depth + 1))}
-            {folder.chats.map(renderChatWithThreads)}
+            {/* M35: the navigation pane shows folders only — the chats filed
+              * here are the contents pane's job, not a second copy here. */}
+            {nav ? null : folder.chats.map(renderChatWithThreads)}
           </ul>
         ) : null}
       </li>
@@ -462,11 +373,14 @@ export default function ConversationRail({
   };
 
   const anyFolders = allFolders.length > 0;
-  const list = conversations === null ? [] : sortConversations(conversations);
+  const list = tree.chats;
 
   return (
-    <aside className={embedded ? 'rail rail-embedded' : 'rail'} aria-label="Conversations">
-      <div className="rail-head">
+    <aside
+      className={embedded ? 'rail rail-embedded' : 'rail'}
+      aria-label={nav ? 'Folders' : 'Conversations'}
+    >
+      <div className="rail-head" hidden={nav}>
         <button
           type="button"
           className="btn btn-primary btn-block rail-new"
@@ -488,31 +402,70 @@ export default function ConversationRail({
               Try again
             </button>
           </div>
-        ) : list.length === 0 ? (
-          <p className="rail-note">Your conversations appear here — start with New chat.</p>
+        ) : list.length === 0 && !anyFolders ? (
+          /* Only when there is NOTHING at all. With folders present but no
+           * chats, the tree renders below — a folder page that hides the
+           * folders you own because you have not filed a chat yet is the one
+           * shape this surface must not have. */
+          nav ? (
+            <p className="rail-note">No folders yet.</p>
+          ) : (
+            <p className="rail-note">Your conversations appear here — start with New chat.</p>
+          )
         ) : (
           <ul className="rail-list rail-tree">
-            {/* Inbox: chats with no folder — always shown when non-empty. */}
-            {inboxChats.length > 0 || !anyFolders ? (
+            {nav ? (
+              /* M35: the Explorer navigation pane's root — the content pane
+               * shows the root folders and the unfiled chats under it. */
               <li className="folder-node" style={{ '--folder-depth': 0 } as CSSProperties}>
                 <div
-                  className={
-                    dropTargetKey === '' ? 'folder-row folder-row-inbox drop-target' : 'folder-row folder-row-inbox'
-                  }
+                  className={`folder-row folder-row-root${
+                    dropTargetKey === '' ? ' drop-target' : ''
+                  }${selectedFolderId === null ? ' folder-row-current' : ''}`}
                   onDragOver={(event) => dropOver(event, '')}
                   onDragLeave={() => dropLeave('')}
                   onDrop={(event) => drop(event, '')}
                 >
-                  <span className="folder-name folder-name-inbox">Inbox</span>
-                  <span className="folder-count">{inboxChats.length}</span>
+                  <span className="folder-toggle" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="folder-name folder-select"
+                    aria-current={selectedFolderId === null ? 'true' : undefined}
+                    disabled={disabled}
+                    title={`Every folder — ${flat.length} chat${flat.length === 1 ? '' : 's'} in all`}
+                    onClick={() => onSelectFolder?.(null)}
+                  >
+                    All folders
+                    {/* The root counts every chat, exactly like a folder row
+                      * counts its subtree: a drive that read "0" while
+                      * holding subfolders would contradict the pane beside it. */}
+                    <span className="folder-count">{flat.length > 0 ? flat.length : ''}</span>
+                  </button>
                 </div>
-                <ul className="folder-group">{inboxChats.map(renderChatWithThreads)}</ul>
               </li>
-            ) : null}
+            ) : (
+              /* Inbox: chats with no folder — always shown when non-empty. */
+              inboxChats.length > 0 || !anyFolders ? (
+                <li className="folder-node" style={{ '--folder-depth': 0 } as CSSProperties}>
+                  <div
+                    className={
+                      dropTargetKey === '' ? 'folder-row folder-row-inbox drop-target' : 'folder-row folder-row-inbox'
+                    }
+                    onDragOver={(event) => dropOver(event, '')}
+                    onDragLeave={() => dropLeave('')}
+                    onDrop={(event) => drop(event, '')}
+                  >
+                    <span className="folder-name folder-name-inbox">Inbox</span>
+                    <span className="folder-count">{inboxChats.length}</span>
+                  </div>
+                  <ul className="folder-group">{inboxChats.map(renderChatWithThreads)}</ul>
+                </li>
+              ) : null
+            )}
             {roots.map((root) => renderFolder(root, 0))}
           </ul>
         )}
-        {folders !== null ? (
+        {folders !== null && !nav ? (
           <div className="rail-foot">
             {creatingFor === null ? (
               <button
@@ -541,7 +494,7 @@ export default function ConversationRail({
             )}
           </div>
         ) : null}
-        <span className="rail-total">
+        <span className="rail-total" hidden={nav}>
           {flat.length} chat{flat.length === 1 ? '' : 's'}
           {totalFolderChats > 0 ? ` · ${totalFolderChats} in folders` : ''}
         </span>

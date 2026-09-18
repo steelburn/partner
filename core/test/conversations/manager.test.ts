@@ -6,12 +6,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  createAssetStore,
   createAuditStore,
   createConversationStore,
   createMessageStore,
   createPersonaStore,
   openDatabase,
 } from '../../src/stores/db.js';
+import type { AssetStore } from '../../src/stores/types.js';
 import { auditLog } from '../../src/services/redaction.js';
 import { createConversationManager } from '../../src/conversations/manager.js';
 import type { ConversationManager } from '../../src/conversations/manager.js';
@@ -36,6 +38,32 @@ function makeWorld(now?: () => number): {
     now,
   });
   return { conversations, personas, audit };
+}
+
+/** The same world with an asset store wired (M35 assetCount). */
+function makeAssetWorld(): { conversations: ConversationManager; assets: AssetStore } {
+  const db = openDatabase(':memory:');
+  const audit = auditLog({ store: createAuditStore(db) });
+  const assets = createAssetStore(db);
+  const conversations = createConversationManager({
+    assetStore: assets,
+    stores: { conversations: createConversationStore(db), messages: createMessageStore(db) },
+    audit,
+  });
+  return { conversations, assets };
+}
+
+function assetRow(id: string, conversationId: string): Parameters<AssetStore['insert']>[0] {
+  return {
+    id,
+    conversationId,
+    messageId: null,
+    kind: 'document',
+    title: `Asset ${id}`,
+    body: 'body',
+    tags: null,
+    createdAt: 1,
+  };
 }
 
 function expectConversationError(fn: () => unknown, code: string): void {
@@ -153,6 +181,52 @@ describe('remove cascade', () => {
     conversations.remove(conv.id);
     expectConversationError(() => conversations.get(conv.id), 'not_found');
     expect(conversations.list()).toHaveLength(0);
+  });
+});
+
+describe('assetCount (M35 — the Folders Assets column)', () => {
+  it('counts the assets saved for each chat, in list() and in get()', () => {
+    const { conversations, assets } = makeAssetWorld();
+    const withAssets = conversations.create({ title: 'has assets' });
+    const empty = conversations.create({ title: 'none' });
+    assets.insert(assetRow('a1', withAssets.id));
+    assets.insert(assetRow('a2', withAssets.id));
+    assets.insert(assetRow('a3', empty.id));
+    assets.remove('a3');
+
+    // Order-independent: `list()` is recent-first and both rows share a
+    // timestamp here, so only the counts are the claim.
+    const counts = new Map(conversations.list().map((row) => [row.id, row.assetCount]));
+    expect(counts.size).toBe(2);
+    expect(counts.get(withAssets.id)).toBe(2);
+    expect(counts.get(empty.id)).toBe(0);
+    expect(conversations.get(withAssets.id).summary.assetCount).toBe(2);
+    expect(conversations.get(empty.id).summary.assetCount).toBe(0);
+  });
+
+  it('reports 0 — not a crash or a stale number — with no asset store wired', () => {
+    const { conversations } = makeWorld();
+    const conv = conversations.create({ title: 'no assets table' });
+    expect(conv.assetCount).toBe(0);
+    expect(conversations.list()[0]?.assetCount).toBe(0);
+    expect(conversations.get(conv.id).summary.assetCount).toBe(0);
+  });
+
+  it('carries the count through a rename/folder move, which returns a summary', () => {
+    const { conversations, assets } = makeAssetWorld();
+    const conv = conversations.create({ title: 'moves around' });
+    assets.insert(assetRow('a1', conv.id));
+    expect(conversations.update(conv.id, { folderId: 'f1' }).assetCount).toBe(1);
+    expect(conversations.update(conv.id, {}).assetCount).toBe(1);
+  });
+
+  it('never leaks asset BODIES or titles into audit while counting', () => {
+    const { conversations, assets } = makeAssetWorld();
+    const conv = conversations.create({ title: 'audit' });
+    assets.insert({ ...assetRow('a1', conv.id), title: 'Secret title', body: 'secret-body-xyz' });
+    conversations.list();
+    conversations.get(conv.id);
+    expect(assets.countsByConversation()).toEqual([{ conversationId: conv.id, count: 1 }]);
   });
 });
 

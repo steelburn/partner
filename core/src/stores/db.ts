@@ -2986,6 +2986,9 @@ export function createAssetStore(db: Database.Database): AssetStore {
      ORDER BY created_at ASC, rowid ASC`,
   );
   const remove = db.prepare('DELETE FROM assets WHERE id = ?');
+  const countsAll = db.prepare(
+    'SELECT conversation_id AS conversationId, COUNT(*) AS count FROM assets GROUP BY conversation_id',
+  );
 
   return {
     insert(row: AssetRow): void {
@@ -2996,6 +2999,9 @@ export function createAssetStore(db: Database.Database): AssetStore {
     },
     listByConversation(conversationId: string): AssetRow[] {
       return listByConversation.all(conversationId) as AssetRow[];
+    },
+    countsByConversation(): Array<{ conversationId: string; count: number }> {
+      return countsAll.all() as Array<{ conversationId: string; count: number }>;
     },
     remove(id: string): void {
       remove.run(id);

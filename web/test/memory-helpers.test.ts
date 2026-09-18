@@ -5,17 +5,25 @@ import type {
   ProfileEntry,
 } from '@partner/shared';
 import {
+  EPISODE_SUMMARY_CLAMP,
   KIND_LABELS,
   MEMORY_BUNDLE_FILE,
+  SEARCH_HIT_CAP,
   bundleToFile,
   clampText,
   countEntriesInUse,
   dateValueToForgetIso,
   episodeTitle,
+  highlightSegments,
+  hitCountLabel,
   isAutoDetected,
   isEntryInUse,
+  isSummaryClamped,
   kindLabel,
   kindTone,
+  groupCountLabel,
+  groupEntries,
+  parseGrouping,
   removedScopes,
   sameScopes,
   scopedLabel,
@@ -360,5 +368,159 @@ describe('dateValueToForgetIso', () => {
     expect(dateValueToForgetIso('2023-02-31')).toBeNull();
     expect(dateValueToForgetIso('1969-12-31')).toBeNull();
     expect(dateValueToForgetIso('2024-1-5')).toBeNull();
+  });
+});
+
+describe('M36 — summary clamping and search-hit highlighting', () => {
+  it('flags only summaries that exceed the list-row budget', () => {
+    expect(isSummaryClamped('short')).toBe(false);
+    expect(isSummaryClamped('x'.repeat(EPISODE_SUMMARY_CLAMP))).toBe(false);
+    expect(isSummaryClamped('x'.repeat(EPISODE_SUMMARY_CLAMP + 1))).toBe(true);
+    // Code points, not UTF-16 units: an emoji must not count double.
+    expect(isSummaryClamped('🙂'.repeat(EPISODE_SUMMARY_CLAMP))).toBe(false);
+    expect(isSummaryClamped('🙂'.repeat(EPISODE_SUMMARY_CLAMP + 1))).toBe(true);
+  });
+
+  it('marks every occurrence of the query, keeping its casing', () => {
+    const segments = highlightSegments('Concise replies. CONCISE wins.', 'concise');
+    expect(segments.filter((s) => s.hit).map((s) => s.text)).toEqual(['Concise', 'CONCISE']);
+    expect(segments.filter((s) => !s.hit).map((s) => s.text).join('')).toBe(' replies.  wins.');
+  });
+
+  it('marks whole terms when the phrase itself is not in the snippet', () => {
+    const segments = highlightSegments('Likes tables, not bullet lists.', 'tables bullet');
+    expect(segments.filter((s) => s.hit).map((s) => s.text)).toEqual(['tables', 'bullet']);
+  });
+
+  it('prefers the whole query over its own terms', () => {
+    const segments = highlightSegments('concise replies start here', 'concise replies');
+    expect(segments.filter((s) => s.hit).map((s) => s.text)).toEqual(['concise replies']);
+  });
+
+  it('is a no-op for an empty query or a single character', () => {
+    expect(highlightSegments('anything', '')).toEqual([{ text: 'anything', hit: false }]);
+    expect(highlightSegments('anything', '  ')).toEqual([{ text: 'anything', hit: false }]);
+    expect(highlightSegments('anything', 'a')).toEqual([{ text: 'anything', hit: false }]);
+  });
+
+  it('treats the query as text, never as a pattern', () => {
+    expect(highlightSegments('a (b) c', '(b)').map((s) => [s.text, s.hit])).toEqual([
+      ['a ', false],
+      ['(b)', true],
+      [' c', false],
+    ]);
+    // A lone '(' must not throw or match everything.
+    expect(highlightSegments('a (b) c', '((')).toEqual([{ text: 'a (b) c', hit: false }]);
+  });
+
+  it('states the real hit count instead of an always-on cap note', () => {
+    expect(hitCountLabel(1)).toBe('1 hit.');
+    expect(hitCountLabel(4)).toBe('4 hits.');
+    expect(hitCountLabel(SEARCH_HIT_CAP)).toContain('there may be more');
+    expect(hitCountLabel(0)).toBe('No matches.');
+  });
+});
+
+describe('M37 — grouping the library by kind or by persona', () => {
+  const personas = [
+    { id: 'p-a', name: 'Analyst' },
+    { id: 'p-b', name: 'Builder' },
+    { id: 'p-c', name: 'Scribe' },
+  ];
+
+  it('buckets by kind in chip order, dropping empty kinds', () => {
+    const entries = [
+      entry({ id: 'e1', kind: 'rule' }),
+      entry({ id: 'e2', kind: 'preference' }),
+      entry({ id: 'e3', kind: 'rule' }),
+      entry({ id: 'e4', kind: 'identity' }),
+    ];
+    const groups = groupEntries(entries, personas, 'kind');
+    expect(groups.map((group) => group.id)).toEqual(['kind-preference', 'kind-identity', 'kind-rule']);
+    expect(groups.map((group) => group.label)).toEqual(['Preference', 'Identity', 'Rule']);
+    // No `style` card: an empty bucket is not a card.
+    expect(groups.some((group) => group.id === 'kind-style')).toBe(false);
+    expect(groups.find((group) => group.id === 'kind-rule')?.entries.map((e) => e.id)).toEqual(['e1', 'e3']);
+    // Kind tone travels with the head, so the card is coloured like the chip.
+    expect(groups.find((group) => group.id === 'kind-preference')?.tone).toBe('accent');
+    expect(groups.find((group) => group.id === 'kind-rule')?.tone).toBe('danger');
+    expect(groups.find((group) => group.id === 'kind-identity')?.tone).toBe('neutral');
+  });
+
+  it('buckets by persona: global, shared, each persona, then orphaned', () => {
+    const entries = [
+      entry({ id: 'global' }),
+      entry({ id: 'shared', personaScopes: ['p-b', 'p-c'] }),
+      entry({ id: 'only-b', personaScopes: ['p-b'] }),
+      entry({ id: 'gone', personaScopes: ['p-deleted'] }),
+      entry({ id: 'mixed', personaScopes: ['p-deleted', 'p-a'] }),
+    ];
+    const groups = groupEntries(entries, personas, 'persona');
+    expect(groups.map((group) => group.id)).toEqual([
+      'scope-all',
+      'scope-shared',
+      'persona-p-a',
+      'persona-p-b',
+      'scope-removed',
+    ]);
+    expect(groups.map((group) => group.label)).toEqual([
+      'All personas',
+      'Shared',
+      'Analyst',
+      'Builder',
+      'Removed persona',
+    ]);
+    expect(groups[0].entries.map((e) => e.id)).toEqual(['global']);
+    expect(groups[1].entries.map((e) => e.id)).toEqual(['shared']);
+    // A fact shared with a persona that no longer exists stays with the live one.
+    expect(groups[2].entries.map((e) => e.id)).toEqual(['mixed']);
+    expect(groups[3].entries.map((e) => e.id)).toEqual(['only-b']);
+    expect(groups[4].entries.map((e) => e.id)).toEqual(['gone']);
+    // Scribe has nothing to its name, so it gets no card.
+    expect(groups.some((group) => group.id === 'persona-p-c')).toBe(false);
+  });
+
+  it('marks a card that names exactly one persona, so its rows need no scope', () => {
+    const groups = groupEntries(
+      [entry({ id: 'a', personaScopes: ['p-a'] }), entry({ id: 'all' })],
+      personas,
+      'persona',
+    );
+    expect(groups.find((group) => group.id === 'persona-p-a')?.single).toBe(true);
+    // Catch-all buckets are never "single": their rows keep the scope detail.
+    expect(groups.find((group) => group.id === 'scope-all')?.single).toBe(false);
+  });
+
+  it('is a partition: every fact lands in exactly one card, in either mode', () => {
+    const entries = [
+      entry({ id: 'e1' }),
+      entry({ id: 'e2', kind: 'identity', personaScopes: ['p-a'] }),
+      entry({ id: 'e3', kind: 'rule', personaScopes: ['p-a', 'p-b'] }),
+      entry({ id: 'e4', kind: 'style', personaScopes: ['p-gone'] }),
+      entry({ id: 'e5', kind: 'rule', personaScopes: ['p-a', 'p-gone'] }),
+    ];
+    for (const mode of ['kind', 'persona'] as const) {
+      const flat = groupEntries(entries, personas, mode).flatMap((group) => group.entries.map((e) => e.id));
+      expect(flat.slice().sort(), mode).toEqual(['e1', 'e2', 'e3', 'e4', 'e5']);
+      expect(flat.length, mode).toBe(new Set(flat).size); // never listed twice
+    }
+  });
+
+  it('returns nothing for an empty library (the view keeps its empty state)', () => {
+    expect(groupEntries([], personas, 'kind')).toEqual([]);
+    expect(groupEntries([], personas, 'persona')).toEqual([]);
+  });
+
+  it('reads a stored preference and refuses anything else', () => {
+    expect(parseGrouping('persona')).toBe('persona');
+    expect(parseGrouping('kind')).toBe('kind');
+    expect(parseGrouping(null)).toBe('kind');
+    expect(parseGrouping('')).toBe('kind');
+    expect(parseGrouping('profile')).toBe('kind');
+  });
+
+  it('counts a card in the reader’s words', () => {
+    expect(groupCountLabel(1)).toBe('1 fact');
+    expect(groupCountLabel(3)).toBe('3 facts');
   });
 });

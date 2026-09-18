@@ -1341,6 +1341,13 @@ export interface AssetStore {
   insert(row: AssetRow): void;
   findById(id: string): AssetRow | undefined;
   listByConversation(conversationId: string): AssetRow[];
+  /**
+   * conversationId -> row count for EVERY conversation, in one query (M35).
+   * The conversation list needs a per-chat asset count, and calling
+   * `listByConversation` per chat would be an N-query read of the whole table;
+   * this mirrors `MessageStore.countsByConversation` deliberately.
+   */
+  countsByConversation(): Array<{ conversationId: string; count: number }>;
   remove(id: string): void;
 }
 

@@ -229,3 +229,48 @@ describe('M11 D10 persona home folder placement', () => {
     }
   });
 });
+
+describe('conversation summaries carry the chat\'s saved-asset count (M35)', () => {
+  it('every list/detail summary reports assetCount, 0 when there are none', async () => {
+    // The Folders contents pane reads THIS field for its Assets column, so the
+    // claim is pinned end to end: save two assets on one chat, list the
+    // conversations, and read the count back — while the chat that has none
+    // reports 0 rather than omitting the field.
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const withAssets = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ title: 'has assets' });
+      const without = await request(h.app)
+        .post('/v1/conversations')
+        .set(authed(token))
+        .send({ title: 'none' });
+      expect(withAssets.status).toBe(201);
+      expect(withAssets.body.assetCount).toBe(0);
+
+      for (const title of ['One', 'Two']) {
+        const saved = await request(h.app)
+          .post(`/v1/conversations/${withAssets.body.id}/assets`)
+          .set(authed(token))
+          .send({ items: [{ kind: 'document', title, body: 'x' }] });
+        expect(saved.status).toBe(201);
+      }
+
+      const list = await request(h.app).get('/v1/conversations').set(authed(token));
+      expect(list.status).toBe(200);
+      const rows = list.body.conversations as Array<{ id: string; assetCount: number }>;
+      const counts = new Map(rows.map((row) => [row.id, row.assetCount]));
+      expect(counts.get(withAssets.body.id as string)).toBe(2);
+      expect(counts.get(without.body.id as string)).toBe(0);
+
+      const detail = await request(h.app)
+        .get(`/v1/conversations/${withAssets.body.id}`)
+        .set(authed(token));
+      expect(detail.body.conversation.assetCount).toBe(2);
+    } finally {
+      h.close();
+    }
+  });
+});

@@ -114,6 +114,12 @@ const STORAGE_ALLOWLIST = [
   //                        preference; no label, no view, no content)
   'partner.sideWidth', // M32: sidebar drag width (a layout preference, like the
   //                    lane widths above; no content)
+  'partner.factGrouping', // M37: 'kind' | 'persona' — which buckets the Memory
+  //                        library's facts into cards. One word, no fact, no
+  //                        persona id; the buckets themselves are derived, never
+  //                        stored. (Named `factGrouping` because the content
+  //                        detector below forbids `memory`/`profile`, which is
+  //                        where facts themselves would live.)
   'partner.authMode', // M22: 'pairing' | 'login' — which gate this core uses, so
   //                   'session expired' copy names the right action. One word,
   //                   no identity and no content.

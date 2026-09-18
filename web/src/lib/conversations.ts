@@ -18,6 +18,7 @@ import type {
   ConversationMessage,
   ConversationSummary,
   CreateConversationInput,
+  TitleSuggestionReply,
 } from '@partner/shared';
 
 const CONVERSATIONS_PATH = '/v1/conversations';
@@ -159,4 +160,69 @@ export async function deleteConversation(
     headers: { authorization: `Bearer ${token}` },
   });
   return expectNoContent(response, 'Deleting the conversation');
+}
+
+/**
+ * POST /v1/conversations/:id/title-suggestion -> a PROPOSAL (M34).
+ *
+ * Writes nothing: the transcript goes to one bounded model call and the reply
+ * comes back for the owner to accept. Accepting is the ordinary
+ * `PUT /v1/conversations/:id` (`updateConversation` in `lib/folders.ts`), so
+ * there is exactly one path that stores a title.
+ *
+ * A reply the core could not use is a 200 with `{ok:false, code, message}` — the
+ * request succeeded in determining the answer — so the caller renders the
+ * sentence instead of treating it as a transport error. Failures that ARE
+ * transport-shaped (401/404/400/501) throw ApiRequestError with the core's own
+ * message, exactly like every other call here.
+ */
+export async function suggestConversationTitle(
+  token: string,
+  id: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<TitleSuggestionReply> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    `${CONVERSATIONS_PATH}/${encodeURIComponent(id)}/title-suggestion`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: '{}',
+    },
+  );
+  const body = await expectJson<unknown>(response);
+  if (!isRecord(body) || typeof body.ok !== 'boolean') {
+    throw new ApiRequestError(
+      response.status,
+      'The title suggestion response had an unexpected shape.',
+    );
+  }
+  if (body.ok === false) {
+    return {
+      ok: false,
+      code: typeof body.code === 'string' ? body.code : 'unknown',
+      message:
+        typeof body.message === 'string'
+          ? body.message
+          : 'The core could not name this session.',
+    };
+  }
+  if (typeof body.title !== 'string' || body.title.trim() === '') {
+    throw new ApiRequestError(
+      response.status,
+      'The title suggestion response had an unexpected shape.',
+    );
+  }
+  return {
+    ok: true,
+    title: body.title,
+    model: typeof body.model === 'string' ? body.model : 'unknown',
+    source: body.source === 'transcript' ? 'transcript' : 'model',
+    userTurns: typeof body.userTurns === 'number' ? body.userTurns : 0,
+    messageCount: typeof body.messageCount === 'number' ? body.messageCount : 0,
+  };
 }

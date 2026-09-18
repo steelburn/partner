@@ -12,27 +12,36 @@ import type {
 } from '@partner/shared';
 import {
   MEMORY_BUNDLE_FILE,
+  EPISODE_SUMMARY_CLAMP,
   KIND_LABELS,
+  MEMORY_GROUPINGS,
+  MEMORY_GROUPING_LABELS,
   bundleToFile,
   clampText,
   countEntriesInUse,
   dateValueToForgetIso,
   episodeTitle,
+  groupCountLabel,
+  groupEntries,
+  highlightSegments,
+  hitCountLabel,
   isEntryInUse,
   isAutoDetected,
+  isSummaryClamped,
   kindLabel,
   kindTone,
+  parseGrouping,
   removedScopes,
   sameScopes,
   scopedLabel,
   scopedSummary,
   scopesOf,
   sortEpisodes,
-  statusLabel,
   tailoringInUseIds,
   toggleScope,
   validateBundle,
   validateBundleSize,
+  type MemoryGrouping,
 } from './lib/memory-helpers.js';
 import {
   addProfileEntry,
@@ -52,9 +61,22 @@ import {
 } from './lib/memory.js';
 import { isSessionLost } from './lib/personas.js';
 import { readStoredToken } from './lib/token.js';
+import { readLocal, writeLocal } from './lib/storage.js';
 import { timeAgo } from './lib/persona-helpers.js';
+import { IconChevronDown } from './icons.js';
 
 const KIND_OPTIONS: readonly ProfileEntryKind[] = ['preference', 'identity', 'rule', 'style'];
+
+/**
+ * M37: where the Profile library's grouping preference lives. A VIEW
+ * preference — it never names a fact and no persona id is stored — so it sits
+ * with the shell's other local prefs and never reaches the core.
+ *
+ * Named `factGrouping`, not `memoryGrouping`: the storage census' content
+ * detector forbids the word `memory` (that is where facts would live), and the
+ * honest fix for a guard that fires is a better name, not a weaker guard.
+ */
+const FACT_GROUPING_KEY = 'partner.factGrouping';
 
 const HIT_KIND_LABELS: Record<MemorySearchHit['kind'], string> = {
   profile: 'Profile',
@@ -94,6 +116,15 @@ interface ScopePickerProps {
   scopes: readonly string[];
   personas: readonly Persona[];
   disabled?: boolean;
+  /**
+   * M36: start behind a "Scope to specific personas…" toggle. The add form
+   * asks for a scope on every fact it creates, and the ~1-per-persona
+   * checkbox grid costs two rows for the answer that is almost always
+   * "All personas". Sites the user has ALREADY opted into (the edit form, a
+   * suggestion's opened disclosure) show the grid outright, because the picker
+   * is the only place that says WHICH personas a fact names.
+   */
+  collapsible?: boolean;
   onChange: (next: string[]) => void;
 }
 
@@ -107,10 +138,15 @@ interface ScopePickerProps {
  * ticked as "Removed persona" until the user unticks it — opening a fact for
  * editing must never silently widen it to every persona.
  */
-function ScopePicker({ idPrefix, scopes, personas, disabled, onChange }: ScopePickerProps) {
+function ScopePicker({ idPrefix, scopes, personas, disabled, collapsible, onChange }: ScopePickerProps) {
   const all = scopes.length === 0;
   const removed = removedScopes(scopes, personas);
   const hintId = `${idPrefix}-scope-hint`;
+  const gridId = `${idPrefix}-scope-grid`;
+  // Never resynced from props: this is the user's disclosure preference for the
+  // life of the picker, not derived state.
+  const [expanded, setExpanded] = useState(false);
+  const showGrid = !collapsible || expanded;
   return (
     <fieldset className="mem-scope-picker" disabled={disabled} aria-describedby={hintId}>
       <legend className="label">Applies to</legend>
@@ -119,27 +155,42 @@ function ScopePicker({ idPrefix, scopes, personas, disabled, onChange }: ScopePi
           <input type="checkbox" checked={all} onChange={() => onChange([])} />
           <span className="mem-scope-name">All personas</span>
         </label>
-        {personas.map((persona) => (
-          <label key={persona.id} className="mem-scope-option">
-            <input
-              type="checkbox"
-              checked={scopes.includes(persona.id)}
-              onChange={() => onChange(toggleScope(scopes, persona.id))}
-            />
-            <span className="mem-scope-name">{persona.name}</span>
-          </label>
-        ))}
-        {removed.map((id) => (
-          <label key={id} className="mem-scope-option">
-            <input
-              type="checkbox"
-              checked
-              onChange={() => onChange(toggleScope(scopes, id))}
-              title="This persona no longer exists on this machine"
-            />
-            <span className="mem-scope-name">Removed persona</span>
-          </label>
-        ))}
+        {collapsible ? (
+          <button
+            type="button"
+            className="mem-scope-more"
+            aria-expanded={expanded}
+            aria-controls={gridId}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? 'Hide personas' : 'Scope to specific personas…'}
+          </button>
+        ) : null}
+        {showGrid ? (
+          <div className="mem-scope-grid" id={gridId}>
+            {personas.map((persona) => (
+              <label key={persona.id} className="mem-scope-option">
+                <input
+                  type="checkbox"
+                  checked={scopes.includes(persona.id)}
+                  onChange={() => onChange(toggleScope(scopes, persona.id))}
+                />
+                <span className="mem-scope-name">{persona.name}</span>
+              </label>
+            ))}
+            {removed.map((id) => (
+              <label key={id} className="mem-scope-option">
+                <input
+                  type="checkbox"
+                  checked
+                  onChange={() => onChange(toggleScope(scopes, id))}
+                  title="This persona no longer exists on this machine"
+                />
+                <span className="mem-scope-name">Removed persona</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
       </div>
       <p className="form-hint mem-scope-hint" id={hintId}>
         {all
@@ -186,6 +237,25 @@ export interface MemoryViewProps {
    * crosses this callback.
    */
   onAttentionChanged?: () => void;
+  /** M36: bring a chat forward (an episode's source conversation). */
+  onOpenConversation?: (conversationId: string) => void;
+  /**
+   * M36: the conversations the shell knows about. An episode whose chat was
+   * deleted — or that arrived in an imported bundle from another machine —
+   * gets no Open action, because that action could only fail. Null while the
+   * list is still loading.
+   */
+  knownConversationIds?: ReadonlySet<string> | null;
+}
+
+/**
+ * M36: a search hit asking to be revealed — which list, which row, and a nonce
+ * so pressing the same hit twice re-runs the reveal instead of being a no-op.
+ */
+interface MemoryFocus {
+  kind: 'profile' | 'episode';
+  id: string;
+  nonce: number;
 }
 
 /**
@@ -201,12 +271,16 @@ export default function MemoryView({
   onUnpair,
   active,
   onAttentionChanged,
+  onOpenConversation,
+  knownConversationIds,
 }: MemoryViewProps) {
   const [entries, setEntries] = useState<ProfileEntry[] | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sessionLost, setSessionLost] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  /** M36: a search hit's "show me this row" request. */
+  const [focus, setFocus] = useState<MemoryFocus | null>(null);
 
   const load = async (): Promise<void> => {
     const token = readStoredToken();
@@ -298,16 +372,23 @@ export default function MemoryView({
               rejected={rejected}
               personas={list}
               inUseCount={inUseCount}
+              focus={focus}
               onChanged={handleChanged}
               onSessionLost={handleSessionLost}
             />
             <EpisodesCard
               episodes={episodes}
               personas={list}
+              focus={focus}
+              onOpenConversation={onOpenConversation}
+              knownConversationIds={knownConversationIds}
               onChanged={handleChanged}
               onSessionLost={handleSessionLost}
             />
-            <SearchCard onSessionLost={handleSessionLost} />
+            <SearchCard
+              onSessionLost={handleSessionLost}
+              onOpen={(hit) => setFocus({ kind: hit.kind, id: hit.refId, nonce: Date.now() })}
+            />
             <ControlsCard
               entryCount={entries.length}
               episodeCount={episodes?.length ?? 0}
@@ -438,12 +519,41 @@ interface ProfileCardProps {
   rejected: ProfileEntry[];
   personas: readonly Persona[];
   inUseCount: number;
+  /** M36: a search hit's reveal request (see MemoryFocus). */
+  focus?: MemoryFocus | null;
   onChanged: () => void;
   onSessionLost: () => void;
 }
 
-function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, onChanged, onSessionLost }: ProfileCardProps) {
+function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, focus, onChanged, onSessionLost }: ProfileCardProps) {
   const inUseIds = useMemo(() => tailoringInUseIds(confirmed, personas), [confirmed, personas]);
+  const rejectedRef = useRef<HTMLDetailsElement>(null);
+  const focusAt = (id: string): number | undefined =>
+    focus?.kind === 'profile' && focus.id === id ? focus.nonce : undefined;
+  const focusIsRejected =
+    focus?.kind === 'profile' ? rejected.some((entry) => entry.id === focus.id) : false;
+
+  // M37: how the library is bucketed. A view preference, not content — it is
+  // kept beside the shell's other panel widths rather than in the core.
+  const [grouping, setGrouping] = useState<MemoryGrouping>(() =>
+    parseGrouping(readLocal(FACT_GROUPING_KEY)),
+  );
+  const groups = useMemo(
+    () => groupEntries(confirmed, personas, grouping),
+    [confirmed, personas, grouping],
+  );
+  const chooseGrouping = (next: MemoryGrouping): void => {
+    setGrouping(next);
+    writeLocal(FACT_GROUPING_KEY, next);
+  };
+
+  // A hit on a rejected fact is inside a collapsed panel: open it first, or the
+  // row it points at would stay invisible while the page appears to do nothing.
+  useEffect(() => {
+    if (focusIsRejected && rejectedRef.current) rejectedRef.current.open = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusIsRejected, focus?.nonce]);
+
   return (
     <section className="card" aria-label="Profile">
       <div className="section-head">
@@ -474,20 +584,62 @@ function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, onC
           </p>
         </div>
       ) : (
-        <ul className="mem-list">
-          {confirmed.map((entry) => (
-            <li key={entry.id}>
-              <ProfileEntryRow
-                entry={entry}
-                personas={personas}
-                inUse={inUseIds.has(entry.id)}
-                deletable
-                onChanged={onChanged}
-                onSessionLost={onSessionLost}
-              />
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* M37: one switch, two buckets. The group cards are the same rows in
+           *  a responsive grid, so flipping the switch never rebuilds a row. */}
+          <div className="seg-tabs mem-group-switch" role="group" aria-label="Group memory by">
+            {MEMORY_GROUPINGS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className="btn btn-sm"
+                aria-pressed={grouping === option}
+                onClick={() => chooseGrouping(option)}
+              >
+                {MEMORY_GROUPING_LABELS[option]}
+              </button>
+            ))}
+          </div>
+          <div className="mem-groups">
+            {groups.map((group) => (
+              <section
+                key={group.id}
+                className="mem-group"
+                aria-labelledby={`mem-group-${group.id}`}
+              >
+                <div className="mem-group-head">
+                  <span
+                    className={`mem-group-name${group.tone ? ` mem-group-name-${group.tone}` : ''}`}
+                    id={`mem-group-${group.id}`}
+                  >
+                    {group.label}
+                  </span>
+                  <span className="chip" aria-label={groupCountLabel(group.entries.length)}>
+                    {group.entries.length}
+                  </span>
+                </div>
+                <ul className="mem-list">
+                  {group.entries.map((entry) => (
+                    <li key={entry.id}>
+                      <ProfileEntryRow
+                        entry={entry}
+                        personas={personas}
+                        inUse={inUseIds.has(entry.id)}
+                        deletable
+                        showScope={!group.single}
+                        /* The card head already names the kind. */
+                        showKind={grouping === 'persona'}
+                        focusAt={focusAt(entry.id)}
+                        onChanged={onChanged}
+                        onSessionLost={onSessionLost}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+        </>
       )}
 
       {suggested.length > 0 ? (
@@ -506,6 +658,7 @@ function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, onC
                   personas={personas}
                   inUse={false}
                   deletable={false}
+                  focusAt={focusAt(entry.id)}
                   onChanged={onChanged}
                   onSessionLost={onSessionLost}
                 />
@@ -516,7 +669,7 @@ function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, onC
       ) : null}
 
       {rejected.length > 0 ? (
-        <details className="sub-panel mem-rejected">
+        <details className="sub-panel mem-rejected" ref={rejectedRef}>
           <summary className="sub-panel-title">Rejected ({rejected.length})</summary>
           <p className="sub-panel-copy">
             The partner will not ask about these again — they are kept here so it can tell the
@@ -531,6 +684,7 @@ function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, onC
                   personas={personas}
                   inUse={false}
                   deletable
+                  focusAt={focusAt(entry.id)}
                   onChanged={onChanged}
                   onSessionLost={onSessionLost}
                 />
@@ -556,6 +710,18 @@ interface ProfileEntryRowProps {
   inUse?: boolean;
   /** Show Delete (confirmed rows). Suggested rows get Confirm/Reject instead. */
   deletable: boolean;
+  /**
+   * M37: false inside a kind-grouped card, whose head already names the kind.
+   * Default true (the suggestion / rejected panels and persona cards).
+   */
+  showKind?: boolean;
+  /**
+   * M37: false when the surrounding card names this fact's single persona, so
+   * the row does not repeat it. Default true.
+   */
+  showScope?: boolean;
+  /** M36: a fresh nonce when a search hit wants this row revealed in place. */
+  focusAt?: number;
   onChanged: () => void;
   onSessionLost: () => void;
 }
@@ -565,6 +731,9 @@ function ProfileEntryRow({
   personas,
   inUse: inUseOverride,
   deletable,
+  showKind = true,
+  showScope = true,
+  focusAt,
   onChanged,
   onSessionLost,
 }: ProfileEntryRowProps) {
@@ -576,6 +745,8 @@ function ProfileEntryRow({
   const [busy, setBusy] = useState<'save' | 'confirm' | 'reject' | 'delete' | 'scope' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  /** M36: this row's node, so a search hit can scroll it into view. */
+  const rowRef = useRef<HTMLDivElement>(null);
 
   const tone = kindTone(entry.kind);
   const inUse = inUseOverride === undefined ? isEntryInUse(entry, personas) : inUseOverride;
@@ -598,6 +769,16 @@ function ProfileEntryRow({
     setRowError(null);
     setEditing(false);
   };
+
+  // M36: a search hit asked for this row — open its editor (the hit is a fact
+  // you searched for, so editing is the useful landing) and bring it into view.
+  // Keyed on the nonce, so pressing the same hit again reveals it again.
+  useEffect(() => {
+    if (focusAt === undefined) return;
+    startEdit();
+    rowRef.current?.scrollIntoView({ block: 'center' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusAt]);
 
   const save = async (): Promise<void> => {
     if (busy !== null) return;
@@ -723,7 +904,7 @@ function ProfileEntryRow({
 
   if (editing) {
     return (
-      <div className="mem-row mem-row-editing" aria-busy={busy === 'save'}>
+      <div className="mem-row mem-row-editing" ref={rowRef} aria-busy={busy === 'save'}>
         <div className="form-stack">
           <div className="form-row">
             <div className="form-field">
@@ -814,9 +995,11 @@ function ProfileEntryRow({
   }
 
   return (
-    <div className="mem-row">
+    <div className="mem-row" ref={rowRef}>
       <div className="mem-row-main">
-        <span className={`mem-chip mem-chip-${tone}`}>{kindLabel(entry.kind)}</span>
+        {showKind ? (
+          <span className={`mem-chip mem-chip-${tone}`}>{kindLabel(entry.kind)}</span>
+        ) : null}
         <p className="mem-value">{entry.value}</p>
       </div>
       {entry.evidence !== null && entry.evidence.length > 0 ? (
@@ -828,27 +1011,21 @@ function ProfileEntryRow({
             In use
           </span>
         ) : null}
-        {isAutoDetected(entry) ? (
-          <span
-            className="mem-chip mem-chip-neutral"
-            title="Detected by the partner from your chats, not typed by you"
-          >
-            Auto-detected
-          </span>
-        ) : null}
-        {entry.status !== 'confirmed' ? (
-          <span className="mem-chip mem-chip-neutral">{statusLabel(entry.status)}</span>
-        ) : null}
-        <span className="mem-meta-item" aria-label="Scope" title={personaScopeLabel}>
-          {scopedSummary(entryScopes, personas)}
-        </span>
+        {/* M36: provenance is ONE token. The line below already says who wrote
+         *  it ("Partner noticed" vs "You"), and the panel heading already
+         *  names the status, so a separate "Auto-detected" chip plus a
+         *  "Suggested"/"Rejected" chip were three tokens for one fact. */}
         {entry.status === 'suggested' ? (
           <details className="mem-scope-pick">
             <summary
               className="mem-scope-pick-summary"
               title="Tie this suggestion to one or more personas"
+              aria-label={`Scope: ${personaScopeLabel}. Change which personas honor this fact`}
             >
-              Change
+              <span className="mem-scope-pick-caret" aria-hidden="true">
+                <IconChevronDown />
+              </span>
+              {scopedSummary(entryScopes, personas)}
             </summary>
             <ScopePicker
               idPrefix={`mem-tie-${entry.id}`}
@@ -858,9 +1035,20 @@ function ProfileEntryRow({
               onChange={(next) => void changeScope(next)}
             />
           </details>
+        ) : showScope ? (
+          <span className="mem-meta-item" aria-label="Scope" title={personaScopeLabel}>
+            {scopedSummary(entryScopes, personas)}
+          </span>
         ) : null}
-        <span className="mem-meta-item">
-          {entry.source === 'user' ? 'You' : 'Partner'} · {timeAgo(entry.updatedAt)}
+        <span
+          className="mem-meta-item"
+          title={
+            isAutoDetected(entry)
+              ? 'Noticed by the partner from your chats, not typed by you'
+              : undefined
+          }
+        >
+          {isAutoDetected(entry) ? 'Partner noticed' : 'You'} · {timeAgo(entry.updatedAt)}
         </span>
         <span className="mem-actions">
           {entry.status === 'suggested' ? (
@@ -1065,6 +1253,7 @@ function AddEntryForm({ personas, onAdded, onSessionLost }: AddEntryFormProps) {
         scopes={scopes}
         personas={personas}
         disabled={busy}
+        collapsible
         onChange={setScopes}
       />
       <div className="form-actions">
@@ -1090,11 +1279,23 @@ function AddEntryForm({ personas, onAdded, onSessionLost }: AddEntryFormProps) {
 interface EpisodesCardProps {
   episodes: EpisodeSummary[] | null;
   personas: readonly Persona[];
+  /** M36: a search hit's reveal request (see MemoryFocus). */
+  focus?: MemoryFocus | null;
+  onOpenConversation?: (conversationId: string) => void;
+  knownConversationIds?: ReadonlySet<string> | null;
   onChanged: () => void;
   onSessionLost: () => void;
 }
 
-function EpisodesCard({ episodes, personas, onChanged, onSessionLost }: EpisodesCardProps) {
+function EpisodesCard({
+  episodes,
+  personas,
+  focus,
+  onOpenConversation,
+  knownConversationIds,
+  onChanged,
+  onSessionLost,
+}: EpisodesCardProps) {
   return (
     <section className="card" aria-label="Episodes">
       <div className="section-head">
@@ -1129,6 +1330,11 @@ function EpisodesCard({ episodes, personas, onChanged, onSessionLost }: Episodes
               <EpisodeRow
                 episode={episode}
                 personas={personas}
+                focusAt={
+                  focus?.kind === 'episode' && focus.id === episode.id ? focus.nonce : undefined
+                }
+                onOpenConversation={onOpenConversation}
+                knownConversationIds={knownConversationIds}
                 onChanged={onChanged}
                 onSessionLost={onSessionLost}
               />
@@ -1143,18 +1349,36 @@ function EpisodesCard({ episodes, personas, onChanged, onSessionLost }: Episodes
 function EpisodeRow({
   episode,
   personas,
+  focusAt,
+  onOpenConversation,
+  knownConversationIds,
   onChanged,
   onSessionLost,
 }: {
   episode: EpisodeSummary;
   personas: readonly Persona[];
+  /** M36: a fresh nonce when a search hit wants this summary revealed. */
+  focusAt?: number;
+  onOpenConversation?: (conversationId: string) => void;
+  knownConversationIds?: ReadonlySet<string> | null;
   onChanged: () => void;
   onSessionLost: () => void;
 }) {
   const [busy, setBusy] = useState<'summarize' | 'delete' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  /** M36: the clamped teaser is one click from the full summary. */
+  const [expanded, setExpanded] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   const demo = episode.model === null;
+
+  // M36: a search hit landed on this summary — show it whole and bring it into
+  // view. Without the expand the hit would scroll to a `…` and stop there.
+  useEffect(() => {
+    if (focusAt === undefined) return;
+    setExpanded(true);
+    rowRef.current?.scrollIntoView({ block: 'center' });
+  }, [focusAt]);
 
   const resummarize = async (): Promise<void> => {
     if (busy !== null || demo) return;
@@ -1214,21 +1438,51 @@ function EpisodeRow({
     episode.personaId === null
       ? 'no persona'
       : (personaNameById(personas, episode.personaId) ?? 'Removed persona');
+  const clamped = clampText(episode.summary, EPISODE_SUMMARY_CLAMP);
+  const truncated = isSummaryClamped(episode.summary);
+  const summaryId = `mem-ep-summary-${episode.id}`;
+  // M36: only offer the chat when the shell can actually open it. An imported
+  // episode names a conversation from another machine, and a deleted chat
+  // leaves its summary behind (conversation delete does not cascade) — either
+  // would make this a button that can only fail.
+  const canOpenChat =
+    onOpenConversation !== undefined &&
+    knownConversationIds !== null &&
+    knownConversationIds !== undefined &&
+    knownConversationIds.has(episode.conversationId);
   return (
-    <div className="mem-row">
+    <div className="mem-row" ref={rowRef}>
       <div className="mem-row-head">
         <h3 className="mem-row-title">{title}</h3>
         <span className="mem-actions">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={busy !== null || demo}
-            onClick={() => void resummarize()}
-            aria-busy={busy === 'summarize'}
-            title={demo ? 'Demo summaries have no provider behind them.' : undefined}
-          >
-            {busy === 'summarize' ? 'Summarizing…' : 'Re-summarize'}
-          </button>
+          {canOpenChat ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => onOpenConversation?.(episode.conversationId)}
+              title="Open the conversation this summary came from"
+            >
+              Open chat
+            </button>
+          ) : null}
+          {demo ? (
+            /* M36: a disabled control with its reason hidden in a `title` is a
+             * dead end on touch. Demo summaries have no provider to re-run, so
+             * the row says what is true instead of offering the impossible. */
+            <span className="mem-hint" id={`mem-ep-noprovider-${episode.id}`}>
+              No provider behind a demo summary
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={busy !== null}
+              onClick={() => void resummarize()}
+              aria-busy={busy === 'summarize'}
+            >
+              {busy === 'summarize' ? 'Summarizing…' : 'Re-summarize'}
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-secondary btn-sm btn-danger"
@@ -1254,7 +1508,20 @@ function EpisodeRow({
         ) : null}
         <span className="mem-meta-item">{timeAgo(episode.updatedAt)}</span>
       </div>
-      <p className="mem-summary">{clampText(episode.summary, 220)}</p>
+      <p className="mem-summary" id={summaryId}>
+        {expanded ? episode.summary : clamped}
+      </p>
+      {truncated ? (
+        <button
+          type="button"
+          className="mem-summary-toggle"
+          aria-expanded={expanded}
+          aria-controls={summaryId}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
       {rowError ? (
         <p className="row-error" role="alert">
           {rowError}
@@ -1270,9 +1537,12 @@ function EpisodeRow({
 
 interface SearchCardProps {
   onSessionLost: () => void;
+  /** M36: reveal the row a hit points at (profile → its editor, episode → its
+   *  full summary). Before this the results were read-only text. */
+  onOpen: (hit: MemorySearchHit) => void;
 }
 
-function SearchCard({ onSessionLost }: SearchCardProps) {
+function SearchCard({ onSessionLost, onOpen }: SearchCardProps) {
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<MemorySearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -1353,12 +1623,34 @@ function SearchCard({ onSessionLost }: SearchCardProps) {
                     >
                       {HIT_KIND_LABELS[hit.kind]}
                     </span>
-                    <p className="mem-snippet">{hit.snippet}</p>
+                    <p className="mem-snippet">
+                      {highlightSegments(hit.snippet, query).map((segment, index) =>
+                        segment.hit ? (
+                          <mark className="mem-mark" key={index}>
+                            {segment.text}
+                          </mark>
+                        ) : (
+                          <span key={index}>{segment.text}</span>
+                        ),
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm mem-hit-open"
+                      onClick={() => onOpen(hit)}
+                      title={
+                        hit.kind === 'profile'
+                          ? 'Open this fact for editing'
+                          : 'Show the full episode summary'
+                      }
+                    >
+                      {hit.kind === 'profile' ? 'Edit' : 'Show'}
+                    </button>
                   </div>
                 </li>
               ))}
             </ul>
-            <p className="mem-cap-note">Showing up to 50 hits.</p>
+            <p className="mem-cap-note">{hitCountLabel(hits.length)}</p>
           </>
         )
       ) : null}
@@ -1609,6 +1901,11 @@ function ControlsCard({ entryCount, episodeCount, onChanged, onSessionLost }: Co
             <span className="mem-control-copy">
               Removes profile entries and episodes CREATED before the chosen day (a whole-memory boundary).
             </span>
+            {!dateValid ? (
+              <span className="mem-hint" id="mem-forget-before-hint">
+                Pick a date to enable this.
+              </span>
+            ) : null}
           </div>
           <div className="mem-control-date">
             <input
@@ -1629,6 +1926,7 @@ function ControlsCard({ entryCount, episodeCount, onChanged, onSessionLost }: Co
               disabled={dateBusy || !dateValid || forgetAllBusy || importing || exporting}
               onClick={() => void forgetBefore()}
               aria-busy={dateBusy}
+              aria-describedby={dateValid ? undefined : 'mem-forget-before-hint'}
               aria-label={
                 dateArmed ? `Confirm forgetting memory before ${date}` : 'Forget memory before the selected date'
               }

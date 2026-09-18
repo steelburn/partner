@@ -1,21 +1,115 @@
 # UNFINISHED — the review list for the next session
 
-Date: 2026-09-18 (updated at `v0.1.23`) · Index: `PLAN.md` §15 · Specs:
-`PLAN-M27.md`, `PLAN-M28.md`, `PLAN-M29.md` · Records: `docs/VERIFY-M26.md`,
-`docs/VERIFY-M27.md`, `docs/VERIFY-M29.md`.
+Date: 2026-09-19 (updated at `v0.1.26`) · Index: `PLAN.md` §15 · Specs:
+`PLAN-M34.md`, `PLAN-M35.md`, `PLAN-M36.md`, `PLAN-M37.md` · Records:
+`docs/VERIFY-M34.md`, `docs/VERIFY-M35.md`, `docs/VERIFY-M36.md`,
+`docs/VERIFY-M37.md`.
 
 This file exists because session context does not survive. It is a **review
 list**, not a spec: each item says what is left, where it goes, what it depends
 on, and what is already true. Read the spec for detail; read the verify docs for
 what was measured.
 
-State at the time of writing: `v0.1.23` released, with **M29 on `master`** (the
-parent owns releases); schema **v23**; root **1766 passed** (5 env-gated skips),
-shared **90**, web **944**, typechecks 0, web build green. Zero open Dependabot
-alerts. (1719/918 before the 2026-09-18 fixups; they added 27 tests — 6 Studio,
-1 deploy guard, 19 for the sample set and the install card — and are recorded in
-§0 below. M29 then added 27 more: 13 lifecycle, 4 invite, 3 shared-access, 7 web
-account client — `docs/VERIFY-M29.md`.)
+State at the time of writing: `v0.1.26` released, with **M29–M37 on `master`**
+(the parent owns releases); schema **v24**; root **1812 passed** (5 env-gated
+skips), shared **90**, web **1084**, typechecks 0, web build green. Zero open
+Dependabot alerts. (Earlier states: `v0.1.25` released with M34/M35 on `master`
+and root 1812/shared 90/web 1048; `v0.1.23` with M29 and root 1766/shared 90/web
+944 — §0-M29–M33 below record what those added. The §0-M32 folder open end was
+closed by M34, and the M34 phone open end by M35.)
+
+---
+
+## 0-M35. M35 — Folders as an Explorer
+
+Landed 2026-09-18 on top of M34; **no schema change, no core route change**. What
+is true (all with tests): the Folders page is an Explorer — a navigation pane
+(the same `ConversationRail` in a new folders-only `nav` mode: selectable rows, a
+selectable `All folders` root, every folder control unchanged) beside a contents
+pane (`FolderContents`: the open folder's subfolders then chats, columns
+Name · Type · Items · Modified, the shared `FolderActions` / `ChatActions` on each
+row), with an address bar (`↑ Up`, a breadcrumb of controls, item count) and one
+Create action scoped to the open folder. One tree definition
+(`web/src/lib/folder-tree.ts` — it now owns `folderSubtreeIds` / `folderTreeRows`,
+which `note-helpers.ts` re-exports for its callers) backs both panes. The
+selection is clamped against the live folder list, and the phone tier stacks the
+panes and drops the metadata columns.
+
+**Also fixed:** `.folder-action-confirm` (armed delete) was `--accent-contrast` on
+a `--danger` fill — dark mode measured **APCA Lc −17.3 / WCAG 1.32:1**, an
+unreadable confirm. It now takes its own `--bg` ground with `--danger` text and a
+2px danger ring (Lc 80.9 light / 80.5 dark).
+
+**Open ends:**
+
+1. **Items is a subtree number, the rail badge is not.** Contents rows count a
+   folder plus everything under it; the rail's per-folder badge keeps M34's
+   direct-child meaning (open end 2 above, still true). Both are documented in
+   `lib/folder-tree.ts`; they are deliberately different, but a reader comparing
+   the two surfaces can still be surprised.
+2. **`All folders` shows every chat, not the Inbox bucket.** The root row's badge
+   counts all chats (a drive that read "0" while holding subfolders contradicted
+   the pane beside it). The Inbox count now lives only in the rail's non-`nav`
+   tree and in the page's stats line.
+3. **No folder *move* in the UI.** You can create, rename and delete a folder, and
+   file chats into it, but re-parenting an existing folder (`PUT /v1/folders/:id
+   {parentId}`) still has no control — the core supports it and the manager
+   cycle-guards it. That would be a new gesture (a folder-row drag), not a fix.
+4. **`assetCount` is per-request, not cached.** `ConversationManager.list()` runs
+   one grouped count per call (the same shape `messageCount` already uses), so a
+   long list pays one extra query — measured as negligible at demo scale, but it
+   is a query per refresh rather than a stored column. A stored counter would
+   need a schema version, a backfill and an invalidation rule for every asset
+   create/delete; the derived read was chosen deliberately.
+5. **The phone overlay does not show assets.** The Conversations rail (phone
+   tier) still renders `4 msgs · 5m ago` in a chat row; the asset count lives on
+   the Folders page, where the owner asked for it. Adding it to the rail's meta
+   line is a separate decision about that surface's density.
+
+---
+
+## 0-M34. M34 — Folders as a first-class section, and a session title you can
+name or have suggested
+
+Landed 2026-09-18 on top of M33; **no schema change**. What is true (all with
+tests): a chat session has **two independent organizations** — the persona that
+runs it (the tree under Personas, M32) and the folder it is filed in (the new
+**Folders** destination in the sidebar's Workspace group, reachable on a phone
+from the More sheet). `FoldersView` owns only page chrome and renders the SAME
+`ConversationRail` in its `embedded` form, so the folder controls M32 orphaned
+(create / rename / delete, drag-to-move, the move select) are back on desktop
+with exactly one definition. The chat's top now shows the **session title**
+(editable in place: Save / Cancel / Escape, clamped to 120 chars) plus **Suggest
+title**, enabled from the second user turn. A suggestion is a PROPOSAL:
+`POST /v1/conversations/:id/title-suggestion` runs ONE bounded model call
+(`runBoundedModelCall` — the shared 256 KiB / 60 s bound), stores nothing, and
+answers 200 with either `{ok:true,title,model,source,userTurns,messageCount}` or
+`{ok:false,code,message}`. Accepting it goes through the ordinary
+`PUT /v1/conversations/:id`. Audit rows carry counts + the title LENGTH, never
+content.
+
+**Open ends:**
+
+1. **The phone tier was not re-measured.** Folders reaches the phone through the
+   More sheet, the embedded rail is content-height there, and the folder row's
+   actions are now revealed on `(hover: none)` — but no 360–430px walk of the
+   Folders page was run. The desktop walk (1440, light + dark) is recorded in
+   `docs/VERIFY-M34.md`, together with the two defects it found and the fixes.
+   **Closed by M35** (`docs/VERIFY-M35.md`): the page was measured at 390×844 —
+   no horizontal overflow, no target under 44px, panes stacked, metadata columns
+   dropped.
+2. **Folder counts are direct-child only.** `Folder.chatCount` counts chats
+   filed *directly* in a folder (its own doc says so), and `folderStats` on the
+   page counts the same way — so a parent folder with only nested children reads
+   a count that does not include them. Deliberate for now (the tree shows the
+   children), but it is the one number on the page that could mislead.
+3. **A suggestion does not auto-offer.** After a few turns the user presses
+   **Suggest title**; nothing prompts on its own. An automatic inline hint at
+   the threshold would be a new decision, not a fix.
+4. **Re-filing a chat on touch still has no drag.** `(hover: none)` hides the
+   drag handle and reveals the move `<select>` instead, so touch re-filing works
+   but through a select rather than a gesture. That was already true before M34
+   (the M20.A addendum); the Folders page just makes it more visible.
 
 ---
 
@@ -34,15 +128,11 @@ sandboxed iframe (`allowInlineCodePreview` is off in Chat only).
 
 **Open ends:**
 
-1. **Folder management lost its desktop home.** M32 moved the session list out
-   of the Chat entry, and the folder tree lived inside that same
-   `ConversationRail`. Folders are still reachable at the phone tier (the rail
-   is the floating overlay), but on desktop there is no create/rename/delete or
-   drag-to-move affordance. Decide where folders belong now: a folder row inside
-   each persona's sessions, a dedicated "Folders" section, or retiring the
-   folder dimension if persona grouping replaced it in practice. The `embedded`
-   prop and `.rail-embedded` CSS are now unused and should be removed with that
-   decision.
+1. ~~**Folder management lost its desktop home.**~~ **RESOLVED in M34** — the
+   owner chose the "dedicated Folders section" option. Folders is now a
+   Workspace destination rendering the same embedded `ConversationRail`, so
+   create/rename/delete and drag-to-move are live on desktop again and the
+   `embedded` prop is used rather than dead. See §0-M34 above.
 2. **The phone tier was not re-measured.** The persona tree is bounded and
    scrolls, and the disclosure keeps the tablet `--target-min` floor, but no
    360–430px walk of the new tree was run.

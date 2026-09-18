@@ -50,23 +50,36 @@ Container/hosted way in: see `PLAN-M21.md` (image + Cloudflare Tunnel) and
 
 ## Status (2026-09-18)
 
-**M0–M33 implemented.** Latest release **v0.1.25**.
+**M0–M37 implemented.** Latest release **v0.1.26**.
 
 | | |
 |---|---|
-| Root suite | **1783 passed** (5 env-gated skips) |
-| Shared / web suites | **90** / **999** passed |
+| Root suite | **1812 passed** (5 env-gated skips) |
+| Shared / web suites | **90** / **1084** passed |
 | Typecheck | 0 errors (`npm run typecheck`) |
 | Web build | green (`npm run build -w web`) |
-| Schema | **v24** (multi-persona memory scope) |
+| Schema | **v24** (multi-persona memory scope; M35 changed no schema) |
 | Hosted shape | `AUTH_MODE=login` — container + tunnel verified (`docs/VERIFY-M21.md`, `docs/VERIFY-M22.md`) |
-| Partly open | M20.B S8 (Vault/Runner), M13/M14/M15/M24 live env-gated walks — see `docs/UNFINISHED.md` |
+| Partly open | M20.B S8 (Vault/Runner), M13/M14/M15/M24 live env-gated walks, and the M34/M35 folder open ends (no folder move gesture, the phone rail's asset count) — see `docs/UNFINISHED.md` |
 
-Recent work (M30–M33) reshaped the shell and memory: conversations now live
-under **Personas** with a resizable menu and an **Unassigned** group; the Skills
-**Catalog** is a card deck with a detail drawer; Memory ties a pending
-suggestion to a persona in one step, shows rejected facts, and supports **any
-set** of personas per fact (`personaScopes`, schema v24).
+Recent work (M30–M37) reshaped the shell and memory: conversations now live
+under **Personas** with a resizable menu and an **Unassigned** group, and a
+session is organized twice — by the persona that runs it and by the **Folders**
+section that files it, which is now an Explorer (folder tree beside the open
+folder's subfolders and chats, with a breadcrumb address bar); a chat's title
+sits at the top of the session, renamed in place or proposed by **Suggest
+title** once the chat has a few turns. The Skills **Catalog** is a card deck
+with a detail drawer; Memory ties a pending suggestion to a persona in one step,
+shows rejected facts, and supports **any set** of personas per fact
+(`personaScopes`, schema v24). M36 then took a display pass over Memory: a
+suggestion row reads in one line (one provenance item, and the scope text is its
+own disclosure), episode summaries expand and only offer **Open chat** for a
+conversation the shell really has, disabled controls say why in place, search
+hits are highlighted and actionable, and the add form's persona grid collapses
+for the usual *All personas* answer. M37 then turned that library into
+**responsive group cards**: one card per bucket (by **Kind**, or by the
+**Persona** that honors the fact) in an `auto-fill` grid, switched by one
+segmented pill and remembered per browser.
 
 Release-by-release detail is in `CHANGELOG.md`; per-milestone specs are
 `PLAN-M<N>.md`; the compact index is `PLAN.md` §15.

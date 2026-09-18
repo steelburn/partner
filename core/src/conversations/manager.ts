@@ -24,6 +24,7 @@ import type {
 } from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
 import type {
+  AssetStore,
   ConversationRow,
   ConversationStore,
   MessageRow,
@@ -51,6 +52,13 @@ export interface ConversationManagerOptions {
    * absent, persona binding is not validated.
    */
   personaStore?: PersonaStore;
+  /**
+   * M35: asset row store, read ONLY for the per-chat `assetCount` on a summary
+   * (one grouped query for a list, one count per single read). Optional so a
+   * harness that never touches assets still compiles — when absent every
+   * summary reports 0, which is the honest reading of "not counted".
+   */
+  assetStore?: AssetStore;
   stores: { conversations: ConversationStore; messages: MessageStore };
   audit: AuditService;
   /** Injectable clock (epoch ms). */
@@ -91,7 +99,11 @@ export interface ConversationManager {
   remove(id: string): void;
 }
 
-function toSummary(row: ConversationRow, messageCount: number): ConversationSummary {
+function toSummary(
+  row: ConversationRow,
+  messageCount: number,
+  assetCount: number,
+): ConversationSummary {
   return {
     id: row.id,
     personaId: row.personaId,
@@ -101,6 +113,8 @@ function toSummary(row: ConversationRow, messageCount: number): ConversationSumm
     parentId: row.parentId ?? null,
     sourceAssetId: row.sourceAssetId ?? null,
     messageCount,
+    // M35: derived from the assets table, never stored on the row.
+    assetCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -124,6 +138,7 @@ export function createConversationManager(
 ): ConversationManager {
   const { stores, audit } = options;
   const personaStore = options.personaStore;
+  const assetStore = options.assetStore;
   const now = options.now ?? Date.now;
 
   function countsMap(): Map<string, number> {
@@ -132,6 +147,23 @@ export function createConversationManager(
       map.set(conversationId, count);
     }
     return map;
+  }
+
+  /** One grouped read of the assets table; absent store = every chat reads 0. */
+  function assetCountsMap(): Map<string, number> {
+    const map = new Map<string, number>();
+    if (assetStore === undefined) return map;
+    for (const { conversationId, count } of assetStore.countsByConversation()) {
+      map.set(conversationId, count);
+    }
+    return map;
+  }
+
+  /** One chat's asset count (single reads: create/update/bind/get). */
+  function assetCountOf(conversationId: string): number {
+    return assetStore === undefined
+      ? 0
+      : assetStore.listByConversation(conversationId).length;
   }
 
   function create(input: CreateConversationInput): ConversationSummary {
@@ -182,7 +214,7 @@ export function createConversationManager(
       personaId,
       titleLength: title === null ? 0 : title.length,
     });
-    return toSummary(row, 0);
+    return toSummary(row, 0, 0);
   }
 
   function append(
@@ -236,8 +268,9 @@ export function createConversationManager(
 
   function list(): ConversationSummary[] {
     const counts = countsMap();
+    const assetCounts = assetCountsMap();
     return stores.conversations.list().map((row) => {
-      return toSummary(row, counts.get(row.id) ?? 0);
+      return toSummary(row, counts.get(row.id) ?? 0, assetCounts.get(row.id) ?? 0);
     });
   }
 
@@ -245,7 +278,7 @@ export function createConversationManager(
     const row = stores.conversations.findById(id);
     if (!row) throw conversationError('not_found', 'conversation not found');
     const messages = stores.messages.listByConversation(id).map(toMessage);
-    return { summary: toSummary(row, messages.length), messages };
+    return { summary: toSummary(row, messages.length, assetCountOf(id)), messages };
   }
 
   function remove(id: string): void {
@@ -288,7 +321,7 @@ export function createConversationManager(
         body.folderId === null || body.folderId === '' ? null : body.folderId;
     }
     if (Object.keys(storePatch).length === 0) {
-      return toSummary(row, stores.messages.countByConversation(id));
+      return toSummary(row, stores.messages.countByConversation(id), assetCountOf(id));
     }
     stores.conversations.update(id, { ...storePatch, updatedAt: now() });
     audit.log('web', 'conversation.update', id, {
@@ -296,7 +329,7 @@ export function createConversationManager(
       folderId: storePatch.folderId === undefined ? undefined : (storePatch.folderId ?? null),
     });
     const updated = stores.conversations.findById(id) as ConversationRow;
-    return toSummary(updated, stores.messages.countByConversation(id));
+    return toSummary(updated, stores.messages.countByConversation(id), assetCountOf(id));
   }
 
   return { create, append, list, get, bindPersona, update, remove };

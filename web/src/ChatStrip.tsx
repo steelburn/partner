@@ -11,7 +11,7 @@ import { describeBytes, declaredVisionModels, isImageCapableModel, MAX_INLINE_IM
 import type { PendingToolCall } from '@partner/shared/src/tools.js';
 import { ApiRequestError, listProviders, streamChat, type StreamDoneMeta } from './lib/api.js';
 import { purposeLabel } from './lib/providers.js';
-import { getConversation } from './lib/conversations.js';
+import { getConversation, suggestConversationTitle } from './lib/conversations.js';
 import { RISK_LABELS, RISK_TONE_CLASS, pendingLabel, summarizeTool } from './lib/roots.js';
 import { SkillInstallCard } from './SkillInstallCard.js';
 import { decidePending } from './lib/tools.js';
@@ -31,6 +31,14 @@ import { PartnerMarkdown } from './Markdown.js';
 import type { WikiNoteTarget } from './WikiLinkChip.js';
 import { ChoiceMemoryContext } from './ChoiceMemory.js';
 import { conversationUi } from './lib/conversation-ui.js';
+import {
+  TITLE_MAX_CHARS,
+  canSuggestTitle,
+  normalizeTitleInput,
+  suggestTitleHint,
+  suggestionSourceNote,
+  titleForDisplay,
+} from './lib/session-title.js';
 import { isGroupLive } from './lib/answer-group.js';
 import { IconAttach, IconSave, IconSend } from './icons.js';
 import { CodePreview } from './CodePreview.js';
@@ -82,6 +90,19 @@ export interface ChatStripProps {
   onBrainstormSessionChange?: (session: BrainstormSessionSummary) => void;
   /** Open a `[[Note Title]]` citation in the shell's Notes view. */
   onOpenNote?: (id: string) => void;
+  /**
+   * M34: the open session's stored title (null/absent = never named). Displayed
+   * at the top of the chat and renamed in place.
+   */
+  sessionTitle?: string | null;
+  /**
+   * M34: store a new title for the open session. The shell owns the write +
+   * refresh; a rejection surfaces under the header, so this is the ONE path
+   * that stores a title — accepting an AI suggestion comes through here too.
+   * The header never sends an empty title (Save is disabled on a blank field),
+   * so a session cannot be left named "" by accident.
+   */
+  onRenameSession?: (title: string) => Promise<void> | void;
 }
 
 interface ChatRow {
@@ -143,6 +164,8 @@ export default function ChatStrip({
   brainstormSession = null,
   onBrainstormSessionChange,
   onOpenNote,
+  sessionTitle = null,
+  onRenameSession,
 }: ChatStripProps) {
   const [rows, setRows] = useState<ChatRow[]>([]);
   const [draft, setDraft] = useState('');
@@ -163,6 +186,18 @@ export default function ChatStrip({
   const [queueErrors, setQueueErrors] = useState<Readonly<Record<string, string>>>({});
   const [brainstormBusy, setBrainstormBusy] = useState(false);
   const [brainstormError, setBrainstormError] = useState<string | null>(null);
+  /** M34: the session header — in-place rename plus a title PROPOSAL the owner
+   *  reviews (accepting is the only thing that stores it). */
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+  const [suggestion, setSuggestion] = useState<{
+    title: string;
+    source: 'model' | 'transcript';
+  } | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
   const nextId = useRef(0);
   /** Conversation whose usage/latency meta line is currently shown — the
    *  line is cleared when the open conversation changes (never leaks across
@@ -351,7 +386,6 @@ export default function ChatStrip({
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     setAtBottom(near);
   };
-
   const jumpToLatest = (): void => {
     const el = transcriptRef.current;
     if (!el) return;
@@ -1209,6 +1243,98 @@ export default function ChatStrip({
     setBrainstormError(null);
   }, [conversationId]);
 
+  /**
+   * M34: a title proposal belongs to the conversation that produced it, so
+   * switching chats drops it (with the header's own transient state) rather
+   * than offering the previous chat's name for this one.
+   */
+  useEffect(() => {
+    setSuggestion(null);
+    setSuggestError(null);
+    setTitleError(null);
+    setEditingTitle(false);
+  }, [conversationId]);
+
+  const beginTitleEdit = (): void => {
+    if (conversationId === null) return;
+    setTitleDraft(sessionTitle ?? '');
+    setTitleError(null);
+    setEditingTitle(true);
+  };
+
+  const saveTitle = async (): Promise<void> => {
+    if (conversationId === null || savingTitle) return;
+    const next = normalizeTitleInput(titleDraft);
+    if (next === '') return;
+    setSavingTitle(true);
+    setTitleError(null);
+    try {
+      await onRenameSession?.(next);
+      setEditingTitle(false);
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setTitleError(cause instanceof Error ? cause.message : 'Could not rename this session.');
+    } finally {
+      setSavingTitle(false);
+    }
+  };
+
+  /**
+   * Ask the core to name this session from the transcript. Nothing is stored —
+   * the reply is held for review, and the owner's accept is what writes.
+   */
+  const requestTitleSuggestion = async (): Promise<void> => {
+    if (conversationId === null || suggesting) return;
+    const token = readStoredToken();
+    if (!token) {
+      onUnpair();
+      return;
+    }
+    setSuggesting(true);
+    setSuggestError(null);
+    try {
+      const reply = await suggestConversationTitle(token, conversationId);
+      if (!reply.ok) {
+        setSuggestion(null);
+        setSuggestError(reply.message);
+        return;
+      }
+      setSuggestion({ title: reply.title, source: reply.source });
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setSuggestion(null);
+      setSuggestError(
+        cause instanceof Error ? cause.message : 'Could not suggest a title right now.',
+      );
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const acceptTitleSuggestion = async (): Promise<void> => {
+    if (suggestion === null || savingTitle) return;
+    setSavingTitle(true);
+    setTitleError(null);
+    try {
+      await onRenameSession?.(suggestion.title);
+      setSuggestion(null);
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onUnpair();
+        return;
+      }
+      setTitleError(cause instanceof Error ? cause.message : 'Could not rename this session.');
+    } finally {
+      setSavingTitle(false);
+    }
+  };
+
   const flipBrainstorm = async (): Promise<void> => {
     if (brainstormSession === null || brainstormBusy) return;
     const token = readStoredToken();
@@ -1246,9 +1372,137 @@ export default function ChatStrip({
   /** The linked-brainstorm header only belongs to the conversation it came from. */
   const showBrainstorm =
     brainstormSession !== null && brainstormSession.conversationId === conversationId;
+  /** M34: the session header. */
+  const sessionHeading = titleForDisplay(sessionTitle);
+  const suggestReason = suggestTitleHint(rows);
+  const canSuggest = canSuggestTitle(rows);
+  const headerNote = titleError ?? suggestError;
 
   return (
     <section className="chat" aria-label="Chat with Partner">
+      {/* M34: the session title, at the top of the session and editable in
+        * place. `sessionTitle` is the shell's copy of the stored title, so this
+        * stays a controlled read of one value rather than a second store. */}
+      <div className="chat-session">
+        {editingTitle ? (
+          <form
+            className="chat-session-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveTitle();
+            }}
+          >
+            <input
+              className="field chat-session-input"
+              value={titleDraft}
+              autoFocus
+              maxLength={TITLE_MAX_CHARS}
+              placeholder="Name this session"
+              aria-label="Session title"
+              disabled={savingTitle}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setEditingTitle(false);
+                }
+              }}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary btn-sm"
+              disabled={savingTitle || titleDraft.trim() === ''}
+              aria-busy={savingTitle}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={savingTitle}
+              onClick={() => setEditingTitle(false)}
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <div className="chat-session-head">
+            <h2 className="chat-session-title" title={sessionHeading}>
+              {sessionHeading}
+            </h2>
+            <div className="chat-session-actions">
+              <button
+                type="button"
+                className="btn-link chat-session-action"
+                onClick={beginTitleEdit}
+                disabled={conversationId === null}
+                title={conversationId === null ? 'Send a message first' : undefined}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="btn-link chat-session-action"
+                onClick={() => void requestTitleSuggestion()}
+                disabled={conversationId === null || suggesting || !canSuggest}
+                aria-busy={suggesting}
+                title={suggestReason}
+              >
+                {suggesting ? 'Reading the chat…' : 'Suggest title'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {suggestion !== null ? (
+        <div className="chat-session-proposal" role="status">
+          <span className="chat-session-proposal-text">
+            Suggested: <strong>{suggestion.title}</strong>
+          </span>
+          <span className="chat-session-proposal-actions">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void acceptTitleSuggestion()}
+              disabled={savingTitle}
+              aria-busy={savingTitle}
+            >
+              Use title
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setSuggestion(null)}
+              disabled={savingTitle}
+            >
+              Dismiss
+            </button>
+          </span>
+          {suggestionSourceNote(suggestion.source) === null ? null : (
+            <span className="chat-session-proposal-note">
+              {suggestionSourceNote(suggestion.source)}
+            </span>
+          )}
+        </div>
+      ) : null}
+
+      {headerNote === null ? null : (
+        <div className="chat-session-note" role="alert">
+          <span className="chat-session-note-text">{headerNote}</span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setTitleError(null);
+              setSuggestError(null);
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div
         className="chat-transcript"
         aria-live="polite"

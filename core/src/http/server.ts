@@ -141,6 +141,8 @@ import { browseDirectory, BrowseError } from '../files/browse.js';
 import type { ToolErrorCode } from '../broker/errors.js';
 import { ToolError, toolError, toolErrorStatus } from '../broker/errors.js';
 import type { ConversationManager, ConversationDetail } from '../conversations/manager.js';
+import type { TitleSuggester } from '../conversations/title.js';
+import { TITLE_MIN_USER_TURNS, countUserTurns } from '../conversations/title.js';
 import type { PersonaManager } from '../personas/manager.js';
 import { ConversationError } from '../conversations/errors.js';
 import { PersonaError } from '../personas/errors.js';
@@ -453,6 +455,13 @@ export interface CoreAppOptions {
    * routes 501 not_configured.
    */
   conversationManager?: ConversationManager;
+  /**
+   * M34: the session-title suggester — one bounded model call, injected the
+   * same way the skill generator is. When absent, POST
+   * /v1/conversations/:id/title-suggestion responds 501 not_configured;
+   * every other conversation route is untouched.
+   */
+  titleSuggester?: TitleSuggester;
   /**
    * M4 memory bundle (optional so M0-M3 harnesses compile unchanged). When
    * absent the /v1/memory surface responds 501 not_configured and chat-time
@@ -4454,6 +4463,72 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
     res.status(204).end();
   });
+
+  // M34 (PLAN-M34.md slice B) — the session-title SUGGESTION.
+  //
+  // A proposal, never a write: the transcript goes to one bounded model call
+  // and the answer comes back for the owner to accept (the accept path is the
+  // existing PUT /v1/conversations/:id, which audits `titleChanged`). Offered
+  // only once the chat has been through a few turns, because a title named from
+  // "hello" is the message, not the topic.
+  //
+  // Wire shape: 200 with `{ok:true, title, model, source, userTurns,
+  // messageCount}` or `{ok:false, code, message}` when the core could not use
+  // the reply (the same "the request succeeded in determining the answer"
+  // contract the flow-authoring verbs use). 404 unknown conversation, 400
+  // not_enough_context before the first few turns, 501 when unwired.
+  //
+  // Audit carries COUNTS and the model name only — never a message or a title.
+  api.post(
+    '/v1/conversations/:id/title-suggestion',
+    requireSession(sessions),
+    async (req: Request, res: Response) => {
+      const manager = requireConversationManager(options, res);
+      if (!manager) return;
+      const suggester = options.titleSuggester;
+      if (!suggester) {
+        notConfigured(res, 'the session-title suggester');
+        return;
+      }
+      const id = String(req.params.id ?? '');
+      let detail: ConversationDetail;
+      try {
+        detail = manager.get(id);
+      } catch (err) {
+        if (sendConversationError(res, err)) return;
+        throw err;
+      }
+      const userTurns = countUserTurns(detail.messages);
+      if (userTurns < TITLE_MIN_USER_TURNS) {
+        res.status(400).json({
+          error: 'not_enough_context',
+          message: 'the session needs a few turns before a title can be suggested',
+        });
+        return;
+      }
+      const outcome = await suggester.suggest({ messages: detail.messages });
+      audit.log('web', 'conversation.title_suggested', id, {
+        ok: outcome.ok,
+        messages: detail.messages.length,
+        userTurns,
+        chars: outcome.ok ? outcome.title.length : 0,
+        model: outcome.ok ? outcome.model : undefined,
+        code: outcome.ok ? undefined : outcome.code,
+      });
+      if (!outcome.ok) {
+        res.status(200).json({ ok: false, code: outcome.code, message: outcome.message });
+        return;
+      }
+      res.status(200).json({
+        ok: true,
+        title: outcome.title,
+        model: outcome.model,
+        source: outcome.source,
+        userTurns,
+        messageCount: detail.messages.length,
+      });
+    },
+  );
 
   api.put('/v1/conversations/:id', requireSession(sessions), (req: Request, res: Response) => {
     const manager = requireConversationManager(options, res);
