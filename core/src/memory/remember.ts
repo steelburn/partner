@@ -66,6 +66,16 @@ export const REMEMBER_KNOWN_VALUE_CAP = 160;
 /** Fixed lead-in for the already-known listing (never user-derived). */
 export const REMEMBER_KNOWN_HEADER =
   'ALREADY KNOWN (never return these again, in any wording):';
+/**
+ * Fixed lead-in for the rejected listing. Rejected facts are not "known" —
+ * they are the user's explicit NO — but the extractor still needs to see them,
+ * or it proposes the same fact again in fresh wording (the deterministic
+ * dedupe only catches reworded matches approximately). The listing is
+ * same-scope + global, so one persona's rejection never leaks another
+ * persona's private memory.
+ */
+export const REMEMBER_REJECTED_HEADER =
+  'REJECTED (the user declined these — never suggest them again, not even reworded):';
 
 /** Where a remembered fact applies: every persona (`global`) or only one. */
 export type RememberScope = 'global' | 'persona';
@@ -106,8 +116,8 @@ export const REMEMBER_SYSTEM_PROMPT =
   'defaults, standing rules); use "persona" when it only matters while working with this ' +
   'persona. Return [] when nothing is worth keeping. Never include secrets ' +
   '(passwords, API keys, tokens, payment data), transient task details, or facts about anyone ' +
-  'other than the user. A list of facts that are already known may follow the transcript: ' +
-  'never return any of them, not even reworded.';
+  'other than the user. A list of facts that are already known, and a list of facts the user ' +
+  'has REJECTED, may follow the transcript: never return any of them, not even reworded.';
 
 /** The chat client a persona's extraction rides, plus the concrete model id. */
 export interface RememberTarget {
@@ -228,6 +238,27 @@ export function formatKnownBlock(entries: readonly ProfileEntry[]): string {
     );
   }
   return lines.length === 0 ? '' : `${REMEMBER_KNOWN_HEADER}\n${lines.join('\n')}`;
+}
+
+/**
+ * Render the fixed "rejected" block. Same shape as {@link formatKnownBlock}
+ * (bounded, value-capped, whitespace-collapsed) but behind its own header, so
+ * the model can tell "already known" from "the user said no" and never
+ * re-asks either. Returns '' when nothing has been rejected.
+ */
+export function formatRejectedBlock(entries: readonly ProfileEntry[]): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const entry of entries) {
+    if (lines.length >= REMEMBER_KNOWN_MAX) break;
+    const key = dedupeKey(entry.value);
+    if (key === '' || seen.has(key)) continue;
+    seen.add(key);
+    lines.push(
+      `- ${trimToCap(entry.value.replace(/\s+/g, ' '), REMEMBER_KNOWN_VALUE_CAP)}`,
+    );
+  }
+  return lines.length === 0 ? '' : `${REMEMBER_REJECTED_HEADER}\n${lines.join('\n')}`;
 }
 
 /**
@@ -360,12 +391,16 @@ export function createRememberManager(options: RememberManagerOptions): Remember
       .filter((entry) => entry.personaScope === null || entry.personaScope === personaId);
     // Review-before-suggest: show the model what is already known (confirmed
     // and still-pending, newest first so the cap keeps the freshest facts) so
-    // it does not propose the same fact in new wording. Rejected values are
-    // withheld from the listing but still deduped below.
+    // it does not propose the same fact in new wording. Rejected values ride a
+    // separate block so the model also does not re-ask a fact the user already
+    // declined — the deterministic dedupe below stays the guarantee, but this
+    // stops the awkward reworded re-ask from ever reaching the user.
+    const byNewest = (a: ProfileEntry, b: ProfileEntry): number => b.updatedAt - a.updatedAt;
     const knownBlock = formatKnownBlock(
-      scoped
-        .filter((entry) => entry.status !== 'rejected')
-        .sort((a, b) => b.updatedAt - a.updatedAt),
+      scoped.filter((entry) => entry.status !== 'rejected').sort(byNewest),
+    );
+    const rejectedBlock = formatRejectedBlock(
+      scoped.filter((entry) => entry.status === 'rejected').sort(byNewest),
     );
 
     let reply: string | null;
@@ -379,7 +414,8 @@ export function createRememberManager(options: RememberManagerOptions): Remember
               role: 'user',
               content:
                 `USER:\n${userText}\n\nPARTNER:\n${assistantText}` +
-                (knownBlock === '' ? '' : `\n\n${knownBlock}`),
+                (knownBlock === '' ? '' : `\n\n${knownBlock}`) +
+                (rejectedBlock === '' ? '' : `\n\n${rejectedBlock}`),
             },
           ],
         }),

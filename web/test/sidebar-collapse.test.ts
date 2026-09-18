@@ -176,3 +176,30 @@ describe('the shell wires the toggle', () => {
     expect(APP).toMatch(/minimized=\{sideMin\}/);
   });
 });
+
+describe('the sidebar can be dragged wider (M32)', () => {
+  it('the dragged width is the same --side-w knob, persisted per session', () => {
+    expect(APP).toMatch(/const SIDE_W_KEY = 'partner\.sideWidth'/);
+    expect(APP).toMatch(/readIntSession\(SIDE_W_KEY\)/);
+    expect(APP).toMatch(/writeSession\(SIDE_W_KEY, String\(value\)\)/);
+  });
+
+  it('a dragged width only applies while the sidebar is expanded', () => {
+    // Inline custom properties beat the `.side-minimized` class rule, so a
+    // stale drag width over an icon rail would blow the 60px rail wide open.
+    expect(APP).toMatch(
+      /!sideMin && sideW !== null \? \(\{ '--side-w': `\$\{sideW\}px` \} as CSSProperties\) : undefined/,
+    );
+    expect(APP).toMatch(/style=\{sideStyle\}/);
+  });
+
+  it('the divider is the shared ColumnDivider, between the two columns', () => {
+    const divider = APP.slice(APP.indexOf('label="Resize menu"') - 40, APP.indexOf('label="Resize menu"') + 320);
+    expect(divider).toContain('<ColumnDivider');
+    expect(divider).toContain('direction={1}');
+    expect(divider).toContain('min={180}');
+    expect(divider).toContain('max={420}');
+    // The handle must not reappear on a phone, where the sidebar is gone.
+    expect(APP).toMatch(/paired && !sideMin && !phoneTier \? \(/);
+  });
+});

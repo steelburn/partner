@@ -64,6 +64,7 @@ import MembersView from './MembersView.js';
 import MemoryView from './MemoryView.js';
 import NotesView from './NotesView.js';
 import PairGate from './PairGate.js';
+import PersonaChatTree from './PersonaChatTree.js';
 import PersonaManagerView from './PersonaManagerView.js';
 import PersonaPicker from './PersonaPicker.js';
 import PlaybooksView from './PlaybooksView.js';
@@ -204,18 +205,23 @@ function SideNav({
   attention,
   minimized,
   onSelect,
-  chatTree,
-  chatTreeOpen,
-  onToggleChatTree,
+  personaTree,
+  personaTreeOpen,
+  onTogglePersonaTree,
+  onNewChat,
+  newChatDisabled,
 }: {
   current: ViewName;
   attention: AttentionCounts;
   minimized: boolean;
   onSelect: (view: ViewName) => void;
-  /** M30: the conversation + folder tree, rendered under the Chat entry. */
-  chatTree: ReactNode;
-  chatTreeOpen: boolean;
-  onToggleChatTree: () => void;
+  /** M32: the per-persona chat session tree, rendered under Personas. */
+  personaTree: ReactNode;
+  personaTreeOpen: boolean;
+  onTogglePersonaTree: () => void;
+  /** Start a chat with the active persona from the menu. */
+  onNewChat: () => void;
+  newChatDisabled: boolean;
 }) {
   return (
     <nav className="side-nav" aria-label="Partner views">
@@ -230,10 +236,33 @@ function SideNav({
           {group.views.map((view) => {
             const label = NAV_LABELS[view];
             if (view === 'chat') {
-              // M30: the conversation tree (and its folders) lives under the
-              // Chat entry, so the sidebar is the one left panel. The
-              // disclosure is separate from the destination button: selecting
-              // Chat and expanding the tree are two different intents.
+              // M32: the Chat destination starts a chat. The session list moved
+              // under Personas, so the Chat entry no longer owns a tree.
+              return (
+                <div className="side-chat" key={view}>
+                  <NavButton
+                    item={{ view, label, icon: iconFor(view), badge: badgeFor(view, attention) }}
+                    current={current}
+                    minimized={minimized}
+                    onSelect={onSelect}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm side-new-chat"
+                    onClick={onNewChat}
+                    disabled={newChatDisabled}
+                    aria-label="New chat"
+                    title={minimized ? 'New chat' : undefined}
+                  >
+                    <span className="side-label">New chat</span>
+                  </button>
+                </div>
+              );
+            }
+            if (view === 'personas') {
+              // M32: chat sessions under Personas. The disclosure is separate
+              // from the destination button: selecting the view and expanding
+              // the tree are two different intents (the Chat tree's contract).
               return (
                 <div className="side-chat" key={view}>
                   <div className="side-chat-row">
@@ -246,22 +275,18 @@ function SideNav({
                     <button
                       type="button"
                       className="side-chat-toggle"
-                      onClick={onToggleChatTree}
-                      aria-expanded={chatTreeOpen}
-                      aria-controls={chatTreeOpen ? 'side-chat-tree' : undefined}
-                      aria-label={
-                        chatTreeOpen ? 'Collapse conversations' : 'Expand conversations'
-                      }
-                      title={chatTreeOpen ? 'Collapse conversations' : 'Expand conversations'}
+                      onClick={onTogglePersonaTree}
+                      aria-expanded={personaTreeOpen}
+                      aria-controls={personaTreeOpen ? 'side-persona-tree' : undefined}
+                      aria-label={personaTreeOpen ? 'Collapse persona chats' : 'Expand persona chats'}
+                      title={personaTreeOpen ? 'Collapse persona chats' : 'Expand persona chats'}
                       disabled={minimized}
                     >
                       <IconChevronDown />
                     </button>
                   </div>
-                  {chatTreeOpen && !minimized ? (
-                    <div className="side-chat-tree" id="side-chat-tree">
-                      {chatTree}
-                    </div>
+                  {personaTreeOpen && !minimized ? (
+                    <div className="side-chat-tree">{personaTree}</div>
                   ) : null}
                 </div>
               );
@@ -1008,6 +1033,11 @@ const ASSETS_W_KEY = 'partner.assetsWidth';
 /** M20.A follow-up 10 — the sidebar's icon-rail state, per session like the
  *  rail/lane widths (a shell preference, not user data: nothing to sync). */
 const SIDE_MIN_KEY = 'partner.sideMinimized';
+/** M32 — the sidebar's dragged width (px), per session like the minimize
+ *  state. Absent until the first drag, so the tier default applies. */
+const SIDE_W_KEY = 'partner.sideWidth';
+/** Fallback width used to seed a drag when the user has never resized. */
+const SIDE_W_DEFAULT = 224;
 
 const readSession = (key: string): string | null => {
   try {
@@ -1359,11 +1389,16 @@ function ColumnDivider({
       return !minimized;
     });
   }, []);
-  /** M30: whether the sidebar's Chat section shows the conversation tree.
-   *  A shell preference, not content — held in memory only (the sidebar's own
-   *  minimize state already persists the layout choice, and nothing here is
-   *  worth a storage key). */
-  const [chatTreeOpen, setChatTreeOpen] = useState<boolean>(true);
+  /** M32: the sidebar's dragged width; null until the first drag so the
+   *  per-tier default (224 desktop / 200 tablet) still applies. */
+  const [sideW, setSideW] = useState<number | null>(() => readIntSession(SIDE_W_KEY));
+  const commitSideW = useCallback(
+    (value: number): void => writeSession(SIDE_W_KEY, String(value)),
+    [],
+  );
+  /** M32: whether the sidebar's Personas section shows the session tree.
+   *  A shell preference, not content — held in memory only. */
+  const [personaTreeOpen, setPersonaTreeOpen] = useState<boolean>(true);
   const [notesW, setNotesW] = useState<number | null>(() => readIntSession(NOTES_W_KEY));
   const toggleRail = useCallback((): void => {
     if (railOpen) {
@@ -1445,6 +1480,10 @@ function ColumnDivider({
     ...(notesLaneOpen && notesW !== null ? { '--notes-w': `${notesW}px` } : {}),
     ...(assetsLaneOpen && assetsW !== null ? { '--assets-w': `${assetsW}px` } : {}),
   } as CSSProperties;
+  /* M32: a dragged sidebar width wins over the tier default — but only while
+   * the sidebar is expanded, so the 60px icon rail is never overridden. */
+  const sideStyle =
+    !sideMin && sideW !== null ? ({ '--side-w': `${sideW}px` } as CSSProperties) : undefined;
   const notesDefaultW = 232;
   const assetsDefaultW = 300;
 
@@ -1499,7 +1538,7 @@ function ColumnDivider({
   );
 
   return (
-    <div className={sideMin ? 'app side-minimized' : 'app'}>
+    <div className={sideMin ? 'app side-minimized' : 'app'} style={sideStyle}>
       <aside className="app-side" aria-label="App">
         <div className="side-head">
           <span className="app-brand side-brand">Partner</span>
@@ -1522,11 +1561,23 @@ function ColumnDivider({
             attention={attention}
             minimized={sideMin}
             onSelect={setView}
-            chatTreeOpen={chatTreeOpen}
-            onToggleChatTree={() => setChatTreeOpen((open) => !open)}
+            personaTreeOpen={personaTreeOpen}
+            onTogglePersonaTree={() => setPersonaTreeOpen((open) => !open)}
+            onNewChat={() => void handleNewChat()}
+            newChatDisabled={railLocked}
             /* The phone tier hides the sidebar; there the rail is the overlay,
              * so the tree would only be a wasted second render. */
-            chatTree={phoneTier ? null : conversationRail(true)}
+            personaTree={
+              phoneTier ? null : (
+                <PersonaChatTree
+                  personas={personas}
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  disabled={railLocked}
+                  onOpenConversation={handleOpenConversation}
+                />
+              )
+            }
           />
         ) : null}
         {paired ? (
@@ -1544,6 +1595,18 @@ function ColumnDivider({
           </div>
         ) : null}
       </aside>
+      {paired && !sideMin && !phoneTier ? (
+        <ColumnDivider
+          label="Resize menu"
+          direction={1}
+          current={sideW}
+          fallback={SIDE_W_DEFAULT}
+          min={180}
+          max={420}
+          onSet={setSideW}
+          onCommit={commitSideW}
+        />
+      ) : null}
       <div className="app-col">
         {paired ? (
           <header className="app-topbar">

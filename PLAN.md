@@ -394,10 +394,16 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   persona honors — global + its own scope, capped) and must not re-propose
   them; a punctuation/case/space-insensitive dedupe keeps an already-known or
   already-suggested fact out of the store — so the same suggestion is never
-  filed twice.
+  filed twice. **Rejected** facts (M32) ride a second, same-scope `REJECTED`
+  listing (`formatRejectedBlock`) so the model does not re-ask a declined fact
+  even in fresh wording; the deterministic dedupe stays the guarantee. The
+  Memory view loads rejected entries (`GET /v1/memory/profile?includeRejected=1`)
+  into a collapsed **Rejected** panel with Restore, and a pending suggestion
+  carries a one-step "applies to" persona select so it can be scoped without
+  opening the editor.
 - **Forgetting:** per-entry delete, per-store wipe, or "forget everything
-  before <date>". Memory exports as JSON/Markdown. A rejected fact is never
-  re-suggested.
+  before <date>". Memory exports as JSON/Markdown. A rejected fact is tracked
+  (visible under **Rejected**) and never re-suggested.
 - **Privacy defaults:** global auto-remember is **on** by default but only
   ever produces visible, confirmable suggestions (nothing tailors a reply
   until confirmed); persona-scoped memory of a conversation requires that
@@ -1358,6 +1364,32 @@ apps/partner/
       reduced-motion safe. `m31-redesign.test.ts` (+11) pins the structure and
       the geometry. Web suite **58 files / 967 tests**; typecheck 0; bundle
       green; verified in-browser at 1440 and 1024.
+      **M32 — persona-owned sessions, a resizable menu, a Catalog deck, and
+      tracked memory (DONE).** Four requested changes in one UI pass. (1) The
+      conversation/session tree moved out of the Chat entry and under
+      **Personas**: each persona is a disclosure listing its chats
+      (`PersonaChatTree`; grouping is the pure `groupConversations`, and a chat
+      whose persona is gone stays visible under an explicit **Unassigned**
+      group). Chat is a destination plus a `New chat` action, and the phone
+      overlay still uses `ConversationRail`. (2) The Skills **Catalog** segment
+      became a Personas-style card deck whose card face opens a slide-out
+      detail drawer (`CatalogDrawer`) reusing the persona deck/drawer classes,
+      so the two pages cannot drift. (3) The left menu is drag-resizable via
+      the shared `ColumnDivider` (180–420px, `partner.sideWidth` per session);
+      the inline `--side-w` applies only while expanded, so the 60px icon rail
+      is never overridden. (4) Memory: a pending suggestion carries a one-step
+      "applies to" persona select, rejected facts load into a collapsed
+      **Rejected** panel with Restore, and the extractor receives a same-scope
+      `REJECTED` block (`formatRejectedBlock`) alongside `ALREADY KNOWN`, so a
+      declined fact is not re-asked even reworded. The chat transcript no
+      longer flips a fenced HTML/CSS block into an inline sandboxed iframe
+      (`allowInlineCodePreview` stays on for Notes/Assets; chat passes
+      `false`). No schema change. `one-left-panel.test.ts` rewritten,
+      `persona-chat-tree.test.ts` (+3), `skills-catalog-view.test.tsx` (+5),
+      `sidebar-collapse.test.ts` (+3), `markdown.test.ts` (+1) and
+      `remember.test.ts` (+2) pin the decisions. Web suite **60 files / 979
+      tests**; core remember green; typecheck 0; bundle green; verified
+      in-browser at 1440 (deck + drawer, rejected panel, scope select).
       **M20.A follow-up — phone Notes view crowding (QUEUED, measured, NOT
       started).** Reported as "mobile view is too crowded"; a scan of all four
       phone tabs found Chat/Files/Personas clean and **Notes is the offender** —

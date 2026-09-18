@@ -21,6 +21,7 @@ function render(props: {
   onPreviewCode?: (preview: { title: string; source: string }) => void;
   resolveNote?: (title: string) => { id: string; title: string; snippet?: string | null } | null;
   onOpenNote?: (id: string) => void;
+  allowInlineCodePreview?: boolean;
 }): string {
   return renderToStaticMarkup(
     h(PartnerMarkdown, {
@@ -30,6 +31,7 @@ function render(props: {
       onPreviewCode: props.onPreviewCode,
       resolveNote: props.resolveNote,
       onOpenNote: props.onOpenNote,
+      allowInlineCodePreview: props.allowInlineCodePreview,
     }),
   );
 }
@@ -343,6 +345,19 @@ describe('PartnerMarkdown inline HTML code preview (F12 follow-up)', () => {
     expect(html).toContain('const x = 1;');
     expect(html).toContain('md-pre');
     expect(html).not.toContain('md-code-preview-frame');
+  });
+
+  it('a surface can opt out of inline previews entirely (chat, M32)', () => {
+    // The chat transcript must never turn a message into a sandboxed iframe:
+    // there the fence renders as plain code, with no Code|Preview switch.
+    const html = render({
+      text: 'Look:\n\n```html\n<h1>Hello</h1>\n```',
+      allowInlineCodePreview: false,
+    });
+    expect(html).toContain('md-pre');
+    expect(html).toContain('&lt;h1&gt;Hello&lt;/h1&gt;');
+    expect(html).not.toContain('md-code-preview-frame');
+    expect(html).not.toContain('md-code-tabs');
   });
 
   it('never executes scripts outside the sandbox (source is inert text)', () => {

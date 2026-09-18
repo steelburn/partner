@@ -2187,6 +2187,22 @@ select {
   border-top: 1px solid var(--border);
 }
 
+/* M32 — the Skills Catalog reuses the persona card deck so the two pages read
+ * the same. Only the description clamp and the drawer's meta row are
+ * catalog-specific. */
+.catalog-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.catalog-drawer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
 .persona-form {
   display: flex;
   flex-direction: column;
@@ -2512,6 +2528,33 @@ select {
   gap: var(--space-1);
   flex-wrap: wrap;
   margin-left: auto;
+}
+
+/* --- M32: suggestion scope + rejected list ------------------------------ */
+
+/* A pending suggestion can be tied to a persona in one step, without opening
+ * the editor. Compact so it reads as a property of the row, not a form. */
+.mem-scope-pick {
+  display: inline-flex;
+  align-items: center;
+}
+
+.mem-scope-select {
+  width: auto;
+  max-width: 180px;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+/* Rejected facts: a tracked, collapsed audit trail. The summary is a control,
+ * so it gets the pointer affordance the other sub-panel titles do not need. */
+.mem-rejected > summary {
+  cursor: pointer;
+}
+
+.mem-rejected > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 /* --- Search ------------------------------------------------------------- */
@@ -7848,11 +7891,157 @@ select {
    * row reads as "more below" rather than as broken layout. */
   border-bottom: 1px solid var(--border);
   padding-bottom: var(--space-2);
+  /* M32: the persona tree has no inner rail to scroll, so the section itself
+   * owns the overflow. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .app.side-minimized .side-chat-tree,
-.app.side-minimized .side-chat-toggle {
+.app.side-minimized .side-chat-toggle,
+.app.side-minimized .side-new-chat {
   display: none;
+}
+
+/* --- M32: chat sessions under Personas ---------------------------------- *
+ * One disclosure per persona with its sessions. The tree is bounded by the
+ * shared `.side-chat-tree` wrapper above (same max-height + scroll), so this
+ * only styles the rows. Personas with no chats still render (the count reads
+ * 0) so the menu's shape does not jump as chats appear. */
+.side-persona-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+}
+
+.side-persona {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.side-persona-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-persona-row:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.side-persona-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* Collapsed points right; expanded points down (the Chat disclosure rule). */
+.side-persona-caret {
+  display: inline-flex;
+  flex: none;
+}
+
+.side-persona-row[aria-expanded='false'] .side-persona-caret {
+  transform: rotate(-90deg);
+}
+
+.side-persona-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-persona-count {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.side-persona-chats {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-1) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  min-width: 0;
+}
+
+.side-session {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-session:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.side-session.is-active {
+  /* Same contract as the rail's active row: carve back to --bg so the accent
+   * title keeps its body-text contrast in both themes. */
+  background: var(--bg);
+  color: var(--accent);
+}
+
+.side-session:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.side-session:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.side-session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+
+.side-session-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.side-persona-empty,
+.side-persona-loading {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* The Chat section's New chat button reads as a full-width primary action. */
+.side-new-chat {
+  width: 100%;
+  justify-content: center;
+  margin: var(--space-1) 0 var(--space-2);
 }
 
 /* Content column: top bar + views. */

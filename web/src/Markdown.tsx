@@ -24,7 +24,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { parseStructuredBlocks } from '@partner/shared';
 import type { ChoiceBlock, ChoiceMode, FormBlock, ScorecardBlock } from '@partner/shared';
 import { AnswerGroup } from './AnswerGroup.js';
-import { CodeBlock } from './CodeBlock.js';
+import { CodeBlock, InlineCodePreviewContext } from './CodeBlock.js';
 import { ChoiceCard } from './ChoiceCard.js';
 import { FormCard } from './FormCard.js';
 import { ScorecardCard } from './ScorecardCard.js';
@@ -56,6 +56,13 @@ export interface PartnerMarkdownProps {
   resolveNote?: (title: string) => WikiNoteTarget | null;
   /** Open a resolved citation in the Notes view. */
   onOpenNote?: (id: string) => void;
+  /**
+   * Whether a fenced HTML/CSS block may flip to its inline sandboxed preview.
+   * Defaults to `true` (Notes, Assets). The chat transcript passes `false` so
+   * a message never turns into a sandboxed iframe mid-read (see
+   * `InlineCodePreviewContext`).
+   */
+  allowInlineCodePreview?: boolean;
 }
 
 /** Note-link handlers shared with the `a` renderer (context keeps the
@@ -167,6 +174,7 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   onPreviewCode,
   resolveNote,
   onOpenNote,
+  allowInlineCodePreview,
 }: PartnerMarkdownProps) {
   const visibleText = useMemo(() => filterToolDirectives(text), [text]);
   const hits = useMemo(() => parseStructuredBlocks(visibleText), [visibleText]);
@@ -185,9 +193,11 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
   );
   if (hits.length === 0) {
     return (
-      <NoteLinkContext.Provider value={noteLink}>
-        <MarkdownFragment text={visibleText} />
-      </NoteLinkContext.Provider>
+      <InlineCodePreviewContext.Provider value={allowInlineCodePreview ?? true}>
+        <NoteLinkContext.Provider value={noteLink}>
+          <MarkdownFragment text={visibleText} />
+        </NoteLinkContext.Provider>
+      </InlineCodePreviewContext.Provider>
     );
   }
   const segments: React.ReactNode[] = [];
@@ -341,8 +351,10 @@ export const PartnerMarkdown = memo(function PartnerMarkdown({
     segments.push(<MarkdownFragment key="md-after" text={after} />);
   }
   return (
-    <NoteLinkContext.Provider value={noteLink}>
-      <div className="md-blocks">{segments}</div>
-    </NoteLinkContext.Provider>
+    <InlineCodePreviewContext.Provider value={allowInlineCodePreview ?? true}>
+      <NoteLinkContext.Provider value={noteLink}>
+        <div className="md-blocks">{segments}</div>
+      </NoteLinkContext.Provider>
+    </InlineCodePreviewContext.Provider>
   );
 });

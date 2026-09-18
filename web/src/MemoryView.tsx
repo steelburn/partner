@@ -141,7 +141,10 @@ export default function MemoryView({
       return;
     }
     try {
-      const [profile, episodeList] = await Promise.all([listProfile(token), listEpisodes(token)]);
+      const [profile, episodeList] = await Promise.all([
+        listProfile(token, { includeRejected: true }),
+        listEpisodes(token),
+      ]);
       setEntries(profile);
       setEpisodes(sortEpisodes(episodeList));
       setLoadError(null);
@@ -172,6 +175,7 @@ export default function MemoryView({
   const inUseCount = countEntriesInUse(entries ?? [], list);
   const suggested = (entries ?? []).filter((entry) => entry.status === 'suggested');
   const confirmed = (entries ?? []).filter((entry) => entry.status === 'confirmed');
+  const rejected = (entries ?? []).filter((entry) => entry.status === 'rejected');
 
   return (
     <section className="memory" aria-label="Memory">
@@ -217,6 +221,7 @@ export default function MemoryView({
             <ProfileCard
               confirmed={confirmed}
               suggested={suggested}
+              rejected={rejected}
               personas={list}
               inUseCount={inUseCount}
               onChanged={handleChanged}
@@ -354,13 +359,16 @@ function RememberSettingsCard({ onSessionLost }: RememberSettingsCardProps) {
 interface ProfileCardProps {
   confirmed: ProfileEntry[];
   suggested: ProfileEntry[];
+  /** Rejected facts: hidden from the working list but tracked so the partner
+   *  never asks about them again. Shown in a collapsed panel with Restore. */
+  rejected: ProfileEntry[];
   personas: readonly Persona[];
   inUseCount: number;
   onChanged: () => void;
   onSessionLost: () => void;
 }
 
-function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, onSessionLost }: ProfileCardProps) {
+function ProfileCard({ confirmed, suggested, rejected, personas, inUseCount, onChanged, onSessionLost }: ProfileCardProps) {
   const inUseIds = useMemo(() => tailoringInUseIds(confirmed, personas), [confirmed, personas]);
   return (
     <section className="card" aria-label="Profile">
@@ -433,6 +441,31 @@ function ProfileCard({ confirmed, suggested, personas, inUseCount, onChanged, on
         </div>
       ) : null}
 
+      {rejected.length > 0 ? (
+        <details className="sub-panel mem-rejected">
+          <summary className="sub-panel-title">Rejected ({rejected.length})</summary>
+          <p className="sub-panel-copy">
+            The partner will not ask about these again — they are kept here so it can tell the
+            difference between a fact it has never seen and one you declined. Restore one to make
+            it a confirmed fact, or delete it to forget it entirely.
+          </p>
+          <ul className="mem-list">
+            {rejected.map((entry) => (
+              <li key={entry.id}>
+                <ProfileEntryRow
+                  entry={entry}
+                  personas={personas}
+                  inUse={false}
+                  deletable
+                  onChanged={onChanged}
+                  onSessionLost={onSessionLost}
+                />
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
       <AddEntryForm personas={personas} onAdded={onChanged} onSessionLost={onSessionLost} />
     </section>
   );
@@ -466,7 +499,7 @@ function ProfileEntryRow({
   const [key, setKey] = useState(entry.key ?? '');
   const [value, setValue] = useState(entry.value);
   const [scope, setScope] = useState(entry.personaScope ?? '');
-  const [busy, setBusy] = useState<'save' | 'confirm' | 'reject' | 'delete' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'confirm' | 'reject' | 'delete' | 'scope' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
@@ -544,6 +577,42 @@ function ProfileEntryRow({
         return;
       }
       setRowError(cause instanceof Error ? cause.message : 'Could not update the entry.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * M32: re-scope a suggestion in place, keeping its `suggested` status. A
+   * persona-scoped suggestion only tailors chats with that persona; the same
+   * fact can be parked on "All personas" instead. This is the one-step way to
+   * tie a pending suggestion to a persona without opening the editor.
+   */
+  const changeScope = async (value: string): Promise<void> => {
+    if (busy !== null) return;
+    if (value === scope) return;
+    const token = readStoredToken();
+    if (!token) {
+      onSessionLost();
+      return;
+    }
+    setBusy('scope');
+    setRowError(null);
+    try {
+      await updateProfileEntry(token, entry.id, inputFromEntry(entry, {
+        kind: entry.kind,
+        key: entry.key ?? '',
+        value: entry.value,
+        scope: value,
+      }));
+      setScope(value);
+      onChanged();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        onSessionLost();
+        return;
+      }
+      setRowError(cause instanceof Error ? cause.message : 'Could not update the scope.');
     } finally {
       setBusy(null);
     }
@@ -717,6 +786,24 @@ function ProfileEntryRow({
         <span className="mem-meta-item" aria-label="Scope">
           {personaScopeLabel}
         </span>
+        {entry.status === 'suggested' ? (
+          <span className="mem-scope-pick">
+            <select
+              className="field mem-scope-select"
+              value={scope}
+              disabled={busy !== null}
+              onChange={(event) => void changeScope(event.target.value)}
+              aria-label={`Tie this suggestion to a persona — ${entry.value}`}
+              title="Tie this suggestion to a persona"
+            >
+              <option value="">All personas</option>
+              {scopeOptions}
+              {unknownScope && entry.personaScope !== null ? (
+                <option value={entry.personaScope}>{personaScopeLabel}</option>
+              ) : null}
+            </select>
+          </span>
+        ) : null}
         <span className="mem-meta-item">
           {entry.source === 'user' ? 'You' : 'Partner'} · {timeAgo(entry.updatedAt)}
         </span>
@@ -760,6 +847,17 @@ function ProfileEntryRow({
               Edit
             </button>
           )}
+          {entry.status === 'rejected' ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={busy !== null}
+              onClick={() => void changeStatus('confirmed')}
+              aria-busy={busy === 'confirm'}
+            >
+              {busy === 'confirm' ? 'Restoring…' : 'Restore'}
+            </button>
+          ) : null}
           {deletable ? (
             <button
               type="button"

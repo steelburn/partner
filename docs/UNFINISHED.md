@@ -19,6 +19,39 @@ account client — `docs/VERIFY-M29.md`.)
 
 ---
 
+## 0-M32. M32 — persona-owned sessions, resizable menu, Catalog deck, tracked memory
+
+Landed 2026-09-18 on top of M30/M31; no schema change. What is true (all with
+tests): the session tree nests under **Personas** (`PersonaChatTree`, pure
+`groupConversations`, an explicit **Unassigned** group); the Skills **Catalog**
+is a Personas-style card deck with a slide-out `CatalogDrawer`; the sidebar is
+drag-resizable 180–420px through the shared `ColumnDivider`
+(`partner.sideWidth`, session-only); Memory ties a pending suggestion to a
+persona in one step, shows rejected facts in a **Rejected** panel with Restore,
+and the extractor now receives a `REJECTED` block as well as `ALREADY KNOWN`; and
+the chat transcript renders a fenced HTML/CSS block as code, not an inline
+sandboxed iframe (`allowInlineCodePreview` is off in Chat only).
+
+**Open ends:**
+
+1. **Folder management lost its desktop home.** M32 moved the session list out
+   of the Chat entry, and the folder tree lived inside that same
+   `ConversationRail`. Folders are still reachable at the phone tier (the rail
+   is the floating overlay), but on desktop there is no create/rename/delete or
+   drag-to-move affordance. Decide where folders belong now: a folder row inside
+   each persona's sessions, a dedicated "Folders" section, or retiring the
+   folder dimension if persona grouping replaced it in practice. The `embedded`
+   prop and `.rail-embedded` CSS are now unused and should be removed with that
+   decision.
+2. **The phone tier was not re-measured.** The persona tree is bounded and
+   scrolls, and the disclosure keeps the tablet `--target-min` floor, but no
+   360–430px walk of the new tree was run.
+3. **The Memory rejected panel / suggestion scope select have unit coverage but
+   no live walk.** The extractor change is directly tested; the two new UI
+   affordances were looked at once at 1440.
+
+---
+
 ## 0-M29. M29 — the multi-user lifecycle (do not redo; the open ends)
 
 Landed 2026-09-18, schema v23. Spec `PLAN-M29.md`, record `docs/VERIFY-M29.md`.

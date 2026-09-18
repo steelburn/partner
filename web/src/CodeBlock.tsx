@@ -16,7 +16,7 @@
  *
  * Every non-HTML block renders exactly as before: a plain `<pre class="md-pre">`.
  */
-import { useMemo, useState } from 'react';
+import { createContext, useContext, useMemo, useState } from 'react';
 import type { Element, RootContent } from 'hast';
 import { blockedSummary, buildPreviewDoc } from './lib/preview.js';
 import { codeBlockPreview } from './lib/code-assets.js';
@@ -28,6 +28,18 @@ export interface CodeBlockProps extends React.ComponentPropsWithoutRef<'pre'> {
 
 /** Which panel of the tabbed viewer the reader is looking at. */
 type CodeTab = 'code' | 'preview';
+
+/**
+ * Whether an inline sandboxed preview is available for fenced HTML/CSS.
+ *
+ * Defaults to `true` (Notes and the Assets read view keep the Code|Preview
+ * flip). The chat transcript sets it to `false`: the request was that a chat
+ * message must not turn into a sandboxed iframe while the reader is in Chat —
+ * the rendered document ignored the app's type scale and read as tiny,
+ * unreadable text inside the bubble. In chat the fence renders as code; the
+ * explicit Assets preview overlay still exists where a preview was asked for.
+ */
+export const InlineCodePreviewContext = createContext(true);
 
 /** Concatenated text of a hast subtree (code bodies are plain text nodes). */
 function textOf(node: RootContent): string {
@@ -62,6 +74,7 @@ export function codeFenceInfo(node: Element | undefined): { lang: string | null;
 export function CodeBlock({ node, children }: CodeBlockProps) {
   const { lang, code } = useMemo(() => codeFenceInfo(node), [node]);
   const preview = useMemo(() => codeBlockPreview(lang, code), [lang, code]);
+  const inlinePreview = useContext(InlineCodePreviewContext);
   const [scripts, setScripts] = useState(false);
   const [tab, setTab] = useState<CodeTab>('code');
   const built = useMemo(
@@ -69,8 +82,10 @@ export function CodeBlock({ node, children }: CodeBlockProps) {
     [preview, scripts],
   );
 
-  // Non-HTML (or no previewable source): identical to the old renderer.
-  if (preview === null || built === null) {
+  // Non-HTML (or no previewable source): identical to the old renderer. A
+  // surface that opts out of inline previews (chat) renders the fence as
+  // plain code — never an iframe.
+  if (preview === null || built === null || !inlinePreview) {
     return <pre className="md-pre">{children}</pre>;
   }
 

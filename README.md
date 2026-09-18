@@ -93,8 +93,14 @@ treats it as its own. So a leftover dev core no longer hijacks the app invisibly
 ## Status (2026-09-18)
 
 M0–M29 implemented (PLAN.md §15). The current root suite is **1766
-passed** (5 env-gated skips) · shared **90** · web **944** · typechecks 0 · web
-build green. **M29 lands the multi-user lifecycle** (`PLAN-M29.md`,
+passed** (5 env-gated skips) · shared **90** · web **979** · typechecks 0 · web
+build green. **M32 reshapes the shell and memory** (`PLAN.md` §15): chat
+sessions now live under **Personas** (with an Unassigned group), the Skills
+**Catalog** is a Personas-style card deck with a detail drawer, the left menu
+is drag-resizable (`partner.sideWidth`), the chat transcript no longer renders
+an inline HTML preview as a sandboxed iframe, and Memory ties a pending
+suggestion to a persona in one step while showing rejected facts in a
+**Rejected** panel (the extractor receives them too, so it does not re-ask). **M29 lands the multi-user lifecycle** (`PLAN-M29.md`,
 `docs/VERIFY-M29.md`): **sign out** that closes the partition (not just the
 session), **owner-minted invitations from the app** (roles `owner`/`member`, key
 access `own`/`shared`), **shared AI access** so an invited member chats and
@@ -556,6 +562,28 @@ river of entries with the newest as a full-width lead; the note editor and plan
 planner keep their surface. `m31-redesign.test.ts` (+11) and a new `nav.test.ts`
 case pin the structure and geometry. Web suite green (58 files / 967 tests);
 typecheck 0; bundle green; checked in-browser at 1440 and 1024.
+
+**M32 — persona-owned sessions, a resizable menu, a Catalog deck, and tracked
+memory.** Four requested changes in one UI pass. The conversation/session tree
+moved out of the Chat entry and under **Personas** — each persona is a
+disclosure listing its chats (`PersonaChatTree`; a chat whose persona is gone
+stays visible under **Unassigned**), while Chat stays a destination plus a
+`New chat` action and the phone overlay keeps `ConversationRail`. The Skills
+**Catalog** segment became a Personas-style card deck whose card face opens a
+slide-out detail drawer (`CatalogDrawer`, reusing the persona deck/drawer
+classes). The left menu is drag-resizable through the shared `ColumnDivider`
+(180–420px, `partner.sideWidth` per session; a dragged width applies only while
+the menu is expanded, so the 60px icon rail is never overridden). Memory now
+ties a pending suggestion to a persona in one step, shows rejected facts in a
+collapsed **Rejected** panel with Restore, and feeds the extractor a same-scope
+`REJECTED` block alongside `ALREADY KNOWN` so a declined fact is not re-asked
+even reworded. Finally, the chat transcript no longer flips a fenced HTML/CSS
+block into an inline sandboxed iframe (Notes/Assets keep previews; chat renders
+code). No schema change. New/updated guards: `one-left-panel.test.ts`,
+`persona-chat-tree.test.ts`, `skills-catalog-view.test.tsx`,
+`sidebar-collapse.test.ts`, `markdown.test.ts`, `remember.test.ts`. Web suite
+green (60 files / 979 tests); core remember green; typecheck 0; bundle green;
+checked in-browser at 1440.
 
 **M20.B is executable** — `PLAN-M20-B.md` §3–§5 has the slices, the tests to
 write first, the parallelization waves, and a recommended first slice. **Its

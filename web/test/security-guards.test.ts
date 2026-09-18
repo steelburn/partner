@@ -112,6 +112,8 @@ const STORAGE_ALLOWLIST = [
   'partner.assetsWidth', // UI preference: assets pane drag width
   'partner.sideMinimized', // M20.A f10: sidebar icon-rail on/off (a layout
   //                        preference; no label, no view, no content)
+  'partner.sideWidth', // M32: sidebar drag width (a layout preference, like the
+  //                    lane widths above; no content)
   'partner.authMode', // M22: 'pairing' | 'login' — which gate this core uses, so
   //                   'session expired' copy names the right action. One word,
   //                   no identity and no content.

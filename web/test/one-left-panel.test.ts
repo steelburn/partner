@@ -1,27 +1,24 @@
 /**
- * M30 — one left panel: the conversation list + folder tree under the Chat
- * entry, not a second rail column.
+ * M32 — chat sessions under Personas.
  *
- * The request: "Instead of one panel for menu, and one panel dedicated for
- * Chat, organize them under Chat menu. Don't forget folders."
+ * The request: "Submenu under Personas, chat sessions under personas."
  *
- * What that has to mean in this shell, and why each part is guarded here:
+ * M30 had put the whole conversation/folder rail under the Chat destination;
+ * that nested the session list inside the Chat menu as a second, internally
+ * scrolling box. M32 moves the sessions to the persona they belong to:
  *
- *  1. **One definition of the tree.** `ConversationRail` is rendered from a
- *     single `conversationRail(embedded)` helper, so the sidebar section and
- *     the phone overlay cannot drift; only the wrapper class changes.
- *  2. **The Chat entry owns it.** The sidebar renders the tree directly under
- *     the Chat destination, with a separate disclosure control (selecting the
- *     view and showing the tree are different intents). Folders ride along
- *     because the whole rail moves, not a trimmed list.
- *  3. **The transcript gets its width back above the phone tier.** The
- *     workspace rail is rendered ONLY when the phone tier floats it; the
- *     resizable rail column and its divider are gone.
- *  4. **The phone overlay survives.** At ≤640 the sidebar is hidden, so the
- *     tree must still be the floating rail opened from the top bar.
- *  5. **The geometry is bounded.** The twelve-item menu already fills a
- *     laptop-height sidebar, so the tree needs a max-height (and its own
- *     scroll) or it would crush the menu or be crushed by it.
+ *  1. **The Chat entry no longer owns a tree.** It stays a destination plus a
+ *     `New chat` action; the session list lives under Personas.
+ *  2. **Personas is a disclosure.** Selecting the view and expanding the tree
+ *     are separate intents (the same contract the Chat tree used), and the
+ *     tree is open by default.
+ *  3. **One definition of the tree.** `PersonaChatTree` is mounted once from
+ *     the shell; its grouping is pure (`groupConversations`) and unit-tested.
+ *  4. **The phone overlay survives.** At ≤640 the sidebar is hidden, so
+ *     `ConversationRail` still renders as the floating rail opened from the
+ *     top bar.
+ *  5. **The geometry is bounded.** The tree rides the `.side-chat-tree`
+ *     wrapper's max-height + scroll, or it would crush the menu.
  *
  * The suite is node-only (no DOM), so the geometry claims are pinned against
  * app.css the way `sidebar-collapse.test.ts` does.
@@ -31,7 +28,7 @@ import { SIDE_RAIL_MAX_WIDTH } from '../src/lib/nav.js';
 import { atRuleBlocks, declarations, source, topLevelRules } from './helpers/css.js';
 
 const APP = source('src/App.tsx');
-const RAIL = source('src/ConversationRail.tsx');
+const TREE = source('src/PersonaChatTree.tsx');
 const CSS = source('src/app.css');
 const BLOCKS = atRuleBlocks(CSS);
 
@@ -50,61 +47,45 @@ function baseDeclarations(selector: string): string {
     .join('\n');
 }
 
-describe('the conversation tree lives under the Chat entry', () => {
-  it('the Chat destination and its disclosure are separate controls', () => {
-    // The disclosure is what makes the tree fit inside the menu instead of
-    // permanently spending the menu's height on conversations.
+describe('the session tree lives under Personas', () => {
+  it('the Personas destination and its disclosure are separate controls', () => {
     const nav = APP.slice(APP.indexOf('function SideNav'), APP.indexOf('function MobileNav'));
-    expect(nav).toContain("className=\"side-chat-toggle\"");
-    expect(nav).toContain('aria-expanded={chatTreeOpen}');
-    expect(nav).toContain('{chatTreeOpen && !minimized ? (');
-    expect(nav).toContain("className=\"side-chat-tree\"");
-    // A down-chevron is the disclosure; the destination keeps its own label.
-    expect(nav).toContain('<IconChevronDown />');
+    expect(nav).toContain('className="side-chat-toggle"');
+    expect(nav).toContain('aria-expanded={personaTreeOpen}');
+    expect(nav).toContain('{personaTreeOpen && !minimized ? (');
+    // Chat is a destination plus a New chat action; it owns no tree.
+    expect(nav).toContain('className="btn btn-primary btn-sm side-new-chat"');
+    expect(nav).not.toContain('side-chat-tree" id="side-chat-tree"');
   });
 
   it('the tree is open by default, and the shell owns the state', () => {
-    // An explicit boolean (not persisted: it is layout, and a new key would
-    // have to be justified to the storage guard).
-    expect(APP).toMatch(/const \[chatTreeOpen, setChatTreeOpen\] = useState<boolean>\(true\)/);
-    expect(APP).toContain('onToggleChatTree={() => setChatTreeOpen((open) => !open)}');
+    expect(APP).toMatch(/const \[personaTreeOpen, setPersonaTreeOpen\] = useState<boolean>\(true\)/);
+    expect(APP).toContain('onTogglePersonaTree={() => setPersonaTreeOpen((open) => !open)}');
   });
 
-  it('there is exactly one definition of the tree, used by both surfaces', () => {
-    // Breaks if someone copies the rail JSX into the sidebar: the two surfaces
-    // would drift (a folder action added to one, not the other).
-    expect((APP.match(/<ConversationRail/g) ?? []).length).toBe(1);
-    expect(APP).toContain('const conversationRail = (embedded: boolean): ReactNode => (');
-    expect((APP.match(/conversationRail\(/g) ?? []).length).toBe(2);
+  it('there is exactly one definition of the session tree', () => {
+    // Breaks if someone copies the tree JSX: the two surfaces would drift.
+    expect((APP.match(/<PersonaChatTree/g) ?? []).length).toBe(1);
+    expect(APP).toContain("import PersonaChatTree from './PersonaChatTree.js'");
   });
 
-  it('ConversationRail drops its fixed column width only when embedded', () => {
-    expect(RAIL).toMatch(/embedded\?: boolean/);
-    expect(RAIL).toMatch(/embedded = false/);
-    expect(RAIL).toMatch(/embedded \? 'rail rail-embedded' : 'rail'/);
+  it('the grouping is pure and keeps unassigned chats visible', () => {
+    expect(TREE).toContain('export function groupConversations(');
+    expect(TREE).toContain("unassigned.push(conversation)");
+    // Every persona with a bucket, even when it has no chats.
+    expect(TREE).toContain('for (const persona of personas) byPersona.set(persona.id, []);');
   });
 });
 
 describe('above the phone tier the transcript owns the width', () => {
-  it('the workspace rail is rendered only while the phone tier floats it', () => {
+  it('ConversationRail is the phone overlay only', () => {
     expect(APP).toContain('{phoneTier && railOpen ? conversationRail(false) : null}');
-    // The sidebar carries it everywhere else (and not on a phone, where the
-    // sidebar is display:none).
-    expect(APP).toContain('chatTree={phoneTier ? null : conversationRail(true)}');
-  });
-
-  it('the resizable rail column and its divider are gone', () => {
-    // The point of the merge: no second column, so no drag width and no
-    // `--rail-w` inline style.
-    expect(APP).not.toContain('Resize conversations');
-    expect(APP).not.toContain('RAIL_W_KEY');
-    expect(APP).not.toMatch(/railW/);
-    expect(APP).not.toContain("'--rail-w'");
+    // The sidebar gets the persona tree instead of the embedded rail.
+    expect(APP).toContain('personaTree={');
+    expect(APP).toContain('phoneTier ? null : (');
   });
 
   it('the phone overlay still opens from the top bar', () => {
-    // The only dead-control risk: the rail's toggle now exists on phone only,
-    // because everywhere else the tree is in the sidebar.
     expect(APP).toMatch(
       /\{phoneTier \? \([\s\S]{0,400}onClick=\{toggleRail\}[\s\S]{0,200}\{railOpen \? 'Hide conversations' : 'Show conversations'\}/,
     );
@@ -113,43 +94,35 @@ describe('above the phone tier the transcript owns the width', () => {
 });
 
 describe('the sidebar geometry stays usable', () => {
-  it('the embedded rail fills its section instead of the fixed 288px column', () => {
-    // Equal specificity, so file order decides: `.rail-embedded` must come
-    // after `.rail` or the fixed width wins.
-    expect(baseDeclarations('.rail')).toMatch(/width:\s*288px/);
-    expect(baseDeclarations('.rail-embedded')).toMatch(/width:\s*auto/);
-    expect(baseDeclarations('.rail-embedded')).toMatch(/flex:\s*1/);
-    expect(CSS.indexOf('.rail {')).toBeLessThan(CSS.indexOf('.rail-embedded'));
-  });
-
   it('the tree is a bounded scroll region, not an unbounded menu eater', () => {
     expect(baseDeclarations('.side-chat-tree')).toMatch(/max-height:\s*min\(/);
-    // The tree's content scrolls inside it …
-    expect(baseDeclarations('.rail-body')).toMatch(/overflow-y:\s*auto/);
-    expect(baseDeclarations('.rail-body')).toMatch(/scrollbar-width:\s*thin/);
+    // M32: the persona tree has no inner rail, so the section itself scrolls.
+    expect(baseDeclarations('.side-chat-tree')).toMatch(/overflow-y:\s*auto/);
     // … and the nav scrolls too, so the later groups stay reachable.
     expect(baseDeclarations('.side-nav')).toMatch(/overflow-y:\s*auto/);
   });
 
   it('the icon rail hides the tree and its disclosure, not just the labels', () => {
-    // A tree left rendering inside a 60px rail would be a layout bug — and the
-    // disclosure would be a dead 32px control.
     expect(baseDeclarations('.app.side-minimized .side-chat-tree')).toMatch(/display:\s*none/);
     expect(baseDeclarations('.app.side-minimized .side-chat-toggle')).toMatch(/display:\s*none/);
+    expect(baseDeclarations('.app.side-minimized .side-new-chat')).toMatch(/display:\s*none/);
   });
 
   it('the disclosure points right when closed and down when open', () => {
-    expect(baseDeclarations('.side-chat-toggle svg')).toMatch(/transform:\s*rotate\(-90deg\)/);
-    expect(baseDeclarations(".side-chat-toggle[aria-expanded='true'] svg")).toMatch(
-      /transform:\s*rotate\(0deg\)/,
+    expect(baseDeclarations('.side-persona-row[aria-expanded=\'false\'] .side-persona-caret')).toMatch(
+      /transform:\s*rotate\(-90deg\)/,
     );
   });
 
   it('the disclosure keeps the touch floor on the tablet tier', () => {
-    // Tablet is a touch surface (M20.A floor, ≤1150); the chevron is a control
-    // like any other, even though it is desk-sized on wider tiers.
     const floor = tierDeclarations(`(max-width: ${SIDE_RAIL_MAX_WIDTH}px)`, '.side-chat-toggle');
     expect(floor).toMatch(/min-height:\s*var\(--target-min\)/);
     expect(floor).toMatch(/min-width:\s*var\(--target-min\)/);
+  });
+
+  it('a session row is a button with an ellipsised title', () => {
+    expect(baseDeclarations('.side-session')).toMatch(/width:\s*100%/);
+    expect(baseDeclarations('.side-session-title')).toMatch(/text-overflow:\s*ellipsis/);
+    expect(baseDeclarations('.side-session-title')).toMatch(/white-space:\s*nowrap/);
   });
 });

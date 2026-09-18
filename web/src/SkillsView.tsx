@@ -10,6 +10,7 @@ import type {
 import { ApiRequestError } from './lib/api.js';
 import { formatBadge } from './lib/attention.js';
 import { readStoredToken } from './lib/token.js';
+import { IconClose } from './icons.js';
 import SkillStudio from './SkillStudio.js';
 import {
   disableSkill,
@@ -165,6 +166,9 @@ export default function SkillsView({
   const [rowError, setRowError] = useState<Record<string, string>>({});
   /** Catalog row currently installing (single at a time). */
   const [installingId, setInstallingId] = useState<string | null>(null);
+  /** M32: the catalog detail drawer (one skill at a time), mirroring the
+   *  Personas card deck + slide-out editor. */
+  const [drawer, setDrawer] = useState<CatalogSkill | null>(null);
   /** Skill selected in the Invoke console. */
   const [invokeId, setInvokeId] = useState<string | null>(null);
   /**
@@ -248,6 +252,17 @@ export default function SkillsView({
   }, [installed]);
 
   const handleSessionLost = (): void => setSessionLost(true);
+
+  /** The catalog drawer is a modal surface: Escape closes it (Personas
+   *  contract). The scrim is the pointer path. */
+  useEffect(() => {
+    if (drawer === null) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setDrawer(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawer]);
 
   /**
    * The deep-link intent (M26 D): a chat card's "Review in Studio" opens the
@@ -678,50 +693,58 @@ export default function SkillsView({
               </p>
             </div>
           ) : catalog !== null && catalog.length > 0 ? (
-            <ul className="skill-list">
+            <ul className="persona-deck catalog-deck">
               {catalog.map((skill) => {
                 const isInstalled = installedIds.has(skill.id);
                 const isInstalling = installingId === skill.id;
                 return (
-                  <li key={skill.id} className="skill-card">
-                    <div className="skill-card-inner">
-                      <div className="skill-card-head">
-                        <div className="skill-identity">
-                          <h3 className="skill-name">{skill.name}</h3>
-                          <span className="skill-author">
-                            {skill.author}@{skill.version}
+                  <li key={skill.id}>
+                    <article className="persona-card catalog-card">
+                      <button
+                        type="button"
+                        className="persona-card-open"
+                        onClick={() => setDrawer(skill)}
+                        aria-label={`View catalog skill ${skill.name}`}
+                      >
+                        <span className="persona-card-top">
+                          <span className="persona-card-avatar" aria-hidden="true">
+                            {skill.name.slice(0, 1).toUpperCase()}
                           </span>
-                          {isInstalled ? (
-                            <span className="skill-status skill-status-installed">Installed</span>
-                          ) : null}
-                        </div>
-                        <div className="row-actions">
-                          {isInstalled ? (
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setSegment('installed')}
-                              disabled={viewLocked}
-                            >
-                              Manage
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="btn btn-primary btn-sm"
-                              onClick={() => void handleInstall(skill.id)}
-                              disabled={installingId !== null || viewLocked}
-                              aria-busy={isInstalling}
-                            >
-                              {isInstalling ? 'Installing…' : 'Install'}
-                            </button>
-                          )}
-                        </div>
+                          <span className="persona-card-chips">
+                            {isInstalled ? (
+                              <span className="chip chip-accent">Installed</span>
+                            ) : null}
+                          </span>
+                        </span>
+                        <span className="persona-card-name">{skill.name}</span>
+                        <span className="persona-card-tagline catalog-card-desc">
+                          {skill.description}
+                        </span>
+                        <span className="persona-card-edit-hint">View details</span>
+                      </button>
+                      <div className="persona-card-actions">
+                        {isInstalled ? (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setSegment('installed')}
+                            disabled={viewLocked}
+                          >
+                            Manage
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm"
+                            onClick={() => void handleInstall(skill.id)}
+                            disabled={installingId !== null || viewLocked}
+                            aria-busy={isInstalling}
+                          >
+                            {isInstalling ? 'Installing…' : 'Install'}
+                          </button>
+                        )}
                       </div>
-
-                      <p className="skill-desc">{skill.description}</p>
-                      <CatalogChips skill={skill} />
-                    </div>
+                    </article>
                   </li>
                 );
               })}
@@ -748,7 +771,117 @@ export default function SkillsView({
           />
         </div>
       </div>
+      {drawer !== null ? (
+        <CatalogDrawer
+          skill={drawer}
+          installed={installedIds.has(drawer.id)}
+          installing={installingId === drawer.id}
+          disabled={installingId !== null || viewLocked}
+          onInstall={() => {
+            const id = drawer.id;
+            setDrawer(null);
+            void handleInstall(id);
+          }}
+          onManage={() => {
+            setDrawer(null);
+            setSegment('installed');
+          }}
+          onClose={() => setDrawer(null)}
+        />
+      ) : null}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog detail drawer (M32) — the Personas card-deck pattern in Skills
+// ---------------------------------------------------------------------------
+
+interface CatalogDrawerProps {
+  skill: CatalogSkill;
+  installed: boolean;
+  installing: boolean;
+  disabled: boolean;
+  onInstall: () => void;
+  onManage: () => void;
+  onClose: () => void;
+}
+
+/**
+ * The catalog detail drawer: the same slide-out surface the Persona deck uses
+ * (scrim + `role="dialog"` + Escape), so "open a card to read everything and
+ * act" behaves identically on both pages. Reuses the persona drawer classes
+ * on purpose — the request was for the Catalog to look like Personas, and one
+ * drawer implementation cannot drift from the other.
+ */
+export function CatalogDrawer({
+  skill,
+  installed,
+  installing,
+  disabled,
+  onInstall,
+  onManage,
+  onClose,
+}: CatalogDrawerProps) {
+  return (
+    <>
+      <div className="persona-drawer-scrim" aria-hidden="true" onClick={onClose} />
+      <aside
+        className="persona-drawer catalog-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Catalog skill ${skill.name}`}
+      >
+        <header className="persona-drawer-head">
+          <div className="persona-drawer-titles">
+            <span className="kicker">Catalog skill</span>
+            <h2 className="persona-drawer-title">{skill.name}</h2>
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onClose}
+            aria-label="Close details"
+          >
+            <IconClose />
+          </button>
+        </header>
+        <div className="persona-drawer-body">
+          <p className="card-copy">{skill.description}</p>
+          <div className="catalog-drawer-meta">
+            <span className="chip">
+              {skill.author}@{skill.version}
+            </span>
+            {installed ? <span className="chip chip-accent">Installed</span> : null}
+          </div>
+          <div className="form-field">
+            <span className="label">Permissions</span>
+            <CatalogChips skill={skill} />
+          </div>
+          <p className="form-hint">
+            Install is default-deny: the skill declares its tools and risk before it is added,
+            runs sandboxed with a time budget, and its store is wiped on uninstall.
+          </p>
+          <div className="form-actions">
+            {installed ? (
+              <button type="button" className="btn btn-secondary" onClick={onManage}>
+                Manage installed
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={onInstall}
+                disabled={disabled}
+                aria-busy={installing}
+              >
+                {installing ? 'Installing…' : 'Install'}
+              </button>
+            )}
+          </div>
+        </div>
+      </aside>
+    </>
   );
 }
 

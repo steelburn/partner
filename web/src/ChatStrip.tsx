@@ -1285,7 +1285,12 @@ export default function ChatStrip({
               </div>
             ) : row.role === 'system' ? (
               <div key={row.key} className="msg msg-system">
-                <PartnerMarkdown text={row.text} resolveNote={resolveNote} onOpenNote={onOpenNote} />
+                <PartnerMarkdown
+                  text={row.text}
+                  allowInlineCodePreview={false}
+                  resolveNote={resolveNote}
+                  onOpenNote={onOpenNote}
+                />
               </div>
             ) : (
               <div key={row.key} className="msg msg-assistant">
@@ -1301,6 +1306,7 @@ export default function ChatStrip({
                       onPreviewCode={({ title, source }) => setPreview({ title, source })}
                       resolveNote={resolveNote}
                       onOpenNote={onOpenNote}
+                      allowInlineCodePreview={false}
                     />
                   </ChoiceMemoryContext.Provider>
                 )}

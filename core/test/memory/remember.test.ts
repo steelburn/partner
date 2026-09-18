@@ -15,12 +15,14 @@ import type {
 import {
   createRememberManager,
   formatKnownBlock,
+  formatRejectedBlock,
   looksLikeSecret,
   parseRememberReply,
   REMEMBER_KNOWN_HEADER,
   REMEMBER_KNOWN_MAX,
   REMEMBER_KNOWN_VALUE_CAP,
   REMEMBER_MAX_ITEMS,
+  REMEMBER_REJECTED_HEADER,
   REMEMBER_SYSTEM_PROMPT,
 } from '../../src/memory/remember.js';
 import type { RememberTarget } from '../../src/memory/remember.js';
@@ -139,6 +141,32 @@ describe('formatKnownBlock', () => {
     const block = formatKnownBlock(entries);
     expect(block.split('\n')).toHaveLength(1 + REMEMBER_KNOWN_MAX);
     expect(block).not.toContain('x'.repeat(REMEMBER_KNOWN_VALUE_CAP + 1));
+  });
+});
+
+describe('formatRejectedBlock', () => {
+  function entry(value: string): ProfileEntry {
+    return {
+      id: value,
+      kind: 'rule',
+      key: null,
+      value,
+      evidence: null,
+      source: 'user',
+      status: 'rejected',
+      personaScope: null,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+  }
+
+  it('lists rejected facts behind its own header', () => {
+    const block = formatRejectedBlock([entry('Declined once'), entry('Declined once')]);
+    expect(block).toBe(`${REMEMBER_REJECTED_HEADER}\n- Declined once`);
+  });
+
+  it('returns an empty string when nothing has been rejected', () => {
+    expect(formatRejectedBlock([])).toBe('');
   });
 });
 
@@ -289,11 +317,14 @@ describe('remember manager (fake provider)', () => {
       expect(payload).toContain('Lives in Berlin');
       expect(payload).toContain('Ships on Fridays');
       expect(payload).toContain('Prefers bullet lists');
-      // Rejected facts are not "known", and another persona's memory never leaks.
-      expect(payload).not.toContain('Declined once');
+      // Rejected facts ride a separate block so the model never re-asks them…
+      expect(payload).toContain(REMEMBER_REJECTED_HEADER);
+      expect(payload).toContain('Declined once');
+      // …and another persona's memory never leaks (known or rejected).
       expect(payload).not.toContain('Other persona secret');
       // The rule lives in the fixed instruction; the listing never enters it.
       expect(String(fake.requests[0]?.messages[0]?.content)).toContain('already known');
+      expect(String(fake.requests[0]?.messages[0]?.content)).toContain('REJECTED');
       expect(String(fake.requests[0]?.messages[0]?.content)).not.toContain('Lives in Berlin');
     } finally {
       env.close();

@@ -217,13 +217,16 @@ export async function updateMemorySettings(
 // Profile
 // ---------------------------------------------------------------------------
 
-/** GET /v1/memory/profile -> confirmed + suggested entries. */
+/** GET /v1/memory/profile -> confirmed + suggested entries (rejected optional). */
 export async function listProfile(
   token: string,
-  options: { fetchImpl?: FetchLike } = {},
+  options: { fetchImpl?: FetchLike; includeRejected?: boolean } = {},
 ): Promise<ProfileEntry[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(PROFILE_PATH, {
+  const path = options.includeRejected === true
+    ? `${PROFILE_PATH}?includeRejected=1`
+    : PROFILE_PATH;
+  const response = await fetchImpl(path, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });

@@ -108,6 +108,15 @@ describe('profile API client', () => {
     expect(result.map((row) => row.id)).toEqual(['pe-2']);
   });
 
+  it('listProfile can ask for rejected entries (the tracked no-list)', async () => {
+    const { fetchImpl, calls } = recordFetch(() =>
+      jsonResponse({ profile: [entry({ id: 'pe-no', status: 'rejected' })] }),
+    );
+    const result = await listProfile(TOKEN, { fetchImpl, includeRejected: true });
+    expect(result[0]?.status).toBe('rejected');
+    expect(calls[0]?.input).toBe('/v1/memory/profile?includeRejected=1');
+  });
+
   it('addProfileEntry POSTs the input and parses a bare entry', async () => {
     const { fetchImpl, calls } = recordFetch(() =>
       jsonResponse(entry({ id: 'pe-new', status: 'confirmed' })),

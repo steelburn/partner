@@ -129,8 +129,8 @@ Three tiers. A reader should be able to name the tier from any screenshot.
 | Tier | Width | Shell | Navigation | Rails (conversations/notes/assets) |
 |---|---|---|---|---|
 | **phone** | ≤ 640 | single column: top bar, content, tab bar | bottom tab bar + More sheet (the sidebar is hidden) | conversations **overlay**; notes/assets columns collapse to overlays at ≤ 760 |
-| **tablet** | 641–1150 | content column, icon rail (the **default** — the user may expand it to 200px) | icon rail; the toggle restores labels | conversations **in the sidebar's Chat section**; notes/assets columns below 900, overlays at ≤ 760 |
-| **desktop** | > 1150 | sidebar (224px) + content column | full sidebar with group labels; the toggle collapses it | conversations **in the sidebar's Chat section**; notes/assets columns |
+| **tablet** | 641–1150 | content column, icon rail (the **default** — the user may expand it to 200px) | icon rail; the toggle restores labels | conversations **under Personas** (M32); notes/assets columns below 900, overlays at ≤ 760 |
+| **desktop** | > 1150 | sidebar (224px, drag-resizable 180–420) + content column | full sidebar with group labels; the toggle collapses it | conversations **under Personas** (M32); notes/assets columns |
 
 **One left panel (M30).** The conversation list and its folder tree live in the
 sidebar, under the Chat entry, instead of a second rail column beside the
@@ -141,6 +141,20 @@ tree appears, so the transcript gets the rail's width back; at the phone tier th
 sidebar is hidden, so the tree is still the floating rail overlay opened from the
 top bar. `ConversationRail` renders both (its `embedded` prop only drops the
 fixed column width).
+
+**Chat sessions live under Personas (M32).** The session list left the Chat
+entry and now nests under each persona (`PersonaChatTree`): the Personas
+destination and its disclosure chevron are separate controls, the tree is open
+by default, and a chat whose persona is gone or absent stays visible under an
+explicit **Unassigned** group. Chat is a destination plus a `New chat` action.
+The tree is bounded and scrolls internally (the twelve-item menu already fills a
+laptop-height sidebar). At the phone tier the sidebar is hidden, so the same
+`ConversationRail` is still the floating overlay.
+
+**The sidebar is drag-resizable (M32).** A `ColumnDivider` on the menu's right
+edge adjusts the single `--side-w` knob (180–420px, keyboard arrows included)
+and persists per session as `partner.sideWidth`. A dragged width applies only
+while the menu is expanded, so it can never override the 60px icon rail.
 
 The tier breakpoints are mirrored in code by `matchMedia` constants
 (`App.tsx`, `web/src/lib/nav.ts`) used **only for state defaults** — never for
@@ -212,9 +226,9 @@ v1 inventory (built from M3 onward; states are part of every component):
 | Input / textarea | surface-2 fill, 1px border on hover/focus only, focus ring; error state pairs message w/ `--danger`. |
 | Card | bg `--surface` or `--bg` + elevation-sm at most; separation first by bg. |
 | Chat transcript | user bubbles on accent (contrast text), partner on surface; system/status rows muted. |
-| Sidebar nav | active item: accent text on surface-2 pill; icons 16–20px, no glow. Collapses to the 60px icon rail (one `--side-w` knob, `.app.side-minimized`); icon-only items carry the label as a `title`, and the badge sits in the button's corner rather than being hidden. Groups are **Workspace / Studio / Tools / Settings** (M31): Studio is what the partner is made of (personas, skills, playbooks), Tools is its working data (files, memory), and every configuration surface (providers, themes, audit, members) lives under the last group. The conversation tree nests under the Chat entry (M30). |
+| Sidebar nav | active item: accent text on surface-2 pill; icons 16–20px, no glow. Collapses to the 60px icon rail (one `--side-w` knob, `.app.side-minimized`); icon-only items carry the label as a `title`, and the badge sits in the button's corner rather than being hidden. Groups are **Workspace / Studio / Tools / Settings** (M31): Studio is what the partner is made of (personas, skills, playbooks), Tools is its working data (files, memory), and every configuration surface (providers, themes, audit, members) lives under the last group. The session tree nests under **Personas** (M32), and the menu's right edge is a drag divider. |
 | Persona card (M31) | a “business card” in a responsive `auto-fill` grid: accent avatar, name, tagline, and a 3-fact row (independence / routing / temperature) over hairline rules. The card face is the edit affordance; **pause (the kill switch) and delete stay on the card**, because the destructive/urgent actions must not hide behind a click. A paused card drops to 0.72 opacity. |
-| Drawer (M31) | a side panel (`position: fixed`, elevation-lg, the one scrim value) for editing a single record without leaving the wall — used by Personas. `role="dialog"` + `aria-modal`, a decorative scrim, focus into the first field on open, Escape to close, and the form’s own Save/Cancel are the exits. Full width on a phone; reduced-motion drops the slide. |
+| Drawer (M31) | a side panel (`position: fixed`, elevation-lg, the one scrim value) for editing a single record without leaving the wall — used by Personas and the Skills Catalog (M32). `role="dialog"` + `aria-modal`, a decorative scrim, focus into the first field on open, Escape to close, and the form’s own Save/Cancel are the exits. Full width on a phone; reduced-motion drops the slide. |
 | Magazine layout (Notes & Plans, M31) | an editorial measure, not a card stack: masthead (folio → `--fs-xxl` title → deck), hairline section rules, and a river of entries with the newest as a full-width lead (`grid-column: 1 / -1`). Panel measure 1200px, 1360px at ≥1600px; lists are `auto-fill minmax(300px, 1fr)` grids, prose stays ≤68ch. The note editor and plan planner keep their card surface — they are documents you sit inside, not list entries. |
 | Badge/chip | surface-2 with muted text; status tints from semantic tokens only.
             M12 P0.3: chips carrying accent-colored text use `--surface`
