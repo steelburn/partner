@@ -20,6 +20,13 @@ Security is a first-class feature, not a bolt-on: secrets never leave the
 machine unencrypted, tools are default-deny, every partner action is
 auditable, and skills run sandboxed under declared permissions.
 
+> **How to read this file.** It is long on purpose — it is the design reference.
+> Read only what you need: **§15** is the compact milestone index (status,
+> spec pointer, exit) and **`docs/UNFINISHED.md`** is what is left. Jump to §4
+> architecture, §8 memory, §12 data model, §13 API surface for the relevant
+> design. Release history is `CHANGELOG.md`; the pre-2026-09-18 long-form
+> milestone log is archived in `docs/HISTORY.md`.
+
 ---
 
 ## 1. Product pillars
@@ -891,1311 +898,295 @@ apps/partner/
 
 ---
 
+
 ## 15. Milestones (TDD, red → green)
 
-> **Maintenance rule.** Detailed per-milestone specs live in `PLAN-M<N>.md`,
-> but this section is the master index: whenever a module/milestone is added,
-> changed, or completed, update its entry here (status, description, `*Exit:*`)
-> in the same change — plus the affected design sections (§8 memory, §12 data
-> model, §13 API surface, §14 stack) and `README.md`. `[x]` only when the full
-> exit is locally green; `[ ]` + a `*State:*` line when an env-gated walk
-> remains.
+> **Maintenance rule.** `PLAN-M<N>.md` holds the detailed spec for a milestone;
+> this section is the master index — status, a one-paragraph description, an
+> `*Exit:*` line and the spec pointer. Whenever a module/milestone is added,
+> changed or completed, update its entry here plus the affected design sections
+> (§8 memory, §12 data model, §13 API surface, §14 stack), `README.md` and
+> `CHANGELOG.md`. `[x]` only when the full exit is locally green; `[ ]` + a
+> `*State:*` line when an env-gated walk remains.
 >
 > **Unfinished work across milestones is consolidated in `docs/UNFINISHED.md`**
 > (the review list: what is left, why, the dependency order, the exact entry
 > points, and every env-gated walk that was never run). Start there.
+>
+> The full historical milestone log (measurements, follow-ups, review notes)
+> was moved out of this section on 2026-09-18 and lives verbatim in
+> `docs/HISTORY.md`.
 
 - [x] ~~**S0 — Self-service companion API**~~ **CLOSED as obsolete in M22** — the
       llm-self-service import it existed to unblock was removed (§2), so the
       companion endpoints are no longer wanted. Nothing was built in that repo.
-      JSON route `GET /api/me/key` behind the existing cookie session,
-      rate-limited, demo-mode path, plus exposing the login public key for
-      the envelope. TDD in that repo. *Exit: curl with a demo-mode session
-      returns the key JSON. Unblocks the M1 import wizard.*
-- [x] **M0 — Scaffold, Tauri shell & security spine.** Repo layout, shared
-      types, vitest, config/.env patterns, keychain access abstraction
-      (fake keychain for tests), pairing code + session tokens, origin
-      allowlist. **Tauri v2 shell scaffold + core-sidecar packaging spike**
-      (Node SEA vs `bun build --compile` vs bundled runtime — resolves
-      §17.1). *Exit: two processes (web, core) pair and echo a chat round
-      with a demo fake provider; the packaged app opens and serves the UI on
-      loopback.*
-- [x] **M1 — Providers, gateway & key import.** Provider CRUD,
-      OpenAI-compatible client (SSE streaming, header scrub for ne1 WAF,
-      neutral UA), routing by task class + fallback, budget caps, usage
-      surfacing. Integrated "Connect llm-self-service" wizard (org login via
-      the envelope, S0 key fetch → keychain). *Exit: real chat against a
-      user-supplied endpoint in demo mode; import pulls a demo key.*
-- [x] **M2 — Tool broker & files.** Tool manifests, grant store, risk tiers,
-      confirmation UX, project roots, read/search/write-preview/apply with
-      backups, audit log. *Exit: user grants a root; partner proposes a diff
+- [x] **M0 — Scaffold, Tauri shell & security spine** (`PLAN-M0.md`). Repo
+      layout, shared types, vitest, config/.env patterns, keychain abstraction
+      (fake keychain for tests), pairing codes + session tokens, origin
+      allowlist; Tauri v2 shell scaffold + core-sidecar packaging spike
+      (resolves §17.1). *Exit: two processes pair and echo a chat round with a
+      demo fake provider; the packaged app opens and serves the UI on loopback.*
+- [x] **M1 — Providers, gateway & key import** (`PLAN-M1.md`). Provider CRUD,
+      OpenAI-compatible client (SSE streaming, header scrub, neutral UA), routing
+      by task class + fallback, budget caps, usage surfacing, and the
+      llm-self-service import wizard (removed in M22). *Exit: real chat against a
+      user-supplied endpoint in demo mode.*
+- [x] **M2 — Tool broker & files** (`PLAN-M2.md`). Tool manifests, grant store,
+      risk tiers, confirmation UX, project roots, read/search/write-preview/apply
+      with backups, audit log. *Exit: user grants a root; partner proposes a diff
       in a temp file; UI review; apply.*
-- [x] **M3 — Chat + persona engine v1.** Conversation UI (SSE), persona CRUD,
-      independence levels + pause/kill, model routing per persona. *Exit:
-      two personas with different characters/autonomy respond appropriately.*
-- [x] **M4 — Memory & profile.** Profile facts w/ user confirmation, episode
-      summaries, semantic index, tailoring loop, forgetting + export.
-- [x] **M5 — Plans & notes.** Stores, editors, wiki-links, daily note
-      summary, plan execution with approved diffs.
-- [x] **M6 — Theming.** `theme/v1` schema, presets, Theme Studio, token lint +
-      APCA/WCAG gate on save, DESIGN.md component compliance.
-- [x] **M7 — Extension bridge & search actuator.** Native messaging host,
-      pairing, page capture, per-site scopes, sensitive-site blocklist,
-      "partner this page", search-engine capture for research. *Exit:
-      research flow end-to-end into a note, search results captured from the
-      user's engine with no API key.*
-- [x] **M8 — Skills runtime.** Manifest + signing + hash verify, sandboxed
-      workers, permission enforcement, audit, install/update/uninstall flows,
-      local catalog + registry protocol.
-- [x] **M9 — Capability playbooks.** Research, vibe-code, docgen, email
-      draft, presentation, analysis, design-prototype flows wired to personas
-      (depth per §6), plus the **Ship/deploy playbook** (deploy-target
-      profiles, build → push → deploy → health check → URL) and the
-      **API-key search adapter** (optional search backend).
-- [x] **M10 — Hardening & alpha.** Encryption-at-rest, redaction sweep,
-      budgets enforcement, audit UI, degrade-mode chat, packaging (NSIS on
-      the self-hosted Windows runner; installer boots env-free; signed
-      updates env-gated post-M10), demo mode + verification checklist + docs.
-- [x] **M11 — Chat as the workspace (detailed spec: `PLAN-M11.md`).**
-      Chat attachments + granted-root file references + multimodal image
-      parts; chat tool execution (directive + native `tool_calls`), MCP
-      stdio client with persona auto-calls, API-key internet search (core +
-      chat tool + UI); persona skill/tool policy; purpose-based providers;
-      clickable single/multi choices; markdown→HTML rendering; follow-latest;
-      Assets (save/copy/promote-to-note); chat folders + drag-to-move +
-      persona home folders; per-conversation themes (D6) + extension-chrome
-      theme stream; Notes promoted (tab order, ＋Note/Ctrl+K, Notes lane);
-      A/B persona studio; sandboxed HTML/CSS preview (F12 follow-up: an
-      ```html code block in chat, the assets read view or the note-editor
-      preview renders in ONE tabbed viewer — Code | Preview, the app's
-      segmented pill — so source and sandboxed render are one flip apart
-      and the message never doubles in height; the bubble keeps its width
-      on a flip, and the iframe mounts once); schema v12. *Exit:
-      core 683 · web 440 · extension 57 · typechecks 0 · NSIS packaged app
-      boots env-free (demo, schema v12); live + packaged UI sweeps green.*
-- [x] **M12 — UI readability & polish pass (detailed spec: `PLAN-M12.md`).**
-      Responsive shell (header ≤ 80px, nav shrinkable, rails adapt below
-      1280/960), accent-on-surface-2 contrast-gate fix (light), 16px
-      token-styled nav icons, grouped view order + collapsible Notes lane,
-      dense-list legibility floor. No new features; token-only; suites and
-      ux_audit gates stay green. *Exit: PLAN-M12 P0–P2 ticked; geometry
-      gates at 1440/1280/1024/900/780 (no overflow, composer ≥ 320px @900);
-      light+dark+custom walks green; fresh-context review closed.*
-- [ ] **M13 — Purpose providers & in-session model switch (detailed spec:
-      `PLAN-M13.md`).** Image-turn vision handoff (implicit text-model
-      turns with an attached photo reroute to a vision-capable model;
-      explicit picks never overridden; shared vision capability in
-      `shared/src/vision.ts` — NOTE: the capability RULE changed in M24,
-      which made it declared-per-provider rather than name-matching only); per-message model picker in chat
-      (`providerId` + `model` per turn); purpose-provider bundle with model
-      assignment (`POST /v1/providers/discover` + `/v1/providers/purposes`
-      `modelPins`: one endpoint + key → one profile per purpose carrying
-      exactly the models you choose, first = default; key in each keychain
-      item). *Exit: core 681 · web 470 ·
-      typechecks 0 · ux_audit green on new UI · live manual walk
-      (env-gated).*
-      *State: implemented + verified (suites/typechecks/ux_audit per the
-      README M13 note). Box left open: the exit list also records a live
-      manual walk (env-gated) that has not yet been executed.*
-- [ ] **M14 — Scheduled & autonomous work (detailed spec: `PLAN-M14.md`,
-      implemented + live-walked 2026-09-07; packaged-app walk (shell/NSIS)
-      env-gated remains).** Personas carry
-      schedule definitions (`independence.schedules[]`: daily / weekly /
-      interval + prompt + tz, JSON column on personas, schema v13); a
-      scheduler driver fires due schedules (auto/autonomous, unpaused,
-      enabled personas only) and drives each as a HEADLESS bounded persona
-      tool-loop run (shared playbook engine): brief lands as a user turn in
-      the schedule's own conversation thread, the answer appends on done
-      (+ optional save-note), one `scheduled_runs` row per attempt (status
-      running/done/queued/error/loop_exhausted + pendingId), audits
-      `schedule.run`/`schedule.resume`/`schedule.skip` (ids+counts only).
-      Queued tools pause the run; deciding the approval from the Files queue
-      or the in-chat card auto-resumes it in-process; a paused persona is a
-      kill switch for new runs AND resume. Routes: run-now (headless fire),
-      run history + detail; schedules edit via the persona surface.
-      *Exit: core 715 passed · typechecks 0 ·
-      ux_audit green on the schedule editor + runs panel ·
-      decide-hook e2e (real loop approve+deny auto-resume) · live walk
-      executed 2026-09-07 (api.ne1.dev + Brave; approval pause → headless
-      auto-resume → done + note; found/fixed resume save-note bug) ·
-      packaged-app walk (shell/NSIS) env-gated.*
-
-- [ ] **M15 — Live desktop mode (exit demo; detailed spec: `PLAN-M15.md`).**
-      Packaged shell boots LIVE by default (persistent whole-file-encrypted
-      DB + OS-keychain key + skills under the per-user app-local data dir,
-      not the install dir); a per-boot device secret enables the
-      header-guarded `GET /v1/pair/device` code channel; the tray (Show
-      pairing code… / Open Partner / Quit) surfaces the live pairing code;
-      the PairGate is health-aware (live copy + no demo button).
-      `PARTNER_DEMO_MODE=1` keeps the demo boot.
-      *Exit: core 726 passed · typechecks 0 · web tests + build green ·
-      windows-build green · live packaged-boot walk (tray → pair → chat →
-      restart-survives, ciphertext DB, demo override) · HANDOFF refreshed.*
-- [ ] **M16 — Knowledge workspace (implemented + verified 2026-09-09;
-      detailed spec: `PLAN-M16.md`).**
-      Notes relationship graph (view notes + relationships; edge direction =
-      who references whom, mutual refs render bidirectional; React Flow,
-      `@xyflow/react`, drag positions persist; reuse for brainstorming and,
-      later, doc building); **Brainstorm from notes & captures** (activates a
-      new **Brainstorming** persona `p-brainstorm`, seed-created on demand if
-      missing; bundle ≤ 20 note excerpts into a persona-bound conversation);
-      **versioning for notes & captures** (snapshot every mutation at one
-      choke point — covers quick captures, promote, summarize, restore —
-      history + diff + undoable restore); **Discuss in Assets** (asset
-      discussion becomes a branch/thread of the same discussion — origin
-      conversation — or optionally **forks into a new discussion** via
-      `conversations.parent_id`/`source_asset_id` lineage); **Assets →
-      Export works in the Desktop app** (native save-dialog path in the
-      Tauri shell + blob fallback for browsers); **CSV assets render as
-      tables** (pure shared RFC-4180 parser + token-only table view). Schema
-      v13 → v14 (additive). **Follow-up (v14 → v15):** brainstorm
-      conversations link back to their source note/capture set
-      (`brainstorm_sessions` + `brainstorm_sources`); the graph badges those
-      nodes and reopens an ACTIVE session instead of duplicating it, while a
-      concluded session stays listed with **Reopen**. *Exit: core + web + shared suites green ·
-      typechecks 0 · web build green (React Flow) · windows-build green ·
-      `ux_audit` green on new UI (light + dark) · manual walk (graph,
-      brainstorm persona auto-create, versions/restore, discuss + fork,
-      packaged export save dialog, CSV table) · HANDOFF refreshed.
-      *State: shared 51 · core 837 passed (2 encryptedDb cipher failures
-      pre-exist at HEAD — environment) · web 486 · typechecks 0 · web build
-      green (@xyflow/react) · ux_audit green. Box open: shell
-      windows-build (no local Rust; CI workflow) + the packaged live walk
-      are env-gated, matching M13/M15 precedent.*
-- [x] **M17 — Note projects (implemented + verified 2026-09-11).** An
-      organizational layer over the shared Projects/Folders tree: notes join
-      projects many-to-many, with **no membership = Inbox**. One membership
-      write path (`setFolders`) backs both create-time `folderIds` and
-      re-filing; `list()`/`graph()` scope by folder subtree or Inbox, and a
-      scoped graph returns one-hop **ghost** nodes for out-of-scope
-      references (marked external, never persisted). Deleting a folder clears
-      membership (notes survive); deleting a note cascades its membership
-      rows. Routes: `GET /v1/notes?folderId=<id|none>`,
-      `GET /v1/notes/graph?folderId=…`, `PUT /v1/notes/:id/folders` (501 when
-      folders are unwired). Notes list + graph gain project scope selectors,
-      project chips, an editor Projects multi-select, dimmed ghost nodes with
-      an “other projects” toggle, drag-to-ghost, and a “Link to note…” picker.
-      Schema v15 → v16 (`note_folders`); audit stays membership counts only.
-      *Exit: root + web suites green · typechecks 0 · web build green ·
-      `ux_audit` green on the new UI.*
-- [x] **M18 — Chat multi-question forms (implemented + verified
-      2026-09-11).** When a persona has **more than one open-ended question**
-      it emits a `:::partner.form` container instead of a prose list; each
-      question renders in its own textarea and the user submits **once**. The
-      answers become a single labelled user turn through the normal chat path
-      (nothing client-only; the persisted text is unchanged). The parser
-      shares the `:::partner.*` grammar (`shared/src/structured.ts`): one
-      question per bullet line, a title from the `title=` attr / fence tail /
-      lead line, closed-container-only materialization so streaming stays
-      safe, and malformed or unclosed blocks degrade to plain prose. Pending
-      drafts survive switching conversations (client-side per-conversation UI
-      memory). The `forms` guidance ships in the default structured feature
-      set alongside choices and assets; styles are token-only. *Exit: root
-      suite 877 passed (1 pre-existing platform-specific MCP spawn case) ·
-      web 539 passed · typechecks 0 · web build green · `ux_audit` green.*
-- [x] **M19 — Persona-scoped memory & automatic remember (implemented +
-      verified 2026-09-12; detailed spec: `PLAN-M19.md`).** Personas gain
-      **private memory**: a per-persona tick (`memory.personaMemory = on|off`,
-      off by default) makes a persona keep its OWN facts about the user and
-      recall them **only while chatting with it** (the interactive `/v1/chat`
-      route) — never in another persona's prelude, and never in the headless
-      playbook/schedule/brainstorm loops. Global confirmed facts still tailor
-      every persona (M4). **Automatic remember**: with private memory on, the
-      core asks the persona's cheap-task-class model — out of band, AFTER the
-      client's response has ended — whether the finished exchange holds
-      anything durable about the user, and files findings as
-      `partner_suggestion` / `suggested` entries **labeled global or
-      persona-scoped** for confirmation in the Memory view (alongside the
-      existing explicit add-a-fact path). The extractor prompt is fixed and
-      never user-derived; parsing is defensive (fence/JSON guard, kind whitelist, caps,
-      obvious-secret filter); dedupe covers global + same-scope entries,
-      rejected included, so a rejected fact is never re-suggested;
-      demo/no-provider turns skip; audit rows carry ids/counts/model only. Web:
-      a Memory fieldset in the persona editor, a persona-aware “in use”
-      marker, and an “Auto-detected” provenance chip. No schema change (M4's
-      `profile_entries.persona_scope`/`source` and the `personas.memory_flags`
-      JSON were enough). *Exit: core 893 passed (5 env-gated skips) · web 541
-      passed · typechecks 0 · web build green · `ux_audit` green (APCA
-      light + dark).*
-      **Follow-up (global auto-remember):** the extractor now labels each
-      finding `scope: "global"|"persona"` (missing/unknown → persona). Global
-      findings file `personaScope: null` and, once confirmed, tailor **every**
-      persona — so the partner learns a fact once (name, language, standing
-      tone) instead of per persona; persona findings stay scoped. Dedupe
-      covers both scopes and never files the same value twice. `memory.remember`
-      audit gains `globals`/`personaScoped` counts (still content-free). Web
-      copy (persona-editor Memory hint, Memory privacy note) explains the two
-      scopes. *Exit: core suite green · web 712 passed · typechecks 0.*
-      **Follow-up (turn-target fallback):** extraction no longer silently
-      no-ops when the persona's cheap/chat resolver yields no model — it rides
-      the provider client + model that actually served the turn
-      (`RememberInput.fallbackTarget`), so a provider with no default models
-      (per-message model picks) still remembers. Route test proves a
-      default-model-less provider files a global suggestion from a turn's
-      explicit model. **Follow-up (independent global consent):** global fact
-      detection no longer rides the per-persona private-memory toggle. A
-      user-level `memory.autoRemember.global` setting (settings table, default
-      ON, `GET`/`PUT /v1/memory/settings`) governs facts that apply to every
-      persona; the persona toggle governs only persona-scoped facts. The chat
-      route enqueues extraction when either is on and passes a per-turn policy
-      so only consented scopes are filed. Web: an “Automatic memory” card in
-      the Memory view; persona-editor copy scoped to persona facts. No schema
-      change. *Exit: core 1158 passed · web 733 passed · typechecks 0.*
-      **Follow-up (review before suggest):** extraction reviews existing memory
-      and pending suggestions before proposing — a bounded, value-capped
-      `ALREADY KNOWN` listing (confirmed + still-pending, global + the
-      persona's own scope; rejected withheld) rides the payload with a fixed
-      “never return a listed fact, even reworded” instruction, and the
-      normalized dedupe key ignores punctuation so a fact already known or
-      already suggested is never filed twice. *Exit: core 1334 passed (5
-      env-gated skips) · web 760 passed · typechecks 0.*
-- [ ] **M20 — Client-server, multi-user & mobile (detailed spec:
-      `PLAN-M20.md`; decisions locked 2026-09-12; M20.A in progress).**
-      Partner grows a remote, multi-device, multi-user server role.
-      **Model A′ (§3.1):** the core splits into two roles with two key
-      scopes — a **Vault** on the user's own machine holding the user key and
-      **Tier C** (memory, notes, chat, attachments, provider keys, project
-      roots), and an always-on **Runner** holding only a job key and
-      **Tier W** (schedules, briefcases, run outputs) — so scheduled work runs
-      while the desktop sleeps while the operator never holds a key to private
-      data. Pre-authorized, capped, expiring **briefcases** plus a one-way
-      **drain** at unlock replace sync. **Multi-user by partition (D4):**
-      `data/users/<id>/partner.db` with its own cipher key and skills dir
-      (generalizing today's per-OS-user isolation, §2.3); user / device /
-      client-class are three levels, and **device = session**, so multi-device
-      is per-user for free. System-wide config gets a separate local/admin-only
-      read path now (**M20.E deferred**). Sensitive-data prerequisites (D5,
-      §8.1): close the core-served-`text/html` same-origin hole, keep content
-      out of web storage, pin the cert via QR. Phases: **A** mobile/tablet/
-      touch UI (no core change) · **B** the server role (TLS, named host
-      allowlist, QR pairing, device registry + revoke, client-class capability
-      envelopes, per-user partition) · **C** PWA · **D** optional Tauri v2
-      native shell · **E** system layer (later).
-      *Exit:* refusal matrix (live/remote/TLS) · two users provably isolated
-      (DB, key, skills, audit; a query cannot cross) · the Runner cannot open
-      `vault.db` · briefcase caps + idempotent drain · a mobile-class session
-      denied file-write/deploy/skill-install · QR pairing single-use + expiry +
-      lock · real phone pair → chat → approve → revoke · geometry gates at
-      430/390/375/360 · `ux_audit` green.
-      *State:* **M20.A (mobile/tablet/touch UI) implemented + measured
-      2026-09-12** — composer 58→326px @390 and permanent chrome 252px→0 on
-      phone, controls under 44×44 11→0, tablet geometry unchanged, `ux_audit`
-      PASSED, web suite 547 (+6 nav tests), typechecks 0, build green.
-      **M20.A follow-up (same session):** the *message field* (not the
-      container) was still 49px — text buttons took 214px of the row — now
-      **222px (62%)** with icon-only 44px controls; persona cards 584→**340px**
-      (~2.5 per screen) with a full-width action row and **0** sub-44px
-      controls (was 52); and new **attention badges** (`web/src/lib/attention.ts`
-      +18 tests) so memory suggestions can no longer sit unnoticed — the phone
-      **More tab carries the aggregate** of what the sheet hides, verified
-      `3` → reject → `2`. Web suite now **565**. Rules recorded: a badge must
-      be able to clear itself (failed runs self-clear on a 24h window) and
-      `queued` runs are excluded everywhere (a paused run *is* the pending
-      approval).
-      **M20.A follow-up 2 (same session) — Memory view:** the same flex-crush bug
-      in three places, plus a legibility floor this view was **missed by M12**.
-      `.mem-control-text` is `flex: 1; min-width: 0`, and `min-width: 0` lets a
-      flex item shrink *below* min-content, so the control-row copy collapsed to
-      **9–11px (one character per line)** — the Import row 411px tall — and the
-      Memory controls card ran 1483px. Entry rows were worse: a 42-character
-      entry rendered a **20px value column 399px tall** (my first fix attempt
-      targeted `.row-actions`, which only exists elsewhere; the real container
-      is `.mem-actions` — found by re-measuring). **Suggestions** failed for a
-      different reason: 32+32+24+24 = **112px nested padding per side (57% of a
-      390px viewport)** left a 135px measure, which is also why Confirm/Edit/
-      Reject stacked into a 148px column. Flattened to one 16px gutter per
-      level: measure 135→**263px**, suggestion 450-471→**293px**. Copy/chips
-      12→**14px**. Memory view total 5436→**4075px (−25%)** while the measure
-      nearly doubles; sub-44px controls **12→0**. `ux_audit` PASSED (18 pairs).
-      Recorded: `--danger` on the light card surface is **Lc 75.42** vs floor 75
-      — thin, so it fails first if either token is retuned. **Recommended but
-      NOT applied:** "Forget everything" is the *first* row of the controls
-      card, putting the most irreversible action in the most prominent position;
-      portability-first / destructive-last is the safer convention, but that is
-      a product decision (see `PLAN-M20.md` §12).
-      **Applied recommendations (2026-09-12, same session):**
-      **(1) `PLAN-M20.md` §8.1.1 — the live security hole is CLOSED.** Core-served
-      `text/html` executed on the SPA's own origin where the session token
-      lives. One exported policy (`attachmentContentHeaders()`) now keeps only
-      images and PDF `inline` and forces everything else to `attachment` +
-      `Content-Security-Policy: sandbox`; HTML upload is unchanged (the model
-      legitimately reads attached HTML) and `CodePreview`'s sandboxed path still
-      previews it. Verified no SPA regression: the app fetches attachment bytes
-      with a Bearer header, and `fetch()` ignores `Content-Disposition`, so only
-      direct navigation changes. 8 new tests in
-      `core/test/http/attachmentContentSafety.test.ts`; root suite **893→901**.
-      **(2) Memory controls reordered** to Export → Import → Forget before a
-      date → Forget everything (portability first, destructive last, severity
-      escalating, 32px separation), verified rendered in a browser.
-      **(3) `.preview-frame`'s `#ffffff` tokenised** as `--surface-doc` — the
-      stylesheet now has **no raw hex in any declaration**.
-      **Two of my own claims were corrected:** there was never a touch
-      re-filing gap (`.rail-item-move` is a `<select aria-label="Move … to
-      folder">`, measured 66×44 — I built nothing for it), and the
-      `--rail-action-w` token I suggested was a bad idea (the width is
-      label-driven, so a token would be false systemisation).
-      **M20.A follow-up 6 (same session) — one submit per question set.**
-      Fixes a reported bug: a reply carrying a choice **and** a set of free-text
-      questions rendered two cards with two independent submits ("Confirm" /
-      "Submit answers"), and pressing either sent only its own answer while the
-      other was silently discarded. `web/src/lib/answer-group.ts` (pure, 15
-      tests) owns the message-level rule — `answerableCount > 1` groups, so a
-      single-container message keeps its existing button untouched — and
-      `composeGroupedAnswer` joins each part with the exact string that card
-      would have sent alone, so only the *arrival* changes. `AnswerGroup.tsx`
-      owns the one submit; grouped forms require every question; the group locks
-      after sending ("Answers sent") so one prominent button cannot double-post.
-      **Verified through the real chat path** (a throwaway loopback
-      OpenAI-compatible stub, since the demo provider cannot emit containers):
-      1 group · **exactly 1 submit** · **0 per-card submits** · gate walks
-      disabled→disabled→disabled→enabled with hints 2→1→1→none · the single press
-      produced **one** user turn containing both the choice and the Q/A pairs.
-      `ux_audit` PASSED. *Open:* the answered-lock is per page session (a reload
-      makes an answered group answerable again — pre-existing behaviour, needs a
-      message-level marker to fix properly).
-      **M20.A follow-up 7 — danger-on-well sweep + chip contrast (DONE):** a
-      subagent wave (scout + 3 writers + fresh-context reviewer) found the
-      grouped-answer lock should derive from **transcript position** rather than
-      client storage (no new key, and it survives reload, a different device and
-      cleared storage), and swept **16 selectors** whose light-mode `--danger`
-      text sat on a `--surface-2` well at **Lc 69.52** against a 75 floor
-      (`.theme-row`/`.mcp-server-row`/`.p-milestone` ghost danger controls,
-      `.attach-chip-remove`, and `.row-error`/`.chat-attach-error` copy) → now
-      **80.88**. The gate also caught two pre-existing chip defects, both fixed:
-      `.attach-chip-preview` accent on a well (**69.02** → `--accent-hover`
-      **77.08**) and `.attach-chip-meta` `--text-faint` (**68.86** →
-      `--text-muted` **81.40**). The reviewer found **2 MAJOR defects the parent
-      had missed**: `.answer-group-parts` had **no CSS rule** (0px separation
-      between question sets) and **no test rendered `AnswerGroup`** — deleting
-      `showSubmit={false}` restored the original bug with the suite green; both
-      fixed, the latter now falsified as non-vacuous. **Lane failure recorded:**
-      the first danger sweep produced nothing (a forked worker continued the
-      parent's reasoning); retried with `context: 'fresh'`. Verification +
-      arbitration record: `docs/VERIFY-MOBILE.md`.
-      **M20.A follow-up — phone persona picker (FIX, reported bug):** the list was
-      unusable on a phone while looking fine in the DOM. The top bar is a
-      horizontal scroller and `overflow-x: auto` forces `overflow-y: auto`, so
-      the absolute `.picker-pop` sat inside a scroll box — measured @390×844
-      with 9 personas it laid out **655px** tall but painted only the bar's
-      **60px** band (**1 of 9** options), and the open-time focus scrolled the
-      bar up **65px**, hiding the trigger. ≤640 now renders the list as the
-      **same bottom sheet as the More control** (fixed, full width, anchored on
-      the tab bar, `max-height: 60dvh`, scrollable, rows `flex: none`), and the
-      base popover gained a `calc(100dvh - …)` bound because a **landscape
-      phone (844×390) is outside the width-based tier** and its tail was
-      unreachable too. Measured after: fully in-viewport with the last option
-      reachable at 360×640, 390×844, 844×390, 768×600, 1280×900; rows ≥71px;
-      bar `scrollHeight` 715→**60**; desktop popover unchanged. New guard
-      `web/test/picker-mobile.test.ts` (**+7**), falsified against a reverted
-      `position: fixed`. `ux_audit` PASSED (picker rules, 8 APCA pairs);
-      web suite **635→642**.
-      **M20.A follow-up — the top bar owns the chrome (Assets + Theme moved up):**
-      reported as "Assets seems redundant … one at the top, and another near chat
-      input." Verified worse than two: **three** controls for one action (top-bar
-      icon, labelled chat-bar button, in-pane chevron), the first two bound to the
-      same handler/state, on screen **579px apart**, disagreeing on enabled state.
-      Then two owner criteria in sequence: **maximise chat input width** (measured:
-      phone input **222px either way** — the lane is an absolute overlay; desktop
-      **682 → 366px (−46%)** when it opens, and only the *ungated* top-bar icon
-      could do that with nothing to show), and finally **"move Theme and Assets to
-      top"** — which is also the shell's own M14 design ("a slim top bar (persona
-      picker + lane/theme controls)"). Final state: top bar = persona ·
-      conversations · notes · **assets** · **theme** · mode, with the assets toggle
-      still gated on a conversation; the row above the composer keeps only
-      brainstorm state and the save flash, and renders only when it has content.
-      Measured after: desktop 6 controls / 523px in 1008px, no scroll; phone 6
-      controls / **318px** in 358px, **no scroll**; phone transcript **513 → 565px**
-      (a 52px row directly above the composer is gone); theme bind proven end to
-      end ("Midnight" → `preset-midnight`, surviving a reload). One trade on the
-      phone: the **level** chip yields its 31px (`Paused` never does). Guards in
-      `assets-lane-controls.test.ts` (5) + `picker-mobile.test.ts` (+1), both
-      falsified. Web suite now **648**.
-      **M20.A follow-up 9 — tap outside a floating pane to put it away (DONE,
-      measured in-browser @390×844 / 700×900 / 1280×900).** On a touch tier the
-      rail (≤640) and the two right-hand lanes (≤760) float over the transcript,
-      so until now the only way back was the toggle that had opened the pane:
-      measured the open rail covers **320 of 390px** and those toggles live in a
-      horizontally scrolling top bar — the one gesture a touch user knows (tap
-      the content you can see) did nothing. It does now, and the pane **slides
-      out to its own edge** before its state closes (frame trace 0 → −83 → −204
-      → −273 → −306 → −319px over 180ms = `--motion-base`, then the pane
-      closes), so leaving looks like arriving. The scrim is scoped to
-      `.chat-workspace` (measured 390×728 from y=60 — the top bar's bottom
-      edge), so the toggles that opened the pane stay live and undimmed, and the
-      desktop column model is untouched (**0** scrims at 1280 and a click on the
-      transcript closes nothing). Floating panes are mutually exclusive at the
-      phone tier (they overlap by **202px** there), and a reduced-motion
-      preference closes at once rather than waiting for motion that is disabled.
-      Decision + tier numbers in `web/src/lib/panels.ts`; `panels.test.ts` (+16)
-      anchors them to app.css, pins the cascade order (exit declared after
-      entry), the one scrim value and the reduced-motion fallback — both
-      falsified (a tier predicate returning `true` failed 2, swapping the
-      animation order failed 2). Web suite **673 → 689**; typecheck 0;
-      `ux_audit` PASSED; bundle green.
-      **M20.A follow-up 10 — the sidebar minimize toggle, tablet AND desktop
-      (DONE, measured in-browser @1440×900 / 1024×900).** M12 collapsed the
-      sidebar to an icon rail automatically below 1150px, which left the
-      labelled **224px** menu on every wider viewport with no control to reclaim
-      it — and an iPad in landscape reports **>1150 CSS px**, so “tablet” and
-      “desktop” both meant 224px. The rail is now a **state**
-      (`.app.side-minimized`, one `--side-w` knob) that the tablet query only
-      *defaults*: measured sidebar **224 → 60px** and content column
-      **1216 → 1380px** (the 164px returned to the view), tabs 44px with a
-      centred icon, and at 1024 the default is the rail with the toggle able to
-      restore a 200px labelled menu. The **attention badge survives** collapse on
-      the button's corner (verified with a real attention item: 24×28, inside the
-      44px button and the 60px rail) — the old rail hid badges at ≤1150, the
-      exact failure M20.A shipped badges to prevent. The toggle lives inside the
-      sidebar (so the phone tier cannot show a dead control), is 44×44 on touch
-      tiers, remembers the choice per session, and crossing into the tablet tier
-      collapses once rather than fighting the user. Decision + tiers in
-      `web/src/lib/nav.ts`; `sidebar-collapse.test.ts` (+10) pins the state/knob,
-      the tier-only *default*, the badge, the touch floor and the absence of a
-      width transition — falsified 4 ways. Web suite **689 → 699**; typecheck 0;
-      `ux_audit` PASSED; bundle green.
-      **M30 — one left panel: conversations under the Chat entry (DONE).** The
-      conversation list and its folder tree moved out of the second “Chat” rail
-      column and into the sidebar, nested under the Chat destination; a
-      disclosure chevron separates “open Chat” from “show/hide the tree”
-      (session-only state, no new storage key). Above the phone tier this is the
-      only home for the tree, so the transcript reclaims the rail's width; at the
-      phone tier the sidebar is hidden, so `ConversationRail` still renders as
-      the floating overlay opened from the top bar. Folder create/rename/delete,
-      drag-to-move and drag targets are otherwise unchanged — the `embedded`
-      prop only drops the fixed 288px column width and fits the sidebar.
-      `railWidth` is retired (the tree fills the sidebar), so
-      `security-guards.test.ts`'s storage allowlist dropped
-      `partner.railWidth`. DESIGN.md §Responsive updated.
-      `one-left-panel.test.ts` (+12) pins the one definition, the two render
-      sites, the bounded/sidebar geometry and the phone overlay. Web suite green
-      (57 files / 956 tests); typecheck 0; bundle green.
-      **M31 — Settings, persona cards, and a magazine Notes & Plans (DONE).**
-      Three requested changes in one pass. (1) Sidebar IA: Providers, Themes,
-      Audit and Members moved into a new **Settings** group; Studio is now
-      personas/skills/playbooks and Tools is files/memory (`NAV_GROUPS`;
-      `nav.test.ts` +1 pins the membership and that Settings is last).
-      (2) Personas became a wall of business cards (`PersonaManagerView`): the
-      card face opens a slide-out `role="dialog"` drawer holding the full
-      editor plus the theme bind, while Pause (the kill switch) and Delete stay
-      on the card. One editor instance; Escape and the scrim close it; dead
-      inline-editor classes removed. (3) Notes & Plans got a magazine layout
-      (`NotesView` masthead + scoped CSS): folio/kicker, `--fs-xxl` title and
-      deck, hairline section rules, a 1200px measure (1360px ≥1600), and an
-      `auto-fill` river with the newest item as a full-width lead; the note
-      editor and plan planner keep their card surface. Token-only and
-      reduced-motion safe. `m31-redesign.test.ts` (+11) pins the structure and
-      the geometry. Web suite **58 files / 967 tests**; typecheck 0; bundle
-      green; verified in-browser at 1440 and 1024.
-      **M32 — persona-owned sessions, a resizable menu, a Catalog deck, and
-      tracked memory (DONE).** Four requested changes in one UI pass. (1) The
-      conversation/session tree moved out of the Chat entry and under
-      **Personas**: each persona is a disclosure listing its chats
-      (`PersonaChatTree`; grouping is the pure `groupConversations`, and a chat
-      whose persona is gone stays visible under an explicit **Unassigned**
-      group). Chat is a destination plus a `New chat` action, and the phone
-      overlay still uses `ConversationRail`. (2) The Skills **Catalog** segment
-      became a Personas-style card deck whose card face opens a slide-out
-      detail drawer (`CatalogDrawer`) reusing the persona deck/drawer classes,
-      so the two pages cannot drift. (3) The left menu is drag-resizable via
-      the shared `ColumnDivider` (180–420px, `partner.sideWidth` per session);
-      the inline `--side-w` applies only while expanded, so the 60px icon rail
-      is never overridden. (4) Memory: a pending suggestion carries a one-step
-      "applies to" persona select, rejected facts load into a collapsed
-      **Rejected** panel with Restore, and the extractor receives a same-scope
-      `REJECTED` block (`formatRejectedBlock`) alongside `ALREADY KNOWN`, so a
-      declined fact is not re-asked even reworded. The chat transcript no
-      longer flips a fenced HTML/CSS block into an inline sandboxed iframe
-      (`allowInlineCodePreview` stays on for Notes/Assets; chat passes
-      `false`). No schema change. `one-left-panel.test.ts` rewritten,
-      `persona-chat-tree.test.ts` (+3), `skills-catalog-view.test.tsx` (+5),
-      `sidebar-collapse.test.ts` (+3), `markdown.test.ts` (+1) and
-      `remember.test.ts` (+2) pin the decisions. Web suite **60 files / 979
-      tests**; core remember green; typecheck 0; bundle green; verified
-      in-browser at 1440 (deck + drawer, rejected panel, scope select).
-      **M33 — multi-persona memory scope (DONE).** Requested change: Memory's
-      "Applies to" offered All personas **or exactly one** persona; it now
-      offers All personas **or any set** of them. (1) **Wire + store:**
-      `ProfileEntry.personaScopes: string[]` replaces `personaScope`, EMPTY =
-      every persona; the deprecated single field is still accepted on input
-      (add/update/import/bundle) and mapped to `[id]`/`[]`, so an old caller or
-      an exported `memory/v1` file keeps its scope instead of silently widening
-      it. Schema **v23 → v24** adds `profile_entries.persona_scopes` (JSON id
-      array, `NULL` = global) and backfills each legacy `persona_scope` row into
-      a one-element array exactly once — version-gated, so reopening can never
-      resurrect a scope the user has since widened (`db-migrate.test.ts` +3, the
-      seven SCHEMA_VERSION tripwires bumped to 24). (2) **Behavior:** tailoring,
-      auto-remember's known/rejected/dedupe listing and
-      `GET /v1/memory/profile?personaScope=` all read the set as membership, so
-      a fact shared by two personas is honored by each of them (and only by
-      them). (3) **UI:** the three scope selects (edit form, add form, and M32's
-      one-step suggestion re-scope) became ONE `ScopePicker` checkbox set —
-      "All personas" IS the empty set, unticking the last persona returns to it,
-      and a persona the local list no longer has stays ticked as "Removed
-      persona" so opening a fact cannot widen it; the suggestion's control is a
-      `Change` disclosure whose open state survives the write. Token-only, 44px
-      options at the phone tier, focus ring + disabled state declared.
-      `memory-scope-picker.test.ts` (+12) pins the structure, tokens and states;
-      `memory-helpers.test.ts` (+8), `memory-api.test.ts` (+2), core
-      `profile/tailor/transfer/remember/memoryRoutes` (+13) pin the algebra and
-      the wire. *Exit: core 162 files / 1633 passed (5 env-gated skips) · web 61
-      files / 999 passed · typecheck 0 · bundle green · `ux_audit` green (APCA
-      Lc ≥ 75 body + ≥ 30 non-text, light + dark, 0 hardcoded values) · verified
-      in-browser against a demo core (two personas saved and re-read after a full
-      reload; suggestion re-scoped in place; widening back to All personas shows
-      "In use"; 10/10 options measure 44px at 390×844 with 0 overflow).*
-      **M20.A follow-up — phone Notes view crowding (QUEUED, measured, NOT
-      started).** Reported as "mobile view is too crowded"; a scan of all four
-      phone tabs found Chat/Files/Personas clean and **Notes is the offender** —
-      its chrome is deeper than the viewport (measured @390×844: toolbar 235px in
-      **5 wrapped rows**, scope bar 128px in 3 rows, three stacked control
-      cards, and the **search field 405px below the fold** at y 1249) with
-      **3 controls under the 44px floor** (`Graph` 72×35, `Select` 71×35,
-      `New project` 111×35). Proposed: hide the desktop explainer paragraph on
-      phones (precedent: `.persona-theme-hint`), 2 toolbar rows with secondary
-      actions behind a `⋯` overflow (precedent: the phone's More sheet), a
-      one-row scope bar, and the 44px floor applied to the 35px controls. The
-      only product call is moving 4 actions one tap deeper. Full measurements +
-      *Exit:* in `PLAN-M20.md`.
-      Verification record — plus the explicitly unverified list (no visual
-      inspection; the `hover: none` branch not runtime-exercised; safe areas
-      and keyboard unproven; no background/OS notification delivery; the two
-      irreversible forget actions were **measured but never pressed**; whole-file
-      `ux_audit` outstanding; geometry not a CI gate) — in
-      `docs/VERIFY-MOBILE.md`. **All gates are now closed (D1–D5 + §12 Q1–Q12):**
-      the owner directed that the blockers be cleared, and each now carries a
-      decision with its consequence stated (`PLAN-M20-B.md` §6). Four are marked
-      ⚠ because their cost lands on how the product is *used*, not just built:
-      **D5** the Runner must be a machine the user owns (no shared/multi-tenant
-      VPS in v1 — cost: the product assumes an always-on device); **Q2** user
-      creation is local-only (cost: a remote owner cannot add a family member);
-      **Q4** a mesh VPN is the supported path with cert-fingerprint pinning on the
-      LAN fallback (cost: LAN-without-mesh is explicitly lower-assurance); **Q11**
-      un-drained Runner results are expendable. Also decided: briefcases are
-      tag-selected with **enforced** caps (≤ 20 items / ≤ 256 KB / ≤ 24 h TTL), the
-      drain is **append-only**, the per-user layout uses **N rails** (so cross-user
-      reads are structurally impossible rather than relying on every call site),
-      `users`+`pairings`+`sessions` live in a **system DB** with today's
-      `data/partner.db` treated as user #0, and the `extension` class is
-      read+browser+chat only.
-      **Deferred reviewer nits cleared, not deferred:** the guards file's
-      duplicated allowlist (lifted to module scope behind a shared
-      `declaredPartnerKeys()` — which surfaced a real `/^partner./` vs
-      `/^partner\./` regex bug introduced during the edit), the unbounded
-      `<ReactMarkdown` slice (now brace-depth-bounded, strictly stronger), the
-      wrong `strip`/`clobber` rationale, and two false "no DOM harness"
-      premises. The storage census's blind spot is narrowed: inline key literals
-      passed to storage calls are now covered (with a non-vacuity proof); a key
-      held in a *variable* remains invisible and is documented as such.
-      Remaining: **M20.B (the server role) — scoped, every gate decided.** Slice
-      plan in `PLAN-M20-B.md`; status table in its §3.0.
-      **M20.B third wave (S7 WIRING) LANDED 2026-09-13 — a real phone can now
-      obtain a mobile session.** `POST /v1/pair/payload` issues a 256-bit
-      single-use secret to a **loopback** caller (and refuses without remote
-      access + TLS, so no secret is ever carried over plaintext);
-      `POST /v1/pair` accepts `{secret}` from anywhere and mints **`mobile`** —
-      never `desktop` — while `{code}` is refused from a non-loopback **socket
-      peer** *before* it is verified, so a remote caller can neither consume nor
-      lock the code on the user's screen. Locality is the peer address, not the
-      `Host` header (§2.1). Both paths are rate-limited per peer and a successful
-      pair resets the bucket. Client half: the SPA reads `#pair=…`, re-validates
-      the payload itself (https, canonical 32-byte base64url), confirms once and
-      clears the fragment; the Providers screen issues links. Root suite
-      1109 → **1131**, web 619 → **638**, typechecks 0, build green,
-      `ux_audit` PASSED (24 pairs, light + dark), geometry measured at 1280/390
-      in both modes (no overflow, 0 controls < 44px, copy 73 chars/line).
-      **The audit also exposed a pre-existing defect, now fixed:**
-      `.field::placeholder` used `--text-faint` (Lc 68.86 light / 48.02 dark,
-      below the 75 floor) — placeholders are instructive text, so they now use
-      `--text-muted` and `DESIGN.md` reserves `--text-faint` for disabled text.
-      **Not done:** QR rendering (no encoder dependency — the link is shown as
-      text), the shell-side "copy pairing link", and a real phone/TLS walk
-      (env-gated). Issuing a link is loopback-only, so a deployment that turns
-      remote access on needs a local loopback route to the allowlisted host
-      (hosts-file alias) — stated in the UI copy and in
-      `docs/VERIFY-M20-B.md`.
-      **M20.B second wave (S4/S5/S6 WIRING) LANDED 2026-09-12:** the capability
-      envelope now **enforces** — 21 route mounts, `ExecContext.clientClass`, and
-      the refusal ordered **before** the grant check; the device registry
-      (list/revoke/revoke-all, 404-not-403 across users, no token material on the
-      wire); and the transport matrix (`REMOTE_ACCESS` + TLS files + a named
-      `ALLOWED_HOSTS`, https listener, `startServer` re-asserting the refusal).
-      Root suite 1066 → **1109**, typecheck 0, build green.
-      **The review found three BLOCKERS — the envelope was bypassable three ways,
-      all now fixed:** (1) the **approval queue** (`broker.decide` took an actor
-      *label*, not a class, so a mobile session could approve a queued write and
-      have it run, or acquire a grant via approve-and-remember); (2) the
-      **persona/skill/playbook tool loops** reached the broker class-less, so a
-      mobile *chat turn* executed with **desktop authority**; (3) **MCP server
-      CRUD** was ungated while an enabled server is **spawned as a process** —
-      code execution, which I had underestimated as configuration hygiene. Also
-      fixed: the S5 transitional rule was keyed on the *caller* having no user, so
-      a user-less session could read **and revoke a named user's devices** (now
-      scoped to `user_id IS NULL` — identical today, hole closed for the future);
-      `startServer` re-asserts the transport refusal; and an unmapped tool now
-      fails closed for **every** class including desktop.
-      **At the end of wave 2 enforcement was unreachable; the S7 wiring wave
-      closed that.** As written at the time: **S7** (pairing secret +
-      client-class delivery) was unwired, so a mobile session could only be
-      minted in tests and `/v1/pair` minted `desktop` with `user_id` NULL.
-      **Since the third wave (2026-09-13, above) a real phone can obtain a
-      `mobile` session.** Remaining: **S8**, **S9**, plus the recorded
-      vocabulary gap (provider key writes and autonomous firing have no capability
-      name — a reviewed decision, not a tidy-up). Record:
-      `docs/VERIFY-M20-B.md`.
-      **Added after the gates closed — pairing is not authentication** (raised by
-      the owner: the local desktop copy pairs, but a multi-user web version needs
-      different handling). Verified: the only session mint site is
-      `sessions.create('web', origin)` with **no user**, and `SessionRow` has no
-      `user_id`, so pairing proves *device enrollment by proximity* and cannot
-      answer *which user a session acts as*. Now separated into **enrollment →
-      authentication → authorization**, with the rule that a session never carries
-      a user without an authentication event. The **desktop copy is unchanged**
-      (on a single-user install enrollment implies the OS-profile user #0, so the
-      PairGate stays byte-identical); a multi-user core mints an acting session
-      only after sign-in, and one device may hold sessions for several users, so
-      revoke is per (device, user). Credential primitive: **per-user passphrase**
-      (argon2id/scrypt in the system DB), passkey as a later adapter behind the
-      same seam. **Sign-in doubles as the partition unlock event**, which resolves
-      §4.4's operator-readable-store problem for a hosted multi-user core at a
-      per-user, explicit, audited cost to headless schedules. This adds slices
-      **S2a** (credentials) and **S9** (per-user unlock) and raises **S6**:
-      **TLS is now a prerequisite for multi-user**, not only for remote access.
-      Design: `PLAN-M20-B.md` §2a.
-      **M20.B first wave LANDED 2026-09-12** (verification record:
-      `docs/VERIFY-M20-B.md`). Built: **S1** per-user partition (incl. the
-      legacy-user alias), **S2/S2a** `users` + `user_credentials` in a second
-      encrypted **system DB** with scrypt credentials, **S3** session widening +
-      rotation/revoke, and the **pure primitives** for S4/S6/S7. Schema v16 →
-      **v18** (v17 tables, v18 session columns), each bumped once through the
-      guarded-column migration surface. Root suite 901 → **1066**.
-      **A MAJOR data-loss bug was caught by the review and fixed:** the plan
-      asserted that the existing `data/partner.db` stays as user #0's partition
-      while no code implemented it, so an install booting with `USER_ID=0` would
-      have opened an **empty** DB under a new key and orphaned the real data.
-      Fixed with a single `LEGACY_USER_ID` constant (`FIRST_USER_ID` derives from
-      it, so they cannot drift) mapping that user to the legacy path, skills dir
-      and `db-key` account. Also fixed from the same pass: Windows reserved
-      **stem** names (`con.txt` etc.), a fail-OPEN `uncoveredHosts`, **wildcard
-      SANs not matching** (which would have refused every real Let's Encrypt/mesh
-      cert — now RFC 6125 single-label, with the `evil-example.com` suffix-attack
-      as a test), the mobile envelope's three **indirect** routes to denied
-      capabilities, a credential **timing oracle**, and a partition
-      close-during-open race. `kind` was **not** widened.
-      **CAVEAT as of wave 1 (superseded by the wave-2 entry below).** The
-      users/credentials/system-DB work is not called by `createCore`; `/v1/pair`
-      mints exactly as before with `user_id` NULL. So **no new control was in
-      force after wave 1** — the envelope, TLS refusal, rate limiting and
-      networked pairing were available, not active. Wave 2 (below) wired S4/S5/S6,
-      and the third wave wired **S7**, so the delivery path now exists too.
-
-- [x] **M21 — Container deployment + Cloudflare Tunnel (implemented + container-verified
-      2026-09-13; detailed spec: `PLAN-M21.md`, record: `docs/VERIFY-M21.md`).**
-      Partner runs headless in a container, in LIVE mode, and reaches the internet
-      only through a Cloudflare Tunnel — no published port, no inbound rule, no
-      cert to renew. Adds the one thing live mode was missing in a container: a
-      **`file` keychain kind** (`KEYCHAIN_KIND=file` + `KEYCHAIN_FILE`; JSON,
-      0600, atomic + serialised writes, malformed ⇒ refuse to boot, never
-      re-key), plus one config hardening (an unknown `KEYCHAIN_KIND` is refused
-      instead of silently meaning `native`). `docker/server/` ships the live
-      image (non-root, S6 remote matrix: `REMOTE_ACCESS` + TLS + a named
-      `ALLOWED_HOSTS`), the two-service compose, stage scripts that also generate
-      the origin certificate, and three container-side tools (`healthcheck`,
-      `pair-link`, `partner-request`). **Topology is a security property:** the
-      tunnel sidecar keeps its OWN network namespace, because the pairing routes
-      decide by socket peer (S7) and a shared namespace would make every internet
-      request look loopback — an anonymous visitor could then mint a pairing
-      secret. Pairing is therefore `compose exec partner node tools/pair-link.mjs`
-      (operator shell access = the "at the machine" proof) and yields a
-      **`mobile`** session; `desktop` class is unreachable in this shape (the
-      coherent follow-up — letting a loopback-issued secret carry its intended
-      class — is a reviewed capability decision, not taken here).
-      *Exit: container boots LIVE (`demo=off`, schema v18) and reaches `healthy` ·
-      a non-loopback peer redeems a secret for a `mobile` session while
-      `/v1/pair/payload` and `{code}` stay 403 `loopback_required` · the session
-      survives a container restart (volume + file key) and is refused
-      `desktop`-only capabilities by class · both new test invariants falsified by
-      injection · root 1131 → 1162 · web 638 · typechecks 0 · `ux_audit` n/a (no
-      new UI).*
-      *State: the Cloudflare edge leg, the dashboard's hostname settings and
-      `stage.ps1` on Windows PowerShell were env-gated at the time of writing and
-      are now **verified against a real tunnel** — the user deployed it at
-      `partner.teliti.app` on 2026-09-13 and the whole path (edge → tunnel → core
-      → pairing → mobile session → authenticated read) was checked in a browser.
-      **2026-09-18:** `stage.ps1` now RUNS on Windows PowerShell 5.1 (it needed an
-      encoding fix — a UTF-8 em dash parsed as a smart quote closed a string
-      early), and the image ships the skill worker harness it was missing, so a
-      skill can actually run in the container (measured by a real forked
-      invocation inside it). The image was rebuilt and the container recreated
-      against the same volume; see `docs/VERIFY-M21.md`.
-      That live check found a **blocker the suite had certified**: the SPA's
-      payload validator counted decoded CHARACTERS instead of BYTES, so every
-      genuine pairing link was refused ("missing a valid certificate
-      fingerprint") — the tests passed because their fixtures were ASCII filler.
-      Fixed (byte-based canonical validation), fixtures replaced with
-      `randomBytes(32)`, and the cross-module seam is now pinned by
-      `tests/pair-payload-agreement.test.ts`; both fixes falsified by injection.
-      A second defect of the same check: a pairing link pasted into an
-      already-open tab did nothing (fragment-only navigation does not remount the
-      SPA) — `PairGate` now listens for `hashchange`. Root **1166** · web **639**.
-      Record: `docs/VERIFY-M21.md` ("Live deployment check").*
-
-- [x] **M22 — Remote-hosted accounts, deployment-owned files, no llm-self-service
-      (implemented + container-verified 2026-09-13; detailed spec: `PLAN-M22.md`,
-      record: `docs/VERIFY-M22.md`).** Three changes for the hosted shape.
-      **(1) Pairing → user login:** `AUTH_MODE=login` makes `POST
-      /v1/auth/session` the only way in — a per-user passphrase (scrypt, system
-      DB) mints a session that carries `user_id`, wrong-password and
-      unknown-user are indistinguishable, 3 failures lock for 5 minutes, a
-      per-peer limiter sits on top (behind a tunnel every request shares one peer
-      address), and **the whole pairing lane answers 403**. Accounts are managed
-      by the operator CLI `tools/user.mjs` (shell access = the "at the machine"
-      proof); **one user per core is enforced** until per-user partitions (S1/S8/S9)
-      land, because two accounts would share one database. The desktop pairing
-      shape is unchanged. **(2) Deployment-owned roots:** `FIXED_ROOTS=/files`
-      registers the mount at boot (idempotently — grants reference the root by id)
-      and `POST`/`DELETE /v1/roots` answer `403 roots_fixed`; a non-directory root
-      fails the boot; the Files view renders read-only. **(3) llm-self-service
-      removed** from core, web and `shared` (the `ProviderSource` value stays so
-      old rows read), which also closes **S0** as obsolete.
-      *Exit: container-verified through the user's tunnel — account created by
-      CLI, sign-in returns a `desktop` session, `/v1/roots` read-only, and a
-      brokered write into `/files` completes proposal → approval → file on the
-      volume · login gate walked in a browser (fields, disabled submit, sign-in →
-      workspace, only token/theme/authMode stored) · root 1166 → 1184 · web 639 →
-      635 · typechecks 0 · build green.*
-      **R-slice (same session):** the recommendations were then built except R5
-      (Cloudflare Access, skipped by request). **R1 per-user partitions** — a
-      partition IS a single-user core (its own encrypted database, key and skills
-      directory): the listening app authenticates against the shared system
-      sessions and **delegates** every other `/v1` request to that user's app, so
-      not one of the ~200 routes changed. Two users are provably isolated
-      (`core/test/http/userPartitions.test.ts`: a read in one partition cannot
-      contain the other's rows; separate `db-key:<id>` keys; per-user audit and
-      skills), and the rails' LRU/idle/close semantics are unit-tested. **R2**
-      rotation revokes that user's sessions. **R3** `PARTITION_IDLE_MS` closes idle
-      partitions — memory hygiene, documented as exactly that. **R4**
-      `CLIENT_IP_HEADER` + `TRUSTED_PROXY_CIDRS` give per-client auth rate limiting,
-      believed only from a trusted peer and never used for a locality decision.
-      **R6** `FIXED_ROOTS_READ_ONLY=1`. **R7** `MAX_UPLOAD_BYTES` /
-      `MAX_JSON_BYTES` — and the upload cap is now the *upload* cap: the file
-      bytes are the request body (`express.raw`, content type = mime,
-      `x-attachment-name` = the name), so 8 MiB is reachable. Until 2026-09-14
-      uploads rode a base64 JSON envelope and were really capped at ~768 KiB by
-      the 1 MiB JSON limit, which is what refused iPhone photos; the 413 now
-      names the file, its size and the limit, and `/v1/health` publishes
-      `maxUploadBytes` so the SPA refuses before uploading
-      (`docs/VERIFY-M22.md`, `core/test/http/attachmentUploadLimit.test.ts`).
-      **R8** a verified backup tool (`VACUUM INTO` +
-      `integrity_check`, exits non-zero when it cannot verify, prunes to `--keep`).
-      **R9** the vocabulary gap is closed (`provider.configure`, `persona.run`).
-      Root 1184 → **1204**, web 635, typechecks 0.
-      **S1/S9 (PLAN-M20-B):** S1 verified end to end (the rails are its missing
-      caller) and **S9 landed** — schema v19 wraps the partition key under the
-      passphrase (own salt + HKDF, so the stored verifier cannot unwrap it),
-      removes the plaintext at first sign-in, refuses a locked partition with
-      `401 partition_locked`, closes the handle with the key, and offers the
-      per-user AUDITED `keep-unlocked` opt-in. **S8 (Vault/Runner) NOT done** —
-      deliberately not half-landed. Root 1204 → **1215**.
-      **Sign-up (invite lane, 2026-09-14):** a hosted person can now create their
-      OWN account, so the operator never types their passphrase — the one thing
-      `tools/user.mjs add` could not avoid. `SIGNUP_MODE=invite` (default `off`,
-      needs `AUTH_MODE=login`) enables it: the operator mints a 256-bit single-use
-      invite on the machine (`tools/signup-link.mjs` → `POST /v1/signup/code`,
-      loopback-only, the same secret primitive as the pairing link) and sends
-      `https://<host>/#signup=<code>`; `POST /v1/auth/signup` consumes it and
-      creates the users row + scrypt credential exactly as the CLI would (`0` for
-      the first account), returning **no session** — sign-in stays the single
-      authority path. Validation is shared (`shared/src/accounts.ts`), the shape
-      checks run BEFORE the code is spent (a typo must not burn a one-time
-      invite), a taken name is a 409, and neither the name nor the passphrase
-      reaches a response or an audit row. **There is deliberately no `open`
-      mode:** a hostname the internet reaches is reachable by anyone, and "who may
-      reach it" is not "who may create an account" — the operator's invite is the
-      decision. Root 1215 → **1229**, web 699 → **712** (a container-shaped walk
-      found the fresh-tab invite path rendering an empty code field; seeded from
-      one shared helper now, with the invariant pinned in `web/test/signup.test.ts`).
-      Record: `docs/VERIFY-M22.md`.
-      **The Windows `userPartitions` failure — two real defects, both fixed
-      (2026-09-15).** Five partition tests failed on every `verify (windows)` run
-      while linux passed, with `Cannot read properties of null (reading 'port')`
-      in the test's own boot helper. **(1) `listen()` resolved a core that was
-      never listening:** `app.listen(port, host, cb)` calls `cb` even when the bind
-      FAILED (Windows/Node 25), so a taken port resolved the boot, printed "up on
-      …" and served nobody, and the real `EADDRINUSE` was discarded (its `reject`
-      ran after the promise had settled). Readiness now comes from the `listening`
-      event and failure from `error`, so a taken port rejects the boot by name
-      (`core/test/listen.test.ts`). **(2) `PORT=0` silently became 4390**
-      (`readInt` falls back to the default for anything out of range), which is why
-      three core test files depended on 4390 being free — a leak from an earlier
-      e2e run, or a dev core, broke them. `loadConfig` now REFUSES a malformed or
-      out-of-range `PORT` (0 included) with the reason a caller must name the port
-      (the loopback allowlist is derived from it), and those tests bind a **named
-      free port** (`freePort()`); teardown drops keep-alive sockets before waiting
-      (`closeServer`), which also removed the `EPERM` on the temp dir. Windows root
-      suite **1254 passed / 5 failed → 1262 passed / 0 failed** (5 env-gated
-      skips); no assertion was weakened.
-      *State: still open — S8, a device/sign-out UI, per-user quotas; unverified — a two-user browser walk,
-      R4 against the real Cloudflare edge, an R8 restore, and R3's live timer. See
-      `docs/VERIFY-M22.md`.*
-
-- [x] **M23 — Scorecard chat answers (implemented + verified 2026-09-15).**
-      A fourth answerable container joins choices and free-text forms:
-      `:::partner.scorecard` rates several named items on one shared numeric
-      scale so the user answers a multi-item review in a single pass. Grammar:
-      one item per bullet line, `scale=<2–10>` (default 5) is the highest score
-      with scores running 1..scale, and an optional `labels="Low|High"` names
-      the ends. One radio group per item makes one-score-per-item structural.
-      Submitting once sends a single labelled user turn
-      (`Q: <item>` / `A: <score>/<scale>`) through the normal chat path —
-      nothing client-only, persisted text unchanged. The parser lives in
-      `shared/src/structured.ts` beside the other containers
-      (closed-container-only materialization; malformed or unclosed blocks
-      degrade to prose; a bad scale clamps rather than dropping the card).
-      `ScorecardCard` is answerable in the M20.A one-submit group — grouped
-      scorecards require every item rated, while a standalone card accepts any
-      non-empty rating set — and pending ratings survive conversation switches
-      via the existing per-conversation UI memory. The `scorecards` guidance
-      ships in the default structured feature set; styles are token-only
-      (`accent-emphasis`/`accent-contrast` selected state, `--target-min`
-      targets, one column on phones). *Exit: shared 16 · web
-      722 · core `instructions.test.ts` green · typechecks 0 · web build
-      green. (The root suite's scrypt-heavy auth/partition files time out under
-      parallel CPU load both at HEAD and here — a pre-existing environment
-      flake, green in isolation with a raised timeout.)*
-
-- [ ] **M24 — Make attached photos actually reach the model (fix; 2026-09-16).**
-      Fixes the reported failure "the partner says it never received the image"
-      while the same model reads the image fine when tested directly against
-      LiteLLM. Three independent causes, all silent:
-      **(1) capability was guessed from the model name.** `VISION_HINTS` decided
-      whether a turn attached an `image_url` part, so an operator-chosen gateway
-      alias (`my-photo-model`, `pixtral-12b`, any LiteLLM `model_name`) counted
-      as text-only: the persona was handed just the descriptor line
-      `[Image attachment: …]` and correctly answered that no image arrived — and
-      neither the M13 reroute nor the chat picker could find a vision model, both
-      applying the same name test. Capability is now DECLARED: `providers.vision_models`
-      (schema **v20**) plus every model on a `vision`-purpose profile, read through
-      one shared function (`declaredVisionModels` + `isImageCapableModel(model,
-      declared)`) used by the core's gate, the reroute resolver, the chat picker
-      and the capability chips; hints remain the zero-config default and a
-      declaration can only ADD capability. Edited in place via
-      `PUT /v1/providers/:id` and model chips on the provider card (a
-      name-recognised model and a vision-purpose profile are not un-tickable —
-      clicking would be a no-op). **(2) the two byte budgets were conflated.**
-      Upload fits `maxUploadBytes` (8 MiB) but only `MAX_INLINE_IMAGE_BYTES`
-      (3 MiB, now shared + published on `/v1/health` as `maxInlineImageBytes`)
-      can ride a turn, so a normal phone photo stored, thumbnailed and was then
-      dropped from the request; the composer now re-encodes any over-budget image
-      (ladder extended to 6 rungs) to the inline budget, and an image that still
-      cannot ride is described to the model as **NOT sent** rather than reading
-      like a success. **(3) a multi-photo turn sent only one image.** The part
-      was singular (`ChatMessage.image`, `metas[0]`), so a second attached photo
-      was silently withheld; it is now `ChatMessage.images`, serialized as one
-      `image_url` per photo in attach order and bounded by
-      `MAX_INLINE_IMAGES_PER_TURN` (4) — with the composer stating outright when
-      staged photos exceed that. Also closes a latent trap:
-      `isImageCapableModel` is used as a bare `filter` callback, so it must
-      ignore the extra index/array arguments.
-      *Exit: shared 90 · root 1333 · web 742 · typechecks 0 · web build green
-      (6 new route-level image cases, incl. alias-on-vision-provider,
-      declared-alias-on-general, handoff-to-alias, no-invented-capability,
-      both-photos-ride, and the over-budget NOT-sent descriptor). Env-gated
-      remains: a real api.ne1.dev walk attaching a photo to a turn and reading it
-      back.*
-      *State: implemented + locally green (suites/typechecks/build above). The
-      live packaged walk against the user's own LiteLLM endpoint is env-gated and
-      has not been executed — that is the case this fix was written for, so it is
-      the one worth walking.*
-
-- [x] **M25 — Reconfigure existing providers (implemented + locally green 2026-09-16).**
-      The provider setup card could only ADD purpose profiles; once created, the
-      only way to change which models a purpose carried was to delete the profile
-      and build it again, which meant re-typing the API key and losing the
-      keychain item. The card now has two modes over the same endpoint/key idea:
-      **Add new** (the unchanged M13 bundle) and **Reconfigure existing**, which
-      operates on profiles that already exist. Pick one of the endpoints in the
-      list, rediscover its current model list through the key the keychain
-      ALREADY holds (`GET /v1/models?provider=<id>` — no key field, tried across
-      the endpoint's profiles healthiest-first so one keyless sibling cannot block
-      the rest), then tick the models each purpose profile should carry and save.
-      Writes reuse the existing `PUT /v1/providers/:id` (M24) per changed profile,
-      so a `vision`-purpose profile's new pins are also its image-capability
-      declaration (M24 semantics), while other profiles keep their existing
-      declarations. The pane never creates, deletes or re-keys anything; a profile
-      emptied of models is refused before any request (the add flow refuses the
-      same shape), and only profiles whose ordered list actually changed are sent,
-      so order still picks each purpose's default. Pure decisions live in
-      `web/src/lib/providers.ts` (`endpointGroups`, `reconfigureModelOptions`,
-      `reconfigurePinsFor`, `reconfigureChanges`), with the stored-key read as
-      `listProviderModels` in `web/src/lib/api.ts`. The mode toggle and the
-      reassignment rows reuse the token-only `.btn`/`.field`/`.bundle-*` styles
-      plus one `.bundle-mode` selection rule (surface + elevation-sm, the
-      purpose-filter contract). No core route or schema change.
-      *Exit: shared 90 · root 1328 passed (5 env-gated skips) · web 758 (742 + 16)
-      · typechecks 0 · web build green · `ux_audit` PASSED (17 APCA pairs, light
-      + dark; tokens, states, slop tells). The complete-stylesheet whole-file
-      `ux_audit` run remains outstanding (payload > 200 KB); the gate ran on a
-      composed, brace-balanced payload of the new block plus every interactive
-      base/state it depends on, and a full-file slop-tell scan (`backdrop-filter`
-      0 · gradients 0 · blur 0 · text-shadow 0).*
-
-- [x] **M26 — Skill authoring: build a skill by talking to the partner
-      (detailed spec: `PLAN-M26.md`).** M8 could only install from the
-      checked-in catalog; M26 adds the missing half. A **draft** is an inert,
-      editable bundle held as a `skill_drafts` row (schema **v21**) in the
-      user's own encrypted DB: describe the skill in **chat** (the
-      `skills.draft` external tool, advertised only when the session is
-      desktop, the persona may act, and `skill.author` is granted) or in a new
-      **Build** segment of the Skills view (AI-assisted generation from the
-      configured provider, or a template, so it works with no provider too).
-      The line the milestone draws: **a model may write code and ask, but only
-      the owner makes it executable.** Drafting is inert, validation is
-      deterministic (never executes), the sandboxed **dry-run** returns the
-      worker's own logs so chat iteration is possible, and install is a
-      `skill.install` act on **both** surfaces — the Studio button, or the
-      approval card the persona's `skills.requestInstall` opens in the
-      conversation it asked from (`pending_tools.kind='skill_install'`,
-      decided by the same `promote()`); the plain-language permission summary
-      is shown either way, and a widened permission set forces re-consent
-      (`permission_change` 409). Drafts are re-draftable across turns so a
-      lint error is fixable in place, export/import moves an unsigned bundle
-      that always lands as a draft (signing deferred), and the `skills` nav
-      badge counts ready drafts without double counting an open approval. New
-      capability `skill.author` (desktop-only by the existing envelope table);
-      `network: true` stays refused; audits carry ids/counts/lengths only —
-      never code, description, prompt or bundle body. Slices A drafts core ·
-      B generator + the pure/reads-files templates · C chat authoring + install
-      approval · D Studio + deep link + badge · E export/import · F docs/verify.
-      *Exit: schema v21 additive (a v20 DB opens unchanged) ·
-      create → validate → dry-run → install/update + re-consent → discard,
-      fork and bundle round-trip green · deterministic validation covers
-      shape/registry/import lint/caps · chat stages and asks but never runs or
-      installs, and both install paths produce identical rows · `skill.author`
-      denied for mobile + extension · no draft code/description/prompt/args/
-      result/log/bundle in any audit row · Studio usable with and without a
-      provider · typechecks 0 · web build green · `ux_audit` PASSED.*
-      *State: **COMPLETE** (2026-09-16) — including the two templates that
-      needed M27, which landed with M27 S4 (2026-09-17).
-      **Review fixup 2026-09-18:** the Studio's four live-walk findings (draft
-      description, the Edit/Fork deep link, creating a draft when one exists,
-      the failing run's reason) are fixed — see `docs/UNFINISHED.md` §0 and
-      `README.md` “Skill Studio fixup”.
-      Measured: root **1468 passed / 5 env-gated skips** · shared **90** ·
-      web **851** · typechecks 0 · web build green · `ux_audit` PASSED (16 token
-      pairs, light + dark) · record `docs/VERIFY-M26.md`. All slices landed:
-      A drafts core (+ schema v21) · B generator + demo fallback · C chat
-      `skills.draft`/`skills.requestInstall` + the install approval (which
-      promotes through the SAME `promote()` the Studio calls, and is
-      class-checked as `skill.install` because approving EXECUTES) · D the
-      Studio Build segment (editor, validation, sandboxed dry-run, two-step
-      install with the consent table, fork/edit, export/import, deep link,
-      `skills` badge, and a label on the canned non-model draft) · E dry-run +
-      unsigned bundles · F docs. The *notes* and *MCP* templates landed with
-      **M27 S4** (2026-09-17); the picker is capability-filtered, so it offers
-      only what the build can honour. NOT walked: a live-endpoint generation run
-      and a packaged-app Studio run.*
-- [ ] **M27 — What a skill may reach: app-scoped tools + MCP from the sandbox
-      (detailed spec: `PLAN-M27.md`).** Exists because two of the four Studio
-      templates are not implementable on today's skill reach. **S1** widens
-      `ToolScope` to `{kind:'project'} | {kind:'app'}` and adds three read-only
-      app tools (`notes.list`/`notes.search`/`notes.read`, `low` risk, mapped
-      to the existing `file.read` capability — no new capability name) that
-      resolve against a reserved `APP_SCOPE_ID='app'` instead of a project root,
-      with rootless app grants beside the roots in the same grant surface.
-      **S2** adds `permissions.mcpServers` so a skill may reach an **enabled**
-      MCP server's tools through the runner, a **medium-or-higher ceiling**
-      (an MCP tool's own risk is unknowable in advance), and coded denials
-      (`mcp_not_declared`/`mcp_disabled`) with **no interactive pending row** —
-      consistent with skills being non-interactive. **S3** propagates the
-      session **client class** into the runner for broker *and* MCP calls,
-      which closes the gap M20-B S4 recorded against itself (nothing in
-      `skills/` or `mcp/` consulted the class). **S4** adds the notes + MCP
-      templates and points the Studio picker at a single "what can a skill
-      reach" source so a template can never produce a bundle the sandbox
-      refuses. **S5** adds **model reach**:
-      `permissions.llm` enables a new `partner.llm.complete` worker verb, the
-      skill's own `budget.maxTokens` is finally **enforced and ledger-charged**
-      (it has been declared and validated since M8 and never read — `runner.ts`
-      uses only `timeMs`), and `skill.llm` is a desktop-only capability. A
-      skill can therefore send the data it read to the configured provider —
-      **declared, ceiling-bounded and audited as counts**, not ambient. S5 is
-      independent of S1–S4 and can land as its own M27-B; `PLAN-M28.md`'s `llm`
-      node needs it.
-      *Exit (all locally green; the last line is env-gated): a zero-root broker
-      grants and runs `notes.read` ·
-      `POST /v1/grants {projectId:'app'}` accepted only for an app-scoped
-      manifest and refused for `files.read` · app tools audit ids/counts/
-      lengths only · an enabled server's tool runs, undeclared/disabled/unknown/
-      over-ceiling refused with no pending row and ONE `mcp.call.denied` row
-      naming the server and the code · **mobile-with-a-grant refused**
-      at the broker and the MCP path, class read from the session row · both
-      templates validate *and* run.*
-      *State: **S1 + S2 + S3 + S4 + S5 landed** (S3+S5 2026-09-16, S1 2026-09-17,
-      S2 2026-09-17, S4 2026-09-17; record `docs/VERIFY-M27.md`) —
-      root **1651 passed / 5 env-gated skips** · shared **90** · web **858** ·
-      typechecks 0 · web build green; the S3/S5-era figures were
-      root **1495** · web **851** (1614 at S1+S2 — that figure includes the S2
-      audit-actor attribution fix above; 1628 at S4; 1645 after M28 B; and 1651
-      after the 2026-09-17 independent-review fixup recorded at the end of this
-      entry). **S3:** the session client class now reaches the runner
-      from the SESSION ROW (both routes in) and is forwarded to `broker.exec`,
-      so an already-granted write can no longer walk a phone through the
-      envelope — the case proven with `files.edit`, because the brief's
-      `files.read` premise was wrong (mobile's envelope includes it and an
-      existing test asserts it executes); the grant is verified present before
-      the refusal, and a request body cannot set or raise the class.
-      **S5:** `partner.llm.complete` — declared (`permissions.llm`, else
-      `llm_not_declared`), class-gated by a new `skill.llm` capability that is
-      deliberately absent from the mobile/extension allowlists, and bounded by
-      `budget.maxTokens` (else a documented 4096 default) accumulated across the
-      invocation, failing `budget_exceeded` MID-RUN with the worker killed. That
-      finally gives `SkillBudget.maxTokens` a runtime meaning (declared since M8,
-      never read), the provider spend ledger is charged per accounted call, and
-      one `skill.llm` audit row carries the model id + token counts only — never
-      the prompt or the completion. **S1 (2026-09-17):** the app-scoped notes
-      tools — `notes.list`/`notes.search`/`notes.read` are manifests with
-      `scope:{kind:'app'}`, the broker branches on the manifest's scope (the app
-      path keys the grant and the pending row on `APP_SCOPE_ID` and **never
-      calls `roots.getById`**, so a notes skill works with ZERO roots), a
-      sanctioned file tool asked for `projectId:'app'` is refused, and
-      `defaultToolRegistry()` is now DERIVED from the broker's manifest set so
-      installer and dispatcher cannot drift. The three ids map to the EXISTING
-      `file.read` capability on purpose — a new name would be absent from
-      mobile's allowlist and deny a phone its own notes by construction. Audit
-      rows carry ids/counts/lengths only (a note body never reaches one). Web:
-      an **App data** grant group (scope-filtered pickers on both sides) and a
-      dry-run `tool_denied` that names WHERE the grant goes. **S2 (2026-09-17):**
-      MCP reach from the sandbox — `permissions.mcpServers` (server ids, never
-      tool names) is declared, de-duplicated and capped at 8, and a `low`-risk
-      manifest declaring it is refused at **validate** time because an MCP
-      tool's own risk is unknowable in advance (D6). The runner routes
-      `partner.tools.exec('mcp:<server>/<tool>')` to an INJECTED seam
-      (`core/src/mcp/skillReach.ts`) instead of the broker, so `skills/` still
-      never imports `mcp/`; the seam checks the class envelope FIRST
-      (`mcp.call`), then the declaration, then the ceiling, then whether the
-      server is configured and enabled — closing **D7's MCP half**. Every
-      failure is a coded refusal the skill can catch (`mcp_not_declared` /
-      `mcp_disabled` / `upstream` / `capability_denied` / `tool_denied`) and NO
-      pending row is ever created: skills are non-interactive, so a server is
-      enabled BEFORE the run, exactly as a root is granted before it. The
-      authoring prompt, the chat instructions and the install summary now
-      describe that reach from the SAME capability object the validator uses
-      (D9; the chat instructions also gained the `llm` description they had
-      been missing since S5). S2 also fixed a pre-existing attribution defect it
-      surfaced: `McpManager.call()` hardcoded the audit actor `web`, so a skill's
-      reach read as a web request nobody made — the call path now takes an
-      optional actor (`skill` from this seam, `persona` from the chat
-      auto-call), and the `web` default keeps every existing caller unchanged.
-      **S4 (2026-09-17):** the last slice — `notes-checklist` and `mcp-call` in
-      `core/src/skills/templates.ts`, each with the `requires` key the picker
-      gates on, so a build without the reach does not offer them (both
-      directions asserted, including through the drafts door). The notes
-      template reads through the app-scoped tools with no `projectId` and no
-      root, and its bundle was proven by a real Studio DRY-RUN against a real
-      granted note — plus the coded `tool_denied` refusal and NO queued row
-      before the grant. The MCP template was proven against a **local stdio
-      server**: one declared server, `mcp:<server>/<tool>`, and its docblock's
-      codes (`mcp_not_declared` / `mcp_disabled`) asserted. Its manifest ships a
-      PLACEHOLDER server id — ids are generated when a server is added, so no
-      template can name the owner's — and the run test performs the same
-      one-field edit the author does.
-      **Independent-review fixup (2026-09-17, no version bump):** a REFUSED MCP
-      call wrote no audit row at all, so a skill that caught the coded denial
-      recorded `skill.invoke` ok:true with no trace of the attempt — the seam
-      now takes the core's `AuditService` and writes exactly ONE
-      `mcp.call.denied` row per refusal (actor `skill`, the server id as the
-      target, the code + tool id as details; never tool arguments or the command
-      line), asserted per code AND driven through the runner with a
-      multi-segment `mcp:<server>/a/b` id so the runner's duplicated id regex
-      is held to the seam's. The D8 assertions now count the WHOLE
-      `pending_tools` table (open rows alone could not see a
-      closed-by-denial regression), the oversized-result test now crosses the
-      real MCP seam instead of exercising a skill that ignores it, and a
-      persona-driven run's `skill.invoke` row names actor `persona` rather than
-      `web`.`
+- [x] **M3 — Chat + persona engine v1** (`PLAN-M3.md`). Conversation UI (SSE),
+      persona CRUD, independence levels + pause/kill, model routing per persona.
+      *Exit: two personas with different characters/autonomy respond
+      appropriately.*
+- [x] **M4 — Memory & profile** (`PLAN-M4.md`). Profile facts w/ user
+      confirmation, episode summaries, semantic index, tailoring loop,
+      forgetting + export.
+- [x] **M5 — Plans & notes** (`PLAN-M5.md`). Stores, editors, wiki-links, daily
+      note summary, plan execution with approved diffs.
+- [x] **M6 — Theming** (`PLAN-M6.md`). `theme/v1` schema, presets, Theme Studio,
+      token lint + APCA/WCAG gate on save, DESIGN.md component compliance.
+- [x] **M7 — Extension bridge & search actuator** (`PLAN-M7.md`). Native
+      messaging host, pairing, page capture, per-site scopes, sensitive-site
+      blocklist, "partner this page", search-engine capture for research.
+- [x] **M8 — Skills runtime** (`PLAN-M8.md`). Manifest + signing + hash verify,
+      sandboxed workers, permission enforcement, audit, install/update/uninstall
+      flows, local catalog + registry protocol.
+- [x] **M9 — Capability playbooks** (`PLAN-M9.md`). Research, vibe-code, docgen,
+      email draft, presentation, analysis, design-prototype flows wired to
+      personas; the Ship/deploy playbook; the optional API-key search adapter.
+- [x] **M10 — Hardening & alpha** (`PLAN-M10.md`). Encryption-at-rest,
+      redaction sweep, budgets enforcement, audit UI, degrade-mode chat, NSIS
+      packaging, demo mode + verification checklist + docs.
+- [x] **M11 — Chat as the workspace** (`PLAN-M11.md`). Attachments + granted-root
+      file references + multimodal image parts; chat tool execution (directive +
+      native `tool_calls`), MCP stdio client, API-key internet search; persona
+      skill/tool policy; purpose providers; choices; markdown→HTML; follow-latest;
+      Assets; chat folders; per-conversation themes + extension theme stream;
+      Notes lane; A/B persona studio; tabbed Code/Preview HTML viewer; schema
+      v12. *Exit: core 683 · web 440 · extension 57 · typechecks 0 · packaged app
+      boots env-free (demo, schema v12).*
+- [x] **M12 — UI readability & polish pass** (`PLAN-M12.md`). Responsive shell
+      (header ≤ 80px, rails adapt below 1280/960), accent contrast-gate fix,
+      16px token nav icons, grouped view order + collapsible Notes lane, dense
+      list legibility floor. No new features; token-only. *Exit: PLAN-M12 P0–P2
+      ticked; geometry gates at 1440/1280/1024/900/780; light+dark walks green.*
+- [ ] **M13 — Purpose providers & in-session model switch** (`PLAN-M13.md`).
+      Image-turn vision handoff (implicit text-model turns with a photo reroute
+      to a vision-capable model; explicit picks never overridden); per-message
+      model picker; purpose-provider bundle with `modelPins`
+      (`/v1/providers/discover` + `/v1/providers/purposes`). *State: implemented
+      + verified (suites/typechecks/`ux_audit`); a live manual walk is
+      env-gated.*
+- [ ] **M14 — Scheduled & autonomous work** (`PLAN-M14.md`). Personas carry
+      schedules (`independence.schedules[]`: daily/weekly/interval + prompt + tz,
+      schema v13); a scheduler driver fires due schedules and drives each as a
+      headless bounded persona run; `scheduled_runs` history; queued tools pause
+      a run and deciding the approval auto-resumes it; pause is a kill switch for
+      new runs AND resume. *State: implemented + live-walked 2026-09-07; the
+      packaged-app walk (shell/NSIS) is env-gated.*
+- [ ] **M15 — Live desktop mode (exit demo)** (`PLAN-M15.md`). Packaged shell
+      boots LIVE by default (whole-file-encrypted DB + OS-keychain key + skills
+      in the per-user app-local data dir); a per-boot device secret guards
+      `GET /v1/pair/device`; the tray surfaces the pairing code; the PairGate is
+      health-aware. `PARTNER_DEMO_MODE=1` keeps the demo boot. *State: live
+      packaged-boot walk is env-gated.*
+- [ ] **M16 — Knowledge workspace** (`PLAN-M16.md`). Notes relationship graph
+      (React Flow, persisted drag positions); Brainstorm from notes & captures
+      (auto-created `p-brainstorm` persona); note/capture versioning with
+      history + diff + restore; Discuss in Assets (branch or fork via
+      `conversations.parent_id`/`source_asset_id`); desktop export save dialog;
+      CSV-as-table; follow-up brainstorm session links; schema v13 → v15.
+      *State: suites green; the shell `windows-build` + packaged live walk are
+      env-gated.*
+- [x] **M17 — Note projects** (spec: this entry; M17 has no separate plan file).
+      An organizational layer over the Projects/Folders tree: notes join projects
+      many-to-many, with **no membership = Inbox**. One membership write path
+      (`setFolders`) backs create-time `folderIds` and re-filing; `list()`/`graph()`
+      scope by folder subtree or Inbox, and a scoped graph returns one-hop
+      **ghost** nodes for out-of-scope references. Deleting a folder clears
+      membership (notes survive); deleting a note cascades its rows. Routes
+      `GET /v1/notes?folderId=<id|none>`, `GET /v1/notes/graph?folderId=…`,
+      `PUT /v1/notes/:id/folders` (501 when folders are unwired); schema **v16**
+      (`note_folders`). *Exit: root + web suites green · typechecks 0 · web build
+      green · `ux_audit` green on the new UI.*
+- [x] **M18 — Chat multi-question forms** (spec: this entry; no separate plan
+      file). When a persona has more than one open-ended question it emits a
+      `:::partner.form` container instead of a prose list; each question renders
+      in its own textarea and the user submits **once**, producing a single
+      labelled user turn through the normal chat path. The parser shares the
+      `:::partner.*` grammar in `shared/src/structured.ts` (closed-container-only
+      materialization; malformed blocks degrade to prose). Pending drafts survive
+      conversation switches. *Exit: root 877 · web 539 · typechecks 0 · web build
+      green · `ux_audit` green.*
+- [x] **M19 — Persona-scoped memory & automatic remember** (`PLAN-M19.md`).
+      A per-persona tick (`memory.personaMemory`, off by default) makes a persona
+      keep its OWN facts and recall them only while chatting with it — never in
+      another persona's prelude or a headless run. With private memory on, the
+      core asks the persona's cheap model, out of band after the response ends,
+      whether the exchange holds anything durable, and files findings as
+      confirmable suggestions labeled global or persona-scoped. Fixed extractor
+      prompt, defensive parsing, dedupe covering global + same-scope + rejected.
+      Follow-ups: independent global auto-remember setting
+      (`memory.autoRemember.global`), turn-target fallback, review-before-suggest
+      (`ALREADY KNOWN`) and the `REJECTED` block. *Exit: core 1334 · web 760 ·
+      typechecks 0.*
+- [ ] **M20 — Client-server, multi-user & mobile** (`PLAN-M20.md`; execution
+      breakdown + status table `PLAN-M20-B.md`; records `docs/VERIFY-MOBILE.md`,
+      `docs/VERIFY-M20-B.md`). **Model A′:** the core splits into a **Vault**
+      (user key + Tier C) and an always-on **Runner** (job key + Tier W), with
+      pre-authorized capped expiring **briefcases** and a one-way **drain**.
+      **Multi-user by partition** (`data/users/<id>/partner.db`, own key and
+      skills dir); user/device/client-class are three levels and device =
+      session. Phases: **A** mobile/tablet/touch UI · **B** the server role (TLS,
+      named host allowlist, QR pairing, device registry + revoke, client-class
+      capability envelopes, per-user partition) · **C** PWA · **D** optional
+      Tauri v2 shell · **E** system layer (later). *State: **A implemented +
+      measured**; **B landed through S7 + S9** (the envelope enforces, networked
+      pairing mints a real `mobile` session, per-user partitions + wrapped keys);
+      **S8 (Vault/Runner) not started**. All D1–D5 and Q1–Q12 decisions are
+      closed (`PLAN-M20-B.md` §6).*
+- [x] **M21 — Container deployment + Cloudflare Tunnel** (`PLAN-M21.md`,
+      `docs/VERIFY-M21.md`). Partner runs headless in a container, LIVE, reached
+      only through a Cloudflare Tunnel. Adds the `file` keychain kind
+      (`KEYCHAIN_KIND=file` + `KEYCHAIN_FILE`; JSON, 0600, atomic writes,
+      malformed ⇒ refuse to boot), a non-root live image, a two-service compose
+      (the tunnel keeps its own network namespace, because pairing decides by
+      socket peer), container tools (`healthcheck`, `pair-link`,
+      `partner-request`), and operator-shell pairing. *Exit: container boots LIVE
+      (demo off, schema v18) and reaches `healthy`; a non-loopback peer redeems a
+      secret for a `mobile` session; the session survives a restart; verified
+      against the real tunnel at `partner.teliti.app` (2026-09-13) and refreshed
+      2026-09-18 (Windows `stage.ps1`, the skill worker harness).*
+- [x] **M22 — Remote-hosted accounts, deployment-owned files, no
+      llm-self-service** (`PLAN-M22.md`, `docs/VERIFY-M22.md`). (1) `AUTH_MODE=login`
+      makes `POST /v1/auth/session` the only way in (scrypt passphrase, no
+      user-existence oracle, lockout, per-peer limiter; the pairing lane answers
+      403). (2) `FIXED_ROOTS=/files` registers the mount at boot and
+      `POST`/`DELETE /v1/roots` answer `403 roots_fixed`. (3) llm-self-service
+      removed from core/web/shared (closes S0). R-slices: per-user partitions
+      (R1), rotation revoke (R2), idle-partition close (R3), per-client auth rate
+      limit (R4), read-only roots (R6), upload/JSON caps (R7 — the upload cap is
+      now the request-body cap), a verified backup tool (R8), vocabulary gap
+      (R9). Invite-based sign-up (`SIGNUP_MODE=invite`, no `open` mode). S1/S9
+      verified, S8 not. *State: S8, a device/sign-out UI and per-user quotas
+      remain open; unverified — a two-user browser walk, R4 at the real edge, an
+      R8 restore, R3's live timer.*
+- [x] **M23 — Scorecard chat answers** (spec: this entry; no separate plan
+      file). A fourth answerable container, `:::partner.scorecard`, rates several
+      named items on one shared numeric scale (`scale=<2–10>`, optional
+      `labels="Low|High"`), one radio group per item, submitted once as a single
+      labelled turn. Parser in `shared/src/structured.ts`; answerable in the
+      M20.A one-submit group; `scorecards` guidance in the default feature set.
+      *Exit: shared 16 · web 722 · core `instructions.test.ts` green ·
+      typechecks 0 · web build green.*
+- [ ] **M24 — Make attached photos actually reach the model** (fix; spec: this
+      entry; no separate plan file). Capability is **declared** per provider
+      (`providers.vision_models`, schema **v20**) instead of guessed from the
+      model name, read through one shared `isImageCapableModel`; the two byte
+      budgets are split (upload 8 MiB vs inline 3 MiB, published as
+      `maxInlineImageBytes`) and over-budget images are re-encoded; a turn carries
+      several photos (`ChatMessage.images`, `MAX_INLINE_IMAGES_PER_TURN` = 4) and
+      an unsent image is described as NOT sent. *State: locally green; the live
+      packaged walk against the user's own endpoint is env-gated.*
+- [x] **M25 — Reconfigure existing providers** (spec: this entry; no separate
+      plan file). The setup card gains a *Reconfigure existing* mode: pick an
+      existing endpoint, rediscover its models through the key the keychain
+      already holds (`GET /v1/models?provider=<id>`, tried healthiest-first), tick
+      the models each purpose carries, and save via `PUT /v1/providers/:id` per
+      changed profile. Never creates, deletes or re-keys; an emptied profile is
+      refused before any request. *Exit: root 1328 · web 758 · typechecks 0 · web
+      build green · `ux_audit` PASSED.*
+- [x] **M26 — Skill authoring: build a skill by talking to the partner**
+      (`PLAN-M26.md`, `docs/VERIFY-M26.md`). A **draft** is an inert, editable
+      bundle (`skill_drafts`, schema **v21**) in the user's own encrypted DB:
+      describe it in chat (`skills.draft`, may ask with `skills.requestInstall`)
+      or build it in the Studio (AI-assisted, template, or by hand), then read,
+      dry-run and install it. The line held: **a model may write code and ask,
+      but only the owner makes it executable** — drafting runs nothing,
+      validation is deterministic, one `promote()` re-validates, and a widened
+      permission set forces re-consent. `fork`/`edit`/export/import (import lands
+      as a draft); `skill.author` is desktop-only. *State: **COMPLETE** (the
+      notes + MCP templates landed with M27 S4); not walked — a live-endpoint
+      generation and a packaged Studio run.*
+- [ ] **M27 — What a skill may reach: app-scoped tools + MCP + model**
+      (`PLAN-M27.md`, `docs/VERIFY-M27.md`). **S1** app-scoped notes tools
+      (`notes.list`/`notes.search`/`notes.read`, reserving `APP_SCOPE_ID='app'`,
+      no root, mapped to the existing `file.read` capability). **S2** MCP reach
+      (`permissions.mcpServers`, per-server, `medium` ceiling minimum, coded
+      refusals, **no pending row**). **S3** the session client class reaches the
+      runner, closing the M20-B S4 gap. **S4** the notes + MCP Studio templates
+      (capability-filtered picker). **S5** model reach (`partner.llm.complete`,
+      enforced `budget.maxTokens`, ledger-charged, `skill.llm` desktop-only).
+      *State: S1–S5 all landed; a real MCP server walk is env-gated.*
 - [x] **M28 — Skill Studio Flow: build a skill on a canvas, with the model as a
-      collaborator (detailed spec: `PLAN-M28.md`, verification record:
-      `docs/VERIFY-M28.md`).** **Slices A–F landed 2026-09-17.** The Studio (M26)
-      gains a **fourth surface**: a **React Flow** canvas — the dependency is
-      already in `web/` (used by `NotesGraph.tsx`), so **no new package** — where
-      a skill is a graph of ten typed nodes. The model can **build** the graph from a
-      description (`mode:'generate-flow'`), the user can draw it, and the model
-      can **refine** what the user drew as a **proposal with an
-      accept/reject diff** — never a silent rewrite. The load-bearing
-      constraint: a flow is **not a second kind of skill**. It compiles
-      **deterministically to `entry.mjs`** (byte-identical for one flow, total
-      compiler: a cycle is a named error, not an exception), so the artifact,
-      the sandbox, the hash check and every M26 install gate are unchanged and
-      there is no flow interpreter to trust. The vocabulary is deliberately not
-      a programming language — no loops, no arbitrary expressions, no imports —
-      and expressions are a validated **path grammar + fixed operators**, so an
-      AI-written graph **cannot inject code**; the emitted code is then held to
-      the unmodified gates. Two properties fall out for free: `permissions.tools`
-      is **derived from the graph's `tool` nodes** (the install summary provably
-      matches the code), and flow/code coherence is a **derived hash
-      comparison**, not a boolean (a hand-edit that restores the compiled bytes
-      clears it). Because React Flow has no keyboard path to creating an edge,
-      the Flow tab ships a second, equivalent **Nodes table** view over the same
-      document; the palette omits `llm` unless M27 S5 is wired. Schema **v22**
-      adds `flow_json`/`flow_sha256`/`flow_compiled_at`. Slices A compiler
-      (pure) · B routes + staleness · C canvas + nodes table · D AI
-      build/refine/from-code · E chat `flow` payload · F docs/verify.
-      *Exit (planned): v22 additive (a v21 DB opens unchanged) — **done** ·
-      compiler total
-      and deterministic, cycle/dangling/missing-output/unknown-tool named —
-      **done** ·
-      injection refused by the path grammar + template escaping, asserted —
-      **done** ·
-      derived `permissions.tools` equal to the graph's tool nodes both ways —
-      **done, and now written into the manifest on `/compile` together with
-      `permissions.llm`** ·
-      the compile is held to the DRAFT manifest's own risk ceiling (D5) —
-      **done: the compile path supplies `riskCeiling`/`riskOf` from the broker
-      registry, so a `files.edit` node under a `low` manifest is refused
-      `tool_requires_medium` and nothing is written** ·
-      install from a stale draft allowed and documented (install consumes code) —
-      **done (asserted by installing AND RUNNING a stale draft)** ·
-      refine writes nothing until accepted — **done** · `llm` only with M27 S5 —
-      **done (the palette gate is `llmAvailable` on the flow read, and a compiled
-      `llm` node reaches a provider under the manifest's token ceiling)** ·
-      canvas and nodes views edit one document, both keyboard-reachable —
-      **done** · `ux_audit` PASSED
-      on the new token-only styles **plus a looked-at canvas frame** (a passing
-      audit is the floor, not the evidence, for a visual surface) — **done,
-      `docs/m28/`** · suites
-      root + Δ / web + Δ / shared + Δ, zero regressions · typechecks 0 · web
-      build green · both demo e2e flows green — **done: root 1724, shared 90,
-      web 918, typechecks 0, build green, `tests/e2e-skill-flow.test.ts`.***
-      *State: **slices A–F landed 2026-09-17** — root
-      **1746** (5 env-gated skips) · shared **90** · web **937** · typechecks 0 ·
-      web build
-      green. **Review fixup 2026-09-18** (M26/M28 Studio surfaces: draft
-      description, the Edit/Fork deep link, creating a draft when one exists,
-      the failing run's reason — `docs/UNFINISHED.md` §0) lives in
-      `web/src/studio/DraftComposer.tsx` + `DraftRail`/`SkillStudio`, not in the
-      canvas. **Slice A (the compiler)** is `core/src/skills/flow/schema.ts` +
-      `flow/compile.ts`, both pure (no fs, no db, no routes). Determinism is
-      asserted against
-      shuffled `nodes`/`edges` ARRAYS, not just a repeated call; the failures are
-      named before any byte is emitted (cycle, dangling edge, missing output,
-      duplicate input, unknown tool, `llm_not_available`, `tool_requires_medium`,
-      >1 inbound edge on a non-merge); and the emitted module is **executed**
-      against a fake `partner` and, in `flowRun.test.ts`, in the REAL M8 sandbox
-      via `runner.invoke({dirOverride})` — a compiled flow reads a real note
-      through the broker with zero roots, and fails `tool_denied` without a
-      grant. The injection boundary is proven: the path grammar refuses
-      `__proto__`/`constructor`/`a..b`/`a);process.exit(1);//`, a hostile string
-      that is NOT path-shaped round-trips as inert data, and template text is
-      escaped so a backtick or `${` in prose stays prose. Two additions beyond
-      the spec's letter, both recorded: `FlowValidationCode` gained `bad_node`
-      (a recognised type with malformed data had no name), and the compile result
-      gained `usesLlm` — without it a flow with an `llm` node installs a manifest
-      that refuses every call with `llm_not_declared`, a bundle that can never
-      run. **The Studio split** (owner decision: before C/D) turned the
-      2025-line `web/src/SkillStudio.tsx` into a 468-line container plus
-      `web/src/studio/{DraftRail,DraftEmptyState,DraftEditor,ValidationPanel,
-      RunPanel,InstallPanel,InstallConfirm,DraftActions}.tsx` + `shared.ts`,
-      re-exported from the original module so no importer or test moved. No CSS
-      changed (`app.css` byte-identical). **Slice B** is schema **v22**
-      (`skill_drafts.flow_json` / `flow_sha256` / `flow_compiled_at`, guarded
-      `ensureColumn`, so a v21 DB opens unchanged) plus the three routes
-      `GET|PUT /v1/skills/drafts/:id/flow` and
-      `POST /v1/skills/drafts/:id/flow/compile`, with the lifecycle in
-      `core/src/skills/drafts.ts`: a save is structurally validated and touches
-      no code, a compile writes `code` + `flow_sha256` + `flow_compiled_at` and
-      rewrites the manifest's derived permissions (`tools` AND `llm`, so a flow
-      with an `llm` node cannot install a manifest that refuses every model
-      call), a compile that cannot succeed answers `{ok:false, errors}` and
-      writes nothing, and `flowStale` is recomputed on every read
-      (`sha256(code) !== flow_sha256`) — a hand-edit that restores the compiled
-      bytes clears it by itself, and install from a stale draft is **allowed and
-      asserted** (install consumes code; staleness is UI honesty, not a security
-      state). Audit rows carry counts and tool ids only. **Independent-review
-      fixup (2026-09-17, no version bump):** the compile path never passed
-      `riskCeiling`/`riskOf`, so D5's `tool_requires_medium` was dead in
-      production — a `low` manifest whose graph held a `files.edit` node
-      compiled, wrote `permissions.tools:['files.edit']`, re-validated ok and
-      INSTALLED, a bundle guaranteed to refuse at run time. The draft manager
-      now takes the registry's risks (`riskOf`, required) and hands them to the
-      compiler with the manifest's own tier, so that compile fails NAMED and
-      writes nothing; and `mode:'generate-flow'` — advertised on the wire but
-      unimplemented (slice D) — is now refused BY NAME instead of being silently
-      downgraded to `mode:'generate'`, which had handed a caller asking for a
-      graph a code bundle with `flow: null` and no error. Tests:
-      `core/test/skills/flowStale.test.ts` ·
-      `core/test/http/skillFlowRoutes.test.ts` (+2 in `db-migrate.test.ts` for
-      the v21 → v22 upgrade; the six SCHEMA_VERSION tripwires were bumped to 22).
-      **Slices C–F landed 2026-09-17.** **C** is the canvas
-      (`web/src/SkillFlow.tsx`) + its DOM-free helper layer
-      (`web/src/lib/flow-helpers.ts`) + the Flow tab in `web/src/studio/*`: the
-      palette rail, the typed inspector, per-node error decoration,
-      Auto-arrange, and the **Nodes table** that edits every field of the same
-      document (D9's answer to React Flow having no keyboard path to an edge) —
-      the ten node types register under prefixed React Flow ids because
-      `input`/`output`/`default`/`group` are reserved by the library, while the
-      DOCUMENT keeps D2's spelling. **D** is the four AI verbs
-      (`core/src/skills/flow/refine.ts` pure prompts/parse/diff,
-      `flow/ai.ts` the model seam, `core/src/skills/model.ts` the ONE bounded
-      call extracted from M26's generator so five callers share one cap and one
-      timeout): `mode:'generate-flow'`, `/flow/refine`, `/flow/from-code`,
-      `/flow/explain` — and **both proposal routes write nothing**, asserted
-      byte-identical at the manager level and over HTTP. **E** is the same
-      `skills.draft` tool accepting a `flow` payload instead of `code`, with the
-      node vocabulary (`flowContract`) joining the shared reach vocabulary the
-      authoring prompt, the chat instructions and the palette all mirror. **F**
-      is `docs/VERIFY-M28.md` (+ the looked-at frames in `docs/m28/`), which is
-      also where the four decisions taken beyond the spec's letter are recorded:
-      staleness now checks BOTH sides of the last compile (an edited graph used
-      to read fresh), the shared bounded call, `SkillDraftOrigin` gaining
-      `'flow'`, `llmAvailable` riding the flow read for the palette gate, and
-      `explain` auditing nothing. Gates: root **1724** (5 env-gated skips) ·
-      shared **90** · web **918** · typechecks 0 · web build green · `ux_audit`
-      PASSED · `tests/e2e-skill-flow.test.ts` green. Not verified: a LIVE model
-      walk for the four verbs (no endpoint in this workspace — the deterministic
-      answers and the stubbed-reply paths are what ran).*
+      collaborator** (`PLAN-M28.md`, `docs/VERIFY-M28.md`, frames `docs/m28/`).
+      The Studio's fourth surface is a React Flow graph of ten typed nodes, where
+      the model can build a graph from a description, the user can draw it, and
+      the model can refine it as an accept/reject proposal (never a silent
+      rewrite). A flow is **not a second kind of skill**: it compiles
+      deterministically to the same `entry.mjs`, expressions are a validated path
+      grammar + fixed operators (no injection), and `permissions.tools`/`llm` are
+      derived from the graph. Schema **v22** adds
+      `flow_json`/`flow_sha256`/`flow_compiled_at` and three routes; an
+      equivalent Nodes table edits the same document from the keyboard. Slices
+      A compiler · B routes + staleness · C canvas + nodes table · D AI
+      build/refine/from-code · E chat `flow` payload · F docs. *State: slices A–F
+      landed 2026-09-17 (root 1746 · web 937 · typechecks 0 · build green); a
+      live model walk for the four AI verbs is env-gated.*
+- [x] **M29 — The multi-user lifecycle: sign out, in-app invitations, shared AI
+      access, per-user files and note/asset sharing** (`PLAN-M29.md`,
+      `docs/VERIFY-M29.md`). (1) **Sign out** revokes the session and closes the
+      user's partition (unreadable, not merely unreachable). (2) **Owner-minted
+      invitations** from the Members view (`users.role`/`users.key_access`,
+      `invites` storing only the code hash; one conditional redemption update;
+      shape errors before the invite is spent). (3) **Shared AI access**: an owner
+      publishes providers + search config (`shared_access`, `shared-*` keychain
+      accounts); a `keyAccess:'shared'` member uses them while they have none of
+      their own. (4) **Per-user fixed roots** (`<FIXED_ROOTS entry>/<userId>`).
+      (5) **Note/asset sharing** as snapshot copies in the system DB (`shares`).
+      Schema **v23** (additive). *Exit: root 1766 · shared 90 · web 944 ·
+      typechecks 0 · `ux_audit` PASSED · walked live against a real login-mode
+      core.*
+- [x] **M30 — One left panel: conversations under the Chat entry** (spec: this
+      entry; detail in `docs/HISTORY.md`). The conversation list and folder tree
+      moved into the sidebar, nested under Chat with a disclosure chevron
+      (session-only state). Above the phone tier this is the tree's only home, so
+      the transcript reclaims the rail's width; at the phone tier the same
+      `ConversationRail` renders as the floating overlay. `railWidth` retired.
+      *Exit: web 57 files / 956 tests · typecheck 0 · bundle green.*
+- [x] **M31 — Settings, persona cards, and a magazine Notes & Plans** (spec:
+      this entry; detail in `docs/HISTORY.md`). (1) Sidebar IA: Providers,
+      Themes, Audit and Members grouped under **Settings**; Studio is
+      personas/skills/playbooks, Tools is files/memory. (2) Personas as a wall of
+      business cards whose face opens a slide-out editor drawer (Pause and Delete
+      stay on the card). (3) Notes & Plans magazine layout (masthead, hairline
+      rules, 1200px measure, newest item as a full-width lead). *Exit: web 58
+      files / 967 tests · typecheck 0 · bundle green · checked at 1440 and 1024.*
+- [x] **M32 — Persona-owned sessions, a resizable menu, a Catalog deck, and
+      tracked memory** (spec: this entry; detail in `docs/HISTORY.md`). (1) The
+      conversation tree moved under **Personas** (`PersonaChatTree`; orphaned
+      chats under **Unassigned**). (2) Skills Catalog as a card deck + detail
+      drawer (`CatalogDrawer`). (3) Drag-resizable left menu (180–420px,
+      `partner.sideWidth`). (4) Memory: one-step suggestion persona select, a
+      **Rejected** panel with Restore, and a `REJECTED` extractor block; chat no
+      longer inlines the HTML preview. No schema change. *Exit: web 60 files /
+      979 tests · core remember green · typecheck 0 · bundle green.*
+- [x] **M33 — Multi-persona memory scope** (spec: this entry; detail in
+      `docs/HISTORY.md`). `ProfileEntry.personaScopes: string[]` replaces
+      `personaScope` (EMPTY = every persona); the deprecated field is still
+      accepted on input and mapped to `[id]`/`[]`. Schema **v23 → v24** adds
+      `profile_entries.persona_scopes` and backfills each legacy `persona_scope`
+      once. Tailoring, auto-remember's known/rejected/dedupe listing and
+      `GET /v1/memory/profile?personaScope=` read the set as membership. One
+      `ScopePicker` checkbox set backs the edit form, add form and suggestion
+      re-scope. *Exit: core 163 files / 1633 passed · web 61 files / 999 passed ·
+      typecheck 0 · bundle green · `ux_audit` green (light + dark) · verified
+      in-browser against a demo core.*
 
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
 credentials. Never in production builds.
-
-- [x] **M29 — The multi-user lifecycle: sign out, in-app invitations, shared AI
-      access, per-user files and note/asset sharing (detailed spec:
-      `PLAN-M29.md`, verification record: `docs/VERIFY-M29.md`).** Five things a
-      hosted (login-mode) Partner needs before a second person can really use it.
-      **(1) Sign out** — `POST /v1/auth/signout` revokes the presented session
-      AND (on a login core) closes the user's partition and drops its key, so
-      signed out means unreadable rather than merely unreachable; the SPA gains a
-      sidebar-footer control, a Members card and a phone-reachable route.
-      **(2) Owner-minted invitations, no shell** — `users.role`
-      (`owner`/`member`) plus an `invites` table; an owner mints, lists and
-      revokes single-use invitations from the Members view, and only the code's
-      hash is stored. `SIGNUP_MODE` keeps governing the loopback operator mint
-      (the way to create the FIRST account) while an owner-minted invite redeems
-      regardless — an explicit admission decision needs no deployment switch, and
-      the redeemer cannot escalate because `role`/`key_access` are read from the
-      invite ROW.
-      **(3) Shared AI access** — a member invited with `keyAccess:'shared'`
-      reaches the deployment's published provider + search configuration while
-      they have none of their own, so they can chat without being handed a key;
-      the owner publishes from the Members view (`shared_access` rows +
-      `shared-*` keychain accounts), and their own setup always wins.
-      **(4) Per-user file paths** — a partitioned core derives each account's
-      fixed roots as `<FIXED_ROOTS entry>/<userId>` (or `<partition>/files` with
-      no deployment volume), creates them at boot, and keeps the roots surface
-      read-only in login mode, so one mounted volume no longer means one shared
-      directory.
-      **(5) Note & asset sharing** — `shares` holds a SNAPSHOT copy in the system
-      DB, so a grantee reads what they were given without ever opening the
-      owner's partition, can save it into their own notes, and sees nothing else;
-      the owner can push a current edit or revoke. Schema **v22 → v23**
-      (additive: `users.role`/`users.key_access`, `invites`, `shares`,
-      `shared_access`).
-      *Exit: root 1766 passed (5 env-gated skips) · shared 90 · web 944 ·
-      typechecks 0 · web build green · `ux_audit` PASSED on the new surfaces ·
-      walked live in a browser against a real login-mode core (owner sign-in →
-      Members → mint an invitation link → Shared; the desktop pairing shape also
-      walked) · container refreshed, `partner-server:local` healthy · Windows
-      NSIS package built green.*
 
 ---
 

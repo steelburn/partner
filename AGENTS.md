@@ -5,23 +5,27 @@ not documentation.
 
 ## Plans & documentation upkeep (standing rule)
 
-`PLAN.md` is the master index. Detailed specs live in per-milestone files
-(`PLAN-M<N>.md`), but **PLAN.md must stay current** — a reader who only opens
-`PLAN.md` must be able to find every module and where its details live.
+Keep the entry-point docs SMALL. Context budget is the reason this repo has a
+doc structure at all: `README.md` (state snapshot), `PLAN.md` (design + compact
+milestone index), `CHANGELOG.md` (releases), `PLAN-M<N>.md` (one spec per
+milestone), `docs/` (verification + `docs/UNFINISHED.md`). Long-form history
+lives in `docs/HISTORY.md` — archive, never load it for routine work.
 
 When a module/milestone is added, changed, or completed:
 
 - Add/update its entry in **`PLAN.md` §15 (Milestones)** with the status,
-  one-paragraph description, and an `*Exit:*` line. Use `[x]` only when the
-  full exit is locally green; leave `[ ]` (with a `*State:*` line) when an
-  env-gated walk/packaged step remains.
+  one-paragraph description, an `*Exit:*` line and the spec pointer. Keep it
+  compact (target ≤ 8 lines); detail belongs in `PLAN-M<N>.md`, not here. Use
+  `[x]` only when the full exit is locally green; leave `[ ]` (with a
+  `*State:*` line) when an env-gated walk/packaged step remains.
+- Add a release entry to **`CHANGELOG.md`** (newest first) in the same change.
 - Update the affected design sections in the same change when they describe
   it: **§8 Memory**, **§12 Data model** (tables + schema version +
   migrations), **§13 API surface** (routes), **§14 stack/architecture**.
-- Keep `README.md` status + the milestone notes in sync, and point the
-  milestone entry at its `PLAN-M<N>.md` spec.
+- Keep the `README.md` status table in sync (suites, schema version, latest
+  release, partly-open list).
 - Prefer precise, verifiable facts (schema versions, route names, suite
-  counts) over prose; do not restate a whole spec in PLAN.md.
+  counts) over prose; do not restate a whole spec in PLAN.md or README.md.
 
 ## Repo conventions (verified)
 

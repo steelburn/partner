@@ -1,6 +1,6 @@
 # Partner on Windows — build, bundle & run the .exe
 
-> Handoff & full project state: `HANDOFF-WINDOWS.md` at the repo root.
+> Handoff & Windows runbook: `docs/HANDOFF-WINDOWS.md`.
 > Verified on a real Windows 11 machine + self-hosted runner (2026-09-05):
 > the NSIS installer builds green in CI and the installed `partner-shell.exe`
 > boots the core sidecar with NO environment variables.

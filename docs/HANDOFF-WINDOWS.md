@@ -1,0 +1,102 @@
+# Partner — Windows handoff (CI + desktop build)
+
+**Purpose:** what is Windows-specific. For current product state, suites and
+open work read `README.md`, `PLAN.md` §15, `CHANGELOG.md` and
+`docs/UNFINISHED.md` — do not duplicate that here. Repo:
+`github.com/steelburn/partner` (private), default branch `master`, pushed
+direct. `verify` auto-triggers on push; `windows-build` triggers on
+`workflow_dispatch` / `v*` tags. Runner label `[self-hosted, Windows]`
+(`win-intel-i5-core-ultra`).
+
+## Machine prerequisites
+
+1. **VS Build Tools 2022, workload "Desktop development with C++"** (MSVC
+   14.44 + Windows SDK 10.0.26100 verified). Needed by `npm ci` (node-gyp
+   rebuild of the aliased `better-sqlite3`) AND cargo/NSIS.
+2. **Rust stable-msvc** (CI installs via dtolnay).
+3. **Node 22** (SQLCipher-fork prebuilds need Node ≥ 22).
+4. **Smart App Control OFF** (Windows Security). SAC blocks unsigned cargo
+   build scripts intermittently (`os error 4551`) — must be off for any native
+   compile.
+5. **Git for Windows first on PATH** — bash-using actions
+   (`dtolnay/rust-toolchain`, …) otherwise resolve the WindowsApps WSL shim.
+   Restart the runner after PATH changes.
+6. **PowerShell execution policy is GPO-pinned** — workflow steps use
+   `shell: cmd` (pwsh unusable; node-gyp's PS discovery is blocked too, so
+   node-gyp falls back to vswhere — works with the workload installed).
+
+## Verify commands
+
+```bash
+npx vitest run                 # root suite (shared + core + tests), 5 env-gated skips
+npx vitest run --root web      # web suite
+npm run typecheck              # all workspaces, 0 errors
+npm run build -w web           # SPA build
+```
+
+The Windows leg skips 5 env-gated symlink tests (no Developer Mode) — expected.
+The web suite is **not** part of the root run; the extension suite is not wired
+to a runner (`extension/package.json` has no `test` script). Current counts:
+`README.md` status table.
+
+**Run the root suite with no dev core on :4390** (a listening stray makes
+`userPartitions.test.ts` fail — `server.address()` returns null). The core now
+refuses a taken port by name and refuses `PORT=0`/out-of-range instead of
+falling back to 4390.
+
+## Windows desktop build (CI path — no local Rust/MSVC needed)
+
+1. Stage happens inside the workflow: web build → esbuild core bundle →
+   vendor natives (`shell/artifacts`) → sidecar placeholder (node renamed to
+   `binaries/partner-core-x86_64-pc-windows-msvc.exe`) → copy all four into
+   `shell/src-tauri/resources/` → `tauri build --bundles nsis`.
+2. Artifact `partner-windows`: `partner-shell.exe` + NSIS setup +
+   `core-bundle.cjs` (the tree sits at `<exe>/resources/…`).
+3. `spawn_core` (`shell/src-tauri/src/lib.rs`) resolves staged files from
+   `<resource_dir>/resources` or flat `resource_dir`, **strips the `\\?\`
+   verbatim prefix** (Node's CJS loader dies on `\\?\C:\…` main scripts),
+   spawns the sidecar and waits for the port. Dev fallbacks
+   `PARTNER_CORE_BUNDLE` / `PARTNER_STATIC_DIR` / `PARTNER_NO_SIDECAR` remain.
+
+### Resources gotcha
+
+`bundle.resources` must be `["resources"]` (bare dir → walk). `"resources/**"`
+matches **directories only** in glob 0.3.4, so `tauri-build` fails with
+`glob pattern resources/** path not found or didn't match any files` even when
+the directory is full of files. Full runbook: `shell/src-tauri/README-windows.md`.
+
+### Boot identity (why a stray core cannot hijack the window)
+
+The shell mints a per-boot nonce (`PARTNER_CORE_NONCE`), the core echoes it at
+`GET /v1/boot`, and a mismatch (or a non-core listener) is a reported conflict
+instead of a silent wrong-core window. On Windows two Node listeners **both**
+bind `127.0.0.1:4390` and the stray wins every connection, with no
+`EADDRINUSE` — hence the explicit probe.
+
+## Windows-specific fixes already shipped
+
+- `listen()` readiness comes from the `listening` event, failure from `error`
+  (a failed bind used to resolve the boot and serve nobody).
+- `PORT=0`/malformed values are refused by `loadConfig` (they used to fall back
+  to 4390).
+- Windows reserved **stem** names (`con.txt` …) are rejected in paths.
+- `docker/server/stage.ps1` runs on Windows PowerShell 5.1 (an encoding fix: a
+  UTF-8 em dash parsed as a smart quote and closed a string early).
+
+## Open / env-gated (Windows-relevant)
+
+- **Packaged-app walks** (M14 scheduled run, M15 live desktop boot, M24 photo
+  reach, per-surface theme walkthrough) — the last packaged boot verified
+  env-free was schema v12 (M11); the packaged schema has moved on.
+- **M20.B upgrade rehearsal:** the legacy-partition alias is unit-tested but has
+  never been exercised by a real file-DB boot with `USER_ID` set. **Must happen
+  before anyone sets `USER_ID`.**
+- The authoritative open list is `docs/UNFINISHED.md`.
+
+## Local-only artifacts (NOT on GitHub)
+
+- `shell/artifacts/` (core bundle + vendored `node_modules`) — gitignored,
+  regenerated by CI/stage scripts.
+- `~/.cargo` rustup toolchain + registry on the runner box.
+- GitHub token for API/curl at `$TMP/gh-token.txt` (scopes repo+workflow, not
+  `read:org`, so `gh auth login` validation fails — use curl).
