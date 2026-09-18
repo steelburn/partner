@@ -74,6 +74,8 @@ describe('M20-B S2 system database (pre-user tables)', () => {
       createdAt: 1,
       keepUnlocked: false,
       disabledAt: null,
+      role: 'owner',
+      keyAccess: 'own',
     });
     expect(stores.users.findByOsProfileKey('alice')?.label).toBe(MARKER);
 
@@ -109,6 +111,8 @@ describe('M20-B S2 system database (pre-user tables)', () => {
       createdAt: 7,
       keepUnlocked: false,
       disabledAt: null,
+      role: 'owner',
+      keyAccess: 'own',
     });
 
     // At rest — the file AND its WAL, while the handle is still open — there

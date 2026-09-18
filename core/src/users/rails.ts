@@ -113,8 +113,10 @@ export function partitionConfigFor(
   config: CoreConfig,
   userId: string,
   partition: { dbPath: string; skillsDir: string },
+  /** M29: this account may use the deployment's published provider/search. */
+  sharedAccess = false,
 ): CoreConfig {
-  return { ...config, userId, dbPath: partition.dbPath, skillsDir: partition.skillsDir };
+  return { ...config, userId, dbPath: partition.dbPath, skillsDir: partition.skillsDir, sharedAccess };
 }
 
 export function createUserRails(options: UserRailsOptions): UserRails {
@@ -179,7 +181,11 @@ export function createUserRails(options: UserRailsOptions): UserRails {
       const opening = partitions
         .open(userId)
         .then((handle) => {
-          const bundle = build(partitionConfigFor(config, userId, handle), handle.db, system);
+          // M29: whether this account rides the deployment's published
+          // provider/search configuration is read from the USER ROW at open
+          // time, so an owner changing a member's access needs no restart.
+          const sharedAccess = system.users.findById(userId)?.keyAccess === 'shared';
+          const bundle = build(partitionConfigFor(config, userId, handle, sharedAccess), handle.db, system);
           bundle.scheduler.start();
           entries.set(userId, { userId, bundle, lastUsedAt: now() });
           evictIfNeeded();

@@ -24,16 +24,22 @@
  */
 import type Database from 'better-sqlite3';
 import {
+  createInviteStore,
   createKeyWrapStore,
   createPairingStore,
   createSessionStore,
+  createShareStore,
+  createSharedAccessStore,
   createUserCredentialStore,
   createUserStore,
 } from '../stores/db.js';
 import type {
+  InviteStore,
   KeyWrapStore,
   PairingStore,
   SessionStore,
+  ShareStore,
+  SharedAccessStore,
   UserCredentialStore,
   UserStore,
 } from '../stores/types.js';
@@ -49,6 +55,12 @@ export interface SystemStores {
   sessions: SessionStore;
   /** S9: passphrase-wrapped partition keys (the at-rest promise). */
   keyWraps: KeyWrapStore;
+  /** M29: single-use invitations minted by an owner. */
+  invites: InviteStore;
+  /** M29: cross-user note/asset shares (snapshot copies). */
+  shares: ShareStore;
+  /** M29: the deployment's published provider/search configuration. */
+  sharedAccess: SharedAccessStore;
 }
 
 /** Wire the pre-user stores over one system database handle. */
@@ -59,5 +71,8 @@ export function createSystemStores(db: Database.Database): SystemStores {
     pairings: createPairingStore(db),
     sessions: createSessionStore(db),
     keyWraps: createKeyWrapStore(db),
+    invites: createInviteStore(db),
+    shares: createShareStore(db),
+    sharedAccess: createSharedAccessStore(db),
   };
 }

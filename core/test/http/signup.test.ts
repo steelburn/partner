@@ -38,7 +38,7 @@ import { createUserManager } from '../../src/users/manager.js';
 import { createCredentialManager } from '../../src/users/credentials.js';
 import type { UserManager } from '../../src/users/manager.js';
 import type { CredentialManager } from '../../src/users/credentials.js';
-import { createPairSecretManager } from '../../src/http/pairSecret.js';
+import { createInviteManager } from '../../src/users/invites.js';
 import { MIN_PASSPHRASE_LENGTH } from '@partner/shared';
 
 const PASSWORD = 'a long enough passphrase';
@@ -82,12 +82,18 @@ async function signupCore(
   }
 
   // The manager is injected whenever a test needs its own clock; otherwise the
-  // app creates the default one over `config.signupTtlMs`.
-  const secrets =
-    options.now === undefined ? undefined : createPairSecretManager({ now: options.now, ttlMs: options.ttlMs ?? 60_000 });
+  // app builds its own over `config.signupTtlMs`.
+  const invites =
+    options.now === undefined && options.ttlMs === undefined
+      ? undefined
+      : createInviteManager({
+          store: stores.invites,
+          now: options.now ?? Date.now,
+          ttlMs: options.ttlMs ?? 60_000,
+        });
 
   const bundle = createCore(config, db, stores, {
-    ...(secrets === undefined ? {} : { signupSecrets: secrets }),
+    ...(invites === undefined ? {} : { invitesOverride: invites }),
     ...(options.peer === undefined ? {} : { peerAddress: () => options.peer }),
     ...(options.rateLimit === undefined ? {} : { signupRateLimit: options.rateLimit }),
   });
@@ -161,12 +167,12 @@ describe('POST /v1/signup/code — the mint is an operator act', () => {
   it('issues a canonical 256-bit code that cannot be guessed or replayed', async () => {
     const { bundle, code } = await signupCore();
     const issued = await code();
-    expect(issued).toHaveLength(43);
-    expect(Buffer.from(issued, 'base64url')).toHaveLength(32);
-    expect(Buffer.from(issued, 'base64url').toString('base64url')).toBe(issued);
-    // Minting again supersedes it (one active invite), so the first is dead.
+    // 32 random bytes, hex — 64 characters, and not predictable from a second
+    // mint (M29 invitations are store-backed and may coexist).
+    expect(issued).toMatch(/^[0-9a-f]{64}$/);
     const second = await code();
     expect(second).not.toBe(issued);
+    expect(second).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('reports the mode on /v1/health, and never the code', async () => {
@@ -191,7 +197,7 @@ describe('POST /v1/auth/signup — the account it creates', () => {
 
     const res = await signUp(bundle, { code, username: 'Ama', password: PASSWORD });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(res.body).toEqual({ ok: true, id: 'ama' });
+    expect(res.body).toEqual({ ok: true, id: 'ama', role: 'member' });
 
     // The row is what the CLI would have made: the name slugged into the id.
     expect(users.findById('ama')).toMatchObject({ label: 'Ama', disabledAt: null });
@@ -267,7 +273,7 @@ describe('the invite is single use, expiring, and lockable', () => {
     expect((await signUp(bundle, { code, username: 'Ama', password: PASSWORD })).status).toBe(201);
     const replay = await signUp(bundle, { code, username: 'Other', password: PASSWORD });
     expect(replay.status).toBe(401);
-    expect(replay.body.reason).toBe('not_found');
+    expect(replay.body.reason).toBe('used');
     expect(replay.body.message).toMatch(/single use/i);
     expect(users.list()).toHaveLength(1);
   });
@@ -284,24 +290,22 @@ describe('the invite is single use, expiring, and lockable', () => {
     expect(res.body.reason).toBe('expired');
   });
 
-  it('locks after repeated wrong codes (429), instead of guessing forever', async () => {
+  it('refuses an unknown code without locking the live one', async () => {
     const { bundle } = await signupCore();
     const minted = await mintInvite(bundle);
     const good = String(minted.body.code);
-    const wrong = `${'A'.repeat(42)}B`;
+    const wrong = `${'A'.repeat(63)}B`;
 
-    // Three wrong guesses: the third SETS the lock (and is still a 401 — the
-    // caller learns nothing extra), the next attempt is refused outright.
+    // A wrong code is `unknown` — there is no guess bucket, because a 256-bit
+    // code cannot be guessed and the per-peer budget (tested below) is what
+    // bounds flooding. Crucially the LIVE invite is untouched.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const res = await signUp(bundle, { code: wrong, username: 'Ama', password: PASSWORD });
       expect(res.status, `attempt ${attempt + 1}`).toBe(401);
-      expect(res.body.reason, `attempt ${attempt + 1}`).toBe('invalid');
+      expect(res.body.reason, `attempt ${attempt + 1}`).toBe('unknown');
     }
-    const locked = await signUp(bundle, { code: wrong, username: 'Ama', password: PASSWORD });
-    expect(locked.status).toBe(429);
-    // The live code is locked too — that is the point of the bucket.
     const withRealCode = await signUp(bundle, { code: good, username: 'Ama', password: PASSWORD });
-    expect(withRealCode.status).toBe(429);
+    expect(withRealCode.status).toBe(201);
   });
 
   it('rate-limits per peer, separately from sign-in', async () => {
@@ -357,12 +361,36 @@ describe('shape errors are refused before the invite is spent', () => {
     expect(res.body.reason).toBe('missing_invite');
   });
 
-  it('is refused entirely when sign-up is off, naming the operator command', async () => {
-    const { bundle } = await signupCore({ mode: 'off' });
-    const res = await signUp(bundle, { code: 'A'.repeat(43), username: 'Ama', password: PASSWORD });
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('signup_disabled');
-    expect(res.body.message).toContain('tools/user.mjs add');
+  it('an owner-minted invite still redeems while SIGNUP_MODE is off, but the operator mint is refused', async () => {
+    // M29: SIGNUP_MODE governs only the LOOPBACK operator mint (the way to make
+    // the FIRST account). Redeeming an owner's in-app invitation is an explicit
+    // admission decision and needs no deployment switch.
+    const { bundle, users } = await signupCore({
+      mode: 'off',
+      accounts: [{ id: 'owner', label: 'Owner' }],
+    });
+    expect((await mintInvite(bundle)).status).toBe(403);
+
+    // The owner signs in and mints from the APP.
+    const ownerSession = await signIn(bundle, { username: 'owner', password: PASSWORD });
+    expect(ownerSession.status).toBe(200);
+    const minted = await request(bundle.app)
+      .post('/v1/invites')
+      .set('Host', ALLOWED_HOST)
+      .set('Authorization', `Bearer ${ownerSession.body.token}`)
+      .send({ role: 'member', keyAccess: 'shared' });
+    expect(minted.status, JSON.stringify(minted.body)).toBe(201);
+    expect(minted.body.url).toContain('#signup=');
+
+    const redeemed = await signUp(bundle, {
+      code: String(minted.body.code),
+      username: 'Ama',
+      password: PASSWORD,
+    });
+    expect(redeemed.status, JSON.stringify(redeemed.body)).toBe(201);
+    expect(redeemed.body).toEqual({ ok: true, id: 'ama', role: 'member' });
+    // The role and key access came from the INVITE ROW, not the request.
+    expect(users.findById('ama')).toMatchObject({ role: 'member', keyAccess: 'shared' });
   });
 });
 

@@ -20,6 +20,7 @@ import type {
 } from '@partner/shared';
 import { isProviderPurpose } from '@partner/shared';
 import { KEYCHAIN_SERVICE } from '../keychain/keychain.js';
+import type { SharedProviderConfig } from '../sharing/sharedAccess.js';
 import type { AuditService } from '../services/redaction.js';
 import type { ProviderRow, ProviderRowPatch, ProviderStore } from '../stores/types.js';
 import { createOpenAICompatibleClient } from '../gateway/openaiCompatible.js';
@@ -86,6 +87,15 @@ export function toSummary(row: ProviderRow): ProviderSummary {
   };
 }
 
+/**
+ * M29: a published (shared) provider as a wire summary. Health is empty because
+ * no probe was run against it — a shared profile is not the member's to test,
+ * and inventing "healthy" would be a claim nothing measured.
+ */
+function toSharedSummary(config: SharedProviderConfig): ProviderSummary {
+  return { ...config, defaultModels: [...config.defaultModels], visionModels: [...config.visionModels], health: emptyHealth() };
+}
+
 /** Validate a list of model ids: array of non-empty strings, trimmed, deduped. */
 function normalizeModelIds(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) {
@@ -143,6 +153,17 @@ export interface ProviderManagerOptions {
   connectTimeoutMs?: number;
   /** Client idle timeout for live streams (default 60s). */
   idleTimeoutMs?: number;
+  /**
+   * M29: the deployment's published provider configuration, when this account has
+   * `keyAccess: 'shared'`. The fallback is read-only and consulted ONLY while the
+   * account has no providers of its own — a member's own setup always wins, and
+   * the shared key never leaves the deployment (`shared.providerKey` reads it
+   * from the keychain).
+   */
+  shared?: {
+    providers(): SharedProviderConfig[];
+    providerKey(id: string): Promise<string | null>;
+  };
 }
 
 export interface ProviderManager {
@@ -248,12 +269,19 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
   }
 
   function list(): ProviderSummary[] {
-    return store.list().map(toSummary);
+    const own = store.list().map(toSummary);
+    // M29: the shared fallback exists for an account that has configured
+    // nothing. Once it has ANY provider of its own, its list is its own — so a
+    // member who later sets up their own endpoint stops riding the owner's.
+    if (own.length > 0) return own;
+    return (options.shared?.providers() ?? []).map(toSharedSummary);
   }
 
   function get(id: string): ProviderSummary | null {
     const row = store.findById(id);
-    return row ? toSummary(row) : null;
+    if (row) return toSummary(row);
+    const shared = options.shared?.providers().find((entry) => entry.id === id);
+    return shared === undefined ? null : toSharedSummary(shared);
   }
 
   /**
@@ -348,6 +376,14 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
   }
 
   async function getKey(id: string): Promise<string | null> {
+    // A shared provider's key lives under the deployment `shared-provider:`
+    // account; an own provider's under `provider:`. The row decides which, so a
+    // member can never read a key by naming an id it does not own.
+    if (store.findById(id) === undefined && options.shared !== undefined) {
+      if (options.shared.providers().some((entry) => entry.id === id)) {
+        return options.shared.providerKey(id);
+      }
+    }
     try {
       return await keychain.get(KEYCHAIN_SERVICE, keychainAccount(id));
     } catch {
@@ -440,11 +476,13 @@ export function createProviderManager(options: ProviderManagerOptions): Provider
 
   async function clientFor(id: string): Promise<OpenAICompatibleClient> {
     const row = store.findById(id);
-    if (!row) throw new ProviderError('not_found', 'provider not found');
+    const shared = row === undefined ? get(id) : null;
+    if (!row && shared === null) throw new ProviderError('not_found', 'provider not found');
+    const endpoint = row ? row.endpoint : (shared as ProviderSummary).endpoint;
     const key = await getKey(id);
     if (key === null) throw new ProviderError('missing_key', 'provider has no key — set one before chatting');
     return createOpenAICompatibleClient({
-      endpoint: row.endpoint,
+      endpoint,
       apiKey: key,
       connectTimeoutMs,
       idleTimeoutMs,

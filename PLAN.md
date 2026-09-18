@@ -616,12 +616,15 @@ any Partner-owned server (there is none in v1).
 | `assets` | typed saved artifacts (documents/tables/code/references/deductions…) |
 | `mcp_servers` | configured stdio MCP servers (default-deny OFF) |
 | `users` | local accounts: data-partition root + disabled flag (M20) |
-| `users` | local accounts: the data-partition root, OS-profile mapping and disabled flag — in the **system DB**, not a per-user DB, because it must exist before a user is resolved (M20.B S2) |
+| `users` | local accounts: the data-partition root, OS-profile mapping, disabled flag, **`role`** (`owner`/`member`) and **`key_access`** (`own`/`shared`) — in the **system DB**, not a per-user DB, because it must exist before a user is resolved (M20.B S2; M29 roles) |
 | `user_credentials` | per-user passphrase credential: salt, scrypt params, derived key, failure bucket and lock window. Stores **no passphrase** (M20.B S2a) |
 | `pairings` / `sessions` | device/origin pairing + session tokens; sessions gain `user_id`, client class, device label/platform and `rotated_at` (M20) — **`kind` is deliberately NOT widened**: it is the audit actor for 7 routes |
+| `invites` | single-use, expiring invitations minted by an owner (or the loopback operator tool). Stores the code's **SHA-256 only** plus the `role`/`key_access` the redeemer gains — sign-up reads them from this row, never from the request (M29) |
+| `shares` | cross-user note/asset shares as **snapshot copies** in the system DB (owner id, kind, resource id, grantee id, title, body, meta, revoked_at), so a grantee never opens the owner's partition and a share stays readable while its owner is signed out (M29) |
+| `shared_access` | key/value holding the deployment's published provider + search configuration. Secrets live in the deployment keychain under `shared-provider:`/`shared-search:` accounts; only non-secret JSON is here (M29) |
 | `audit_log` | append-only activity |
 
-Schema is `v21` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+Schema is `v23` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
 `personas.policy`/`home_folder`/`schedules`, `providers.purpose`/
 `vision_models`, `conversations.folder_id`/`parent_id`/`source_asset_id`,
 `messages.content_type`, `pending_tools.conversation_id`/`persona_id`/**`kind`**/
@@ -651,6 +654,8 @@ side is compared to the recorded hash and the graph side is recompiled, because 
 canvas save never touches `code` (a graph edited after a compile used to read
 fresh — `docs/VERIFY-M28.md` §3.1). `origin` gained the value `'flow'`. Guarded
 `ensureColumn`, so a v21 DB opens unchanged and pre-v22 rows read `NULL` = no flow.
+
+**v23 (M29, landed):** adds `users.role` (default `'owner'` — an existing account is its deployment's owner) and `users.key_access` (default `'own'`), plus the `invites`, `shares` and `shared_access` tables. Additive: a v22 DB gains the two columns on its next open and the tables via `CREATE TABLE IF NOT EXISTS`, and a pre-v23 row reads as an owner with its own credentials — exactly the pre-M29 behaviour. `PLAN-M29.md`.
 
 **M20 partitions by user and by trust tier:** one whole-file-encrypted DB +
 cipher key + skills dir per user under `data/users/<id>/` (generalizing the
@@ -729,6 +734,25 @@ drawn in the Studio, generated from a description, refined by the model as a
 proposal the owner accepts or rejects, compiled into `code` with the permissions
 derived from it, and installed/run over HTTP — `PLAN-M28.md`,
 `docs/VERIFY-M28.md`.
+
+M29 (schema v23, all in the GATEWAY so they answer before per-user delegation)
+adds the multi-user lifecycle: `POST /v1/auth/signout` (revokes the session AND
+closes the user's partition — on a login core the token is not the only thing
+that goes) · `GET /v1/account` (id, label, role, key access — never a
+credential) · owner-only `GET /v1/users` · `GET|POST /v1/invites` and
+`DELETE /v1/invites/:id` (single-use invitations; only the hash is stored, and
+`role`/`key_access` come from the invite ROW at redemption, so a redeemer cannot
+escalate) · owner-only `GET|PUT|DELETE /v1/shared-access` (publish the
+deployment's provider/search configuration for members with `keyAccess:
+'shared'`; secrets move to `shared-*` keychain accounts and the fallback is
+read-only and only while the member has none of their own · sharing
+`POST /v1/shares`, `GET /v1/shares/sent|received`, `GET
+/v1/shares/received/:id`, `POST /v1/shares/:id/refresh|import`, `DELETE
+/v1/shares/:id` (snapshot copies in the system DB, so no cross-partition read
+ever happens) · `POST /v1/signup/code` keeps its loopback operator mint while
+`POST /v1/auth/signup` also redeems an owner-minted invite even when
+`SIGNUP_MODE=off` — an owner's explicit admission decision needs no deployment
+switch · `PLAN-M29.md`, `docs/VERIFY-M29.md`.
 
 Later milestones extend this surface: providers by purpose
 (`/v1/providers/discover`, `/v1/providers/purposes` — M13) and edited in place
@@ -2015,6 +2039,45 @@ apps/partner/
 Demo mode mirrors llm-self-service: `DEMO_MODE=1` swaps in fake providers /
 fake keychain / in-memory stores so the whole product is exercisable with no
 credentials. Never in production builds.
+
+- [x] **M29 — The multi-user lifecycle: sign out, in-app invitations, shared AI
+      access, per-user files and note/asset sharing (detailed spec:
+      `PLAN-M29.md`, verification record: `docs/VERIFY-M29.md`).** Five things a
+      hosted (login-mode) Partner needs before a second person can really use it.
+      **(1) Sign out** — `POST /v1/auth/signout` revokes the presented session
+      AND (on a login core) closes the user's partition and drops its key, so
+      signed out means unreadable rather than merely unreachable; the SPA gains a
+      sidebar-footer control, a Members card and a phone-reachable route.
+      **(2) Owner-minted invitations, no shell** — `users.role`
+      (`owner`/`member`) plus an `invites` table; an owner mints, lists and
+      revokes single-use invitations from the Members view, and only the code's
+      hash is stored. `SIGNUP_MODE` keeps governing the loopback operator mint
+      (the way to create the FIRST account) while an owner-minted invite redeems
+      regardless — an explicit admission decision needs no deployment switch, and
+      the redeemer cannot escalate because `role`/`key_access` are read from the
+      invite ROW.
+      **(3) Shared AI access** — a member invited with `keyAccess:'shared'`
+      reaches the deployment's published provider + search configuration while
+      they have none of their own, so they can chat without being handed a key;
+      the owner publishes from the Members view (`shared_access` rows +
+      `shared-*` keychain accounts), and their own setup always wins.
+      **(4) Per-user file paths** — a partitioned core derives each account's
+      fixed roots as `<FIXED_ROOTS entry>/<userId>` (or `<partition>/files` with
+      no deployment volume), creates them at boot, and keeps the roots surface
+      read-only in login mode, so one mounted volume no longer means one shared
+      directory.
+      **(5) Note & asset sharing** — `shares` holds a SNAPSHOT copy in the system
+      DB, so a grantee reads what they were given without ever opening the
+      owner's partition, can save it into their own notes, and sees nothing else;
+      the owner can push a current edit or revoke. Schema **v22 → v23**
+      (additive: `users.role`/`users.key_access`, `invites`, `shares`,
+      `shared_access`).
+      *Exit: root 1766 passed (5 env-gated skips) · shared 90 · web 944 ·
+      typechecks 0 · web build green · `ux_audit` PASSED on the new surfaces ·
+      walked live in a browser against a real login-mode core (owner sign-in →
+      Members → mint an invitation link → Shared; the desktop pairing shape also
+      walked) · container refreshed, `partner-server:local` healthy · Windows
+      NSIS package built green.*
 
 ---
 

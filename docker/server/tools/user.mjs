@@ -33,8 +33,8 @@ const CTRL_C = '\u0003';
 const BACKSPACE = '\u007f';
 const USAGE = `Partner account tool
 
-  list                      list accounts (id, label, disabled)
-  add <name>                create an account with a new passphrase
+  list                      list accounts (id, label, role, AI access, state)
+  add <name> [--owner]      create an account with a new passphrase
   passwd <name>             replace an existing account's passphrase
   lock-account <name>       disable an account (data is kept)
   unlock-account <name>     re-enable a disabled account
@@ -130,7 +130,9 @@ try {
     }
     for (const user of users) {
       process.stdout.write(
-        `${user.id}\t${user.label}\t${user.disabledAt === null ? 'active' : 'disabled'}\n`,
+        `${user.id}\t${user.label}\t${user.role}\t${user.keyAccess}\t${
+          user.disabledAt === null ? 'active' : 'disabled'
+        }\n`,
       );
     }
   } else if (command === 'add') {
@@ -143,11 +145,19 @@ try {
     // accounts get their own partition file as usual.
     const firstAccount = accounts.users.list().length === 0;
     const id = firstAccount ? core.LEGACY_USER_ID : idFor(name);
-    const created = accounts.users.create({ id, label: name.trim() });
+    // M29: the first account is the OWNER (it can invite and publish shared
+    // access); later accounts are members, and `--owner` promotes one.
+    const role = firstAccount || process.argv.includes('--owner') ? 'owner' : 'member';
+    const created = accounts.users.create({ id, label: name.trim(), role });
     if (!created.ok) throw new Error(`could not create the account (${created.reason})`);
     const stored = await accounts.credentials.create(created.user.id, password);
     if (!stored.ok) throw new Error(`could not store the passphrase (${stored.reason})`);
-    process.stdout.write(`Created account "${created.user.label}" (id ${created.user.id}).\n`);
+    process.stdout.write(
+      `Created account "${created.user.label}" (id ${created.user.id}, ${created.user.role}).\n` +
+        (created.user.role === 'member'
+          ? 'They set up their own providers unless they are invited with shared access from the app.\n'
+          : ''),
+    );
   } else if (command === 'passwd') {
     if (name === undefined) throw new Error('passwd needs a name');
     const user = findByName(accounts.users, name);

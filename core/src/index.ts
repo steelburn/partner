@@ -11,8 +11,8 @@
  * Running this file directly (node/tsx entry) starts the loopback server and
  * prints a one-line startup banner; importing it never listens.
  */
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
@@ -31,7 +31,7 @@ export { createUserRails, partitionConfigFor } from './users/rails.js';
 export { createUserPartitions } from './users/partition.js';
 export { dbKeyAccount, ensureDbKey, DB_KEY_ACCOUNT } from './keychain/dbKey.js';
 export { openEncryptedDatabase } from './stores/db.js';
-export { userDbPath, userSkillsDir, usersRoot } from './users/paths.js';
+export { userDbPath, userSkillsDir, usersRoot, userRoot } from './users/paths.js';
 export { LEGACY_USER_ID } from '@partner/shared';
 export { createCredentialManager, SCRYPT_PARAMS } from './users/credentials.js';
 export { createSystemStores } from './users/store.js';
@@ -51,6 +51,7 @@ export {
   createEpisodeStore,
   createFileProposalStore,
   createGrantStore,
+  createInviteStore,
   createMemoryFtsStore,
   createMessageStore,
   createNoteLinkStore,
@@ -66,6 +67,8 @@ export {
   createProviderStore,
   createSessionStore,
   createSettingsStore,
+  createShareStore,
+  createSharedAccessStore,
   createSiteScopeStore,
   createSkillDraftStore,
   createSkillInvocationStore,
@@ -88,6 +91,8 @@ export type {
   FileProposalStore,
   GrantRow,
   GrantStore,
+  InviteRow,
+  InviteStore,
   MemoryFtsHit,
   MemoryFtsStore,
   MemoryRefKind,
@@ -125,6 +130,9 @@ export type {
   SessionStore,
   SettingsRow,
   SettingsStore,
+  ShareRow,
+  ShareStore,
+  SharedAccessStore,
   SiteScopeStore,
   PlaybookRunPatch,
   PlaybookRunRow,
@@ -626,7 +634,7 @@ import { createKeychainFile, keychainFileError } from './keychain/file.js';
 import { isDirectEntryPoint } from './entry.js';
 import { rateLimitKeyFor } from './http/peer.js';
 import { dbKeyAccount, ensureDbKey } from './keychain/dbKey.js';
-import { userDbPath } from './users/paths.js';
+import { userDbPath, userRoot } from './users/paths.js';
 import { createUserManager } from './users/manager.js';
 import type { UserManager } from './users/manager.js';
 import { createCredentialManager } from './users/credentials.js';
@@ -647,8 +655,7 @@ import {
   SPEND_WINDOW_MS,
 } from './gateway/spend.js';
 import type { SpendLedgerManager } from './gateway/spend.js';
-import { createProviderManager } from './providers/providerManager.js';
-import type { ProviderManager } from './providers/providerManager.js';
+import { createProviderManager } from './providers/providerManager.js';import type { ProviderManager } from './providers/providerManager.js';
 import { createToolBroker } from './broker/broker.js';
 import type { ToolBroker } from './broker/broker.js';
 import { createGrantManager } from './broker/grants.js';
@@ -693,6 +700,13 @@ import type { AssetManager } from './assets/index.js';
 import { createMcpManager, createMcpSkillReach } from './mcp/index.js';
 import type { McpManager } from './mcp/index.js';
 import { createSearchManager } from './search/index.js';
+import { searchKeychainAccount } from './search/manager.js';
+import { KEYCHAIN_SERVICE } from './keychain/keychain.js';
+import { createSharedAccess } from './sharing/sharedAccess.js';
+import { createShareManager } from './sharing/manager.js';
+import type { ShareDetail } from './sharing/manager.js';
+import { createInviteManager } from './users/invites.js';
+import type { ShareKind } from '@partner/shared';
 import type { SearchManager } from './search/index.js';
 import {
   createDeployManager,
@@ -872,6 +886,79 @@ async function openCoreDatabase(config: CoreConfig): Promise<Database.Database> 
  * duplicate canonical path with a typed `exists` error). The stored path is the
  * canonical one, so the lookup compares canonical paths.
  */
+/**
+ * M29: the cross-user sharing gateway.
+ *
+ * It closes over the RAILS and the system stores. Reading the caller's own
+ * resource opens THAT user's partition (the core they are already using); an
+ * imported copy is written into the SAME caller's store. Neither direction
+ * exposes a way to read a partition the request did not name, and the share
+ * itself is a snapshot row in the system database.
+ */
+function createSharingGateway(deps: {
+  rails: { coreFor(userId: string): Promise<CoreBundle | undefined> };
+  stores: SystemStores;
+}): import('./http/server.js').SharingGateway {
+  const manager = createShareManager({ store: deps.stores.shares });
+  return {
+    manager,
+    resolveGrantee(input: string): { id: string; label: string } | null {
+      const wanted = input.trim().toLowerCase();
+      const user = deps.stores.users
+        .list()
+        .find(
+          (candidate) =>
+            candidate.id.toLowerCase() === wanted || candidate.label.toLowerCase() === wanted,
+        );
+      return user === undefined ? null : { id: user.id, label: user.label };
+    },
+    labelFor(userId: string): string | null {
+      return deps.stores.users.findById(userId)?.label ?? null;
+    },
+    async readOwn(
+      userId: string,
+      kind: ShareKind,
+      resourceId: string,
+      conversationId: string | null,
+    ): Promise<{ title: string; body: string; meta: Record<string, unknown> | null } | null> {
+      const bundle = await deps.rails.coreFor(userId);
+      if (bundle === undefined) return null;
+      if (kind === 'note') {
+        const note = bundle.notes.get(resourceId);
+        return note === null
+          ? null
+          : { title: note.title, body: note.content, meta: { tags: note.tags } };
+      }
+      if (conversationId === null) return null;
+      const asset = bundle.assets.list(conversationId).find((entry) => entry.id === resourceId);
+      return asset === undefined
+        ? null
+        : {
+            title: asset.title,
+            body: asset.body,
+            meta: { kind: asset.kind, tags: asset.tags, conversationId },
+          };
+    },
+    async importReceived(
+      userId: string,
+      share: ShareDetail,
+    ): Promise<{ kind: ShareKind; id: string; conversationId: string | null } | null> {
+      const bundle = await deps.rails.coreFor(userId);
+      if (bundle === undefined) return null;
+      // A shared ASSET lands as a topic-tagged note: its copy is text, and notes
+      // are the durable, linkable home (assets are bound to a conversation the
+      // grantee does not own). The provenance line makes the origin explicit.
+      const suffix = share.kind === 'asset' ? '\n\n_(shared asset copy)_' : '';
+      const note = bundle.notes.create({
+        title: `Shared: ${share.title}`.slice(0, 200),
+        content: `${share.body}${suffix}`,
+        tags: ['shared'],
+      });
+      return { kind: 'note', id: note.id, conversationId: null };
+    },
+  };
+}
+
 function applyFixedRoots(
   roots: ProjectRootManager,
   paths: readonly string[],
@@ -919,6 +1006,18 @@ export function createCore(
     signupSecrets?: import('./http/pairSecret.js').PairSecretManager;
     /** Fixed-window budget for `POST /v1/auth/signup`, per network peer. */
     signupRateLimit?: { limit?: number; windowMs?: number };
+    /**
+     * M29: the gateway-owned seams. They live here (rather than being built in
+     * createCore) because they need the RAILS — the object that can open another
+     * user's partition — which only `startServer` owns.
+     */
+    sharing?: import('./http/server.js').SharingGateway;
+    sharedAccess?: import('./sharing/sharedAccess.js').SharedAccess;
+    onSignOut?: (userId: string) => void;
+    publishSharedAccess?: (ownerId: string) => Promise<{
+      providerCount: number;
+      searchConfigured: boolean;
+    }>;
     /**
      * M20-B S7 TEST SEAM: the network peer of a request. Injectable because a
      * hermetic test cannot dial the core from a non-loopback address, and the
@@ -975,7 +1074,24 @@ export function createCore(
   // whole surface is exercisable with no credentials. Demo chat still falls
   // back to the demo provider until a profile is registered.
   const providerStore = createProviderStore(db);
-  const providerManager = createProviderManager({ store: providerStore, keychain, audit });
+  // M29: this account's provider list falls back to the deployment's published
+  // configuration while it has none of its own (only when the user row says
+  // keyAccess === 'shared' — see users/rails.ts).
+  const sharedAccess =
+    system === undefined ? undefined : createSharedAccess({ store: system.sharedAccess, keychain });
+  const providerManager = createProviderManager({
+    store: providerStore,
+    keychain,
+    audit,
+    ...(config.sharedAccess === true && sharedAccess !== undefined
+      ? {
+          shared: {
+            providers: () => sharedAccess.providers(),
+            providerKey: (id: string) => sharedAccess.providerKey(id),
+          },
+        }
+      : {}),
+  });
 
   // M2: tool broker over the SAME in-memory/file DB — roots/grants/pending/
   // proposals tables (schema v3) + the six files.* tools. Roots are added at
@@ -985,7 +1101,27 @@ export function createCore(
   // them before anything can read the list, and fail the boot when one is not a
   // directory — a typo'd or unmounted path must not silently leave the file
   // tools with no reachable root (or, worse, "succeed" with an empty one).
-  applyFixedRoots(projectRootManager, config.fixedRoots, config.fixedRootsReadOnly);
+  // M29: FILE ISOLATION. On a partitioned (multi-user) core every account gets
+  // its OWN root under each deployment-owned base directory, created on boot:
+  // `<FIXED_ROOTS entry>/<userId>`. Without that, one mounted volume gave every
+  // user the same files — the opposite of "a user cannot interact with another
+  // user's file". With no FIXED_ROOTS at all, the per-user root is
+  // `<partition>/files`. Either way the roots surface is READ-ONLY in login mode
+  // (`rootsFixed` below), so a member cannot add a path that escapes their area.
+  if (config.userId !== undefined) {
+    const bases =
+      config.fixedRoots.length > 0
+        ? config.fixedRoots
+        : [join(userRoot(config.dataRoot, config.userId), 'files')];
+    const userRoots =
+      config.fixedRoots.length > 0
+        ? bases.map((base) => join(base, config.userId as string))
+        : bases;
+    for (const dir of userRoots) mkdirSync(dir, { recursive: true });
+    applyFixedRoots(projectRootManager, userRoots, config.fixedRootsReadOnly);
+  } else {
+    applyFixedRoots(projectRootManager, config.fixedRoots, config.fixedRootsReadOnly);
+  }
   const grantManager = createGrantManager({ store: createGrantStore(db) });
   const pendingManager = createPendingManager({
     store: createPendingToolStore(db),
@@ -1138,6 +1274,14 @@ export function createCore(
     settings: settingsStore,
     keychain,
     audit,
+    ...(config.sharedAccess === true && sharedAccess !== undefined
+      ? {
+          shared: {
+            config: () => sharedAccess.search(),
+            key: (provider: string) => sharedAccess.searchKey(provider),
+          },
+        }
+      : {}),
   });
   const themeStore = createThemeStore(db);
   const themes = createThemeManager({
@@ -1368,12 +1512,19 @@ export function createCore(
     // self-service (SIGNUP_MODE=invite + AUTH_MODE=login, enforced by loadConfig).
     signupMode: config.signupMode,
     signupTtlMs: config.signupTtlMs,
+    // M29: invitations are store-backed in the system database, so they survive
+    // a restart until they expire (unlike the in-memory pairing secret).
+    ...(system === undefined
+      ? {}
+      : { invites: createInviteManager({ store: system.invites, ttlMs: config.signupTtlMs }) }),
+    // M29: the deployment's published provider/search configuration (owner).
+    ...(sharedAccess === undefined ? {} : { sharedAccess }),
     maxJsonBytes: config.maxJsonBytes,
     // R7: the SAME number the attachment manager enforces, so the route's body
     // limit and the manager's cap cannot drift.
     maxUploadBytes: config.maxUploadBytes,
     // M22: a deployment-owned roots list makes the roots surface read-only.
-    rootsFixed: config.fixedRoots.length > 0,
+    rootsFixed: config.fixedRoots.length > 0 || config.userId !== undefined,
     // R4: the header is read only when the socket peer is a trusted proxy, and
     // it feeds the rate-limit buckets only (never locality).
     clientIp: (req) =>
@@ -1641,6 +1792,60 @@ export async function startServer(config: CoreConfig = loadConfig()): Promise<St
   }
   const db =
     rails === undefined ? await openCoreDatabase(config) : openDatabase(':memory:');
+  // M29: the deployment's published provider/search configuration and the
+  // cross-user sharing gateway. Both need the system database; sharing also
+  // needs the rails (to read the caller's OWN resource and write an import).
+  const sharedAccess =
+    system === undefined
+      ? undefined
+      : createSharedAccess({ store: system.stores.sharedAccess, keychain });
+  const sharing =
+    rails === undefined || system === undefined
+      ? undefined
+      : createSharingGateway({ rails, stores: system.stores });
+  const m29Seams = (ownerRails: typeof rails): Record<string, unknown> => {
+    if (ownerRails === undefined || sharedAccess === undefined) return {};
+    return {
+      ...(sharing === undefined ? {} : { sharing }),
+      onSignOut: (userId: string) => {
+        // Closing the partition drops its key from memory too (rails.close calls
+        // vault.lock), so a sign-out makes the data unreadable, not merely
+        // unreachable.
+        ownerRails.close(userId);
+      },
+      publishSharedAccess: async (ownerId: string) => {
+        const ownerBundle = await ownerRails.coreFor(ownerId);
+        if (ownerBundle === undefined) {
+          throw new Error('the owner partition could not be opened');
+        }
+        const entries: Array<{
+          config: import('./sharing/sharedAccess.js').SharedProviderConfig;
+          key: string | null;
+        }> = [];
+        for (const provider of ownerBundle.providerManager.list()) {
+          const { health: _health, ...config } = provider;
+          entries.push({ config, key: await ownerBundle.providerManager.getKey(provider.id) });
+        }
+        const searchConfig = ownerBundle.search.config();
+        const keys: Record<string, string> = {};
+        if (searchConfig.enabled) {
+          for (const provider of ['tavily', 'brave'] as const) {
+            const key = await keychain.get(KEYCHAIN_SERVICE, searchKeychainAccount(provider));
+            if (key !== null && key !== '') keys[provider] = key;
+          }
+        }
+        await sharedAccess.publish({
+          providers: entries,
+          search: searchConfig.enabled ? { config: searchConfig, keys } : null,
+          updatedBy: ownerId,
+        });
+        return {
+          providerCount: entries.length,
+          searchConfigured: searchConfig.enabled && Object.keys(keys).length > 0,
+        };
+      },
+    };
+  };
   const bundle = createCore(
     config,
     db,
@@ -1657,6 +1862,7 @@ export async function startServer(config: CoreConfig = loadConfig()): Promise<St
             return (await rails.coreFor(userId))?.app;
           },
           ...(vault === undefined ? {} : { auth: { vault } }),
+          ...m29Seams(rails),
         },
   );
   const server = await listen(bundle.app, config.port, config.host, config.tls);

@@ -142,7 +142,7 @@ export interface ProviderClient {
 // Versioning
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 export const WIRE_VERSION = 'v1';
 
 /**
@@ -157,3 +157,39 @@ export const WIRE_VERSION = 'v1';
  * derived from it rather than spelled a second time.
  */
 export const LEGACY_USER_ID = '0';
+
+/**
+ * M29: an account's role on this core.
+ *
+ * `owner` may mint invitations, publish shared provider/search access and see
+ * every account; `member` reaches their OWN partition plus whatever has been
+ * shared with them. The FIRST account on an empty core is always an owner, so a
+ * deployment is never left without one.
+ */
+export const USER_ROLES = ['owner', 'member'] as const;
+export type UserRole = (typeof USER_ROLES)[number];
+export function isUserRole(value: unknown): value is UserRole {
+  return value === 'owner' || value === 'member';
+}
+
+/**
+ * M29: where a member's model + search credentials come from.
+ *
+ * `own` — the account configures providers itself (the owner default, and every
+ * pre-M29 account). `shared` — the account may use the deployment's published
+ * provider/search configuration while it has none of its own, so an invited
+ * person can chat immediately. Chosen at INVITE time; a redeemer cannot change
+ * it.
+ */
+export const KEY_ACCESS_MODES = ['own', 'shared'] as const;
+export type KeyAccess = (typeof KEY_ACCESS_MODES)[number];
+export function isKeyAccess(value: unknown): value is KeyAccess {
+  return value === 'own' || value === 'shared';
+}
+
+/** M29: what a share covers — a note or a saved asset. */
+export const SHARE_KINDS = ['note', 'asset'] as const;
+export type ShareKind = (typeof SHARE_KINDS)[number];
+export function isShareKind(value: unknown): value is ShareKind {
+  return value === 'note' || value === 'asset';
+}

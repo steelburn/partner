@@ -26,6 +26,7 @@
  */
 import type { UserRow, UserStore } from '../stores/types.js';
 import { LEGACY_USER_ID } from '@partner/shared';
+import type { KeyAccess, UserRole } from '@partner/shared';
 import { InvalidUserIdError, assertValidUserId } from './paths.js';
 import { currentOsProfileUsername, osProfileKey } from './osProfile.js';
 
@@ -78,7 +79,15 @@ export interface UserManager {
    */
   ensureFirstUser(): UserRow | null;
   /** Provision one user. The caller owns the id (validated as a partition name). */
-  create(input: { id: string; label: string; osProfileKey?: string | null }): UserCreateResult;
+  create(input: {
+    id: string;
+    label: string;
+    osProfileKey?: string | null;
+    /** M29: defaults to 'member' (a deployment must mint an owner invite). */
+    role?: UserRole;
+    /** M29: defaults to 'own' (the account configures its own credentials). */
+    keyAccess?: KeyAccess;
+  }): UserCreateResult;
   /** Every user, oldest first (disabled users included — see `disabledAt`). */
   list(): UserRow[];
   findById(id: string): UserRow | undefined;
@@ -118,6 +127,10 @@ export function createUserManager(options: UserManagerOptions): UserManager {
         createdAt: at,
         disabledAt: null,
         keepUnlocked: false,
+        // M29: the first account on an empty core is its owner. A deployment can
+        // never be left with nobody able to mint an invitation.
+        role: 'owner',
+        keyAccess: 'own',
       };
       store.insert(user);
       return user;
@@ -149,6 +162,13 @@ export function createUserManager(options: UserManagerOptions): UserManager {
         createdAt: now(),
         disabledAt: null,
         keepUnlocked: false,
+        // M29: an explicit role/keyAccess wins; the defaults are the safe
+        // readings — a member who configures their own credentials. The ONE
+        // exception is the first account on an empty core: it must be an owner,
+        // or nobody could ever mint an invitation (the CLI's `add` is the
+        // observed path here, and `ensureFirstUser` is not it in login mode).
+        role: store.list().length === 0 ? 'owner' : input.role ?? 'member',
+        keyAccess: input.keyAccess ?? 'own',
       };
       store.insert(user);
       return { ok: true, user };

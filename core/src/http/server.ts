@@ -113,10 +113,17 @@ import type { AuthMode, SignupMode } from '../config.js';
 import {
   LEGACY_USER_ID,
   accountIdForUsername,
+  isKeyAccess,
+  isShareKind,
   isUsableAccountId,
+  isUserRole,
   passphraseProblem,
   usernameProblem,
 } from '@partner/shared';
+import type { ShareKind, UserRole } from '@partner/shared';
+import type { InviteManager } from '../users/invites.js';
+import type { ShareDetail, ShareManager } from '../sharing/manager.js';
+import type { SharedAccess } from '../sharing/sharedAccess.js';
 import { createPairSecretManager } from './pairSecret.js';
 import type { PairSecretManager } from './pairSecret.js';
 import { buildPairPayload } from './pairPayload.js';
@@ -213,6 +220,40 @@ export interface CoreAuthOptions {
     lock(userId: string): boolean;
     keyFor(userId: string): Promise<string | undefined>;
   };
+}
+
+/**
+ * M29: the cross-user sharing seam.
+ *
+ * The routes for sharing live in the GATEWAY (this app), before per-user
+ * delegation, because a share is the one thing that deliberately names two
+ * users. The implementation (`index.ts`) owns the rails and the system stores:
+ * it resolves a grantee, reads the caller's OWN resource (opening the caller's
+ * partition, which is the same core they are already using) to snapshot it, and
+ * writes an imported copy into the grantee's own store. Nothing here lets a
+ * request read another user's database.
+ */
+export interface SharingGateway {
+  manager: ShareManager;
+  /** Resolve a grantee from an account id or label; null = no such account. */
+  resolveGrantee(input: string): { id: string; label: string } | null;
+  /** Account id -> label, for rendering owner/grantee on a share list. */
+  labelFor(userId: string): string | null;
+  /**
+   * Read the caller's own note/asset to snapshot it. Null when it does not
+   * exist (or the asset is not in the named conversation).
+   */
+  readOwn(
+    userId: string,
+    kind: ShareKind,
+    resourceId: string,
+    conversationId: string | null,
+  ): Promise<{ title: string; body: string; meta: Record<string, unknown> | null } | null>;
+  /** Copy a received share into the caller's own store (notes or assets). */
+  importReceived(
+    userId: string,
+    share: ShareDetail,
+  ): Promise<{ kind: ShareKind; id: string; conversationId: string | null } | null>;
 }
 
 export interface CoreAppOptions {
@@ -331,18 +372,42 @@ export interface CoreAppOptions {
    */
   signupTtlMs?: number;
   /**
-   * The invite-secret manager. Defaults to a fresh in-memory
-   * {@link createPairSecretManager} — the same 256-bit single-use primitive as
-   * the networked-pairing secret (keyed HMAC at rest, one active record, dies
-   * with the process), which is exactly the lifetime an invite wants.
+   * Explicit invite manager override (tests own the clock/TTL). Production
+   * passes `invites` from index.ts, built over the system database.
    */
-  signupSecrets?: PairSecretManager;
+  invitesOverride?: InviteManager;
   /**
    * Fixed-window budget for `POST /v1/auth/signup`, per network peer. Separate
    * from the sign-in budget on purpose: a sign-up flood must not lock the
    * owner out of signing in.
    */
   signupRateLimit?: { limit?: number; windowMs?: number };
+  /**
+   * M29: owner-minted invitations (login mode). Absent ⇒ the invite routes
+   * refuse with `not_configured`, which is what the pairing shape wants — there
+   * is no account to invite. The manager is store-backed, so an invite survives
+   * a restart until it expires (unlike the pairing secret, which dies with the
+   * process because it is only ever used seconds later).
+   */
+  invites?: InviteManager;
+  /** M29: cross-user note/asset sharing. Absent ⇒ the share routes 501. */
+  sharing?: SharingGateway;
+  /** M29: the deployment's published provider/search configuration. */
+  sharedAccess?: SharedAccess;
+  /**
+   * M29: called AFTER a sign-out revokes the presented session — closes the
+   * user's partition and drops their key from memory, so "sign out" means the
+   * data is no longer open, not merely that the token is gone.
+   */
+  onSignOut?: (userId: string) => void;
+  /**
+   * M29: snapshot the OWNER's live provider/search configuration into the
+   * deployment's shared access. Owner-only route; the callback opens the
+   * owner's partition (they are signed in) and writes only what it reads.
+   */
+  publishSharedAccess?: (
+    ownerId: string,
+  ) => Promise<{ providerCount: number; searchConfigured: boolean }>;
   /**
    * M20-B S7: TEST SEAM — the network peer of a request. Defaults to the real
    * socket address (`req.socket.remoteAddress`), which is the only signal that
@@ -1810,9 +1875,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
   // `SignupMode` in config.ts for why.
   const signupMode = options.signupMode ?? 'off';
   const signupEnabled = loginMode && signupMode === 'invite';
-  const signupSecrets =
-    options.signupSecrets ??
-    createPairSecretManager({ ttlMs: options.signupTtlMs ?? SIGNUP_TTL_DEFAULT_MS });
+  // M29: invitations are store-backed (they survive a restart until they
+  // expire). `options.invites` is the production manager over the system
+  // database; `invitesOverride` is the test seam for a pinned clock/TTL.
+  const invites = options.invitesOverride ?? options.invites;
+  // M29: an owner can invite from the app, so redemption is available whenever
+  // invitations exist — even with SIGNUP_MODE=off (that switch governs only the
+  // loopback OPERATOR mint, which is the way to create the first account).
+  const ownerInvitesEnabled = loginMode && invites !== undefined;
+  const signupAvailable = loginMode && (signupEnabled || ownerInvitesEnabled);
   const signupLimiter: RateLimiter = createRateLimiter({
     limit: options.signupRateLimit?.limit ?? PAIR_RATE_LIMIT_DEFAULT.limit,
     windowMs: options.signupRateLimit?.windowMs ?? PAIR_RATE_LIMIT_DEFAULT.windowMs,
@@ -1850,7 +1921,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       // account (with a code minted on the machine), `off` otherwise. Not a
       // secret — it decides whether the gate offers a "Create an account" path
       // at all, and the form still needs a live invite to succeed.
-      signupMode: signupEnabled ? 'invite' : 'off',
+      signupMode: signupAvailable ? 'invite' : 'off',
       // R7: the SPA reads this to refuse an over-size file BEFORE spending the
       // upload. It cannot be inferred client-side, and a refused upload that
       // already pushed megabytes over a phone connection is a bad trade for
@@ -2239,15 +2310,17 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     });
   });
 
-  // 3c-bis. M22 sign-up — ISSUE A SINGLE-USE INVITE (LOCAL ONLY).
+  // 3c-bis. OPERATOR INVITE MINT (LOCAL ONLY, M22; M29 keeps it).
   //
-  // Why the mint is loopback-only and not a button: "may this person create an
-  // account here?" is an administrative decision, and a hostname the internet can
-  // reach is reachable by anyone. Shell access to the machine is the operator's
-  // proof of being at the machine (`docker compose exec partner node
+  // Why the loopback mint exists: "may this person create an account here?" is
+  // an administrative decision, and a hostname the internet can reach is
+  // reachable by anyone. Shell access to the machine is the operator's proof of
+  // being at the machine (`docker compose exec partner node
   // tools/signup-link.mjs`), which is the same reasoning as the pairing secret.
-  // The CODE is minted here; the link carrying it is built by the tool, because
-  // only the operator knows what URL the person should open.
+  //
+  // M29 adds the OWNER-minted lane below (`POST /v1/invites`): an authenticated
+  // owner needs no shell at all. This loopback route stays because it is the only
+  // way to create the FIRST account on a fresh deployment (there is no owner yet).
   app.post('/v1/signup/code', async (req: Request, res: Response) => {
     if (!signupEnabled) {
       res.status(403).json({
@@ -2263,22 +2336,28 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       res.status(403).json({ error: 'loopback_required' });
       return;
     }
-    const code = await signupSecrets.issue();
+    if (invites === undefined) {
+      res.status(503).json({ error: 'not_configured', message: 'invitations are unavailable' });
+      return;
+    }
+    const body = (req.body ?? {}) as { role?: unknown; keyAccess?: unknown };
+    const minted = invites.mint({
+      role: isUserRole(body.role) ? body.role : 'member',
+      keyAccess: isKeyAccess(body.keyAccess) ? body.keyAccess : 'shared',
+      createdBy: null,
+    });
     // The code is never logged, echoed into an audit row, or written anywhere:
     // it exists in this response and in the operator's terminal.
     audit.log('auth', 'auth.signup_code', 'invite', { ok: true });
-    res.status(201).json({ code });
+    res.status(201).json({ code: minted.code, expiresAt: minted.invite.expiresAt });
   });
 
-  // 3c-ter. M22 sign-up — CREATE AN ACCOUNT WITH AN INVITE.
+  // 3c-ter. SIGN-UP — CREATE AN ACCOUNT WITH AN INVITE (M22; M29 roles).
   //
   // The person chooses their own name and passphrase; the operator never sees
-  // either, which is the whole point of the invite lane (a CLI-created account
-  // means the operator typed the passphrase). What this route produces is
-  // byte-for-byte what `tools/user.mjs add` produces: a users row (id derived
-  // from the name, `0` for the first account so a pre-partition database keeps
-  // its owner) plus a scrypt credential — so a sign-up later, a CLI rotation and
-  // a partition unlock are all the same account.
+  // either. M29: the invite carries `role`/`keyAccess`, and those are read from
+  // the INVITE ROW — never from this body — so a redeemer cannot make themselves
+  // an owner or grant themselves shared access by editing the request.
   app.post('/v1/auth/signup', async (req: Request, res: Response) => {
     if (!loginMode || auth.users === undefined || auth.capabilities === undefined) {
       res.status(403).json({
@@ -2287,12 +2366,15 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       });
       return;
     }
-    if (!signupEnabled) {
+    // An owner mint (M29) is an explicit admission decision, so it does not
+    // require SIGNUP_MODE: only an authenticated owner (or the loopback operator
+    // tool) can produce the invite this route redeems.
+    if (!signupAvailable) {
       res.status(403).json({
         error: 'signup_disabled',
         message:
           'Sign-up is off. Ask whoever runs this Partner to create an account for you ' +
-          '(tools/user.mjs add <name>), or to enable invites with SIGNUP_MODE=invite.',
+          '(tools/user.mjs add <name>).',
       });
       return;
     }
@@ -2328,9 +2410,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
 
     // Shape checks BEFORE the invite is spent: a typo in the passphrase must not
-    // burn a one-time code. A username that is already taken still does (the
-    // operator mints another), which is why both halves validate the same rules
-    // (`@partner/shared/accounts`) — the browser shows exactly these sentences.
+    // burn a one-time code.
     const nameProblem = usernameProblem(username);
     if (nameProblem !== null) {
       res.status(400).json({ error: 'invalid_input', reason: 'invalid_username', message: nameProblem });
@@ -2344,28 +2424,32 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       return;
     }
 
-    const verified = await signupSecrets.verify(code);
-    if (!verified.ok) {
-      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: verified.reason });
-      if (verified.reason === 'locked') {
-        const retryAfterMs = 5 * 60 * 1000;
-        res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
-        res.status(429).json({ error: 'too_many_attempts', reason: verified.reason, retryAfterMs });
-        return;
-      }
+    if (invites === undefined) {
+      res.status(503).json({ error: 'not_configured', message: 'invitations are unavailable' });
+      return;
+    }
+    const found = invites.find(code);
+    if (!found.ok) {
+      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: found.reason });
       res.status(401).json({
         error: 'invite_failed',
-        reason: verified.reason,
+        reason: found.reason,
         message:
-          'That invite has already been used or has expired. Ask for a fresh one — ' +
-          'invites are single use.',
+          found.reason === 'used'
+            ? 'That invite has already been used. Ask for a fresh one — invites are single use.'
+            : found.reason === 'expired'
+              ? 'That invite has expired. Ask for a fresh one.'
+              : 'That invite is not recognised. Open the link you were sent, or paste its code.',
       });
       return;
     }
+    const invite = found.invite;
 
     // The label is what a person signs in with, and sign-in matches it
     // case-insensitively against the FIRST match, so two accounts differing only
     // in case would make one of them unreachable. Refuse the duplicate instead.
+    // (A duplicate name is refused BEFORE the invite is spent, unlike M22: an
+    // owner can re-send the same link.)
     const wanted = username.toLowerCase();
     const existing = auth.users.list();
     if (
@@ -2384,8 +2468,10 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
 
     // The first account owns the pre-partition database (the same rule the CLI
     // uses): a hosted core that ran single-user keeps its history instead of
-    // appearing to start empty.
-    const id = existing.length === 0 ? LEGACY_USER_ID : accountIdForUsername(username);
+    // appearing to start empty. It is also always an OWNER and uses its own keys,
+    // whatever the invite said — a deployment must have someone who can invite.
+    const firstAccount = existing.length === 0;
+    const id = firstAccount ? LEGACY_USER_ID : accountIdForUsername(username);
     if (!isUsableAccountId(id)) {
       // Unreachable via `usernameProblem` (it checks the same rules) — kept so a
       // future rule added in one place cannot produce an unusable partition id.
@@ -2397,7 +2483,25 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
       return;
     }
 
-    const created = auth.users.create({ id, label: username });
+    // Spend the invite BEFORE creating the account: the consume is one
+    // conditional UPDATE, so two concurrent redemptions of one code cannot both
+    // pass this line. A loser is refused as `invite_failed` (401).
+    if (!invites.consume(invite.id, id)) {
+      audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: 'used' });
+      res.status(401).json({
+        error: 'invite_failed',
+        reason: 'used',
+        message: 'That invite has already been used. Ask for a fresh one — invites are single use.',
+      });
+      return;
+    }
+
+    const created = auth.users.create({
+      id,
+      label: username,
+      role: firstAccount ? 'owner' : invite.role,
+      keyAccess: firstAccount ? 'own' : invite.keyAccess,
+    });
     if (!created.ok) {
       audit.log('auth', 'auth.signup', 'invite', { ok: false, reason: created.reason });
       if (created.reason === 'duplicate_id' || created.reason === 'duplicate_os_profile') {
@@ -2414,8 +2518,7 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     // The credential is written under the new id. If this fails the account row
     // is left WITHOUT a credential, which in login mode cannot be signed into at
     // all — so it is reported as a server fault naming the id, and the operator
-    // fixes it with `tools/user.mjs passwd <name>` (the two shape refusals above
-    // make an ordinary failure here unreachable).
+    // fixes it with `tools/user.mjs passwd <name>`.
     const stored = await auth.capabilities.create(created.user.id, password);
     if (!stored.ok) {
       audit.log('auth', 'auth.signup', created.user.id, { ok: false, reason: stored.reason });
@@ -2430,11 +2533,435 @@ export function createCoreApp(options: CoreAppOptions): express.Express {
     }
 
     signupLimiter.reset(limitKeyOf(req));
-    audit.log('auth', 'auth.signup', created.user.id, { ok: true });
+    audit.log('auth', 'auth.signup', created.user.id, { ok: true, role: created.user.role });
     // No session is minted here: signing in stays a single path (`/v1/auth/session`)
     // so a bug in this route cannot hand out authority. The SPA signs in
     // immediately with the credentials it just sent.
-    res.status(201).json({ ok: true, id: created.user.id });
+    res.status(201).json({ ok: true, id: created.user.id, role: created.user.role });
+  });
+
+  // -------------------------------------------------------------------------
+  // M29 — the account lane: sign out, who am I, owner-minted invitations, and
+  // the deployment's published shared access. All of these run in the GATEWAY
+  // (before per-user delegation), because they either touch the system database
+  // or must answer even when the caller's partition is locked.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The session's account when it is this deployment's OWNER, else null (after
+   * answering 403). Owner-only routes are the invite mint, the account list and
+   * publishing shared access; the 403 names the reason without revealing who the
+   * owner is.
+   */
+  const ownerSession = (res: Response): SessionInfo | null => {
+    const session = res.locals.session as SessionInfo;
+    const user =
+      session.userId === null || auth.users === undefined
+        ? undefined
+        : auth.users.findById(session.userId);
+    if (user === undefined || user.role !== 'owner') {
+      res.status(403).json({
+        error: 'forbidden',
+        reason: 'owner_required',
+        message: 'Only the owner of this Partner can do that.',
+      });
+      return null;
+    }
+    return session;
+  };
+
+  /**
+   * SIGN OUT (M29). Revokes the presented session and, on a logged-in core,
+   * closes the user's partition and drops their key from memory — so signing out
+   * makes the data unreadable, rather than merely stopping the token. Works in
+   * both shapes: a paired desktop revokes its session and pairs again.
+   */
+  app.post('/v1/auth/signout', requireSession(sessions), async (_req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const token = res.locals.token as string;
+    await sessions.revoke(token);
+    if (session.userId !== null) options.onSignOut?.(session.userId);
+    audit.log('auth', 'auth.signout', session.userId ?? 'web', { sessionId: session.id });
+    res.status(204).end();
+  });
+
+  // Who am I? The SPA needs the role to decide whether to show owner surfaces,
+  // and the label to render them. Never a credential, never a token.
+  app.get('/v1/account', requireSession(sessions), (_req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const user =
+      session.userId === null || auth.users === undefined
+        ? undefined
+        : auth.users.findById(session.userId);
+    res.json({
+      user:
+        user === undefined
+          ? null
+          : {
+              id: user.id,
+              label: user.label,
+              role: user.role,
+              keyAccess: user.keyAccess,
+              disabledAt: user.disabledAt,
+            },
+    });
+  });
+
+  // The account list, for the share picker (and for an owner to see who exists).
+  // ids/labels/roles only — never a credential, an OS profile key or a wrap.
+  app.get('/v1/users', requireSession(sessions), (_req: Request, res: Response) => {
+    if (ownerSession(res) === null) return;
+    const list = (auth.users?.list() ?? []).map((user) => ({
+      id: user.id,
+      label: user.label,
+      role: user.role,
+      keyAccess: user.keyAccess,
+      disabledAt: user.disabledAt,
+    }));
+    res.json({ users: list });
+  });
+
+  // MINT AN INVITATION (M29, owner only — no shell needed). The code is returned
+  // exactly once, in this response; only its SHA-256 is stored. `role` and
+  // `keyAccess` are the redeemer's authority, so a non-owner cannot reach this.
+  app.post('/v1/invites', requireSession(sessions), (req: Request, res: Response) => {
+    const session = ownerSession(res);
+    if (session === null) return;
+    if (invites === undefined) {
+      res.status(503).json({ error: 'not_configured', message: 'invitations are unavailable' });
+      return;
+    }
+    const body = (req.body ?? {}) as { role?: unknown; keyAccess?: unknown; ttlMs?: unknown };
+    if (body.role !== undefined && !isUserRole(body.role)) {
+      res.status(400).json({ error: 'invalid_input', message: 'role must be owner or member' });
+      return;
+    }
+    if (body.keyAccess !== undefined && !isKeyAccess(body.keyAccess)) {
+      res.status(400).json({ error: 'invalid_input', message: 'keyAccess must be own or shared' });
+      return;
+    }
+    const role: UserRole = isUserRole(body.role) ? body.role : 'member';
+    // An owner always configures their own credentials; a member defaults to the
+    // deployment's published access so they can chat immediately.
+    const keyAccess = isKeyAccess(body.keyAccess)
+      ? body.keyAccess
+      : role === 'owner'
+        ? 'own'
+        : 'shared';
+    const ttlMs =
+      typeof body.ttlMs === 'number' && Number.isFinite(body.ttlMs) && body.ttlMs > 0
+        ? Math.min(Math.round(body.ttlMs), 30 * 24 * 60 * 60 * 1000)
+        : undefined;
+    const minted = invites.mint({
+      role,
+      keyAccess,
+      createdBy: session.userId,
+      ...(ttlMs === undefined ? {} : { ttlMs }),
+    });
+    audit.log('auth', 'auth.invite_minted', minted.invite.id, { role, keyAccess });
+    // The link is built from the URL the owner is ALREADY using, so it points at
+    // the same host the person should open; no configuration to get wrong. The
+    // scheme follows the transport this app actually serves (TLS configured =
+    // https), exactly like `originOf` binds sessions to the Host header.
+    const scheme = options.tlsFingerprint === undefined ? 'http' : 'https';
+    const url = `${scheme}://${originOf(req)}/#signup=${minted.code}`;
+    res.status(201).json({
+      id: minted.invite.id,
+      code: minted.code,
+      url,
+      role,
+      keyAccess,
+      createdAt: minted.invite.createdAt,
+      expiresAt: minted.invite.expiresAt,
+    });
+  });
+
+  // The owner's invitation list. Never returns a code (only its hash is stored),
+  // so this is safe to render and to leave on screen.
+  app.get('/v1/invites', requireSession(sessions), (_req: Request, res: Response) => {
+    if (ownerSession(res) === null) return;
+    if (invites === undefined) {
+      res.json({ invites: [] });
+      return;
+    }
+    const at = Date.now();
+    res.json({
+      invites: invites.list().map((invite) => ({
+        id: invite.id,
+        role: invite.role,
+        keyAccess: invite.keyAccess,
+        createdBy: invite.createdBy,
+        createdAt: invite.createdAt,
+        expiresAt: invite.expiresAt,
+        usedAt: invite.usedAt,
+        usedBy: invite.usedBy,
+        state:
+          invite.usedAt !== null ? 'used' : invite.expiresAt <= at ? 'expired' : 'pending',
+      })),
+    });
+  });
+
+  /** Revoke (delete) one invitation. Owner only. */
+  app.delete('/v1/invites/:id', requireSession(sessions), (req: Request, res: Response) => {
+    if (ownerSession(res) === null) return;
+    if (invites === undefined) {
+      res.status(503).json({ error: 'not_configured', message: 'invitations are unavailable' });
+      return;
+    }
+    const id = String(req.params.id ?? '');
+    if (!invites.revoke(id)) {
+      res.status(404).json({ error: 'not_found', message: 'invite not found' });
+      return;
+    }
+    audit.log('auth', 'auth.invite_revoked', id, {});
+    res.status(204).end();
+  });
+
+  // PUBLISH / READ / CLEAR the deployment's shared access (M29). Reading is open
+  // to any signed-in account (a member should be able to see that they are on
+  // the owner's access); writing is the owner's.
+  app.get('/v1/shared-access', requireSession(sessions), (_req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const user =
+      session.userId === null || auth.users === undefined
+        ? undefined
+        : auth.users.findById(session.userId);
+    const shared = options.sharedAccess;
+    res.json({
+      canManage: user?.role === 'owner',
+      configured: shared?.status().configured ?? false,
+      providerCount: shared?.status().providerCount ?? 0,
+      searchConfigured: shared?.status().searchConfigured ?? false,
+      updatedAt: shared?.status().updatedAt ?? null,
+      updatedBy: shared?.status().updatedBy ?? null,
+    });
+  });
+
+  app.put('/v1/shared-access', requireSession(sessions), async (_req: Request, res: Response) => {
+    const session = ownerSession(res);
+    if (session === null) return;
+    if (options.publishSharedAccess === undefined || session.userId === null) {
+      res.status(501).json({ error: 'not_configured', message: 'shared access is unavailable' });
+      return;
+    }
+    const result = await options.publishSharedAccess(session.userId);
+    // Counts only — never an endpoint, a model list or key material.
+    audit.log('provider', 'shared_access.publish', session.userId, {
+      providerCount: result.providerCount,
+      searchConfigured: result.searchConfigured,
+    });
+    res.json(result);
+  });
+
+  app.delete('/v1/shared-access', requireSession(sessions), async (_req: Request, res: Response) => {
+    const session = ownerSession(res);
+    if (session === null) return;
+    if (options.sharedAccess === undefined) {
+      res.status(501).json({ error: 'not_configured', message: 'shared access is unavailable' });
+      return;
+    }
+    await options.sharedAccess.clear();
+    audit.log('provider', 'shared_access.clear', session.userId ?? 'owner', {});
+    res.status(204).end();
+  });
+
+  // -------------------------------------------------------------------------
+  // M29 — SHARING (notes + assets). A share is a SNAPSHOT copy in the system
+  // database; the grantee never opens the owner's partition. The caller's OWN
+  // resource is read through their partition (they are signed in), which is the
+  // only place a user's data is touched here.
+  // -------------------------------------------------------------------------
+
+  /** Parse a share request body into a validation result (400 text on failure). */
+  const parseShareBody = (
+    body: Record<string, unknown>,
+  ): { ok: true; kind: ShareKind; resourceId: string; conversationId: string | null; grantee: string; permission: string | undefined } | { ok: false; message: string } => {
+    if (!isShareKind(body.kind)) return { ok: false, message: 'kind must be note or asset' };
+    const resourceId = typeof body.resourceId === 'string' ? body.resourceId.trim() : '';
+    if (resourceId === '') return { ok: false, message: 'resourceId is required' };
+    const grantee =
+      typeof body.grantee === 'string'
+        ? body.grantee.trim()
+        : typeof body.granteeId === 'string'
+          ? body.granteeId.trim()
+          : '';
+    if (grantee === '') return { ok: false, message: 'grantee (an account name) is required' };
+    const conversationId =
+      typeof body.conversationId === 'string' && body.conversationId.trim() !== ''
+        ? body.conversationId.trim()
+        : null;
+    const permission =
+      typeof body.permission === 'string' && body.permission.trim() !== ''
+        ? body.permission.trim()
+        : undefined;
+    return { ok: true, kind: body.kind, resourceId, conversationId, grantee, permission };
+  };
+
+  app.post('/v1/shares', requireSession(sessions), async (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.status(501).json({ error: 'not_configured', message: 'sharing is unavailable' });
+      return;
+    }
+    const parsed = parseShareBody((req.body ?? {}) as Record<string, unknown>);
+    if (!parsed.ok) {
+      res.status(400).json({ error: 'invalid_input', message: parsed.message });
+      return;
+    }
+    const target = gateway.resolveGrantee(parsed.grantee);
+    if (target === null) {
+      res.status(404).json({ error: 'not_found', message: 'No account with that name.' });
+      return;
+    }
+    if (target.id === session.userId) {
+      res.status(400).json({ error: 'invalid_input', message: 'That is your own account.' });
+      return;
+    }
+    const content = await gateway.readOwn(
+      session.userId,
+      parsed.kind,
+      parsed.resourceId,
+      parsed.conversationId,
+    );
+    if (content === null) {
+      res.status(404).json({ error: 'not_found', message: 'That item no longer exists.' });
+      return;
+    }
+    const share = gateway.manager.create({
+      ownerId: session.userId,
+      kind: parsed.kind,
+      resourceId: parsed.resourceId,
+      conversationId: parsed.conversationId,
+      granteeId: target.id,
+      ...(parsed.permission === undefined ? {} : { permission: parsed.permission }),
+      title: content.title,
+      body: content.body,
+      meta: content.meta,
+    });
+    // Ids and kind only — never the title or the body.
+    audit.log('session', 'share.create', share.id, { kind: parsed.kind, grantee: target.id });
+    res.status(201).json({
+      share: { ...share, ownerLabel: gateway.labelFor(session.userId), granteeLabel: target.label },
+    });
+  });
+
+  app.get('/v1/shares/sent', requireSession(sessions), (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.json({ shares: [] });
+      return;
+    }
+    res.json({
+      shares: gateway.manager.listSent(session.userId).map((share) => ({
+        ...share,
+        ownerLabel: gateway.labelFor(share.ownerId),
+        granteeLabel: gateway.labelFor(share.granteeId),
+      })),
+    });
+  });
+
+  app.get('/v1/shares/received', requireSession(sessions), (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.json({ shares: [] });
+      return;
+    }
+    res.json({
+      shares: gateway.manager.listReceived(session.userId).map((share) => ({
+        ...share,
+        ownerLabel: gateway.labelFor(share.ownerId),
+        granteeLabel: gateway.labelFor(share.granteeId),
+      })),
+    });
+  });
+
+  app.get('/v1/shares/received/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.status(404).json({ error: 'not_found', message: 'share not found' });
+      return;
+    }
+    const share = gateway.manager.getReceived(String(req.params.id ?? ''), session.userId);
+    if (share === null) {
+      res.status(404).json({ error: 'not_found', message: 'share not found' });
+      return;
+    }
+    res.json({ share: { ...share, ownerLabel: gateway.labelFor(share.ownerId) } });
+  });
+
+  app.post('/v1/shares/:id/refresh', requireSession(sessions), async (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.status(501).json({ error: 'not_configured', message: 'sharing is unavailable' });
+      return;
+    }
+    const id = String(req.params.id ?? '');
+    const existing = gateway.manager.getSent(id, session.userId);
+    if (existing === null) {
+      res.status(404).json({ error: 'not_found', message: 'share not found' });
+      return;
+    }
+    const content = await gateway.readOwn(
+      session.userId,
+      existing.kind,
+      existing.resourceId,
+      existing.conversationId,
+    );
+    if (content === null) {
+      res.status(404).json({ error: 'not_found', message: 'The original item no longer exists.' });
+      return;
+    }
+    const updated = gateway.manager.refresh(id, session.userId, content);
+    if (updated === null) {
+      res.status(404).json({ error: 'not_found', message: 'share not found' });
+      return;
+    }
+    audit.log('session', 'share.refresh', id, { kind: existing.kind });
+    res.json({ share: { ...updated, ownerLabel: gateway.labelFor(updated.ownerId) } });
+  });
+
+  app.delete('/v1/shares/:id', requireSession(sessions), (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.status(501).json({ error: 'not_configured', message: 'sharing is unavailable' });
+      return;
+    }
+    const id = String(req.params.id ?? '');
+    if (!gateway.manager.revoke(id, session.userId)) {
+      res.status(404).json({ error: 'not_found', message: 'share not found' });
+      return;
+    }
+    audit.log('session', 'share.revoke', id, {});
+    res.status(204).end();
+  });
+
+  /** Copy a received share into the caller's own store (a note or an asset). */
+  app.post('/v1/shares/:id/import', requireSession(sessions), async (req: Request, res: Response) => {
+    const session = res.locals.session as SessionInfo;
+    const gateway = options.sharing;
+    if (gateway === undefined || session.userId === null) {
+      res.status(501).json({ error: 'not_configured', message: 'sharing is unavailable' });
+      return;
+    }
+    const id = String(req.params.id ?? '');
+    const share = gateway.manager.getReceived(id, session.userId);
+    if (share === null) {
+      res.status(404).json({ error: 'not_found', message: 'share not found' });
+      return;
+    }
+    const imported = await gateway.importReceived(session.userId, share);
+    if (imported === null) {
+      res.status(503).json({ error: 'unavailable', message: 'Could not save the shared copy.' });
+      return;
+    }
+    audit.log('session', 'share.import', id, { kind: share.kind });
+    res.status(201).json({ imported });
   });
 
   // 3d. M22/R1: PER-USER PARTITION DELEGATION.

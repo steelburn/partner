@@ -39,6 +39,14 @@ which Git for Windows ships).
 
 ## Sign-up (M22) — off by default, invite-gated when on
 
+**M29: an owner usually does not need any of this.** Once an owner account
+exists, they mint invitations from the app (Members view → *Invite someone*),
+choosing **Member/Owner** and **shared/own AI access** per invite. Those links
+redeem whether or not `SIGNUP_MODE` is on, because only an authenticated owner
+(or the loopback operator tool below) can produce one. The rest of this section
+is the **operator** lane, which is how the FIRST account is created on a fresh
+deployment.
+
 The default is the operator creating every account (below), because "who may
 reach this hostname" is not "who may create an account here" — a public hostname
 is reachable by anyone.
@@ -144,6 +152,27 @@ volume with a bind mount in `docker-compose.yml`:
 Nothing else on the host is reachable, and a `FIXED_ROOTS` entry that is not a
 directory stops the boot with the path in the message. The desktop app keeps the
 old behaviour (the user registers roots in the UI).
+
+### Every account gets its OWN directory (M29)
+
+With several accounts, one shared `/files` would mean one shared directory. So
+the core derives each account's root as **`/files/<userId>`** and creates it at
+boot; `POST`/`DELETE /v1/roots` stay `403 roots_fixed` for everyone. Accounts are
+provably unable to reach each other's files: they see different roots, and a
+root is the only filesystem surface the tools have.
+
+**Upgrading an existing deployment:** files that sit directly in the volume root
+(`/files/<something>`) are no longer visible to any account. Move them into the
+account's own folder — for the first account created by the CLI that is
+`/files/0/` (its id is `0`), later accounts use their slugged name
+(`/files/ama/`):
+
+```bash
+docker compose exec partner sh -c 'mkdir -p /files/0 && mv /files/* /files/0/ 2>/dev/null || true'
+```
+
+With no `FIXED_ROOTS` set, each account's root is inside their own partition
+(`<partition>/files`) instead.
 
 ## Backups (R8)
 

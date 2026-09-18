@@ -39,6 +39,8 @@ function userRow(id: string, keepUnlocked = false): UserRow {
     createdAt: 1,
     disabledAt: null,
     keepUnlocked,
+    role: 'owner',
+    keyAccess: 'own',
   };
 }
 

@@ -39,6 +39,39 @@ export function IconChat(props: IconProps) {
   );
 }
 
+/** Sign out — a door with an arrow leaving. */
+export function IconSignOut(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9.6 2.9h2.2c.7 0 1.3.6 1.3 1.3v7.6c0 .7-.6 1.3-1.3 1.3H9.6" />
+      <path d="M6.4 5.4 3.4 8l3 2.6" />
+      <path d="M3.6 8h6.2" />
+    </Svg>
+  );
+}
+
+/** Shared — an arrow handing a page to someone else. */
+export function IconShared(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6.2 9.8 9.8 6.2" />
+      <path d="M7.4 4.6 8.9 3.1a2.6 2.6 0 0 1 3.7 3.7l-1.5 1.5" />
+      <path d="M8.6 11.4 7.1 12.9a2.6 2.6 0 0 1-3.7-3.7l1.5-1.5" />
+    </Svg>
+  );
+}
+
+/** Members — a person beside a check (an account on this Partner). */
+export function IconMembers(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="6" cy="5.4" r="2.3" />
+      <path d="M2.3 13c.5-2.4 1.9-3.6 3.7-3.6 1.1 0 2.1.5 2.8 1.4" />
+      <path d="m9.6 11.4 1.3 1.3 2.4-2.6" />
+    </Svg>
+  );
+}
+
 /** Notes — page with lines. */
 export function IconNotes(props: IconProps) {
   return (

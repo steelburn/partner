@@ -23,7 +23,7 @@ export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_DB_PATH = './data/partner.db';
 
 /** Semantic version of the core sidecar (independent of the npm package). */
-export const CORE_VERSION = '0.1.22';
+export const CORE_VERSION = '0.1.23';
 
 /**
  * Where secrets live. `native` = the OS keychain (the default, and the only
@@ -259,6 +259,13 @@ export interface CoreConfig {
    * stay the single plaintext DB they are (partitions are a server concept).
    */
   userId?: string;
+  /**
+   * M29: this boot serves an account with `keyAccess: 'shared'`, so its provider
+   * and search managers fall back to the deployment's published configuration
+   * while the account has none of its own. Set per partition by the rails from
+   * the user row; never an env knob (a user cannot grant themselves this).
+   */
+  sharedAccess?: boolean;
   /** M8 local catalog: env SKILLS_CATALOG_DIR (default repo skills-catalog/). */
   skillsCatalogDir: string;
   /** M14 scheduler heartbeat interval (ms). 0 disables the driver. */

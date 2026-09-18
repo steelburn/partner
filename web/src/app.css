@@ -10558,3 +10558,126 @@ select {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* --------------------------------------------------------------------------
+ * M29 — Members & Shared views, and the sidebar's sign-out footer.
+ *
+ * Same measure/scroll shape as the Providers panel (one reading column), so
+ * these pages inherit the app's existing rhythm rather than introducing a
+ * second one. Every rule is token-only: no raw colours, no ad-hoc shadows.
+ * ------------------------------------------------------------------------ */
+
+.side-foot {
+  flex: none;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.side-foot .side-tab {
+  justify-content: flex-start;
+}
+
+.app.side-minimized .side-foot {
+  width: 100%;
+}
+
+.members,
+.shared {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.members-panel,
+.shared-panel {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.members-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+
+.members-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.members-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.members-row-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.members-row-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.members-row .row-actions {
+  margin-left: auto;
+}
+
+.shared-reader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.shared-reader-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.side-foot .side-tab:focus-visible,
+.members .btn:focus-visible,
+.members .field:focus-visible,
+.shared .btn:focus-visible,
+.shared .field:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.members .btn:disabled,
+.members .field:disabled,
+.shared .btn:disabled,
+.shared .field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -33,7 +33,7 @@ describe('M11 schema v12 (guarded columns)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(22);
+      expect(SCHEMA_VERSION).toBe(23);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');
@@ -170,7 +170,7 @@ describe('M28 schema v22 (flow columns on skill_drafts)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(22);
+      expect(SCHEMA_VERSION).toBe(23);
       expect(columnNames(db, 'skill_drafts')).toEqual(
         expect.arrayContaining(['flow_json', 'flow_sha256', 'flow_compiled_at']),
       );

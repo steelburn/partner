@@ -17,6 +17,7 @@
 export const VIEW_NAMES = [
   'chat',
   'notes',
+  'shared',
   'personas',
   'providers',
   'themes',
@@ -25,6 +26,7 @@ export const VIEW_NAMES = [
   'playbooks',
   'memory',
   'audit',
+  'members',
 ] as const;
 
 export type ViewName = (typeof VIEW_NAMES)[number];
@@ -36,16 +38,17 @@ export interface NavGroupMeta {
 
 /** Desktop sidebar groups (unchanged M14 order and aria semantics). */
 export const NAV_GROUPS: readonly NavGroupMeta[] = [
-  { name: 'Workspace', views: ['chat', 'notes'] },
+  { name: 'Workspace', views: ['chat', 'notes', 'shared'] },
   { name: 'Studio', views: ['personas', 'providers', 'themes'] },
   { name: 'Tools', views: ['files', 'skills', 'playbooks'] },
-  { name: 'System', views: ['memory', 'audit'] },
+  { name: 'System', views: ['memory', 'audit', 'members'] },
 ] as const;
 
 /** Human labels, shared by the sidebar, the mobile tabs and the More sheet. */
 export const NAV_LABELS: Record<ViewName, string> = {
   chat: 'Chat',
   notes: 'Notes',
+  shared: 'Shared',
   personas: 'Personas',
   providers: 'Providers',
   themes: 'Themes',
@@ -54,6 +57,7 @@ export const NAV_LABELS: Record<ViewName, string> = {
   playbooks: 'Playbooks',
   memory: 'Memory',
   audit: 'Audit',
+  members: 'Members',
 };
 
 /**
@@ -69,12 +73,14 @@ export const MOBILE_TABS: readonly ViewName[] = ['chat', 'notes', 'files', 'pers
 
 /** Everything else, reached from the More sheet. */
 export const MOBILE_MORE: readonly ViewName[] = [
+  'shared',
   'providers',
   'themes',
   'skills',
   'playbooks',
   'memory',
   'audit',
+  'members',
 ] as const;
 
 /** Views reachable from the phone UI (tabs + More sheet). */

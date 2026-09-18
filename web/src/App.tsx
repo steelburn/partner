@@ -25,6 +25,7 @@ import {
   IconChevronRight,
   IconClose,
   IconFiles,
+  IconMembers,
   IconMemory,
   IconMore,
   IconNotes,
@@ -34,6 +35,8 @@ import {
   IconPlaybooks,
   IconProviders,
   IconSave,
+  IconShared,
+  IconSignOut,
   IconSkills,
   IconThemes,
 } from './icons.js';
@@ -51,9 +54,11 @@ import { listProfile } from './lib/memory.js';
 import { listDrafts } from './lib/skills.js';
 import { listScheduleRuns } from './lib/schedules.js';
 import { revokeSession } from './lib/api.js';
+import { signOut as requestSignOut } from './lib/account.js';
 import AuditView from './AuditView.js';
 import ConversationRail from './ConversationRail.js';
 import FilesView from './FilesView.js';
+import MembersView from './MembersView.js';
 import MemoryView from './MemoryView.js';
 import NotesView from './NotesView.js';
 import PairGate from './PairGate.js';
@@ -61,6 +66,7 @@ import PersonaManagerView from './PersonaManagerView.js';
 import PersonaPicker from './PersonaPicker.js';
 import PlaybooksView from './PlaybooksView.js';
 import ProvidersView from './ProvidersView.js';
+import SharedView from './SharedView.js';
 import SkillsView from './SkillsView.js';
 import ThemeStudio from './ThemeStudio.js';
 import {
@@ -129,6 +135,8 @@ function iconFor(view: ViewName): JSX.Element {
       return <IconChat />;
     case 'notes':
       return <IconNotes />;
+    case 'shared':
+      return <IconShared />;
     case 'personas':
       return <IconPersonas />;
     case 'providers':
@@ -145,6 +153,8 @@ function iconFor(view: ViewName): JSX.Element {
       return <IconMemory />;
     case 'audit':
       return <IconAudit />;
+    case 'members':
+      return <IconMembers />;
   }
 }
 
@@ -460,6 +470,16 @@ export default function App() {
     clearStoredToken();
     setPaired(false);
   };
+
+  const handleSignOut = useCallback((): void => {
+    // M29: the core's sign-out route revokes the session AND closes the user's
+    // partition (on a login core). Best-effort — an offline core must not leave
+    // the user stuck signed in, so local state clears regardless.
+    const token = readStoredToken();
+    if (token) void requestSignOut(token).catch(() => undefined);
+    clearStoredToken();
+    setPaired(false);
+  }, []);
 
   const handleSessionLost = useCallback((): void => {
     handleUnpair();
@@ -1426,6 +1446,20 @@ function ColumnDivider({
         {paired ? (
           <SideNav current={view} attention={attention} minimized={sideMin} onSelect={setView} />
         ) : null}
+        {paired ? (
+          <div className="side-foot">
+            <button
+              type="button"
+              className="btn btn-secondary side-tab"
+              onClick={handleSignOut}
+              aria-label="Sign out"
+              title={sideMin ? 'Sign out' : undefined}
+            >
+              <IconSignOut />
+              <span className="side-label">Sign out</span>
+            </button>
+          </div>
+        ) : null}
       </aside>
       <div className="app-col">
         {paired ? (
@@ -1723,6 +1757,16 @@ function ColumnDivider({
               <AuditView
                 onUnpair={handleSessionLost}
                 active={view === 'audit'}
+              />
+            </div>
+            <div className={view === 'shared' ? 'app-view app-view-active' : 'app-view'}>
+              <SharedView onUnpair={handleSessionLost} active={view === 'shared'} />
+            </div>
+            <div className={view === 'members' ? 'app-view app-view-active' : 'app-view'}>
+              <MembersView
+                onUnpair={handleSessionLost}
+                onSignOut={handleSignOut}
+                active={view === 'members'}
               />
             </div>
           </>

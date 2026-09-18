@@ -60,6 +60,8 @@ function row(userId: string, overrides: Partial<UserRow> = {}): UserRow {
     createdAt: 1,
     disabledAt: null,
     keepUnlocked: false,
+    role: 'owner',
+    keyAccess: 'own',
     ...overrides,
   };
 }

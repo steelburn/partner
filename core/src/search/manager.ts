@@ -48,6 +48,16 @@ export interface SearchManagerOptions {
   fetchImpl?: typeof fetch;
   /** Injectable clock (epoch ms). */
   now?: () => number;
+  /**
+   * M29: the deployment's published search configuration, for an account with
+   * `keyAccess: 'shared'`. Consulted only while THIS account has search
+   * disabled or no key of its own, so a member's own setup always wins. The key
+   * stays in the deployment keychain (`shared-search:<provider>`).
+   */
+  shared?: {
+    config(): SearchConfig | null;
+    key(provider: SearchProvider): Promise<string | null>;
+  };
 }
 
 export interface SearchManager {
@@ -125,16 +135,34 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
 
-  function config(): SearchConfig {
+  function ownConfig(): SearchConfig {
     return parseConfig(settings.get(SEARCH_SETTINGS_KEY));
+  }
+
+  /**
+   * M29: what search should actually do for this account. The account's OWN
+   * enabled configuration wins; while it has none, the deployment's published
+   * configuration applies (so a member can search without a key of their own).
+   * The `search.config` route still reports `ownConfig()` — publishing is the
+   * owner's act, not a setting a member can edit.
+   */
+  function config(): SearchConfig {
+    const own = ownConfig();
+    if (own.enabled) return own;
+    return options.shared?.config() ?? own;
   }
 
   function accountFor(provider: SearchProvider): string {
     return searchKeychainAccount(provider);
   }
 
+  /** This account's OWN stored key for a provider (never the shared one). */
+  async function ownKeyFor(provider: SearchProvider): Promise<string | null> {
+    return keychain.get(KEYCHAIN_SERVICE, accountFor(provider));
+  }
+
   function providerOrConfigured(provider?: SearchProvider): SearchProvider {
-    const target = provider ?? config().provider;
+    const target = provider ?? ownConfig().provider;
     if (!isSearchProvider(target)) {
       throw searchError('invalid_input', 'provider must be tavily or brave');
     }
@@ -149,7 +177,7 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
       legacyMigrated = (async () => {
         const legacy = await keychain.get(KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_ACCOUNT);
         if (legacy === null || legacy === '') return;
-        const provider = config().provider;
+        const provider = ownConfig().provider;
         const existing = await keychain.get(KEYCHAIN_SERVICE, accountFor(provider));
         if (existing === null || existing === '') {
           await keychain.set(KEYCHAIN_SERVICE, accountFor(provider), legacy);
@@ -164,8 +192,12 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
 
   async function hasKey(provider?: SearchProvider): Promise<boolean> {
     await migrateLegacyKey();
-    const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(providerOrConfigured(provider)));
-    return key !== null && key !== '';
+    const target = providerOrConfigured(provider);
+    const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(target));
+    if (key !== null && key !== '') return true;
+    // M29: a shared key counts — the member can really run a query with it.
+    const sharedKey = await options.shared?.key(target);
+    return sharedKey !== null && sharedKey !== undefined;
   }
 
   async function keyStatus(): Promise<SearchKeyStatus> {
@@ -173,14 +205,15 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
     const status = {} as SearchKeyStatus;
     for (const provider of SEARCH_PROVIDERS) {
       const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(provider));
-      status[provider] = key !== null && key !== '';
+      const sharedKey = await options.shared?.key(provider);
+      status[provider] = (key !== null && key !== '') || (sharedKey !== null && sharedKey !== undefined);
     }
     return status;
   }
 
   function updateConfig(input: SearchConfigInput): SearchConfig {
     const body = (input ?? {}) as SearchConfigInput;
-    const current = config();
+    const current = ownConfig();
     const next: SearchConfig = { ...current };
     if (body.provider !== undefined) {
       if (!isSearchProvider(body.provider)) {
@@ -232,7 +265,7 @@ export function createSearchManager(options: SearchManagerOptions): SearchManage
       throw searchError('disabled', 'internet search is disabled — enable it and store an API key');
     }
     await migrateLegacyKey();
-    const key = await keychain.get(KEYCHAIN_SERVICE, accountFor(cfg.provider));
+    const key = (await ownKeyFor(cfg.provider)) ?? (await options.shared?.key(cfg.provider)) ?? null;
     if (key === null || key === '') {
       throw searchError('disabled', 'no search API key stored — add one to enable search');
     }

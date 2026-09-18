@@ -1,19 +1,62 @@
 # UNFINISHED — the review list for the next session
 
-Date: 2026-09-18 (updated at `v0.1.21`) · Index: `PLAN.md` §15 · Specs:
-`PLAN-M27.md`, `PLAN-M28.md` · Records: `docs/VERIFY-M26.md`, `docs/VERIFY-M27.md`.
+Date: 2026-09-18 (updated at `v0.1.23`) · Index: `PLAN.md` §15 · Specs:
+`PLAN-M27.md`, `PLAN-M28.md`, `PLAN-M29.md` · Records: `docs/VERIFY-M26.md`,
+`docs/VERIFY-M27.md`, `docs/VERIFY-M29.md`.
 
 This file exists because session context does not survive. It is a **review
 list**, not a spec: each item says what is left, where it goes, what it depends
 on, and what is already true. Read the spec for detail; read the verify docs for
 what was measured.
 
-State at the time of writing: `v0.1.21` released, with **M27 S1/S2/S4 and M28
-slices A–F on `master`** (the parent owns releases); schema **v22**; root **1746
-passed** (5 env-gated skips), shared **90**, web **937**, typechecks 0, web build
-green. Zero open Dependabot alerts. (1719/918 before the 2026-09-18 fixups; they
-added 27 tests — 6 Studio, 1 deploy guard, 19 for the sample set and the install
-card — and are recorded in §0 below.)
+State at the time of writing: `v0.1.23` released, with **M29 on `master`** (the
+parent owns releases); schema **v23**; root **1766 passed** (5 env-gated skips),
+shared **90**, web **944**, typechecks 0, web build green. Zero open Dependabot
+alerts. (1719/918 before the 2026-09-18 fixups; they added 27 tests — 6 Studio,
+1 deploy guard, 19 for the sample set and the install card — and are recorded in
+§0 below. M29 then added 27 more: 13 lifecycle, 4 invite, 3 shared-access, 7 web
+account client — `docs/VERIFY-M29.md`.)
+
+---
+
+## 0-M29. M29 — the multi-user lifecycle (do not redo; the open ends)
+
+Landed 2026-09-18, schema v23. Spec `PLAN-M29.md`, record `docs/VERIFY-M29.md`.
+
+**What is now true** (all with tests): sign out closes the partition, not just
+the session (`POST /v1/auth/signout` → `rails.close` + vault lock); an owner
+mints/lists/revokes single-use invitations from the Members view (roles +
+`key_access`, code hash only, conditional consume, no escalation, shape errors
+and taken names refused before the invite is spent); a `keyAccess:'shared'`
+member rides the owner's published provider + search configuration while they
+have none of their own; each account's file root is `<volume>/<userId>` (or
+`<partition>/files`) with `rootsFixed: true` in login mode; and notes/assets
+share as snapshot copies in the system DB (read/import/refresh/revoke, no
+cross-partition read).
+
+**Open ends, in the order I would take them:**
+
+1. **A live model turn through shared access is NOT verified.** The published
+   provider's config and key resolution are tested, but no real endpoint was
+   called with it (no endpoint in this workspace). Same for shared search.
+2. **A second real container account has not been provisioned and signed in.**
+   Two users are proven in-process; the container was refreshed, not multi-user
+   walked.
+3. **`FIXED_ROOTS` migration is manual.** Files sitting at the volume root are
+   invisible after this change; `docker/server/README.md` documents the one-line
+   `mv` into `/files/<userId>`. An operator must run it once.
+4. **No per-user quota or shared-spend cap.** A member riding shared access
+   spends against the OWNER's provider budget (`budgets` are per provider row).
+   A hosted multi-user core wants an operator-level cap keyed by user — this is
+   the M22 "R11" item, still open.
+5. **Asset sharing has no Assets-pane action.** A share is created from the
+   Shared view; the note/asset itself has no "Share" button where you are
+   reading it. Deliberate scope, but the natural next UI.
+6. **Invitation redemptions do not notify the owner.** The list shows `used by
+   <id>` on the next load; there is no push/badge.
+7. **The M29 views were not measured at the phone tier.** They render at desktop
+   width and are reachable from the More sheet; the 360–430px geometry was not
+   re-measured for these two pages.
 
 ---
 
@@ -468,13 +511,13 @@ with its reason. Do not restate this table as "verified" wholesale.
 ## 5. How to re-verify from a clean checkout
 
 ```
-npm test                                  # root: expect 1651 passed, 5 env-gated skips
+npm test                                  # root: expect 1766 passed, 5 env-gated skips
 npx vitest run shared/test                # 90
-npx vitest run --root web                 # 858
+npx vitest run --root web                 # 944
 npm run typecheck                         # 0 errors, all four workspaces
 npm run build -w web                      # green
 cd docker/server && ./stage.sh && docker compose up -d   # container refresh (needs openssl)
-docker compose logs partner --tail 3      # expect "partner-core vX up ... schema=v22"
+docker compose logs partner --tail 3      # expect "partner-core vX up ... schema=v23"
 ```
 
 Guard tests that M26/M27 deliberately updated are the schema version (six files

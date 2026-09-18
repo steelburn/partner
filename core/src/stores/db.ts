@@ -26,6 +26,8 @@ import type {
   FileProposalStore,
   GrantRow,
   GrantStore,
+  InviteRow,
+  InviteStore,
   MemoryFtsHit,
   MemoryFtsStore,
   MemoryRefKind,
@@ -49,6 +51,9 @@ import type {
   SessionRow,
   SessionStore,
   SettingsStore,
+  ShareRow,
+  ShareStore,
+  SharedAccessStore,
   SiteScopeStore,
   SkillDraftRow,
   SkillDraftRowPatch,
@@ -702,6 +707,61 @@ CREATE TABLE IF NOT EXISTS skill_drafts (
 
 CREATE INDEX IF NOT EXISTS idx_skill_drafts_status
   ON skill_drafts (status, updated_at DESC);
+
+-- M29 (v23) INVITES. The owner mints one from the app; the person redeems it at
+-- sign-up. Only the SHA-256 of the code is stored, so a leaked database cannot
+-- be replayed as an invite. 'role' and 'key_access' are decided at MINT time and
+-- read from THIS row at sign-up — never from the request — so a redeemer cannot
+-- escalate their own authority. Single use is 'used_at' (the consume is one
+-- conditional UPDATE).
+CREATE TABLE IF NOT EXISTS invites (
+  id TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL DEFAULT 'member',
+  key_access TEXT NOT NULL DEFAULT 'shared',
+  created_by TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  used_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_invites_expires ON invites (expires_at);
+
+-- M29 (v23) cross-user SHARES. A share copies the note/asset a user chose to
+-- hand over (a snapshot), so the grantee reads it without ever opening the
+-- owner's partition: the two encrypted databases stay private to their owners,
+-- and a signed-out owner's data is still readable by the grantee (that is the
+-- point of a copy). 'meta' carries kind-specific extras (tags, source title).
+CREATE TABLE IF NOT EXISTS shares (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  conversation_id TEXT,
+  grantee_id TEXT NOT NULL,
+  permission TEXT NOT NULL DEFAULT 'read',
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  meta TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_shares_grantee ON shares (grantee_id, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_shares_owner ON shares (owner_id, kind, resource_id);
+
+-- M29 (v23) deployment SHARED ACCESS. The owner publishes their provider and
+-- search configuration here (secrets stay in the deployment keychain under the
+-- shared-* accounts) so an invited member with key_access='shared' can chat and
+-- search without configuring anything. Key/value keeps the shape open; the values
+-- are JSON written by core/src/sharing/sharedAccess.ts alone.
+CREATE TABLE IF NOT EXISTS shared_access (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Column projections mapping snake_case storage to camelCase row types. */
@@ -839,7 +899,8 @@ const FOLDER_COLUMNS = `
 
 const USER_COLUMNS = `
   id, label, os_profile_key AS osProfileKey, created_at AS createdAt,
-  disabled_at AS disabledAt, keep_unlocked AS keepUnlocked`;
+  disabled_at AS disabledAt, keep_unlocked AS keepUnlocked, role,
+  key_access AS keyAccess`;
 
 const USER_CREDENTIAL_COLUMNS = `
   user_id AS userId, salt, hash, params, failed_attempts AS failedAttempts,
@@ -848,6 +909,17 @@ const USER_CREDENTIAL_COLUMNS = `
 const KEY_WRAP_COLUMNS = `
   user_id AS userId, purpose, salt, nonce, tag, ciphertext,
   created_at AS createdAt, updated_at AS updatedAt`;
+
+const INVITE_COLUMNS = `
+  id, code_hash AS codeHash, role, key_access AS keyAccess,
+  created_by AS createdBy, created_at AS createdAt, expires_at AS expiresAt,
+  used_at AS usedAt, used_by AS usedBy`;
+
+const SHARE_COLUMNS = `
+  id, owner_id AS ownerId, kind, resource_id AS resourceId,
+  conversation_id AS conversationId, grantee_id AS granteeId, permission,
+  title, body, meta, created_at AS createdAt, updated_at AS updatedAt,
+  revoked_at AS revokedAt`;
 
 /**
  * M11 (PLAN-M11 C1) guarded additive columns on v1-era tables. Schema is
@@ -905,6 +977,12 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   ['skill_drafts', 'flow_json', 'flow_json TEXT'],
   ['skill_drafts', 'flow_sha256', 'flow_sha256 TEXT'],
   ['skill_drafts', 'flow_compiled_at', 'flow_compiled_at INTEGER'],
+  // M29 (v23) account role and key access. `role` decides who may mint invites
+  // and publish shared access; `key_access` decides whether a member reaches the
+  // deployment's shared provider/search config. Both default to the safe/legacy
+  // reading: an existing account is its deployment's owner and uses its own keys.
+  ['users', 'role', "role TEXT NOT NULL DEFAULT 'owner'"],
+  ['users', 'key_access', "key_access TEXT NOT NULL DEFAULT 'own'"],
 ];
 
 /**
@@ -2935,8 +3013,8 @@ export function createMcpServerStore(db: Database.Database): McpServerStore {
 
 export function createUserStore(db: Database.Database): UserStore {
   const insert = db.prepare(
-    `INSERT INTO users (id, label, os_profile_key, created_at, disabled_at, keep_unlocked)
-     VALUES (@id, @label, @osProfileKey, @createdAt, @disabledAt, @keepUnlocked)`,
+    `INSERT INTO users (id, label, os_profile_key, created_at, disabled_at, keep_unlocked, role, key_access)
+     VALUES (@id, @label, @osProfileKey, @createdAt, @disabledAt, @keepUnlocked, @role, @keyAccess)`,
   );
   const findById = db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`);
   const findByOsProfileKey = db.prepare(
@@ -2979,6 +3057,119 @@ export function createUserStore(db: Database.Database): UserStore {
     },
     setKeepUnlocked(id: string, value: boolean): boolean {
       return setKeepUnlocked.run(value ? 1 : 0, id).changes > 0;
+    },
+  };
+}
+
+/**
+ * M29 invitations. `consume` is the single-use gate: one conditional UPDATE, so
+ * two concurrent redemptions of one code cannot both succeed (the second sees
+ * `used_at` already set and changes 0 rows).
+ */
+export function createInviteStore(db: Database.Database): InviteStore {
+  const insert = db.prepare(
+    `INSERT INTO invites (id, code_hash, role, key_access, created_by, created_at, expires_at, used_at, used_by)
+     VALUES (@id, @codeHash, @role, @keyAccess, @createdBy, @createdAt, @expiresAt, @usedAt, @usedBy)`,
+  );
+  const findById = db.prepare(`SELECT ${INVITE_COLUMNS} FROM invites WHERE id = ?`);
+  const findByCodeHash = db.prepare(`SELECT ${INVITE_COLUMNS} FROM invites WHERE code_hash = ?`);
+  const listAll = db.prepare(`SELECT ${INVITE_COLUMNS} FROM invites ORDER BY created_at DESC, rowid DESC`);
+  const consume = db.prepare(
+    'UPDATE invites SET used_at = ?, used_by = ? WHERE id = ? AND used_at IS NULL',
+  );
+  const remove = db.prepare('DELETE FROM invites WHERE id = ?');
+
+  return {
+    insert(row: InviteRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): InviteRow | undefined {
+      return findById.get(id) as InviteRow | undefined;
+    },
+    findByCodeHash(codeHash: string): InviteRow | undefined {
+      return findByCodeHash.get(codeHash) as InviteRow | undefined;
+    },
+    list(): InviteRow[] {
+      return listAll.all() as InviteRow[];
+    },
+    consume(id: string, usedAt: number, usedBy: string): boolean {
+      return consume.run(usedAt, usedBy, id).changes > 0;
+    },
+    remove(id: string): boolean {
+      return remove.run(id).changes > 0;
+    },
+  };
+}
+
+/** M29 cross-user shares (snapshot rows; see the ShareRow contract). */
+export function createShareStore(db: Database.Database): ShareStore {
+  const insert = db.prepare(
+    `INSERT INTO shares (id, owner_id, kind, resource_id, conversation_id, grantee_id,
+                         permission, title, body, meta, created_at, updated_at, revoked_at)
+     VALUES (@id, @ownerId, @kind, @resourceId, @conversationId, @granteeId,
+             @permission, @title, @body, @meta, @createdAt, @updatedAt, @revokedAt)`,
+  );
+  const findById = db.prepare(`SELECT ${SHARE_COLUMNS} FROM shares WHERE id = ?`);
+  const listByOwner = db.prepare(
+    `SELECT ${SHARE_COLUMNS} FROM shares WHERE owner_id = ? AND revoked_at IS NULL
+     ORDER BY updated_at DESC, rowid DESC`,
+  );
+  const listByGrantee = db.prepare(
+    `SELECT ${SHARE_COLUMNS} FROM shares WHERE grantee_id = ? AND revoked_at IS NULL
+     ORDER BY updated_at DESC, rowid DESC`,
+  );
+  const refresh = db.prepare(
+    `UPDATE shares SET title = ?, body = ?, meta = ?, updated_at = ?
+     WHERE id = ? AND owner_id = ? AND revoked_at IS NULL`,
+  );
+  const revoke = db.prepare(
+    'UPDATE shares SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL',
+  );
+
+  return {
+    insert(row: ShareRow): void {
+      insert.run({ ...row });
+    },
+    findById(id: string): ShareRow | undefined {
+      return findById.get(id) as ShareRow | undefined;
+    },
+    listByOwner(ownerId: string): ShareRow[] {
+      return listByOwner.all(ownerId) as ShareRow[];
+    },
+    listByGrantee(granteeId: string): ShareRow[] {
+      return listByGrantee.all(granteeId) as ShareRow[];
+    },
+    refresh(id, ownerId, title, body, meta, at): boolean {
+      return refresh.run(title, body, meta, at, id, ownerId).changes > 0;
+    },
+    revoke(id: string, ownerId: string, at: number): boolean {
+      return revoke.run(at, id, ownerId).changes > 0;
+    },
+  };
+}
+
+/** M29 deployment shared-access key/value (JSON written by sharedAccess.ts). */
+export function createSharedAccessStore(db: Database.Database): SharedAccessStore {
+  const get = db.prepare('SELECT value, updated_at AS updatedAt FROM shared_access WHERE key = ?');
+  const set = db.prepare(
+    `INSERT INTO shared_access (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  );
+  const remove = db.prepare('DELETE FROM shared_access WHERE key = ?');
+  const keys = db.prepare('SELECT key FROM shared_access ORDER BY key ASC');
+
+  return {
+    get(key: string) {
+      return get.get(key) as { value: string; updatedAt: number } | undefined;
+    },
+    set(key: string, value: string, at: number): void {
+      set.run(key, value, at);
+    },
+    remove(key: string): boolean {
+      return remove.run(key).changes > 0;
+    },
+    keys(): string[] {
+      return (keys.all() as Array<{ key: string }>).map((row) => row.key);
     },
   };
 }

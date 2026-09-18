@@ -8,7 +8,7 @@
  * Stores never read the clock: every write takes explicit timestamps so
  * tests can inject `now()`.
  */
-import type { SiteScopeRecord } from '@partner/shared';
+import type { KeyAccess, ShareKind, SiteScopeRecord, UserRole } from '@partner/shared';
 
 export interface PairingRow {
   id: number;
@@ -1401,6 +1401,10 @@ export interface UserRow {
    * inside the passphrase-wrapped record — signed out means unreadable.
    */
   keepUnlocked: boolean;
+  /** M29: owner or member (see `@partner/shared` USER_ROLES). */
+  role: UserRole;
+  /** M29: own credentials or the deployment's shared provider/search config. */
+  keyAccess: KeyAccess;
 }
 
 /**
@@ -1449,6 +1453,100 @@ export interface UserStore {
    * weakened for THIS user, by their own explicit choice. Audited by the caller.
    */
   setKeepUnlocked(id: string, value: boolean): boolean;
+}
+
+/**
+ * `invites` row (M29) — a single-use invitation minted by an owner.
+ *
+ * The code itself is NEVER stored: `codeHash` is its SHA-256 hex, so a database
+ * dump cannot be replayed as an invite. `role`/`keyAccess` are the authority the
+ * redeemER gains, decided by the MINTING owner; sign-up reads them from here, so
+ * a request body cannot escalate.
+ */
+export interface InviteRow {
+  id: string;
+  codeHash: string;
+  role: UserRole;
+  keyAccess: KeyAccess;
+  /** The owner who minted it (null for the legacy loopback operator mint). */
+  createdBy: string | null;
+  createdAt: number;
+  expiresAt: number;
+  /** Set the moment it is redeemed; a non-null row can never be used again. */
+  usedAt: number | null;
+  usedBy: string | null;
+}
+
+export interface InviteStore {
+  insert(row: InviteRow): void;
+  findById(id: string): InviteRow | undefined;
+  findByCodeHash(codeHash: string): InviteRow | undefined;
+  /** Every row, newest first (the owner's admin list). */
+  list(): InviteRow[];
+  /**
+   * Consume a live invite in ONE conditional UPDATE: marks `used_at`/`used_by`
+   * only while the row is still unused. False when it was already spent (the
+   * race two concurrent sign-ups would otherwise win twice).
+   */
+  consume(id: string, usedAt: number, usedBy: string): boolean;
+  /** Delete one row (owner revocation). False when it did not exist. */
+  remove(id: string): boolean;
+}
+
+/**
+ * `shares` row (M29) — a note or asset one user handed to another.
+ *
+ * The content is a SNAPSHOT (`body`/`meta`), copied when the owner shares it and
+ * refreshed on demand. That is deliberate: the grantee never opens the owner's
+ * encrypted partition, so sharing cannot become a cross-user read path, and a
+ * share stays readable while its owner is signed out.
+ */
+export interface ShareRow {
+  id: string;
+  ownerId: string;
+  kind: ShareKind;
+  resourceId: string;
+  /** The asset's conversation, when `kind` is 'asset'; null for notes. */
+  conversationId: string | null;
+  granteeId: string;
+  permission: string;
+  title: string;
+  body: string;
+  /** JSON kind-specific extras (tags, source, provenance), or null. */
+  meta: string | null;
+  createdAt: number;
+  updatedAt: number;
+  revokedAt: number | null;
+}
+
+export interface ShareStore {
+  insert(row: ShareRow): void;
+  findById(id: string): ShareRow | undefined;
+  /** Active shares this user granted, newest first. */
+  listByOwner(ownerId: string): ShareRow[];
+  /** Active shares granted TO this user, newest first. */
+  listByGrantee(granteeId: string): ShareRow[];
+  /**
+   * Rewrite the snapshot columns (owner "update shared copy"). False when the
+   * row is absent, revoked, or not owned by `ownerId`.
+   */
+  refresh(id: string, ownerId: string, title: string, body: string, meta: string | null, at: number): boolean;
+  /** Mark revoked. False when absent, already revoked, or not owned. */
+  revoke(id: string, ownerId: string, at: number): boolean;
+}
+
+/**
+ * `shared_access` key/value (M29) — the deployment configuration an owner
+ * published for members with `keyAccess: 'shared'`. Secrets never live here: the
+ * provider/search KEYS sit in the deployment keychain under `shared-*` accounts,
+ * and the values are non-secret JSON written by `core/src/sharing/sharedAccess.ts`.
+ */
+export interface SharedAccessStore {
+  get(key: string): { value: string; updatedAt: number } | undefined;
+  set(key: string, value: string, at: number): void;
+  remove(key: string): boolean;
+  /** Keys present, so a caller can report what is published without parsing. */
+  keys(): string[];
 }
 
 /**

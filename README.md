@@ -53,6 +53,12 @@ See the plans:
 - `docs/VERIFY-M28.md` — M28 record: the gates, the looked-at canvas frames and
   the two defects they found, the decisions taken beyond the spec's letter, and
   an explicit "what is NOT verified" (a live model walk).
+- `PLAN-M29.md` — M29 spec: the multi-user lifecycle (sign out, owner-minted
+  invitations with roles, shared AI access for invited members, per-user file
+  paths, and note/asset sharing as snapshot copies).
+- `docs/VERIFY-M29.md` — M29 record: the gates, the browser walk against a real
+  login-mode core, the decisions taken beyond the spec's letter, and what is
+  NOT verified.
 - `DESIGN.md` — default design system (tokens live in `shared/src/theme.ts`).
 
 ## Layout
@@ -86,9 +92,15 @@ treats it as its own. So a leftover dev core no longer hijacks the app invisibly
 
 ## Status (2026-09-18)
 
-M0–M28 (slices A–F) implemented (PLAN.md §15). The current root suite is **1746
-passed** (5 env-gated skips) · shared **90** · web **937** · typechecks 0 · web
-build green. The **Skill Studio fixup** (+6 tests) closes four findings from a
+M0–M29 implemented (PLAN.md §15). The current root suite is **1766
+passed** (5 env-gated skips) · shared **90** · web **944** · typechecks 0 · web
+build green. **M29 lands the multi-user lifecycle** (`PLAN-M29.md`,
+`docs/VERIFY-M29.md`): **sign out** that closes the partition (not just the
+session), **owner-minted invitations from the app** (roles `owner`/`member`, key
+access `own`/`shared`), **shared AI access** so an invited member chats and
+searches without configuring a provider, **per-user file roots** under the
+deployment volume, and **note/asset sharing** as snapshot copies in the system DB.
+Schema **v23**. The **Skill Studio fixup** (+6 tests) closes four findings from a
 live review of the Build segment — a template/blank draft could invalidate
 itself on its first save, `Edit in Studio`/`Fork` opened the wrong draft, a
 draft could not be created once one existed, and a failing test run reported
@@ -1029,6 +1041,49 @@ payload **instead of** `code` — the same tool, not a third one — and the cha
 instructions teach the same node vocabulary the canvas palette and the flow
 prompts use (`flowContract`, one string). The full record, the looked-at frames
 and what is NOT verified are in `docs/VERIFY-M28.md`.
+
+### M29 — the multi-user lifecycle (2026-09-18, implemented + walked)
+
+Five things a hosted (login-mode) Partner needs before a second person can
+really use it, all in the gateway so they answer before per-user delegation.
+
+**Sign out.** `POST /v1/auth/signout` revokes the presented session *and* closes
+the user's partition (their scheduler stops, the database handle closes, the
+key leaves memory), so signed out means unreadable rather than merely
+unreachable. The SPA gets a sidebar-footer control, a card in Members, and the
+Members view on the phone More sheet; a paired desktop's same button is an
+unpair.
+
+**Owner-minted invitations.** `users.role` (`owner`/`member`) and
+`users.key_access` (`own`/`shared`) are additive columns, and `invites` stores a
+code's SHA-256 plus the role/key-access the redeemer gains. An owner mints,
+lists and revokes invitations in the **Members** view — no shell. Sign-up reads
+the invite ROW, so a redeemer cannot escalate, redemption is one conditional
+UPDATE (two concurrent uses cannot both win), and shape errors or a taken name
+are refused **before** the invite is spent. `SIGNUP_MODE` still governs only the
+loopback operator mint (the way to create the FIRST account); an owner's invite
+redeems regardless.
+
+**Shared AI access.** `PUT /v1/shared-access` (owner) publishes the owner's
+provider list + search config into `shared_access`, with secrets in the
+deployment keychain under `shared-*` accounts. A member invited with
+`keyAccess:'shared'` sees those providers only while they have none of their own
+— so they chat and search without a key, and their own setup always wins.
+`DELETE` withdraws rows and keys together.
+
+**Per-user file paths.** On a partitioned core each account's fixed root is
+`<FIXED_ROOTS entry>/<userId>` (or `<partition>/files` without a volume), created
+at boot, and the roots surface is read-only in login mode — one mounted volume
+no longer means one shared directory. **Cost:** an existing deployment moves its
+files at the volume root to `/files/<userId>` once.
+
+**Sharing.** `shares` holds a **snapshot copy** in the system DB, so a grantee
+reads what they were given without ever opening the owner's partition, can save
+it into their own notes, and sees nothing else; the owner can push a current
+edit or revoke. Assets are shared by conversation id and import as a
+topic-tagged note (the grantee does not own the source conversation). Schema
+**v22 → v23** (additive). The record — the browser walk against a real
+login-mode core and what is NOT verified — is `docs/VERIFY-M29.md`.
 
 ### M27 S4 — the notes and MCP Studio templates (2026-09-17, implemented)
 
