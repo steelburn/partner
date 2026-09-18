@@ -1119,6 +1119,22 @@ export function createCore(
         : bases;
     for (const dir of userRoots) mkdirSync(dir, { recursive: true });
     applyFixedRoots(projectRootManager, userRoots, config.fixedRootsReadOnly);
+    // M29 migration: the PREVIOUS layout registered the deployment root itself
+    // (`/files`), so an existing account's partition still holds a row pointing
+    // at the shared directory — which would leave every other account's files
+    // reachable to it. The deployment OWNS this list in login mode, so the
+    // derived set is authoritative: drop every root that is not one of ours.
+    // Grants referencing a removed root stay behind and are inert (a grant still
+    // needs a tool call, and a tool call needs a root).
+    for (const existing of projectRootManager.list()) {
+      if (!userRoots.includes(existing.path)) {
+        try {
+          projectRootManager.remove(existing.id);
+        } catch {
+          // A concurrent boot removed it first; nothing left to do.
+        }
+      }
+    }
   } else {
     applyFixedRoots(projectRootManager, config.fixedRoots, config.fixedRootsReadOnly);
   }
