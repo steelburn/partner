@@ -33,7 +33,7 @@ describe('M11 schema v12 (guarded columns)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(23);
+      expect(SCHEMA_VERSION).toBe(24);
 
       expect(columnNames(db, 'personas')).toContain('policy');
       expect(columnNames(db, 'providers')).toContain('purpose');
@@ -170,7 +170,7 @@ describe('M28 schema v22 (flow columns on skill_drafts)', () => {
         | { value: string }
         | undefined;
       expect(meta?.value).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(23);
+      expect(SCHEMA_VERSION).toBe(24);
       expect(columnNames(db, 'skill_drafts')).toEqual(
         expect.arrayContaining(['flow_json', 'flow_sha256', 'flow_compiled_at']),
       );
@@ -221,6 +221,86 @@ describe('M28 schema v22 (flow columns on skill_drafts)', () => {
       expect(row?.flowJson).toBeNull();
       expect(row?.flowSha256).toBeNull();
       expect(row?.flowCompiledAt).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * M33 — schema v24's `persona_scopes` on `profile_entries`.
+ *
+ * The v23 world knew only the single `persona_scope` (null = global, else one
+ * persona id). v24 adds the JSON id array and backfills it ONCE, on the open
+ * that crosses the version boundary. These tests pin both halves: a fresh DB
+ * opens at v24 with the column present, and a v23-era row's single scope
+ * becomes a one-element array while a global row stays NULL (= every persona).
+ * A later open must NOT re-run the backfill, or widening a fact to all
+ * personas would be silently undone on the next restart.
+ */
+describe('M33 schema v24 (multi-persona memory scope)', () => {
+  function seedRow(db: Database.Database, id: string, scope: string | null): void {
+    db.prepare(
+      `INSERT INTO profile_entries (id, kind, key, value, evidence, source, status,
+                                    persona_scope, created_at, updated_at)
+       VALUES (?, 'rule', NULL, 'legacy fact', NULL, 'user', 'confirmed', ?, 1, 1)`,
+    ).run(id, scope);
+  }
+
+  function scopesOf(db: Database.Database, id: string): unknown {
+    const row = db
+      .prepare('SELECT persona_scopes AS personaScopes FROM profile_entries WHERE id = ?')
+      .get(id) as { personaScopes: string | null } | undefined;
+    return row?.personaScopes ?? null;
+  }
+
+  it('opens at v24 with persona_scopes present', () => {
+    const db = openDatabase(':memory:');
+    try {
+      expect(SCHEMA_VERSION).toBe(24);
+      expect(columnNames(db, 'profile_entries')).toContain('persona_scopes');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a v23-era single scope becomes a one-element array; global stays NULL', () => {
+    const db = openDatabase(':memory:');
+    try {
+      // Simulate the v23 world: no array column, rows carry only persona_scope.
+      db.exec('ALTER TABLE profile_entries DROP COLUMN persona_scopes');
+      db.prepare("UPDATE meta SET value = '23' WHERE key = 'schema_version'").run();
+      seedRow(db, 'pe-scoped', 'p-scribe');
+      seedRow(db, 'pe-global', null);
+      expect(columnNames(db, 'profile_entries')).not.toContain('persona_scopes');
+
+      applySchema(db);
+      expect(columnNames(db, 'profile_entries')).toContain('persona_scopes');
+      expect(scopesOf(db, 'pe-scoped')).toBe(JSON.stringify(['p-scribe']));
+      // NULL reads back as the empty array = every persona — unchanged meaning.
+      expect(scopesOf(db, 'pe-global')).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('the backfill runs once: widening a fact to all personas survives a reopen', () => {
+    const db = openDatabase(':memory:');
+    try {
+      db.exec('ALTER TABLE profile_entries DROP COLUMN persona_scopes');
+      db.prepare("UPDATE meta SET value = '23' WHERE key = 'schema_version'").run();
+      seedRow(db, 'pe-scoped', 'p-scribe');
+      applySchema(db);
+      expect(scopesOf(db, 'pe-scoped')).toBe(JSON.stringify(['p-scribe']));
+
+      // The user widens the fact to every persona (the array column is NULL).
+      db.prepare("UPDATE profile_entries SET persona_scopes = NULL WHERE id = 'pe-scoped'").run();
+      applySchema(db); // the next open
+      expect(scopesOf(db, 'pe-scoped')).toBeNull();
+      // The legacy column is left alone — it is the audit trail of the upgrade.
+      expect(
+        (db.prepare('SELECT persona_scope AS s FROM profile_entries WHERE id = ?').get('pe-scoped') as { s: string }).s,
+      ).toBe('p-scribe');
     } finally {
       db.close();
     }

@@ -23,6 +23,7 @@ import {
   parseSearchHits,
   removeEpisode,
   removeProfileEntry,
+  readScopeArray,
   searchMemory,
   summarizeEpisode,
   updateMemorySettings,
@@ -57,7 +58,7 @@ function entry(overrides: Partial<ProfileEntry> = {}): ProfileEntry {
     evidence: null,
     source: 'user',
     status: 'confirmed',
-    personaScope: null,
+    personaScopes: [],
     createdAt: 100,
     updatedAt: 200,
     ...overrides,
@@ -190,6 +191,30 @@ describe('profile API client', () => {
     expect(parseProfileList([entry()])).toHaveLength(1);
     expect(() => parseProfileList({ entries: [] })).toThrow(ApiRequestError);
     expect(() => parseProfileList([{ id: 7 }])).toThrow(ApiRequestError);
+  });
+
+  it('M33: readScopeArray reads the array field and still understands a pre-M33 payload', () => {
+    // Canonical: the array is taken as-is (blank/duplicate ids dropped).
+    expect(readScopeArray({ personaScopes: ['p-a', 'p-b'] })).toEqual(['p-a', 'p-b']);
+    expect(readScopeArray({ personaScopes: [] })).toEqual([]);
+    expect(readScopeArray({ personaScopes: ['p-a', ' p-a ', '', 'p-b'] })).toEqual(['p-a', 'p-b']);
+    // A pre-M33 response carries only `personaScope` — it must NOT be read as
+    // global (that would silently widen a persona-private fact).
+    expect(readScopeArray({ personaScope: 'p-a' })).toEqual(['p-a']);
+    expect(readScopeArray({ personaScope: null })).toEqual([]);
+    expect(readScopeArray({ personaScope: '   ' })).toEqual([]);
+    expect(readScopeArray({})).toEqual([]);
+  });
+
+  it('M33: parseProfileEntry normalizes the scope of a legacy response', () => {
+    const legacy = { ...entry(), personaScope: 'p-a' };
+    delete (legacy as { personaScopes?: unknown }).personaScopes;
+    expect(readScopeArray(legacy as unknown as Record<string, unknown>)).toEqual(['p-a']);
+    expect(parseProfileEntry(legacy).personaScopes).toEqual(['p-a']);
+    expect(parseProfileEntry(entry({ personaScopes: ['p-a', 'p-b'] })).personaScopes).toEqual([
+      'p-a',
+      'p-b',
+    ]);
   });
 });
 

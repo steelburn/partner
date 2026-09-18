@@ -36,7 +36,7 @@ describe('profile manager — add + status defaults', () => {
     }
   });
 
-  it('explicit status/kind/key/personaScope are honored and normalized', () => {
+  it('explicit status/kind/key/personaScopes are honored and normalized', () => {
     const env = makeMemoryEnv();
     try {
       const entry = env.profile.add({
@@ -44,16 +44,16 @@ describe('profile manager — add + status defaults', () => {
         key: 'language',
         value: '  Always reply in German  ',
         status: 'suggested',
-        personaScope: 'p-scribe',
+        personaScopes: ['p-scribe'],
       });
       expect(entry).toMatchObject({
         kind: 'rule',
         key: 'language',
         value: 'Always reply in German',
         status: 'suggested',
-        personaScope: 'p-scribe',
+        personaScopes: ['p-scribe'],
       });
-      expect(entry.personaScope).toBe('p-scribe');
+      expect(entry.personaScopes).toEqual(['p-scribe']);
     } finally {
       env.close();
     }
@@ -132,8 +132,8 @@ describe('profile manager — update/status lifecycle + scoping', () => {
     const env = makeMemoryEnv();
     try {
       const global = env.profile.add({ kind: 'preference', value: 'global fact' });
-      const scribe = env.profile.add({ kind: 'identity', value: 'scribe fact', personaScope: 'p-scribe' });
-      const builder = env.profile.add({ kind: 'identity', value: 'builder fact', personaScope: 'p-builder' });
+      const scribe = env.profile.add({ kind: 'identity', value: 'scribe fact', personaScopes: ['p-scribe'] });
+      const builder = env.profile.add({ kind: 'identity', value: 'builder fact', personaScopes: ['p-builder'] });
       const rejected = env.profile.add({
         kind: 'rule',
         value: 'dead rule',
@@ -236,10 +236,138 @@ describe('profile manager — audit rows never carry content', () => {
         value: 'shape check',
         key: null,
         evidence: null,
-        personaScope: null,
+        personaScopes: [],
       });
       expect(typeof entry?.createdAt).toBe('number');
       expect(typeof entry?.updatedAt).toBe('number');
+    } finally {
+      env.close();
+    }
+  });
+});
+
+/**
+ * M33 — multi-persona scope.
+ *
+ * `personaScopes` is the canonical input/output field: an EMPTY array is the
+ * global case ("All personas"), one id is private to that persona, and two or
+ * more ids mean exactly those personas honor the fact. The pre-M33 single
+ * `personaScope` string/null is still accepted on input so existing callers
+ * and exported bundles keep working.
+ */
+describe('profile manager — multi-persona scope (M33)', () => {
+  it('stores, dedupes and trims a scope set; [] is the global case', () => {
+    const env = makeMemoryEnv();
+    try {
+      const shared = env.profile.add({
+        kind: 'preference',
+        value: 'prefers short commits',
+        personaScopes: ['p-a', ' p-b ', 'p-a', ''],
+      });
+      expect(shared.personaScopes).toEqual(['p-a', 'p-b']);
+      expect(env.profile.get(shared.id)?.personaScopes).toEqual(['p-a', 'p-b']);
+
+      const global = env.profile.add({ kind: 'rule', value: 'never ship on Friday' });
+      expect(global.personaScopes).toEqual([]);
+
+      // Explicit empty array is the same global case, not a third state.
+      const explicit = env.profile.add({
+        kind: 'rule',
+        value: 'reply in German',
+        personaScopes: [],
+      });
+      expect(explicit.personaScopes).toEqual([]);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('rejects a malformed scope set with invalid_input', () => {
+    const env = makeMemoryEnv();
+    try {
+      const cases: Array<[string, unknown]> = [
+        ['string instead of array', 'p-a'],
+        ['number element', [42]],
+        ['null element', [null]],
+        ['object element', [{ id: 'p-a' }]],
+        ['legacy non-string', 7],
+      ];
+      for (const [label, scopes] of cases) {
+        let err: unknown;
+        try {
+          env.profile.add({ kind: 'rule', value: 'x', personaScopes: scopes as string[] });
+        } catch (cause) {
+          err = cause;
+        }
+        expect(err, label).toBeInstanceOf(MemoryError);
+        expect((err as MemoryError).code, label).toBe('invalid_input');
+      }
+      expect(env.profile.list({ includeRejected: true })).toHaveLength(0);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('still accepts the deprecated single personaScope on add (null = global)', () => {
+    const env = makeMemoryEnv();
+    try {
+      const one = env.profile.add({ kind: 'rule', value: 'one', personaScope: 'p-a' });
+      expect(one.personaScopes).toEqual(['p-a']);
+      const none = env.profile.add({ kind: 'rule', value: 'none', personaScope: null });
+      expect(none.personaScopes).toEqual([]);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('update replaces the whole scope set (including widening back to all)', () => {
+    const env = makeMemoryEnv();
+    try {
+      const entry = env.profile.add({
+        kind: 'rule',
+        value: 'scoped then widened',
+        personaScopes: ['p-a'],
+      });
+      const widened = env.profile.update(entry.id, { personaScopes: ['p-a', 'p-b'] });
+      expect(widened.personaScopes).toEqual(['p-a', 'p-b']);
+
+      const all = env.profile.update(entry.id, { personaScopes: [] });
+      expect(all.personaScopes).toEqual([]);
+
+      // The deprecated patch field still works and mirrors the array form.
+      const legacy = env.profile.update(entry.id, { personaScope: 'p-b' });
+      expect(legacy.personaScopes).toEqual(['p-b']);
+      const legacyGlobal = env.profile.update(entry.id, { personaScope: null });
+      expect(legacyGlobal.personaScopes).toEqual([]);
+    } finally {
+      env.close();
+    }
+  });
+
+  it('list({personaScope}) reads a shared fact as belonging to each named persona', () => {
+    const env = makeMemoryEnv();
+    try {
+      const global = env.profile.add({ kind: 'preference', value: 'global' });
+      const shared = env.profile.add({
+        kind: 'preference',
+        value: 'shared',
+        personaScopes: ['p-a', 'p-b'],
+      });
+      const third = env.profile.add({
+        kind: 'preference',
+        value: 'third only',
+        personaScopes: ['p-c'],
+      });
+
+      expect(env.profile.list({ personaScope: 'p-a' }).map((e) => e.id).sort()).toEqual(
+        [global.id, shared.id].sort(),
+      );
+      expect(env.profile.list({ personaScope: 'p-b' }).map((e) => e.id).sort()).toEqual(
+        [global.id, shared.id].sort(),
+      );
+      expect(env.profile.list({ personaScope: 'p-c' }).map((e) => e.id).sort()).toEqual(
+        [global.id, third.id].sort(),
+      );
     } finally {
       env.close();
     }

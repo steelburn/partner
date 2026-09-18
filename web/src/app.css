@@ -2530,20 +2530,105 @@ select {
   margin-left: auto;
 }
 
-/* --- M32: suggestion scope + rejected list ------------------------------ */
+/* --- M32/M33: suggestion scope + rejected list -------------------------- */
 
-/* A pending suggestion can be tied to a persona in one step, without opening
- * the editor. Compact so it reads as a property of the row, not a form. */
+/* A pending suggestion's scope is a disclosure in the row's meta line: closed
+ * it costs no more room than the old select, open it takes the row's width.
+ * (M33: it opens a checkbox set, so a fact can be shared by several personas.) */
 .mem-scope-pick {
   display: inline-flex;
   align-items: center;
 }
 
-.mem-scope-select {
-  width: auto;
-  max-width: 180px;
+.mem-scope-pick-summary {
+  cursor: pointer;
+  /* Its own --bg ground: in light mode --accent text fails the body floor
+   * directly on a --surface-2 row (Lc 69.0, DESIGN.md), so the control brings
+   * the chip ground this view already uses instead of sitting on the well. */
+  background: var(--bg);
+  color: var(--accent);
+  border-radius: var(--radius-full);
   padding: var(--space-1) var(--space-2);
-  font-size: var(--fs-xs);
+}
+
+.mem-scope-pick-summary:hover {
+  color: var(--accent-hover);
+}
+
+.mem-scope-pick-summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.mem-scope-pick[open] {
+  display: block;
+  flex-basis: 100%;
+  padding-top: var(--space-1);
+}
+
+/* The "Applies to" checkbox set (M33). Replaces the All-personas-or-one
+ * select: every option is a real target with its own focus ring, and the set
+ * wraps instead of forcing a horizontal scroll on a phone. */
+.mem-scope-picker {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mem-scope-picker:disabled {
+  opacity: 0.6;
+}
+
+.mem-scope-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+.mem-scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--space-5);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.mem-scope-option > input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: var(--space-3);
+  height: var(--space-3);
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.mem-scope-option > input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.mem-scope-option > input[type='checkbox']:disabled {
+  cursor: not-allowed;
+}
+
+.mem-scope-name {
+  overflow-wrap: anywhere;
+}
+
+.mem-scope-hint {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .mem-scope-option {
+    min-height: var(--target-min);
+  }
 }
 
 /* Rejected facts: a tracked, collapsed audit trail. The summary is a control,

@@ -21,8 +21,13 @@ export interface ProfileEntry {
   evidence: string | null;
   source: 'user' | 'partner_suggestion';
   status: ProfileEntryStatus;
-  /** null = applies to every persona; else a persona id. */
-  personaScope: string | null;
+  /**
+   * Persona ids this fact is scoped to. **EMPTY = applies to every persona**
+   * (the global case). One id = private to that persona; two or more = shared
+   * by exactly those personas (M33 multi-select). Ids of deleted personas are
+   * preserved verbatim so an edit round-trip never silently widens a fact.
+   */
+  personaScopes: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -34,6 +39,13 @@ export interface ProfileEntryInput {
   evidence?: string;
   source?: 'user' | 'partner_suggestion';
   status?: ProfileEntryStatus;
+  /** Persona ids to scope to; omitted or `[]` = every persona. */
+  personaScopes?: string[];
+  /**
+   * @deprecated Pre-M33 single-scope field. Still accepted on input (a `null`
+   * maps to `[]` = all personas, a string to `[id]`) so existing callers and
+   * exported bundles keep working; responses never carry it.
+   */
   personaScope?: string | null;
 }
 

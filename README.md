@@ -92,9 +92,14 @@ treats it as its own. So a leftover dev core no longer hijacks the app invisibly
 
 ## Status (2026-09-18)
 
-M0–M29 implemented (PLAN.md §15). The current root suite is **1766
-passed** (5 env-gated skips) · shared **90** · web **979** · typechecks 0 · web
-build green. **M32 reshapes the shell and memory** (`PLAN.md` §15): chat
+M0–M29 implemented (PLAN.md §15). The current root suite is **1783
+passed** (5 env-gated skips) · shared **90** · web **999** · typechecks 0 · web
+build green. **M33 makes Memory's scope multi-select** (`PLAN.md` §15): a fact
+can now be shared by several personas instead of "All personas or exactly one"
+— `personaScopes: string[]` (empty = every persona) on the wire,
+`profile_entries.persona_scopes` in the DB (schema **v24**, legacy rows
+backfilled once), and one `ScopePicker` checkbox set behind the edit form, the
+add form and the suggestion re-scope. **M32 reshapes the shell and memory** (`PLAN.md` §15): chat
 sessions now live under **Personas** (with an Unassigned group), the Skills
 **Catalog** is a Personas-style card deck with a detail drawer, the left menu
 is drag-resizable (`partner.sideWidth`), the chat transcript no longer renders
@@ -584,6 +589,32 @@ code). No schema change. New/updated guards: `one-left-panel.test.ts`,
 `sidebar-collapse.test.ts`, `markdown.test.ts`, `remember.test.ts`. Web suite
 green (60 files / 979 tests); core remember green; typecheck 0; bundle green;
 checked in-browser at 1440.
+
+**M33 — multi-persona memory scope (DONE).** Memory's "Applies to" offered All
+personas **or exactly one** persona; it now offers All personas **or any set**.
+`ProfileEntry.personaScopes: string[]` replaces `personaScope` (EMPTY = every
+persona; one id = private; two or more = exactly those), and tailoring,
+auto-remember's known/rejected/dedupe listing and
+`GET /v1/memory/profile?personaScope=` all read it as membership — so a fact
+shared by two personas is honored by each of them and by no one else. The
+deprecated single field is still accepted on input (add/update/import, and a
+pre-M33 `memory/v1` bundle), mapped to `[id]`/`[]`, so an upgrade never silently
+widens a persona-private fact. Schema **v23 → v24** adds
+`profile_entries.persona_scopes` (JSON id array, `NULL` = global); the one open
+that crosses v24 backfills each legacy `persona_scope` into a one-element array
+and never runs again. The three scope selects became ONE `ScopePicker` checkbox
+set — "All personas" IS the empty set, unticking the last persona returns to it,
+and a persona the local list no longer has stays ticked as **Removed persona** so
+opening a fact cannot widen it; the pending suggestion's control is a `Change`
+disclosure whose open state survives the write. Guards:
+`memory-scope-picker.test.ts` (+12), `memory-helpers.test.ts` (+8),
+`memory-api.test.ts` (+2), core `profile`/`tailor`/`transfer`/`remember`
+`memoryRoutes`/`db-migrate` (+16). Web suite green (61 files / 999 tests); core
+162 files / 1633 passed (5 env-gated skips); typecheck 0; bundle green;
+`ux_audit` green (light + dark); checked in-browser against a demo core (a
+shared scope saved and re-read after a full reload, the suggestion re-scoped in
+place, widening back to All personas showing **In use**, and 10/10 options at
+44px on a 390px viewport with zero overflow).
 
 **M20.B is executable** — `PLAN-M20-B.md` §3–§5 has the slices, the tests to
 write first, the parallelization waves, and a recommended first slice. **Its
@@ -1403,7 +1434,8 @@ explicit model), extraction rides the exact provider + model that served the
 turn, so a successful turn never silently skips remembering; audit rows carry
 ids/counts/model only. No schema change (M4's
 `profile_entries.persona_scope`/`source`, the `personas.memory_flags` JSON and
-the `settings` key-value table were enough). Web: an “Automatic memory” card in
+the `settings` key-value table were enough; M33 later replaced that single scope
+field with the multi-select `persona_scopes` array — schema v24). Web: an “Automatic memory” card in
 the Memory view, a Memory fieldset in the persona editor, a persona-aware “in
 use” marker, and an “Auto-detected” provenance chip. Suites after the pass: core
 **893 passed** (5 env-gated skips) · web **541 passed** · typechecks 0 · web

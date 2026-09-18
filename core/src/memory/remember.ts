@@ -10,7 +10,8 @@
  * Scope: the extractor labels each finding `global` (true of the user in
  * every conversation: name, role, language, standing tone/format rules) or
  * `persona` (only meaningful while chatting with this persona). Global
- * findings are filed with `personaScope: null` so they tailor every persona;
+ * findings are filed with an EMPTY scope (`personaScopes: []`) so they tailor
+ * every persona;
  * persona findings stay scoped to the persona that heard them. The whole
  * extraction stays gated on that persona's private-memory toggle — the
  * toggle is the conversation-level consent, and nothing is applied until the
@@ -92,7 +93,7 @@ export const REMEMBER_SCOPES: readonly RememberScope[] = ['global', 'persona'];
  * behaviour).
  */
 export interface RememberPolicy {
-  /** File global (`personaScope: null`) findings. */
+  /** File global (empty-scope) findings. */
   global: boolean;
   /** File persona-scoped findings for this persona. */
   persona: boolean;
@@ -384,11 +385,14 @@ export function createRememberManager(options: RememberManagerOptions): Remember
       return resolverFailed ? { status: 'error' } : { status: 'skipped', reason: 'no_provider' };
     }
 
-    // Everything the persona would honor — global + its own scope — across
-    // confirmed, pending and rejected entries.
+    // Everything the persona would honor — global (empty scope) + its own
+    // scope — across confirmed, pending and rejected entries. M33: an entry
+    // shared by several personas is honored by each of them.
     const scoped = profile
       .list({ includeRejected: true })
-      .filter((entry) => entry.personaScope === null || entry.personaScope === personaId);
+      .filter(
+        (entry) => entry.personaScopes.length === 0 || entry.personaScopes.includes(personaId),
+      );
     // Review-before-suggest: show the model what is already known (confirmed
     // and still-pending, newest first so the cap keeps the freshest facts) so
     // it does not propose the same fact in new wording. Rejected values ride a
@@ -455,9 +459,9 @@ export function createRememberManager(options: RememberManagerOptions): Remember
           ...(candidate.key !== undefined ? { key: candidate.key } : {}),
           ...(candidate.evidence !== undefined ? { evidence: candidate.evidence } : {}),
           source: 'partner_suggestion',
-          // `global` files personaScope null so the fact tailors every
-          // persona once confirmed; `persona` stays private to this one.
-          personaScope: candidate.scope === 'global' ? null : personaId,
+          // `global` files an EMPTY scope so the fact tailors every persona
+          // once confirmed; `persona` stays private to this one.
+          personaScopes: candidate.scope === 'global' ? [] : [personaId],
         } satisfies ProfileEntryInput);
         entryIds.push(entry.id);
         if (candidate.scope === 'global') globalSuggested += 1;

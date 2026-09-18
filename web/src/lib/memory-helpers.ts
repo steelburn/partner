@@ -82,14 +82,82 @@ export interface PersonaLike {
 }
 
 /**
- * Where a profile entry applies: null (global) reads "All personas"; a
- * persona id resolves to that persona's name, or a neutral fallback when the
- * persona no longer exists (its id is not revealed — that is a core id).
+ * Persona ids an entry is scoped to. Defensive on purpose: a payload that
+ * skipped `parseProfileEntry` (tests, a pre-M33 core) may still carry the old
+ * single `personaScope` field, and `[]` must mean "every persona".
  */
-export function scopedLabel(scope: string | null, personas: readonly PersonaLike[] = []): string {
-  if (scope === null) return 'All personas';
-  const persona = personas.find((p) => p.id === scope);
-  return persona ? persona.name : 'Removed persona';
+export function scopesOf(entry: ProfileEntry): string[] {
+  const entryScopes = (entry as { personaScopes?: unknown }).personaScopes;
+  if (Array.isArray(entryScopes)) {
+    return entryScopes.filter((id): id is string => typeof id === 'string' && id.trim() !== '');
+  }
+  const legacy = (entry as { personaScope?: unknown }).personaScope;
+  return typeof legacy === 'string' && legacy.trim() !== '' ? [legacy.trim()] : [];
+}
+
+/** True when the entry applies to every persona (an empty scope set). */
+export function isGlobalScope(scopes: readonly string[]): boolean {
+  return scopes.length === 0;
+}
+
+/**
+ * Full, readable description of a scope set — used for tooltips and
+ * accessible names, where length is not a layout constraint.
+ *
+ * `[]` reads "All personas"; each id resolves to a persona name, or a neutral
+ * fallback when the persona no longer exists (the id itself is a core id and
+ * is never revealed).
+ */
+export function scopedLabel(
+  scopes: readonly string[],
+  personas: readonly PersonaLike[] = [],
+): string {
+  if (scopes.length === 0) return 'All personas';
+  return scopes.map((id) => personaName(id, personas)).join(', ');
+}
+
+/**
+ * Compact scope text for a row's meta line: a single persona is named, two or
+ * more collapse to a count (the full list rides the element's title).
+ */
+export function scopedSummary(
+  scopes: readonly string[],
+  personas: readonly PersonaLike[] = [],
+): string {
+  if (scopes.length === 0) return 'All personas';
+  if (scopes.length === 1) return personaName(scopes[0] as string, personas);
+  return `${scopes.length} personas`;
+}
+
+/** A scoped persona that no longer exists locally (its id is still kept). */
+export function removedScopes(
+  scopes: readonly string[],
+  personas: readonly PersonaLike[] = [],
+): string[] {
+  return scopes.filter((id) => !personas.some((persona) => persona.id === id));
+}
+
+function personaName(id: string, personas: readonly PersonaLike[]): string {
+  return personas.find((persona) => persona.id === id)?.name ?? 'Removed persona';
+}
+
+/**
+ * Pure picker transition. Selecting a persona adds it; selecting it again
+ * removes it. Removing the last one falls back to the empty set, which is the
+ * canonical "All personas" state — the UI never leaves zero boxes ticked with
+ * no meaning.
+ */
+export function toggleScope(scopes: readonly string[], id: string): string[] {
+  return scopes.includes(id) ? scopes.filter((scope) => scope !== id) : [...scopes, id];
+}
+
+/**
+ * Set equality for two scope sets — order-insensitive, so re-checking an
+ * already-selected persona is a no-op rather than a pointless write.
+ */
+export function sameScopes(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((id) => b.includes(id));
 }
 
 /**
@@ -109,12 +177,15 @@ export function tailoringInUseIds(
   const newest = (list: readonly ProfileEntry[]): ProfileEntry[] =>
     [...list].sort((a, b) => b.createdAt - a.createdAt).slice(0, TAILORING_ENTRY_LIMIT);
 
-  const ids = new Set(newest(confirmed.filter((entry) => entry.personaScope === null)).map((e) => e.id));
+  const ids = new Set(
+    newest(confirmed.filter((entry) => isGlobalScope(scopesOf(entry)))).map((e) => e.id),
+  );
   for (const persona of personas) {
     if (persona.memory?.personaMemory !== 'on') continue;
-    const scoped = confirmed.filter(
-      (entry) => entry.personaScope === null || entry.personaScope === persona.id,
-    );
+    const scoped = confirmed.filter((entry) => {
+      const scopes = scopesOf(entry);
+      return scopes.length === 0 || scopes.includes(persona.id);
+    });
     for (const entry of newest(scoped)) ids.add(entry.id);
   }
   return ids;
@@ -123,9 +194,10 @@ export function tailoringInUseIds(
 /** Single-entry predicate: confirmed, and honored by at least one persona. */
 export function isEntryInUse(entry: ProfileEntry, personas: readonly PersonaLike[] = []): boolean {
   if (entry.status !== 'confirmed') return false;
-  if (entry.personaScope === null) return true;
+  const scopes = scopesOf(entry);
+  if (scopes.length === 0) return true;
   return personas.some(
-    (persona) => persona.id === entry.personaScope && persona.memory?.personaMemory === 'on',
+    (persona) => scopes.includes(persona.id) && persona.memory?.personaMemory === 'on',
   );
 }
 

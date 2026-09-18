@@ -526,8 +526,13 @@ export interface ProfileEntryRow {
   source: string;
   /** confirmed | suggested | rejected. */
   status: string;
-  /** null = global (every persona); else a persona id. */
-  personaScope: string | null;
+  /**
+   * JSON array of persona ids (M33), or NULL/`[]` for global (every persona).
+   * Raw column text — the memory manager owns parse/serialize (same split as
+   * `providers.vision_models`). The pre-M33 single `persona_scope` column is
+   * legacy and no longer read or written.
+   */
+  personaScopes: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -536,7 +541,7 @@ export interface ProfileEntryRow {
 export type ProfileEntryRowPatch = Partial<
   Pick<
     ProfileEntryRow,
-    'kind' | 'key' | 'value' | 'evidence' | 'source' | 'status' | 'personaScope'
+    'kind' | 'key' | 'value' | 'evidence' | 'source' | 'status' | 'personaScopes'
   >
 > & { updatedAt: number };
 

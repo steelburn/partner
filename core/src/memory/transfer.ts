@@ -17,14 +17,12 @@ import type {
   EpisodeSummary,
   MemoryExportBundle,
   ProfileEntry,
-  ProfileEntryKind,
-  ProfileEntryStatus,
 } from '@partner/shared';
 import type { AuditService } from '../services/redaction.js';
 import type { EpisodeRow, EpisodeStore, MemoryFtsStore, ProfileEntryRow, ProfileEntryStore } from '../stores/types.js';
 import { memoryError } from './errors.js';
 import { episodeSearchText } from './episodes.js';
-import { profileSearchText } from './profile.js';
+import { profileRowToEntry, profileSearchText, serializePersonaScopes } from './profile.js';
 
 export interface MemoryImportCounts {
   profile: number;
@@ -54,7 +52,7 @@ function entryToRow(entry: ProfileEntry, id: string): ProfileEntryRow {
     evidence: entry.evidence ?? null,
     source: entry.source,
     status: entry.status,
-    personaScope: entry.personaScope ?? null,
+    personaScopes: serializePersonaScopes(entry.personaScopes ?? []),
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
   };
@@ -77,10 +75,31 @@ const ENTRY_KINDS: ReadonlySet<string> = new Set(['preference', 'identity', 'rul
 const ENTRY_STATUSES: ReadonlySet<string> = new Set(['confirmed', 'suggested', 'rejected']);
 const ENTRY_SOURCES: ReadonlySet<string> = new Set(['user', 'partner_suggestion']);
 
-/** Structural row validation shared by profile + episode array entries. */
+/**
+ * M33: accept a pre-M33 bundle row that carries only `personaScope` by
+ * mapping it into the array form. A canonical row passes through untouched.
+ */
+function normalizeImportedScopes(entry: ProfileEntry): ProfileEntry {
+  if (Array.isArray(entry.personaScopes)) return entry;
+  const legacy = (entry as { personaScope?: string | null }).personaScope ?? null;
+  return { ...entry, personaScopes: legacy === null ? [] : [legacy] };
+}
+
+/**
+ * Structural row validation shared by profile + episode array entries.
+ *
+ * M33: a bundle row carries `personaScopes` (array of non-blank strings). A
+ * pre-M33 row carrying only `personaScope` (string | null) is still accepted —
+ * importBundle normalizes it into the array form — so an old export file
+ * keeps importing with its scope intact.
+ */
 function isValidEntry(value: unknown): value is ProfileEntry {
   if (value === null || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;
+  const scopesOk =
+    row.personaScopes === undefined ||
+    (Array.isArray(row.personaScopes) &&
+      row.personaScopes.every((id) => typeof id === 'string' && id.trim() !== ''));
   return (
     typeof row.id === 'string' &&
     typeof row.kind === 'string' &&
@@ -93,7 +112,8 @@ function isValidEntry(value: unknown): value is ProfileEntry {
     ENTRY_STATUSES.has(row.status) &&
     (row.key === null || typeof row.key === 'string') &&
     (row.evidence === null || typeof row.evidence === 'string') &&
-    (row.personaScope === null || typeof row.personaScope === 'string') &&
+    (row.personaScope === undefined || row.personaScope === null || typeof row.personaScope === 'string') &&
+    scopesOk &&
     typeof row.createdAt === 'number' &&
     typeof row.updatedAt === 'number'
   );
@@ -123,18 +143,7 @@ export function createMemoryTransferManager(
   const now = options.now ?? Date.now;
 
   function exportBundle(): MemoryExportBundle {
-    const profile: ProfileEntry[] = stores.profile.list().map((row) => ({
-      id: row.id,
-      kind: row.kind as ProfileEntryKind,
-      key: row.key,
-      value: row.value,
-      evidence: row.evidence,
-      source: row.source as ProfileEntry['source'],
-      status: row.status as ProfileEntryStatus,
-      personaScope: row.personaScope,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
+    const profile: ProfileEntry[] = stores.profile.list().map(profileRowToEntry);
     const episodes: EpisodeSummary[] = stores.episodes.list().map((row) => ({
       id: row.id,
       conversationId: row.conversationId,
@@ -179,10 +188,10 @@ export function createMemoryTransferManager(
     let profileCount = 0;
     for (const entry of entries as ProfileEntry[]) {
       const id = randomUUID();
-      stores.profile.insert(entryToRow(entry, id));
+      stores.profile.insert(entryToRow(normalizeImportedScopes(entry), id));
       // Mirror the add() rule: rejected imported entries stay un-indexed.
       if (entry.status !== 'rejected') {
-        stores.fts.upsertProfile(id, profileSearchText(entry));
+        stores.fts.upsertProfile(id, profileSearchText(normalizeImportedScopes(entry)));
       }
       profileCount += 1;
     }

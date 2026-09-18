@@ -3,9 +3,14 @@
  *
  * Explicit, user-visible memory facts. Owns validation (kind whitelist,
  * non-empty value), the status lifecycle (suggested -> confirmed/rejected ->
- * confirmed again), persona scoping (personaScope null = global), and the FTS
- * mirror: every write re-indexes the entry's searchable text (value), and
- * rejected entries are un-indexed so search never surfaces them.
+ * confirmed again), persona scoping (M33: an EMPTY `personaScopes` array =
+ * global, i.e. every persona), and the FTS mirror: every write re-indexes the
+ * entry's searchable text (value), and rejected entries are un-indexed so
+ * search never surfaces them.
+ *
+ * Scope storage: `profile_entries.persona_scopes` holds a JSON id array (or
+ * NULL for global). This module owns the encoding, mirroring the
+ * `providers.vision_models` split — the row store stays plain CRUD.
  *
  * Audit discipline: rows carry ids, kind, status, source, scope and LENGTHS —
  * never the value/evidence content (user data stays in the tables and in
@@ -46,15 +51,21 @@ export interface ProfileManagerOptions {
 export interface ProfileListOptions {
   /** Include rejected entries (default false — rejected facts are hidden). */
   includeRejected?: boolean;
-  /** Restrict to one persona scope. Pass a NON-NULL persona id to read only
-   *  that persona's entries plus... see below. */
+  /** Restrict to the entries one persona honors: global (empty scope) plus
+   *  any entry whose scope includes this persona id. Pass a NON-NULL persona
+   *  id; an absent option returns everything. */
   personaScope?: string;
 }
 
 /** Partial update; fields validate like create. */
 export type ProfileEntryPatch = Partial<
-  Pick<ProfileEntryInput, 'kind' | 'key' | 'value' | 'evidence' | 'source' | 'status' | 'personaScope'>
->;
+  Pick<ProfileEntryInput, 'kind' | 'key' | 'value' | 'evidence' | 'source' | 'status'>
+> & {
+  /** New scope set; `[]` = every persona. */
+  personaScopes?: string[];
+  /** @deprecated legacy single scope (null = every persona). */
+  personaScope?: string | null;
+};
 
 export interface ProfileManager {
   /** Confirmed + suggested by default; includeRejected to surface rejected. */
@@ -73,7 +84,7 @@ export interface ProfileManager {
 }
 
 /** Wire row -> ProfileEntry (values are already validated by the manager). */
-function toEntry(row: ProfileEntryRow): ProfileEntry {
+export function profileRowToEntry(row: ProfileEntryRow): ProfileEntry {
   return {
     id: row.id,
     kind: row.kind as ProfileEntryKind,
@@ -82,10 +93,79 @@ function toEntry(row: ProfileEntryRow): ProfileEntry {
     evidence: row.evidence,
     source: row.source as ProfileEntry['source'],
     status: row.status as ProfileEntryStatus,
-    personaScope: row.personaScope,
+    personaScopes: parsePersonaScopes(row.personaScopes),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+const toEntry = profileRowToEntry;
+
+/**
+ * Parse the stored JSON id array. TOLERANT by design: a NULL/blank column, a
+ * malformed payload or non-string elements all read as `[]` (global) rather
+ * than throwing — a corrupt scope must never make the whole Memory screen
+ * unreadable. Duplicates are collapsed; blank ids are dropped.
+ */
+export function parsePersonaScopes(raw: string | null | undefined): string[] {
+  if (raw === null || raw === undefined || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const ids: string[] = [];
+  for (const value of parsed) {
+    if (typeof value !== 'string') continue;
+    const id = value.trim();
+    if (id === '' || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  return ids;
+}
+
+/** Serialize a scope set for the `persona_scopes` column; `[]` -> NULL. */
+export function serializePersonaScopes(scopes: readonly string[]): string | null {
+  const ids = normalizePersonaScopes(scopes, 'personaScopes');
+  return ids.length === 0 ? null : JSON.stringify(ids);
+}
+
+/**
+ * Normalize a scope set: every element must be a non-blank string. Throws
+ * `invalid_input` on any other shape (a bad array is a client bug worth
+ * surfacing, unlike a bad STORED value which is tolerated). Empty ids are
+ * dropped and duplicates collapsed, order preserved.
+ */
+export function normalizePersonaScopes(raw: unknown, what: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw memoryError('invalid_input', `${what} must be an array of persona ids`);
+  }
+  const ids: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== 'string') {
+      throw memoryError('invalid_input', `${what} must be an array of persona ids`);
+    }
+    const id = value.trim();
+    if (id === '' || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Resolve the scope set an input carries. M33 canonical field is
+ * `personaScopes`; the pre-M33 `personaScope` string/null is still honored
+ * (null -> `[]`) so older callers and imported bundles keep working. When
+ * both are present the array wins.
+ */
+function scopeFromInput(body: ProfileEntryInput): string[] {
+  if (body.personaScopes !== undefined) {
+    return normalizePersonaScopes(body.personaScopes, 'personaScopes');
+  }
+  const legacy = optionalNullableString(body.personaScope, 'personaScope');
+  return legacy === null ? [] : [legacy];
 }
 
 function requireKind(raw: unknown): ProfileEntryKind {
@@ -153,7 +233,7 @@ export function normalizeProfileInput(
   evidence: string | null;
   source: 'user' | 'partner_suggestion';
   status: ProfileEntryStatus;
-  personaScope: string | null;
+  personaScopes: string[];
 } {
   const body = (input ?? {}) as ProfileEntryInput;
   const kind = requireKind(body.kind);
@@ -171,7 +251,7 @@ export function normalizeProfileInput(
     evidence: optionalNullableString(body.evidence, 'evidence'),
     source,
     status,
-    personaScope: optionalNullableString(body.personaScope, 'personaScope'),
+    personaScopes: scopeFromInput(body),
   };
 }
 
@@ -203,7 +283,8 @@ export function createProfileManager(options: ProfileManagerOptions): ProfileMan
       .filter((row) => {
         if (!optionsIn.includeRejected && row.status === 'rejected') return false;
         if (optionsIn.personaScope !== undefined) {
-          if (row.personaScope !== optionsIn.personaScope && row.personaScope !== null) {
+          const scopes = parsePersonaScopes(row.personaScopes);
+          if (scopes.length > 0 && !scopes.includes(optionsIn.personaScope)) {
             return false;
           }
         }
@@ -223,7 +304,13 @@ export function createProfileManager(options: ProfileManagerOptions): ProfileMan
     const id = randomUUID();
     const row: ProfileEntryRow = {
       id,
-      ...normalized,
+      kind: normalized.kind,
+      key: normalized.key,
+      value: normalized.value,
+      evidence: normalized.evidence,
+      source: normalized.source,
+      status: normalized.status,
+      personaScopes: serializePersonaScopes(normalized.personaScopes),
       createdAt: at,
       updatedAt: at,
     };
@@ -233,7 +320,7 @@ export function createProfileManager(options: ProfileManagerOptions): ProfileMan
       kind: row.kind,
       source: row.source,
       status: row.status,
-      personaScope: row.personaScope,
+      personaScopes: parsePersonaScopes(row.personaScopes),
       valueLength: row.value.length,
     });
     return toEntry(row);
@@ -253,8 +340,12 @@ export function createProfileManager(options: ProfileManagerOptions): ProfileMan
     }
     if (patch.source !== undefined) current.source = requireSource(patch.source);
     if (patch.status !== undefined) current.status = requireStatus(patch.status);
-    if (patch.personaScope !== undefined) {
-      current.personaScope = optionalNullableString(patch.personaScope, 'personaScope');
+    // `personaScopes` (M33) wins over the deprecated single `personaScope`.
+    if (patch.personaScopes !== undefined) {
+      current.personaScopes = normalizePersonaScopes(patch.personaScopes, 'personaScopes');
+    } else if (patch.personaScope !== undefined) {
+      const legacy = optionalNullableString(patch.personaScope, 'personaScope');
+      current.personaScopes = legacy === null ? [] : [legacy];
     }
 
     const updatedAt = now();
@@ -265,7 +356,7 @@ export function createProfileManager(options: ProfileManagerOptions): ProfileMan
       evidence: current.evidence,
       source: current.source,
       status: current.status,
-      personaScope: current.personaScope,
+      personaScopes: serializePersonaScopes(current.personaScopes),
       updatedAt,
     });
     const updated = store.findById(id);
@@ -274,7 +365,7 @@ export function createProfileManager(options: ProfileManagerOptions): ProfileMan
     audit.log('web', 'profile.update', id, {
       kind: updated.kind,
       status: updated.status,
-      personaScope: updated.personaScope,
+      personaScopes: parsePersonaScopes(updated.personaScopes),
       valueLength: updated.value.length,
     });
     return toEntry(updated);

@@ -22,10 +22,15 @@ import {
   isAutoDetected,
   kindLabel,
   kindTone,
+  removedScopes,
+  sameScopes,
   scopedLabel,
+  scopedSummary,
+  scopesOf,
   sortEpisodes,
   statusLabel,
   tailoringInUseIds,
+  toggleScope,
   validateBundle,
   validateBundleSize,
 } from './lib/memory-helpers.js';
@@ -79,21 +84,90 @@ function personaNameById(personas: readonly Persona[], id: string | null): strin
   return personas.find((p) => p.id === id)?.name ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// M33 "Applies to" picker — a checkbox set, never a single-choice select
+// ---------------------------------------------------------------------------
+
+interface ScopePickerProps {
+  /** Namespaces the hint id so two pickers on one page stay unique. */
+  idPrefix: string;
+  scopes: readonly string[];
+  personas: readonly Persona[];
+  disabled?: boolean;
+  onChange: (next: string[]) => void;
+}
+
+/**
+ * Replaces the old "All personas | exactly one persona" select with a
+ * multi-select checkbox set.
+ *
+ * "All personas" IS the empty scope set (the canonical global form), so it is
+ * a checkbox like any other: ticking a persona clears it, and unticking the
+ * last persona returns to it. A persona the local list no longer has stays
+ * ticked as "Removed persona" until the user unticks it — opening a fact for
+ * editing must never silently widen it to every persona.
+ */
+function ScopePicker({ idPrefix, scopes, personas, disabled, onChange }: ScopePickerProps) {
+  const all = scopes.length === 0;
+  const removed = removedScopes(scopes, personas);
+  const hintId = `${idPrefix}-scope-hint`;
+  return (
+    <fieldset className="mem-scope-picker" disabled={disabled} aria-describedby={hintId}>
+      <legend className="label">Applies to</legend>
+      <div className="mem-scope-options">
+        <label className="mem-scope-option">
+          <input type="checkbox" checked={all} onChange={() => onChange([])} />
+          <span className="mem-scope-name">All personas</span>
+        </label>
+        {personas.map((persona) => (
+          <label key={persona.id} className="mem-scope-option">
+            <input
+              type="checkbox"
+              checked={scopes.includes(persona.id)}
+              onChange={() => onChange(toggleScope(scopes, persona.id))}
+            />
+            <span className="mem-scope-name">{persona.name}</span>
+          </label>
+        ))}
+        {removed.map((id) => (
+          <label key={id} className="mem-scope-option">
+            <input
+              type="checkbox"
+              checked
+              onChange={() => onChange(toggleScope(scopes, id))}
+              title="This persona no longer exists on this machine"
+            />
+            <span className="mem-scope-name">Removed persona</span>
+          </label>
+        ))}
+      </div>
+      <p className="form-hint mem-scope-hint" id={hintId}>
+        {all
+          ? 'Every persona honors this fact.'
+          : scopes.length === 1
+            ? 'Only the selected persona honors this fact.'
+            : `Only the ${scopes.length} selected personas honor this fact.`}
+      </p>
+    </fieldset>
+  );
+}
+
 /** A full ProfileEntryInput built from an entry plus any field overrides. */
 function inputFromEntry(
   entry: ProfileEntry,
-  fields: { kind: ProfileEntryKind; key: string; value: string; scope: string },
+  fields: { kind: ProfileEntryKind; key: string; value: string; scopes: readonly string[] },
   overrides: Partial<ProfileEntryInput> = {},
 ): ProfileEntryInput {
   const key = fields.key.trim();
-  const scope = fields.scope.trim();
   return {
     kind: fields.kind,
     value: fields.value.trim(),
     ...(key.length > 0 ? { key } : {}),
     source: entry.source,
     status: entry.status,
-    ...(scope === '' ? { personaScope: null } : { personaScope: scope }),
+    // M33: always send the array form — `[]` is the canonical "All personas",
+    // so widening a fact is an explicit write rather than an omitted field.
+    personaScopes: [...fields.scopes],
     ...overrides,
   };
 }
@@ -498,21 +572,21 @@ function ProfileEntryRow({
   const [kind, setKind] = useState<ProfileEntryKind>(entry.kind);
   const [key, setKey] = useState(entry.key ?? '');
   const [value, setValue] = useState(entry.value);
-  const [scope, setScope] = useState(entry.personaScope ?? '');
+  const [scopes, setScopes] = useState<string[]>(() => scopesOf(entry));
   const [busy, setBusy] = useState<'save' | 'confirm' | 'reject' | 'delete' | 'scope' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
   const tone = kindTone(entry.kind);
   const inUse = inUseOverride === undefined ? isEntryInUse(entry, personas) : inUseOverride;
-  const personaScopeLabel = scopedLabel(entry.personaScope, personas);
-  const unknownScope = entry.personaScope !== null && !personas.some((p) => p.id === entry.personaScope);
+  const entryScopes = scopesOf(entry);
+  const personaScopeLabel = scopedLabel(entryScopes, personas);
 
   const startEdit = (): void => {
     setKind(entry.kind);
     setKey(entry.key ?? '');
     setValue(entry.value);
-    setScope(entry.personaScope ?? '');
+    setScopes(scopesOf(entry));
     setRowError(null);
     setConfirming(false);
     setEditing(true);
@@ -539,7 +613,7 @@ function ProfileEntryRow({
     setBusy('save');
     setRowError(null);
     try {
-      await updateProfileEntry(token, entry.id, inputFromEntry(entry, { kind, key, value, scope }));
+      await updateProfileEntry(token, entry.id, inputFromEntry(entry, { kind, key, value, scopes }));
       reset();
       onChanged();
     } catch (cause) {
@@ -567,7 +641,7 @@ function ProfileEntryRow({
         kind: entry.kind,
         key: entry.key ?? '',
         value: entry.value,
-        scope: entry.personaScope ?? '',
+        scopes: scopesOf(entry),
       }, { status: nextStatus }));
       reset();
       onChanged();
@@ -583,14 +657,13 @@ function ProfileEntryRow({
   };
 
   /**
-   * M32: re-scope a suggestion in place, keeping its `suggested` status. A
-   * persona-scoped suggestion only tailors chats with that persona; the same
-   * fact can be parked on "All personas" instead. This is the one-step way to
-   * tie a pending suggestion to a persona without opening the editor.
+   * M32/M33: re-scope a suggestion in place, keeping its `suggested` status.
+   * A scoped suggestion only tailors chats with the personas it names; the
+   * same fact can be parked on "All personas" instead. One step, no editor.
    */
-  const changeScope = async (value: string): Promise<void> => {
+  const changeScope = async (next: string[]): Promise<void> => {
     if (busy !== null) return;
-    if (value === scope) return;
+    if (sameScopes(next, entryScopes)) return;
     const token = readStoredToken();
     if (!token) {
       onSessionLost();
@@ -603,9 +676,9 @@ function ProfileEntryRow({
         kind: entry.kind,
         key: entry.key ?? '',
         value: entry.value,
-        scope: value,
+        scopes: next,
       }));
-      setScope(value);
+      setScopes(next);
       onChanged();
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -647,12 +720,6 @@ function ProfileEntryRow({
       setBusy(null);
     }
   };
-
-  const scopeOptions = personas.map((persona) => (
-    <option key={persona.id} value={persona.id}>
-      {persona.name}
-    </option>
-  ));
 
   if (editing) {
     return (
@@ -707,24 +774,13 @@ function ProfileEntryRow({
               aria-required="true"
             />
           </div>
-          <div className="form-field">
-            <label className="label" htmlFor={`mem-scope-${entry.id}`}>
-              Applies to
-            </label>
-            <select
-              id={`mem-scope-${entry.id}`}
-              className="field"
-              value={scope}
-              disabled={busy !== null}
-              onChange={(event) => setScope(event.target.value)}
-            >
-              <option value="">All personas</option>
-              {unknownScope && entry.personaScope !== null ? (
-                <option value={entry.personaScope}>{personaScopeLabel}</option>
-              ) : null}
-              {scopeOptions}
-            </select>
-          </div>
+          <ScopePicker
+            idPrefix={`mem-edit-${entry.id}`}
+            scopes={scopes}
+            personas={personas}
+            disabled={busy !== null}
+            onChange={setScopes}
+          />
           {entry.evidence !== null && entry.evidence.length > 0 ? (
             <p className="mem-evidence">Why: {entry.evidence}</p>
           ) : null}
@@ -783,26 +839,25 @@ function ProfileEntryRow({
         {entry.status !== 'confirmed' ? (
           <span className="mem-chip mem-chip-neutral">{statusLabel(entry.status)}</span>
         ) : null}
-        <span className="mem-meta-item" aria-label="Scope">
-          {personaScopeLabel}
+        <span className="mem-meta-item" aria-label="Scope" title={personaScopeLabel}>
+          {scopedSummary(entryScopes, personas)}
         </span>
         {entry.status === 'suggested' ? (
-          <span className="mem-scope-pick">
-            <select
-              className="field mem-scope-select"
-              value={scope}
-              disabled={busy !== null}
-              onChange={(event) => void changeScope(event.target.value)}
-              aria-label={`Tie this suggestion to a persona — ${entry.value}`}
-              title="Tie this suggestion to a persona"
+          <details className="mem-scope-pick">
+            <summary
+              className="mem-scope-pick-summary"
+              title="Tie this suggestion to one or more personas"
             >
-              <option value="">All personas</option>
-              {scopeOptions}
-              {unknownScope && entry.personaScope !== null ? (
-                <option value={entry.personaScope}>{personaScopeLabel}</option>
-              ) : null}
-            </select>
-          </span>
+              Change
+            </summary>
+            <ScopePicker
+              idPrefix={`mem-tie-${entry.id}`}
+              scopes={scopes}
+              personas={personas}
+              disabled={busy !== null}
+              onChange={(next) => void changeScope(next)}
+            />
+          </details>
         ) : null}
         <span className="mem-meta-item">
           {entry.source === 'user' ? 'You' : 'Partner'} · {timeAgo(entry.updatedAt)}
@@ -897,7 +952,7 @@ function AddEntryForm({ personas, onAdded, onSessionLost }: AddEntryFormProps) {
   const [kind, setKind] = useState<ProfileEntryKind>('preference');
   const [key, setKey] = useState('');
   const [value, setValue] = useState('');
-  const [scope, setScope] = useState('');
+  const [scopes, setScopes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -914,14 +969,14 @@ function AddEntryForm({ personas, onAdded, onSessionLost }: AddEntryFormProps) {
       return;
     }
     const keyTrimmed = key.trim();
-    const scopeTrimmed = scope.trim();
     const input: ProfileEntryInput = {
       kind,
       value: value.trim(),
       source: 'user',
       status: 'confirmed',
       ...(keyTrimmed.length > 0 ? { key: keyTrimmed } : {}),
-      ...(scopeTrimmed === '' ? { personaScope: null } : { personaScope: scopeTrimmed }),
+      // `[]` = every persona, the canonical global scope.
+      personaScopes: [...scopes],
     };
     setBusy(true);
     setError(null);
@@ -929,7 +984,7 @@ function AddEntryForm({ personas, onAdded, onSessionLost }: AddEntryFormProps) {
       await addProfileEntry(token, input);
       setKey('');
       setValue('');
-      setScope('');
+      setScopes([]);
       onAdded();
     } catch (cause) {
       if (isSessionLost(cause)) {
@@ -1005,29 +1060,13 @@ function AddEntryForm({ personas, onAdded, onSessionLost }: AddEntryFormProps) {
           aria-required="true"
         />
       </div>
-      <div className="form-field">
-        <label className="label" htmlFor="mem-add-scope">
-          Applies to
-        </label>
-        <select
-          id="mem-add-scope"
-          className="field"
-          value={scope}
-          disabled={busy}
-          onChange={(event) => setScope(event.target.value)}
-        >
-          <option value="">All personas</option>
-          {personas.map((persona) => (
-            <option key={persona.id} value={persona.id}>
-              {persona.name}
-            </option>
-          ))}
-        </select>
-        <p className="form-hint">
-          Facts scoped to one persona tailor only that persona. Global confirmed facts are the
-          ones marked “in use”.
-        </p>
-      </div>
+      <ScopePicker
+        idPrefix="mem-add"
+        scopes={scopes}
+        personas={personas}
+        disabled={busy}
+        onChange={setScopes}
+      />
       <div className="form-actions">
         <button type="submit" className="btn btn-primary" disabled={busy}>
           {busy ? 'Adding…' : 'Add entry'}

@@ -8,11 +8,12 @@
  * '(evidence: …)' suffix), or null when there is nothing to honor.
  *
  * Which entries:
- *   - GLOBAL entries (personaScope === null) are honored by every persona
- *     (M4 contract, unchanged).
- *   - PERSONA-SCOPED entries (personaScope === persona.id) are honored ONLY
- *     when that persona has private memory on (`memory.personaMemory ===
- *     'on'`). Passing a bare persona id keeps the M4 global-only behavior.
+ *   - GLOBAL entries (M33: an EMPTY `personaScopes` array) are honored by
+ *     every persona (M4 contract, unchanged).
+ *   - SCOPED entries (M33: `personaScopes` contains persona.id — possibly
+ *     alongside other personas) are honored when that persona has private
+ *     memory on (`memory.personaMemory === 'on'`). Passing a bare persona id
+ *     keeps the M4 global-only behavior.
  *
  * The route prepends the returned block as a system message ONLY on the
  * provider-routed, persona-bound persist path — never demo, never one-shot —
@@ -43,8 +44,8 @@ export function buildTailoring(
     .list()
     .filter((entry) => {
       if (entry.status !== 'confirmed') return false;
-      if (entry.personaScope === null) return true;
-      return includeScoped && entry.personaScope === personaId;
+      if (entry.personaScopes.length === 0) return true;
+      return includeScoped && entry.personaScopes.includes(personaId);
     })
     // Newest first: the most recent confirmed facts are the ones to honor.
     .sort((a, b) => b.createdAt - a.createdAt)

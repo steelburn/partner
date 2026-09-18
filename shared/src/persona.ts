@@ -56,8 +56,8 @@ export interface PersonaMemoryFlags {
    * M19 persona-private memory + automatic remember consent for THIS persona.
    * 'on' = this persona notices durable facts tied to it after a persisted
    * turn and recalls them only in its own chats. Persona-scoped findings are
-   * filed `personaScope: <id>` as suggestions; nothing is applied until the
-   * user confirms it in the Memory view. Facts that apply everywhere are
+   * filed with `personaScopes: [<id>]` as suggestions; nothing is applied
+   * until the user confirms it in the Memory view. Facts that apply everywhere are
    * governed separately by the user-level global auto-remember setting
    * (`/v1/memory/settings`, default on), not this flag. 'off'/absent = this
    * persona reads/writes no persona-scoped auto-detected facts (privacy

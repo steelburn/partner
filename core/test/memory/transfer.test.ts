@@ -29,7 +29,7 @@ describe('memory export/import', () => {
         value: 'export-shape-fact',
         source: 'user',
         status: 'confirmed',
-        personaScope: null,
+        personaScopes: [],
       });
       expect(bundle.episodes[0]).toMatchObject({
         id: episode.id,
@@ -59,7 +59,7 @@ describe('memory export/import', () => {
         kind: 'style',
         value: 'round-trip style fact',
         evidence: 'seen in drafts',
-        personaScope: 'p-scribe',
+        personaScopes: ['p-scribe'],
         source: 'partner_suggestion',
       });
       const conv = source.conversations.create({ personaId: 'p-scribe' });
@@ -77,7 +77,7 @@ describe('memory export/import', () => {
         kind: 'style',
         value: 'round-trip style fact',
         evidence: 'seen in drafts',
-        personaScope: 'p-scribe',
+        personaScopes: ['p-scribe'],
         source: 'partner_suggestion',
         status: 'suggested',
         createdAt: entry.createdAt, // timestamps round-trip unchanged
@@ -219,6 +219,96 @@ describe('memory export/import', () => {
       expect(target.search.query('rejected-but-exported')).toHaveLength(0);
     } finally {
       source.close();
+      target.close();
+    }
+  });
+});
+
+/**
+ * M33 — scope compatibility in an export bundle.
+ *
+ * `memory/v1` is unchanged: a canonical bundle row carries the `personaScopes`
+ * array. A PRE-M33 file (and any hand-written bundle) that carries only the
+ * single `personaScope` still imports, with its scope mapped into the array
+ * form — an upgrade must not widen a persona-private fact to every persona.
+ */
+describe('memory export/import — M33 scope compatibility', () => {
+  it('imports a pre-M33 row (personaScope string) as a one-element scope', () => {
+    const target = makeMemoryEnv({ demo: true });
+    try {
+      const legacyBundle = {
+        schema: 'memory/v1',
+        exportedAt: 1,
+        profile: [
+          {
+            id: 'old-1',
+            kind: 'rule',
+            key: null,
+            value: 'legacy scoped fact',
+            evidence: null,
+            source: 'user',
+            status: 'confirmed',
+            personaScope: 'p-scribe',
+            createdAt: 10,
+            updatedAt: 11,
+          },
+          {
+            id: 'old-2',
+            kind: 'rule',
+            key: null,
+            value: 'legacy global fact',
+            evidence: null,
+            source: 'user',
+            status: 'confirmed',
+            personaScope: null,
+            createdAt: 12,
+            updatedAt: 13,
+          },
+        ],
+        episodes: [],
+      };
+      expect(target.transfer.importBundle(legacyBundle)).toEqual({ profile: 2, episodes: 0 });
+
+      const byValue = new Map(target.profile.list().map((e) => [e.value, e.personaScopes]));
+      expect(byValue.get('legacy scoped fact')).toEqual(['p-scribe']);
+      expect(byValue.get('legacy global fact')).toEqual([]);
+    } finally {
+      target.close();
+    }
+  });
+
+  it('rejects a bundle whose scope field is neither an array nor a string/null', () => {
+    const target = makeMemoryEnv({ demo: true });
+    try {
+      const bad = {
+        schema: 'memory/v1',
+        exportedAt: 1,
+        profile: [
+          {
+            id: 'bad-1',
+            kind: 'rule',
+            key: null,
+            value: 'bad scope',
+            evidence: null,
+            source: 'user',
+            status: 'confirmed',
+            personaScopes: [42],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        episodes: [],
+      };
+      let err: unknown;
+      try {
+        target.transfer.importBundle(bad);
+      } catch (cause) {
+        err = cause;
+      }
+      expect(err).toBeInstanceOf(MemoryError);
+      expect((err as MemoryError).code).toBe('invalid_input');
+      expect(target.profile.list({ includeRejected: true })).toHaveLength(0);
+    } finally {
       target.close();
     }
   });

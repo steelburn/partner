@@ -16,9 +16,14 @@ import {
   isEntryInUse,
   kindLabel,
   kindTone,
+  removedScopes,
+  sameScopes,
   scopedLabel,
+  scopedSummary,
+  scopesOf,
   sortEpisodes,
   statusLabel,
+  toggleScope,
   validateBundle,
   validateBundleSize,
 } from '../src/lib/memory-helpers.js';
@@ -32,11 +37,22 @@ function entry(overrides: Partial<ProfileEntry> = {}): ProfileEntry {
     evidence: null,
     source: 'user',
     status: 'confirmed',
-    personaScope: null,
+    personaScopes: [],
     createdAt: 100,
     updatedAt: 200,
     ...overrides,
   };
+}
+
+/**
+ * A pre-M33 payload: it carries only the single `personaScope` field (the
+ * array field is absent, not merely empty), which is what the core actually
+ * sent before v24 and what a hand-written fixture looks like.
+ */
+function legacyPayload(fields: { personaScope: string | null }): ProfileEntry {
+  const payload = { ...entry() } as unknown as Record<string, unknown>;
+  delete payload.personaScopes;
+  return { ...payload, ...fields } as unknown as ProfileEntry;
 }
 
 function episode(overrides: Partial<EpisodeSummary> = {}): EpisodeSummary {
@@ -90,15 +106,63 @@ describe('labels', () => {
     expect(statusLabel('rejected')).toBe('Rejected');
   });
 
-  it('scopedLabel: null scope reads All personas, ids resolve to names', () => {
+  it('scopedLabel: an empty scope reads All personas, ids resolve to names', () => {
     const personas = [
       { id: 'p-1', name: 'Maya' },
       { id: 'p-2', name: 'Scribe' },
     ];
-    expect(scopedLabel(null, personas)).toBe('All personas');
-    expect(scopedLabel(null)).toBe('All personas');
-    expect(scopedLabel('p-2', personas)).toBe('Scribe');
-    expect(scopedLabel('p-gone', personas)).toBe('Removed persona');
+    expect(scopedLabel([], personas)).toBe('All personas');
+    expect(scopedLabel([])).toBe('All personas');
+    expect(scopedLabel(['p-2'], personas)).toBe('Scribe');
+    expect(scopedLabel(['p-gone'], personas)).toBe('Removed persona');
+  });
+
+  it('M33 scopedLabel + scopedSummary name one persona, count several', () => {
+    const personas = [
+      { id: 'p-1', name: 'Maya' },
+      { id: 'p-2', name: 'Scribe' },
+      { id: 'p-3', name: 'Builder' },
+    ];
+    // The full label lists every persona (tooltip / accessible name).
+    expect(scopedLabel(['p-1', 'p-3'], personas)).toBe('Maya, Builder');
+    // The row meta line stays short: one name, then a count.
+    expect(scopedSummary([], personas)).toBe('All personas');
+    expect(scopedSummary(['p-2'], personas)).toBe('Scribe');
+    expect(scopedSummary(['p-1', 'p-3'], personas)).toBe('2 personas');
+    expect(scopedSummary(['p-1', 'p-2', 'p-3'], personas)).toBe('3 personas');
+  });
+
+  it('M33 removedScopes names ids the local persona list no longer has', () => {
+    const personas = [{ id: 'p-1', name: 'Maya' }];
+    expect(removedScopes(['p-1'], personas)).toEqual([]);
+    expect(removedScopes(['p-1', 'p-gone'], personas)).toEqual(['p-gone']);
+    expect(removedScopes([], personas)).toEqual([]);
+  });
+
+  it('M33 toggleScope adds, removes, and stays order-stable', () => {
+    expect(toggleScope([], 'p-1')).toEqual(['p-1']);
+    expect(toggleScope(['p-1'], 'p-2')).toEqual(['p-1', 'p-2']);
+    expect(toggleScope(['p-1', 'p-2'], 'p-1')).toEqual(['p-2']);
+    // Unticking the last persona returns to the canonical All-personas set.
+    expect(toggleScope(['p-1'], 'p-1')).toEqual([]);
+  });
+
+  it('M33 sameScopes compares as a set so a re-tick is not a write', () => {
+    expect(sameScopes([], [])).toBe(true);
+    expect(sameScopes(['p-1'], ['p-1'])).toBe(true);
+    expect(sameScopes(['p-1', 'p-2'], ['p-2', 'p-1'])).toBe(true);
+    expect(sameScopes(['p-1'], [])).toBe(false);
+    expect(sameScopes(['p-1'], ['p-2'])).toBe(false);
+    expect(sameScopes(['p-1', 'p-2'], ['p-1'])).toBe(false);
+  });
+
+  it('M33 scopesOf reads the array field and still understands the legacy one', () => {
+    expect(scopesOf(entry({ personaScopes: ['p-1', 'p-2'] }))).toEqual(['p-1', 'p-2']);
+    expect(scopesOf(entry({ personaScopes: [] }))).toEqual([]);
+    // A pre-M33 payload (or a hand-built fixture) still scopes correctly.
+    const legacy = legacyPayload({ personaScope: 'p-9' });
+    expect(scopesOf(legacy)).toEqual(['p-9']);
+    expect(scopesOf(legacyPayload({ personaScope: null }))).toEqual([]);
   });
 });
 
@@ -107,15 +171,15 @@ describe('in-use indicator', () => {
     expect(isEntryInUse(entry())).toBe(true);
     expect(isEntryInUse(entry({ status: 'suggested' }))).toBe(false);
     expect(isEntryInUse(entry({ status: 'rejected' }))).toBe(false);
-    expect(isEntryInUse(entry({ personaScope: 'p-1' }))).toBe(false);
-    expect(isEntryInUse(entry({ personaScope: 'p-1', status: 'confirmed' }))).toBe(false);
+    expect(isEntryInUse(entry({ personaScopes: ['p-1'] }))).toBe(false);
+    expect(isEntryInUse(entry({ personaScopes: ['p-1'], status: 'confirmed' }))).toBe(false);
   });
 
   it('countEntriesInUse sums the flagged entries', () => {
     expect(
       countEntriesInUse([
         entry(),
-        entry({ id: 'a', personaScope: 'p-1' }),
+        entry({ id: 'a', personaScopes: ['p-1'] }),
         entry({ id: 'b', status: 'suggested' }),
         entry({ id: 'c' }),
       ]),
@@ -125,8 +189,8 @@ describe('in-use indicator', () => {
 
   it('M19: scoped entries count as in use only for a persona with private memory on', () => {
     const entries = [
-      entry({ id: 'g', personaScope: null }),
-      entry({ id: 's', personaScope: 'p-1' }),
+      entry({ id: 'g' }),
+      entry({ id: 's', personaScopes: ['p-1'] }),
     ];
     const off = [{ id: 'p-1', name: 'Maya', memory: { personaMemory: 'off' as const } }];
     const on = [{ id: 'p-1', name: 'Maya', memory: { personaMemory: 'on' as const } }];
@@ -135,6 +199,25 @@ describe('in-use indicator', () => {
     expect(isEntryInUse(entries[1] as ProfileEntry, on)).toBe(true);
     expect(countEntriesInUse(entries, off)).toBe(1);
     expect(countEntriesInUse(entries, on)).toBe(2);
+  });
+
+  it('M33: a fact shared by several personas is honored by each of them', () => {
+    const shared = entry({ id: 's', personaScopes: ['p-1', 'p-2'] });
+    const mayaOn = [{ id: 'p-1', name: 'Maya', memory: { personaMemory: 'on' as const } }];
+    const scribeOn = [{ id: 'p-2', name: 'Scribe', memory: { personaMemory: 'on' as const } }];
+    const bothOff = [
+      { id: 'p-1', name: 'Maya', memory: { personaMemory: 'off' as const } },
+      { id: 'p-2', name: 'Scribe', memory: { personaMemory: 'off' as const } },
+    ];
+    const third = [{ id: 'p-3', name: 'Builder', memory: { personaMemory: 'on' as const } }];
+
+    // Honored by ANY listed persona whose private memory is on…
+    expect(isEntryInUse(shared, mayaOn)).toBe(true);
+    expect(isEntryInUse(shared, scribeOn)).toBe(true);
+    // …but not by an unlisted one, and not when every listed one is off.
+    expect(isEntryInUse(shared, third)).toBe(false);
+    expect(isEntryInUse(shared, bothOff)).toBe(false);
+    expect(isEntryInUse(shared, [])).toBe(false);
   });
 });
 

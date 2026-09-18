@@ -1,5 +1,12 @@
 # M19 — Persona-scoped memory & automatic remember
 
+> **Superseded in part (M33, 2026-09-18):** the *single* persona scope this
+> spec describes (`personaScope: string | null`) is now the **multi-select**
+> `personaScopes: string[]` — empty = every persona. The M19 behavior is
+> unchanged otherwise; §8 of `PLAN.md` and the M33 milestone entry are
+> authoritative for the wire/DB shape. The pre-M33 field is still accepted on
+> input, so the examples below keep working.
+
 Status: **implemented** · Repo: `~/apps/partner` · Master plan: `PLAN.md` §8
 (memory & the user model). Builds on M4 (`PLAN-M4.md`) which shipped global
 profile tailoring, episodes, search, forget and export.

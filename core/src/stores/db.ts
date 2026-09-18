@@ -299,7 +299,11 @@ CREATE TABLE IF NOT EXISTS profile_entries (
   evidence TEXT,
   source TEXT NOT NULL, -- 'user'|'partner_suggestion'
   status TEXT NOT NULL DEFAULT 'confirmed', -- confirmed|suggested|rejected
-  persona_scope TEXT, -- null = global, else persona id
+  -- M33 (v24): JSON array of persona ids; NULL/[] = every persona. This is
+  -- the live column — persona_scope below is the pre-M33 single-scope
+  -- field, backfilled into persona_scopes on upgrade and then left alone.
+  persona_scopes TEXT,
+  persona_scope TEXT, -- LEGACY (pre-v24): null = global, else one persona id
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -825,7 +829,7 @@ const MESSAGE_COLUMNS = `
 
 const PROFILE_COLUMNS = `
   id, kind, key, value, evidence, source, status,
-  persona_scope AS personaScope, created_at AS createdAt, updated_at AS updatedAt`;
+  persona_scopes AS personaScopes, created_at AS createdAt, updated_at AS updatedAt`;
 
 const EPISODE_COLUMNS = `
   id, conversation_id AS conversationId, persona_id AS personaId,
@@ -866,7 +870,7 @@ const PROFILE_UPDATE_COLUMNS: Readonly<Record<string, keyof ProfileEntryRowPatch
   evidence: 'evidence',
   source: 'source',
   status: 'status',
-  persona_scope: 'personaScope',
+  persona_scopes: 'personaScopes',
 };
 
 const EPISODE_UPDATE_COLUMNS: Readonly<Record<string, keyof EpisodeRowPatch>> = {
@@ -983,6 +987,11 @@ const M11_GUARDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string
   // reading: an existing account is its deployment's owner and uses its own keys.
   ['users', 'role', "role TEXT NOT NULL DEFAULT 'owner'"],
   ['users', 'key_access', "key_access TEXT NOT NULL DEFAULT 'own'"],
+  // M33 (v24) multi-persona memory scope: the JSON id array that supersedes
+  // the single `persona_scope`. Added here for existing file DBs; a NEW DB
+  // gets it from CREATE TABLE above. Legacy rows are backfilled by
+  // backfillPersonaScopes() on the one open that crosses v24.
+  ['profile_entries', 'persona_scopes', 'persona_scopes TEXT'],
 ];
 
 /**
@@ -1004,13 +1013,53 @@ export function ensureColumn(
 
 function applySchema(db: Database.Database): void {
   assertFts5(db);
+  const priorVersion = readSchemaVersion(db);
   db.exec(SCHEMA_SQL);
   for (const [table, column, ddl] of M11_GUARDED_COLUMNS) {
     ensureColumn(db, table, column, ddl);
   }
+  // One-way, one-time legacy conversion: a v<24 row's single `persona_scope`
+  // becomes a one-element `persona_scopes` array. Anything already on v24+
+  // (including a fresh DB, which reports null) is left untouched so a re-open
+  // can never resurrect a scope the user has since widened to all personas.
+  if (priorVersion !== null && priorVersion < 24) backfillPersonaScopes(db);
   db.prepare(
     'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(META_SCHEMA_VERSION_KEY, String(SCHEMA_VERSION));
+}
+
+/** Schema version recorded by a previous open, or null on a fresh database. */
+function readSchemaVersion(db: Database.Database): number | null {
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(META_SCHEMA_VERSION_KEY) as
+      | { value: string }
+      | undefined;
+    if (row === undefined) return null;
+    const parsed = Number(row.value);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * M33 (v24) migration. Copies each legacy single-persona scope into the new
+ * JSON array column. Rows without a legacy scope (global facts) stay NULL,
+ * which reads back as the empty array = every persona — unchanged meaning.
+ * Ids are JSON-encoded here rather than with SQLite json_array() so the
+ * migration does not depend on a JSON1 build.
+ */
+function backfillPersonaScopes(db: Database.Database): void {
+  const legacy = db
+    .prepare(
+      'SELECT id, persona_scope AS personaScope FROM profile_entries WHERE persona_scope IS NOT NULL AND persona_scopes IS NULL',
+    )
+    .all() as Array<{ id: string; personaScope: string }>;
+  if (legacy.length === 0) return;
+  const update = db.prepare('UPDATE profile_entries SET persona_scopes = ? WHERE id = ?');
+  for (const row of legacy) {
+    update.run(JSON.stringify([row.personaScope]), row.id);
+  }
 }
 
 export { applySchema };
@@ -1702,9 +1751,9 @@ export function createMessageStore(db: Database.Database): MessageStore {
 export function createProfileStore(db: Database.Database): ProfileEntryStore {
   const insert = db.prepare(
     `INSERT INTO profile_entries (id, kind, key, value, evidence, source, status,
-                                  persona_scope, created_at, updated_at)
+                                  persona_scopes, created_at, updated_at)
      VALUES (@id, @kind, @key, @value, @evidence, @source, @status,
-             @personaScope, @createdAt, @updatedAt)`,
+             @personaScopes, @createdAt, @updatedAt)`,
   );
   const findById = db.prepare(`SELECT ${PROFILE_COLUMNS} FROM profile_entries WHERE id = ?`);
   const listAll = db.prepare(

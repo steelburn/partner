@@ -187,7 +187,7 @@ describe('profile routes', () => {
         value: 'prefers tldr summaries',
         status: 'confirmed',
         source: 'user',
-        personaScope: null,
+        personaScopes: [],
       });
       const id = created.body.id as string;
 
@@ -266,6 +266,62 @@ describe('profile routes', () => {
         .set(authed(token))
         .send({ status: 'maybe' });
       expect(badStatus.status).toBe(400);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('M33: a scope set round-trips over the wire; a bad shape is 400', async () => {
+    const h = demoHarness();
+    try {
+      const token = await pairToken(h);
+      const created = await request(h.app)
+        .post('/v1/memory/profile')
+        .set(authed(token))
+        .send({
+          kind: 'preference',
+          value: 'shared by two personas',
+          personaScopes: ['p-a', 'p-b'],
+        });
+      expect(created.status).toBe(201);
+      expect(created.body.personaScopes).toEqual(['p-a', 'p-b']);
+      const id = created.body.id as string;
+
+      // The list route carries the array, and the persona filter reads it as
+      // membership (a shared fact belongs to each persona it names).
+      const list = await request(h.app).get('/v1/memory/profile').set(authed(token));
+      expect(list.body.profile[0].personaScopes).toEqual(['p-a', 'p-b']);
+      for (const persona of ['p-a', 'p-b']) {
+        const scoped = await request(h.app)
+          .get(`/v1/memory/profile?personaScope=${persona}`)
+          .set(authed(token));
+        expect(scoped.body.profile.map((e: { id: string }) => e.id)).toEqual([id]);
+      }
+      const other = await request(h.app)
+        .get('/v1/memory/profile?personaScope=p-c')
+        .set(authed(token));
+      expect(other.body.profile).toHaveLength(0);
+
+      // Widening back to every persona is an empty array, and the deprecated
+      // single field is still accepted on the wire.
+      const widened = await request(h.app)
+        .put(`/v1/memory/profile/${id}`)
+        .set(authed(token))
+        .send({ personaScopes: [] });
+      expect(widened.status).toBe(200);
+      expect(widened.body.personaScopes).toEqual([]);
+      const legacy = await request(h.app)
+        .put(`/v1/memory/profile/${id}`)
+        .set(authed(token))
+        .send({ personaScope: 'p-c' });
+      expect(legacy.body.personaScopes).toEqual(['p-c']);
+
+      const bad = await request(h.app)
+        .post('/v1/memory/profile')
+        .set(authed(token))
+        .send({ kind: 'rule', value: 'bad scope', personaScopes: 'p-a' });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error).toBe('invalid_input');
     } finally {
       h.close();
     }
@@ -548,7 +604,7 @@ describe('chat-time tailoring over the wire', () => {
     try {
       const token = await pairToken(h);
       h.profile?.add({ kind: 'preference', value: 'suggested only', source: 'partner_suggestion' });
-      h.profile?.add({ kind: 'identity', value: 'scribe scoped', personaScope: 'p-scribe' });
+      h.profile?.add({ kind: 'identity', value: 'scribe scoped', personaScopes: ['p-scribe'] });
       const provider = await h.providerManager.create({
         name: 'u2',
         endpoint: upstream.server.base,
@@ -649,7 +705,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
     try {
       const token = await pairToken(h);
       h.profile?.add({ kind: 'identity', value: 'global fact' });
-      h.profile?.add({ kind: 'preference', value: 'researcher private', personaScope: 'p-researcher' });
+      h.profile?.add({ kind: 'preference', value: 'researcher private', personaScopes: ['p-researcher'] });
       const provider = await h.providerManager.create({
         name: 'm19-scope',
         endpoint: upstream.server.base,
@@ -720,10 +776,10 @@ describe('M19 persona-scoped memory + automatic remember', () => {
       expect(entries.every((entry) => entry.source === 'partner_suggestion')).toBe(true);
       const globalEntry = entries.find((entry) => entry.value === 'Works as a backend engineer');
       const personaEntry = entries.find((entry) => entry.value === 'Prefers bullet lists');
-      // `scope:"global"` -> personaScope null (tailors every persona);
+      // `scope:"global"` -> empty scope (tailors every persona);
       // `scope:"persona"` -> scoped to the extracting persona.
-      expect(globalEntry?.personaScope).toBeNull();
-      expect(personaEntry?.personaScope).toBe('p-researcher');
+      expect(globalEntry?.personaScopes).toEqual([]);
+      expect(personaEntry?.personaScopes).toEqual(['p-researcher']);
       const values = entries.map((entry) => entry.value);
       expect(values).toContain('Works as a backend engineer');
       expect(values).toContain('Prefers bullet lists');
@@ -762,7 +818,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
 
       const listed = await request(h.app).get('/v1/memory/profile').set(authed(token));
       const suggestion = (listed.body.profile as Array<Record<string, unknown>>)[0];
-      expect(suggestion?.personaScope).toBeNull();
+      expect(suggestion?.personaScopes).toEqual([]);
       const id = String(suggestion?.id);
 
       // Confirm it, then chat with persona B (private memory OFF).
@@ -823,7 +879,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
       const entries = listedProfile(await request(h.app).get('/v1/memory/profile').set(authed(token)));
       expect(entries).toHaveLength(1);
       expect(entries[0]?.value).toBe('Lives in Berlin');
-      expect(entries[0]?.personaScope).toBeNull();
+      expect(entries[0]?.personaScopes).toEqual([]);
       // The persona-scoped finding was dropped, not filed.
       expect(entries.some((entry) => entry.value === 'Persona-only fact')).toBe(false);
     } finally {
@@ -859,7 +915,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
       const entries = listedProfile(await request(h.app).get('/v1/memory/profile').set(authed(token)));
       expect(entries).toHaveLength(1);
       expect(entries[0]?.value).toBe('Persona-only fact');
-      expect(entries[0]?.personaScope).toBe('p-researcher');
+      expect(entries[0]?.personaScopes).toEqual(['p-researcher']);
     } finally {
       h.close();
     }
@@ -957,7 +1013,7 @@ describe('M19 persona-scoped memory + automatic remember', () => {
       const entries = listed.body.profile as Array<Record<string, unknown>>;
       expect(entries).toHaveLength(1);
       expect(entries[0]?.value).toBe('Lives in Berlin');
-      expect(entries[0]?.personaScope).toBeNull();
+      expect(entries[0]?.personaScopes).toEqual([]);
     } finally {
       h.close();
     }

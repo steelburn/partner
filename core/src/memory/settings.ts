@@ -1,7 +1,7 @@
 /**
  * M19 follow-up: user-level consent for GLOBAL automatic remember.
  *
- * Global facts (`personaScope: null`) tailor EVERY persona, so noticing them
+ * Global facts (M33: an EMPTY `personaScopes` array) tailor EVERY persona, so noticing them
  * is a user-level choice, not a per-persona one. This setting answers only
  * "may the partner propose global facts?". Persona-scoped detection stays
  * gated on that persona's `memory.personaMemory` flag (M19).

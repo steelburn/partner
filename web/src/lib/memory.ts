@@ -63,7 +63,28 @@ export function parseProfileEntry(value: unknown, status = 200): ProfileEntry {
   ) {
     throw new ApiRequestError(status, 'The profile entry response had an unexpected shape.');
   }
-  return entry as unknown as ProfileEntry;
+  // M33 scope normalization: the canonical field is `personaScopes` (string
+  // array; [] = every persona). A pre-M33 payload carrying only `personaScope`
+  // (string | null) still reads correctly, so a mixed-version pair never
+  // silently widens a persona-scoped fact to global.
+  return { ...entry, personaScopes: readScopeArray(entry) } as unknown as ProfileEntry;
+}
+
+/** Persona ids from either the M33 array field or the legacy single scope. */
+export function readScopeArray(entry: Record<string, unknown>): string[] {
+  const raw = entry.personaScopes;
+  if (Array.isArray(raw)) {
+    const ids: string[] = [];
+    for (const value of raw) {
+      if (typeof value !== 'string') continue;
+      const id = value.trim();
+      if (id === '' || ids.includes(id)) continue;
+      ids.push(id);
+    }
+    return ids;
+  }
+  const legacy = entry.personaScope;
+  return typeof legacy === 'string' && legacy.trim() !== '' ? [legacy.trim()] : [];
 }
 
 /**

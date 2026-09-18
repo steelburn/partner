@@ -119,7 +119,7 @@ describe('formatKnownBlock', () => {
       evidence: null,
       source: 'user',
       status: 'confirmed',
-      personaScope: null,
+      personaScopes: [],
       createdAt: 0,
       updatedAt: 0,
     };
@@ -154,7 +154,7 @@ describe('formatRejectedBlock', () => {
       evidence: null,
       source: 'user',
       status: 'rejected',
-      personaScope: null,
+      personaScopes: [],
       createdAt: 0,
       updatedAt: 0,
     };
@@ -204,7 +204,7 @@ describe('remember manager (fake provider)', () => {
       });
       const entries = env.profile.list({ includeRejected: true });
       expect(entries).toHaveLength(2);
-      expect(entries.every((e) => e.personaScope === 'p-builder')).toBe(true);
+      expect(entries.every((e) => e.personaScopes.join(',') === 'p-builder')).toBe(true);
       expect(entries.every((e) => e.source === 'partner_suggestion')).toBe(true);
       expect(entries.every((e) => e.status === 'suggested')).toBe(true);
 
@@ -221,7 +221,7 @@ describe('remember manager (fake provider)', () => {
     }
   });
 
-  it('files global findings with personaScope null and persona findings scoped', async () => {
+  it('files global findings with an empty scope and persona findings scoped', async () => {
     const fake = fakeProvider(
       '[{"kind":"identity","value":"Lives in Berlin","scope":"global"},' +
         '{"kind":"rule","value":"Ship on Fridays","scope":"persona"},' +
@@ -237,8 +237,10 @@ describe('remember manager (fake provider)', () => {
       });
       expect(outcome).toMatchObject({ status: 'saved', suggested: 3 });
       const entries = env.profile.list({ includeRejected: true });
-      const globals = entries.filter((e) => e.personaScope === null).map((e) => e.value);
-      const scoped = entries.filter((e) => e.personaScope === 'p-builder').map((e) => e.value);
+      const globals = entries.filter((e) => e.personaScopes.length === 0).map((e) => e.value);
+      const scoped = entries
+        .filter((e) => e.personaScopes.includes('p-builder'))
+        .map((e) => e.value);
       expect(globals.sort()).toEqual(['Lives in Berlin', 'Speaks German']);
       expect(scoped).toEqual(['Ship on Fridays']);
 
@@ -300,14 +302,14 @@ describe('remember manager (fake provider)', () => {
     const remember = makeRemember(env, { target: fake.target });
     try {
       env.profile.add({ kind: 'identity', value: 'Lives in Berlin' });
-      env.profile.add({ kind: 'rule', value: 'Ships on Fridays', personaScope: 'p-builder' });
+      env.profile.add({ kind: 'rule', value: 'Ships on Fridays', personaScopes: ['p-builder'] });
       env.profile.add({
         kind: 'preference',
         value: 'Prefers bullet lists',
         source: 'partner_suggestion',
       });
       env.profile.add({ kind: 'rule', value: 'Declined once', status: 'rejected' });
-      env.profile.add({ kind: 'rule', value: 'Other persona secret', personaScope: 'p-other' });
+      env.profile.add({ kind: 'rule', value: 'Other persona secret', personaScopes: ['p-other'] });
 
       await remember.extract({ personaId: 'p-builder', userText: 'hi', assistantText: 'ok' });
 
@@ -371,8 +373,8 @@ describe('remember manager (fake provider)', () => {
     const remember = makeRemember(env, { target: fake.target });
     try {
       await remember.extract({ personaId: 'p-studio', userText: 'x', assistantText: 'y' });
-      const studio = env.profile.list().filter((e) => e.personaScope === 'p-studio');
-      const builder = env.profile.list().filter((e) => e.personaScope === 'p-builder');
+      const studio = env.profile.list().filter((e) => e.personaScopes.includes('p-studio'));
+      const builder = env.profile.list().filter((e) => e.personaScopes.includes('p-builder'));
       expect(studio).toHaveLength(1);
       expect(builder).toHaveLength(0);
     } finally {
@@ -513,7 +515,7 @@ describe('remember manager (fake provider)', () => {
       expect(outcome).toMatchObject({ status: 'saved', suggested: 1 });
       const entries = envA.profile.list();
       expect(entries.map((e) => e.value)).toEqual(['Lives in Berlin']);
-      expect(entries[0]?.personaScope).toBeNull();
+      expect(entries[0]?.personaScopes).toEqual([]);
     } finally {
       envA.close();
     }
@@ -532,7 +534,7 @@ describe('remember manager (fake provider)', () => {
       expect(outcome).toMatchObject({ status: 'saved', suggested: 1 });
       const entries = envB.profile.list();
       expect(entries.map((e) => e.value)).toEqual(['Persona-only fact']);
-      expect(entries[0]?.personaScope).toBe('p-x');
+      expect(entries[0]?.personaScopes).toEqual(['p-x']);
     } finally {
       envB.close();
     }

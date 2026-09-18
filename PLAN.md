@@ -364,7 +364,7 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
 
 | Store | Contents | Written by | Notes |
 |---|---|---|---|
-| **Profile** | Facts & preferences: name, languages, timezone, tone/verbosity/format prefs, "do/don't" rules, writing style samples | Partner **auto-detects** suggestions (global or persona-scoped); **user confirms each**; manual edits | Highest trust; drives tailoring; `persona_scope` null = global, else one persona (M19) |
+| **Profile** | Facts & preferences: name, languages, timezone, tone/verbosity/format prefs, "do/don't" rules, writing style samples | Partner **auto-detects** suggestions (global or persona-scoped); **user confirms each**; manual edits | Highest trust; drives tailoring; `persona_scopes` empty = global, else the personas it names — **multi-select** (M19 scoping, M33 multi) |
 | **Episodes** | Summaries of past conversations/tasks with outcome | Partner, on demand (per conversation) | Namespaced per persona unless shared |
 | **Retrieval** | FTS5 full-text over profile/episodes (and notes/plans) | Store writes | The semantic (vector) index is deferred until an embeddings provider is pinned (M4 deviation) |
 
@@ -386,10 +386,11 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   (no default model on the provider, an explicit per-message model),
   extraction rides the exact model that served the turn, so a successful turn
   never silently skips remembering. Each finding is **global**
-  (`personaScope: null` — name, role, language, standing tone/format rules,
-  so it tailors every persona) or **persona-scoped** (only that persona). The
-  extractor prompt is fixed, parsing/caps/secret-filter are defensive, and
-  audit rows carry ids/counts only. Before suggesting, the extractor reviews a
+  (M33: an EMPTY `personaScopes` array — name, role, language, standing
+  tone/format rules, so it tailors every persona) or **persona-scoped** (only
+  that persona). The extractor prompt is fixed, parsing/caps/secret-filter are
+  defensive, and audit rows carry ids/counts only. Before suggesting, the
+  extractor reviews a
   bounded `ALREADY KNOWN` listing (the confirmed and still-pending facts the
   persona honors — global + its own scope, capped) and must not re-propose
   them; a punctuation/case/space-insensitive dedupe keeps an already-known or
@@ -399,8 +400,17 @@ Three explicit stores (all user-visible, editable, exportable, deletable):
   even in fresh wording; the deterministic dedupe stays the guarantee. The
   Memory view loads rejected entries (`GET /v1/memory/profile?includeRejected=1`)
   into a collapsed **Rejected** panel with Restore, and a pending suggestion
-  carries a one-step "applies to" persona select so it can be scoped without
-  opening the editor.
+  carries a one-step "applies to" control so it can be scoped without opening
+  the editor — since **M33** that control is the same multi-select checkbox set
+  the add/edit forms use, so a fact can be shared by several personas.
+- **Multi-persona scope (M33):** `personaScopes: string[]` replaces the
+  single `personaScope` (empty = every persona; one id = private; two or more
+  = exactly those). Tailoring, auto-remember's known/rejected/dedupe listing
+  and the `?personaScope=` filter all read it as membership, so a shared fact
+  is honored by each persona it names. The pre-M33 `personaScope` string/null
+  is still **accepted on input** (an old caller or exported bundle maps to
+  `[id]`/`[]`) and an old file's column is backfilled into the array on the
+  open that crosses v24.
 - **Forgetting:** per-entry delete, per-store wipe, or "forget everything
   before <date>". Memory exports as JSON/Markdown. A rejected fact is tracked
   (visible under **Rejected**) and never re-suggested.
@@ -599,7 +609,7 @@ any Partner-owned server (there is none in v1).
 |---|---|
 | `providers` | endpoint profile (no key material; `keyRef` only) + declared image-capable model ids (M24) |
 | `personas` | persona JSON (§5) + independence/schedules, capability policy |
-| `profile_entries` | user Profile facts (confirmed/suggested/rejected; `persona_scope` null = global) |
+| `profile_entries` | user Profile facts (confirmed/suggested/rejected; `persona_scopes` JSON id array, empty = global — M33; legacy `persona_scope` column superseded, backfilled on the v24 open) |
 | `episodes` | conversation summaries (persona namespace) |
 | `memory_fts` / `notes_fts` | FTS5 indexes over memory + notes/plans (vectors deferred — see M4 deviation) |
 | `notes` / `plans` / `note_links` | markdown stores + wiki-link edges |
@@ -630,11 +640,12 @@ any Partner-owned server (there is none in v1).
 | `shared_access` | key/value holding the deployment's published provider + search configuration. Secrets live in the deployment keychain under `shared-provider:`/`shared-search:` accounts; only non-secret JSON is here (M29) |
 | `audit_log` | append-only activity |
 
-Schema is `v23` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
+Schema is `v24` (additive; guarded `ALTER ADD COLUMN` via `ensureColumn` for
 `personas.policy`/`home_folder`/`schedules`, `providers.purpose`/
 `vision_models`, `conversations.folder_id`/`parent_id`/`source_asset_id`,
 `messages.content_type`, `pending_tools.conversation_id`/`persona_id`/**`kind`**/
-**`draft_id`**, and — M20.B — `sessions.user_id`/`client_class`/`device_label`/
+**`draft_id`**, `profile_entries.persona_scopes`, and — M20.B —
+`sessions.user_id`/`client_class`/`device_label`/
 `platform`/`rotated_at`).
 `v17` added the `users` + `user_credentials` tables; `v18` added the session
 columns; `v19` (M20-B S9) added `key_wraps` (the passphrase-wrapped partition key)
@@ -662,6 +673,17 @@ fresh — `docs/VERIFY-M28.md` §3.1). `origin` gained the value `'flow'`. Guard
 `ensureColumn`, so a v21 DB opens unchanged and pre-v22 rows read `NULL` = no flow.
 
 **v23 (M29, landed):** adds `users.role` (default `'owner'` — an existing account is its deployment's owner) and `users.key_access` (default `'own'`), plus the `invites`, `shares` and `shared_access` tables. Additive: a v22 DB gains the two columns on its next open and the tables via `CREATE TABLE IF NOT EXISTS`, and a pre-v23 row reads as an owner with its own credentials — exactly the pre-M29 behaviour. `PLAN-M29.md`.
+
+**v24 (M33, landed):** adds `profile_entries.persona_scopes` (JSON id array;
+`NULL`/`[]` = every persona) so one profile fact can be shared by several
+personas. The pre-M33 `persona_scope` column is **left in place but no longer
+read or written**: the one open that crosses v24 backfills each legacy
+single-scope row into a one-element array (`backfillPersonaScopes`, version-gated
+via the recorded `schema_version`, so a later open can never resurrect a scope the
+user has since widened to all personas), and a row with no legacy scope stays
+`NULL` — which still reads as "every persona". Additive `ensureColumn`, so a v23
+DB opens unchanged; ids are JSON-encoded in JS rather than with SQLite
+`json_array()` so the migration needs no JSON1 build.
 
 **M20 partitions by user and by trust tier:** one whole-file-encrypted DB +
 cipher key + skills dir per user under `data/users/<id>/` (generalizing the
@@ -1390,6 +1412,37 @@ apps/partner/
       `remember.test.ts` (+2) pin the decisions. Web suite **60 files / 979
       tests**; core remember green; typecheck 0; bundle green; verified
       in-browser at 1440 (deck + drawer, rejected panel, scope select).
+      **M33 — multi-persona memory scope (DONE).** Requested change: Memory's
+      "Applies to" offered All personas **or exactly one** persona; it now
+      offers All personas **or any set** of them. (1) **Wire + store:**
+      `ProfileEntry.personaScopes: string[]` replaces `personaScope`, EMPTY =
+      every persona; the deprecated single field is still accepted on input
+      (add/update/import/bundle) and mapped to `[id]`/`[]`, so an old caller or
+      an exported `memory/v1` file keeps its scope instead of silently widening
+      it. Schema **v23 → v24** adds `profile_entries.persona_scopes` (JSON id
+      array, `NULL` = global) and backfills each legacy `persona_scope` row into
+      a one-element array exactly once — version-gated, so reopening can never
+      resurrect a scope the user has since widened (`db-migrate.test.ts` +3, the
+      seven SCHEMA_VERSION tripwires bumped to 24). (2) **Behavior:** tailoring,
+      auto-remember's known/rejected/dedupe listing and
+      `GET /v1/memory/profile?personaScope=` all read the set as membership, so
+      a fact shared by two personas is honored by each of them (and only by
+      them). (3) **UI:** the three scope selects (edit form, add form, and M32's
+      one-step suggestion re-scope) became ONE `ScopePicker` checkbox set —
+      "All personas" IS the empty set, unticking the last persona returns to it,
+      and a persona the local list no longer has stays ticked as "Removed
+      persona" so opening a fact cannot widen it; the suggestion's control is a
+      `Change` disclosure whose open state survives the write. Token-only, 44px
+      options at the phone tier, focus ring + disabled state declared.
+      `memory-scope-picker.test.ts` (+12) pins the structure, tokens and states;
+      `memory-helpers.test.ts` (+8), `memory-api.test.ts` (+2), core
+      `profile/tailor/transfer/remember/memoryRoutes` (+13) pin the algebra and
+      the wire. *Exit: core 162 files / 1633 passed (5 env-gated skips) · web 61
+      files / 999 passed · typecheck 0 · bundle green · `ux_audit` green (APCA
+      Lc ≥ 75 body + ≥ 30 non-text, light + dark, 0 hardcoded values) · verified
+      in-browser against a demo core (two personas saved and re-read after a full
+      reload; suggestion re-scoped in place; widening back to All personas shows
+      "In use"; 10/10 options measure 44px at 390×844 with 0 overflow).*
       **M20.A follow-up — phone Notes view crowding (QUEUED, measured, NOT
       started).** Reported as "mobile view is too crowded"; a scan of all four
       phone tabs found Chat/Files/Personas clean and **Notes is the offender** —

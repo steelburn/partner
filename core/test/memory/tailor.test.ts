@@ -15,7 +15,7 @@ describe('buildTailoring', () => {
       // Only suggested + rejected + persona-scoped -> nothing to honor.
       env.profile.add({ kind: 'preference', value: 'suggested one', source: 'partner_suggestion' });
       env.profile.add({ kind: 'rule', value: 'rejected one', status: 'rejected' });
-      env.profile.add({ kind: 'identity', value: 'scribe-scoped', personaScope: 'p-scribe' });
+      env.profile.add({ kind: 'identity', value: 'scribe-scoped', personaScopes: ['p-scribe'] });
       expect(buildTailoring(env.profile, 'p-default')).toBeNull();
       expect(buildTailoring(env.profile, 'p-scribe')).toBeNull(); // scoped-only never injects
     } finally {
@@ -79,8 +79,8 @@ describe('buildTailoring', () => {
     const env = makeMemoryEnv();
     try {
       env.profile.add({ kind: 'identity', value: 'global fact' });
-      env.profile.add({ kind: 'preference', value: 'studio secret', personaScope: 'p-studio' });
-      env.profile.add({ kind: 'preference', value: 'builder secret', personaScope: 'p-builder' });
+      env.profile.add({ kind: 'preference', value: 'studio secret', personaScopes: ['p-studio'] });
+      env.profile.add({ kind: 'preference', value: 'builder secret', personaScopes: ['p-builder'] });
 
       const off = buildTailoring(env.profile, { id: 'p-studio', memory: { personaMemory: 'off' } });
       expect(off).toBe('- identity: global fact');
@@ -106,7 +106,7 @@ describe('buildTailoring', () => {
         clock.t += 1;
       }
       for (let i = 0; i < 4; i += 1) {
-        env.profile.add({ kind: 'rule', value: `scoped ${i}`, personaScope: 'p-x' });
+        env.profile.add({ kind: 'rule', value: `scoped ${i}`, personaScopes: ['p-x'] });
         clock.t += 1;
       }
       const text = buildTailoring(env.profile, { id: 'p-x', memory: { personaMemory: 'on' } });
@@ -114,6 +114,53 @@ describe('buildTailoring', () => {
       // The four newest are the scoped facts.
       expect(text?.split('\n')[0]).toContain('scoped 3');
       expect(text).not.toContain('global 0');
+    } finally {
+      env.close();
+    }
+  });
+});
+
+/**
+ * M33 — a fact shared by several personas.
+ *
+ * `personaScopes` is an id set: an entry scoped to ['p-a','p-b'] is honored by
+ * each of those personas when its private memory is on, and by neither when it
+ * is off. A persona outside the set never sees it.
+ */
+describe('buildTailoring — multi-persona scope (M33)', () => {
+  it('injects a shared fact for every listed persona and for no other', () => {
+    const env = makeMemoryEnv();
+    try {
+      env.profile.add({
+        kind: 'preference',
+        value: 'shared preference',
+        personaScopes: ['p-a', 'p-b'],
+      });
+      const on = (id: string): string | null =>
+        buildTailoring(env.profile, { id, memory: { personaMemory: 'on' } });
+
+      expect(on('p-a')).toBe('- preference: shared preference');
+      expect(on('p-b')).toBe('- preference: shared preference');
+      expect(on('p-c')).toBeNull();
+
+      // Private memory off -> the shared fact never rides the prelude.
+      expect(buildTailoring(env.profile, 'p-a')).toBeNull();
+      expect(
+        buildTailoring(env.profile, { id: 'p-a', memory: { personaMemory: 'off' } }),
+      ).toBeNull();
+    } finally {
+      env.close();
+    }
+  });
+
+  it('a fact widened to all personas is honored even with private memory off', () => {
+    const env = makeMemoryEnv();
+    try {
+      env.profile.add({ kind: 'identity', value: 'lives in Berlin' });
+      expect(buildTailoring(env.profile, 'p-a')).toBe('- identity: lives in Berlin');
+      expect(
+        buildTailoring(env.profile, { id: 'p-a', memory: { personaMemory: 'off' } }),
+      ).toBe('- identity: lives in Berlin');
     } finally {
       env.close();
     }
