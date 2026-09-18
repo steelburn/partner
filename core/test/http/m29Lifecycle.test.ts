@@ -21,7 +21,7 @@
  * It runs the whole boot (`startServer`) because delegation, the rails and the
  * system stores are half the feature: none of this is observable in a unit.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +34,15 @@ import { closeServer, freePort, removeTempRoot } from '../helpers.js';
 const dirs: string[] = [];
 const servers: Server[] = [];
 const bundles: CoreBundle[] = [];
+
+/**
+ * These tests boot REAL login cores and derive REAL scrypt credentials (each
+ * `addUser` + sign-in is a ~128 MiB, ~0.2 s derivation; a single case can spend
+ * a dozen). The default 5 s budget is fine on a laptop and NOT on a loaded CI
+ * runner — the v0.1.23 verify run failed on exactly one mid-file case at 5.0 s.
+ * The assertion is correctness, not speed, so the file gets a generous budget.
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await closeServer(server);
