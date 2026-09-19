@@ -3,6 +3,13 @@
 All notable changes to Partner. Newest first. One release per milestone or
 review fixup (`v0.MINOR.PATCH`).
 
+The released version is ONE number: `node scripts/version.mjs <x.y.z>` writes it
+into every carrier (all workspace manifests, `CORE_VERSION`, the Tauri bundle
+version + `Cargo.toml`/`Cargo.lock`, the lockfile) and `npm run version:check`
+reports drift. Guarded by `tests/version-consistency.test.ts` and by the `v*`
+tag guard in `.github/workflows/windows-build.yml` — the desktop bundle, the
+core's `/v1/health` claim and every installer name must agree.
+
 - **Milestone index** → `PLAN.md` §15
 - **Per-milestone spec** → `PLAN-M<N>.md`
 - **Verification records** (walks, measurements, "not verified") → `docs/VERIFY-*.md`

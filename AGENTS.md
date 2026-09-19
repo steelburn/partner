@@ -37,3 +37,8 @@ When a module/milestone is added, changed, or completed:
   `npm run dev:web` (SPA on :5173).
 - Security/audit discipline: never log, echo, or persist secrets or user
   memory content; audit rows carry ids/counts/lengths only.
+- Release versioning: ONE number for the whole app. `node scripts/version.mjs
+  <x.y.z>` writes every carrier (workspace manifests, `CORE_VERSION`, Tauri
+  bundle version + `Cargo.toml`/`Cargo.lock`, lockfile); `npm run version:check`
+  reports drift; guarded by `tests/version-consistency.test.ts` and the `v*` tag
+  guard in `windows-build.yml`. `extension/manifest.json` is its own track.

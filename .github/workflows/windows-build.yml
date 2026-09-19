@@ -49,6 +49,21 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Cheap, and it runs BEFORE the ~20 minute Rust build. The tree's version
+      # fields must agree with each other first.
+      - name: Version carriers agree
+        run: node scripts/version.mjs --check
+
+      # A tag build publishes an installer NAMED from tauri.conf.json, so a
+      # release commit that forgot one field ships the wrong file: v0.1.23
+      # published Partner_0.1.22_x64-setup.exe (fixup 28097ff) because
+      # tauri.conf.json was the copy that stayed behind. Fail in seconds here
+      # rather than in a published artifact.
+      - name: Version tag agrees with the bundle
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          node -e "const v=require('./shell/src-tauri/tauri.conf.json').version, t=process.env.GITHUB_REF_NAME||''; if (t !== 'v'+v) { console.error('TAG_VERSION_MISMATCH: tag '+t+' but shell/src-tauri/tauri.conf.json says '+v+' - the installer would be published as Partner_'+v+'_x64-setup.exe'); process.exit(1) } console.log('tag '+t+' agrees with the bundle version '+v)"
+
       - name: Diagnostics (VS / vswhere / PS policy)
         run: |
           if exist "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" ("C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) else (echo NO_VSWHERE)

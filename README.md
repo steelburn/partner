@@ -26,6 +26,7 @@ web/        SPA (Vite + React)                                [M0–M33]
 extension/  MV3 (native-messaging bridge, theme stream)       [M7–M11]
 shared/     types: tokens, contracts, redaction (no runtime deps)
 tests/      cross-cutting integration tests
+scripts/    repo tooling (version.mjs — the one writer of the release version)
 ```
 
 ## Dev
@@ -54,7 +55,7 @@ Container/hosted way in: see `PLAN-M21.md` (image + Cloudflare Tunnel) and
 
 | | |
 |---|---|
-| Root suite | **1812 passed** (5 env-gated skips) |
+| Root suite | **1833 passed** (5 env-gated skips) |
 | Shared / web suites | **90** / **1084** passed |
 | Typecheck | 0 errors (`npm run typecheck`) |
 | Web build | green (`npm run build -w web`) |

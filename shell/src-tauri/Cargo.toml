@@ -1,7 +1,7 @@
 # M0 scaffold — verify with cargo check once Rust is installed.
 [package]
 name = "partner-shell"
-version = "0.0.0"
+version = "0.1.26"
 description = "Tauri v2 desktop shell for Partner (spawns the Node core sidecar, hosts the webview)"
 edition = "2021"
 

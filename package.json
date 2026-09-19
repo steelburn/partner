@@ -18,7 +18,8 @@
     "test:watch": "vitest",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:core": "npm run dev -w core",
-    "dev:web": "npm run dev -w web"
+    "dev:web": "npm run dev -w web",
+    "version:check": "node scripts/version.mjs --check"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
